@@ -17,6 +17,14 @@ Evidence rule: `test` and `receipt` are an existing repo path (optionally
 `path::detail`), `none: <reason>`, or `pending: WP12 Task N`. `pending` is
 accepted only for decision provider-fix, so later tasks fill those rows.
 
+TODO_IDS is hard-coded here because its source (the outer workspace todo.md
+and its gap-analysis disposition table) is outside this repository; adding a
+TODO category means editing this list and the ledger together.
+
+Provider-owned finding/exclusion rows must be provider-fix, or
+supported-refusal whose `source` cites normative text (contains "PKCS#11" and
+a section reference); nothing else is accepted for them.
+
 Usage: python3 scripts/check-findings-ledger.py [--self-test]
 """
 
@@ -120,7 +128,7 @@ def evidence_ok(value, decision, repo):
         return "empty"
     if PENDING_RE.match(value):
         return None if decision == "provider-fix" else \
-            "pending only allowed for provider-fix"
+            "%r is only allowed for provider-fix (got %s)" % (value, decision)
     if value.startswith("pending"):
         return "malformed pending (want 'pending: WP12 Task N')"
     if value.startswith("none: ") and len(value) > 6:
@@ -196,6 +204,18 @@ def validate(ledger, src, counts=COUNTS, repo=REPO):
                     fam + " "):
                 errs.append("%s: source must start with family %s"
                             % (rid, fam))
+    for rid, r in seen.items():
+        if r["kind"] in ("finding", "exclusion") and r["owner"] == "provider":
+            d = r["decision"]
+            if d == "supported-refusal":
+                if "PKCS#11" not in r["source"] or not re.search(
+                        r"section|\u00a7|sec\.", r["source"]):
+                    errs.append("%s: provider-owned supported-refusal needs "
+                                "a source citing PKCS#11 normative section"
+                                % rid)
+            elif d != "provider-fix":
+                errs.append("%s: provider-owned %s must be provider-fix or "
+                            "supported-refusal (got %s)" % (rid, r["kind"], d))
     return errs
 
 
@@ -267,6 +287,25 @@ def self_test():
     short = copy.deepcopy(src)
     short["exclusion"] = set(sorted(short["exclusion"])[:-1])
     expect("source-has-fewer-than-ledger", validate(base, short))
+    i = next(i for i, r in enumerate(rows)
+             if r["kind"] == "exclusion" and r["owner"] == "provider")
+    r2 = copy.deepcopy(rows)
+    r2[i]["decision"] = "target-gap"
+    r2[i]["test"] = "none: relabelled"
+    r2[i]["receipt"] = "none: relabelled"
+    expect("provider-owned-exclusion-target-gap", validate(with_rows(r2), src))
+    r2 = copy.deepcopy(rows)
+    r2[i]["decision"] = "supported-refusal"
+    r2[i]["test"] = "none: relabelled"
+    r2[i]["receipt"] = "none: relabelled"
+    expect("supported-refusal-without-normative-source",
+           validate(with_rows(r2), src))
+    r2[i]["source"] += " PKCS#11 3.0 section 5.2"
+    if validate(with_rows(r2), src):
+        print("FAIL control normative-source supported-refusal rejected")
+        bad += 1
+    else:
+        print("ok   control supported-refusal-with-normative-source -> accepted")
     # pending evidence only for provider-fix
     i = next(i for i, r in enumerate(rows) if r["decision"] != "provider-fix")
     r2 = copy.deepcopy(rows)
