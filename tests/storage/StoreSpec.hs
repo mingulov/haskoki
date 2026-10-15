@@ -51,11 +51,11 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
+import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
-import System.IO.Error (catchIOError)
+import System.IO.Error (catchIOError, isAlreadyExistsError)
 import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, setFileMode)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
 import System.Posix.Process (exitImmediately, getParentProcessID, getProcessID)
@@ -189,8 +189,8 @@ sqliteOpener = do
   let path = dir </> "store.db"
   pure (Opener "sqlite" (openSQLiteStore path) (removeDirectoryRecursive dir))
 
--- | Make a fresh scratch directory: pid-suffixed with exists-retry
--- (no new dependencies; concurrent runs cannot collide).
+-- | Make a fresh scratch directory: pid-suffixed, retrying the next name
+-- on an already-exists error (no new dependencies; concurrent runs cannot collide).
 makeTempDir :: String -> IO FilePath
 makeTempDir prefix = do
   base <- getTemporaryDirectory
@@ -202,9 +202,12 @@ makeTempDir prefix = do
       | n > 10000 = ioError (userError ("makeTempDir: exhausted names for " ++ stem))
       | otherwise = do
           let dir = base </> (stem ++ show n)
-          (createDirectory dir >> pure dir) `catchIOError` \_ -> do
-            exists <- doesDirectoryExist dir
-            if exists then tryNames base stem (n + 1) else ioError (userError ("makeTempDir: cannot create " ++ dir))
+          -- Decide from the error itself: a concurrent test may create and
+          -- already remove the same name, so a later existence check races.
+          (createDirectory dir >> pure dir) `catchIOError` \e ->
+            if isAlreadyExistsError e
+              then tryNames base stem (n + 1)
+              else ioError (userError ("makeTempDir: cannot create " ++ dir ++ ": " ++ show e))
 
 -- | Both backends run the shared contract, plus sqlite-only cases.
 spec :: TestTree
