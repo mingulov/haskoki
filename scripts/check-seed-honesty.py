@@ -119,6 +119,12 @@ def main():
         # Dated R5 evidence mirror of the executed seed-contract
         # negatives (absent from CI checkouts; local worktree only).
         ("ws/r5-evidence/probe-src/consumer_roundtrip.c", re.compile(r".")),
+        # The generated function-contract table in coverage.md renders
+        # the planner-scope catalog row (ROW-MIRROR owns its content);
+        # it states "served" before the planner contract. Exactly that
+        # row shape, nothing else in the file.
+        ("docs/coverage.md", re.compile(
+            r"^\| C_SeedRandom \| 64 \| served \| unsupported-with-reason \| ")),
     ]
     skip_dirs = {"dist-newstyle", "dist-release", "dist-release-evidence", ".git"}
     skip_files = {"spec/function-contracts.json",  # owned by ROW-MIRROR/PLANNED-COUNT
