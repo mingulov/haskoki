@@ -6,10 +6,12 @@
 -- asserts the value is 0. Lines print only when
 -- HASKOKI_OWNERSHIP_COUNTERS=1 (precedent: DURABILITY lines).
 --
--- The tag rides the test thread's own GHC label (no process
--- global), so parallel tasty workers (-j N) never share a tag; an
--- assertion outside 'counted' (or on a thread the test forked)
--- still asserts, it just prints nothing.
+-- The tag rides a thread label (no process global): 'counted' runs
+-- the body on a child thread it labels itself, because tasty labels
+-- its own test thread and would race a label set there. Parallel
+-- tasty workers (-j N) never share a tag; an assertion outside
+-- 'counted' (or on a thread the body forks) still asserts, it just
+-- prints nothing.
 module OwnershipCounters
   ( counted
   , emitCounters
@@ -17,8 +19,9 @@ module OwnershipCounters
   , assertCensusZero
   ) where
 
-import Control.Concurrent (myThreadId)
-import Control.Exception (finally)
+import Control.Concurrent (forkIOWithUnmask, killThread, myThreadId)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar)
+import Control.Exception (SomeException, mask, onException, throwIO, try)
 import Control.Monad (when)
 import Data.List (stripPrefix)
 import GHC.Conc (labelThread)
@@ -32,14 +35,25 @@ import Test.Tasty.HUnit (assertEqual)
 tagPrefix :: String
 tagPrefix = "haskoki-ownership-counters\t"
 
--- | Run a test body under (case id, test label). The thread's
--- previous label comes back afterwards.
+-- | Run a test body under (case id, test label) on a labelled child
+-- thread. The body's result or exception (an HUnit failure included)
+-- comes back to the caller; an asynchronous exception to the caller
+-- (a tasty timeout) kills the child and waits for it to finish.
 counted :: String -> String -> IO a -> IO a
 counted c t act = do
-  me <- myThreadId
-  before <- threadLabel me
-  labelThread me (tagPrefix ++ c ++ "\t" ++ t)
-  act `finally` labelThread me (maybe "" id before)
+  done <- newEmptyMVar
+  mask $ \restore -> do
+    child <- forkIOWithUnmask $ \unmask -> do
+      me <- myThreadId
+      labelThread me (tagPrefix ++ c ++ "\t" ++ t)
+      r <- tryAny (unmask act)
+      putMVar done r
+    r <- restore (readMVar done)
+      `onException` (killThread child >> readMVar done)
+    either throwIO pure r
+
+tryAny :: IO b -> IO (Either SomeException b)
+tryAny = try
 
 -- | The (case id, test label) of the current thread, if counted.
 currentTag :: IO (Maybe (String, String))
