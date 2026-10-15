@@ -1002,6 +1002,10 @@ static void protected_rejoin(void) {
   if (old == MAP_FAILED) fixture_fail("revocation-allocation");
   memset(old, 0xa5, size);
   int protected = 0;
+  /* Detach needs the persistent store. Select it here: the leg that ran
+   * last may have left the memory configuration in place (the reroute
+   * order runs the memory lifecycle second). */
+  fixture_configure(1);
   fixture_initialize("revocation-source");
   CK_SESSION_HANDLE source = fixture_session(1);
   CK_BYTE input[] = {'a', 'b', 'c'};
