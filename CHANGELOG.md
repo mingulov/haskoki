@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0.0] - Unreleased
+
+- Token serial numbers come from the durable token identity.
+  `C_GetTokenInfo` reports the token's `TokenId` as 16 lowercase hex
+  digits, independent of slot and label, so a moved token keeps its
+  serial and `C_InitToken` keeps it too. v0.4 reported the slot index
+  plus one in decimal. The values are unchanged for a positional
+  catalog of up to 9 tokens. They change for a 10th or later token, for
+  pinned non-positional `token_ids`, and after a slot move: update any
+  saved `pkcs11:` URI that selects those tokens by `serial=`.
+- SQLite stores write each new token's credential row (the configured
+  SO and user PIN) in the same transaction as the token. The stored row
+  is then the PIN authority: editing a configured PIN no longer changes
+  what an existing token accepts.
+- A SQLite store holding tokens without a credential row (written by
+  v0.4 or earlier) refuses to open as migration-required, names those
+  tokens and writes nothing. Identity refusals report first.
+  `haskoki-ctl store check` and `haskoki-ctl store migrate` diagnose
+  and migrate such a store.
+- The test-only `storeResetToken` keeps the token's credential row.
+
 ## [0.4.0.0] - Unreleased
 
 - Token provisioning lifecycle: `C_InitToken`, `C_InitPIN`, and `C_SetPIN`

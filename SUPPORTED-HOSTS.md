@@ -153,7 +153,10 @@ presence.
   SO `5678`; catalog PINs come from the TOML file in plaintext) and
   move in-band after that (`C_InitToken` / `C_InitPIN` / `C_SetPIN`,
   persisted per token on SQLite stores; in memory mode the change
-  holds for the interval only). Comparison is a
+  holds for the interval only). On SQLite the configured PINs are
+  written as the token's credential row when the token is created;
+  a later edit of the configured PINs does not change an existing
+  token. Comparison is a
   position-constant xor fold with length short-circuit
   (`pinsMatch` in `ffi/Haskoki/FFI/Standard.hs`); no machine
   constant-time claim is made,

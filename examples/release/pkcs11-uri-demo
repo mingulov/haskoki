@@ -65,6 +65,9 @@ echo "token URI: $TOKEN_URI"
 URI_TOKEN=$(echo "$TOKEN_URI" | sed 's/;/\n/g' | grep '^token=' | cut -d= -f2)
 URI_SERIAL=$(echo "$TOKEN_URI" | sed 's/;/\n/g' | grep '^serial=' | cut -d= -f2)
 [ "$URI_TOKEN" = "haskoki-demo" ] || fail "token component: $URI_TOKEN"
+# The serial is the home token's durable identity (TokenId 1) in
+# 16 lowercase hex digits, independent of slot and label.
+[ "$URI_SERIAL" = "0000000000000001" ] || fail "serial component: $URI_SERIAL"
 echo "$URI_TOKEN$URI_SERIAL" | grep -q '%' && fail "escaped selector bytes"
 echo "token component: label=$URI_TOKEN serial=$URI_SERIAL"
 
