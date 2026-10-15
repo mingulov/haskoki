@@ -143,7 +143,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.Gmac (gmacRecipeFor)
 import Haskoki.Recipe.Hmac (encodeMacGeneral, hmacRecipeFor)
 import Haskoki.Recipe.MlDsa (MldsaHedge (..), encodeMldsaParams, mldsaRecipeFor)
-import Haskoki.Recipe.Otp (encodeHotpParams, hotpRecipeFor)
+import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Recipe.Poly1305 (poly1305RecipeFor)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPkcs1 (rsaPkcs1RecipeFor)
@@ -179,6 +179,7 @@ spec :: TestTree
 spec = testGroup "message flag battery (T-M01)"
   [ testCase "route rule: message route iff DG1 holds" caseRouteRule
   , testCase "route init: every message route initializes CKR_OK" caseRouteInit
+  , testCase "routeless init: classic-only rows refuse message init" caseRoutelessInit
   , testCase "flag correspondence: CKF_MESSAGE_* has its route and vice versa" caseFlags
   , testCase "no CKF_MULTI_MESSAGE advertised" caseNoMulti
   , testCase "scratch mutation: flipped route/flag fails per run" caseMutation
@@ -445,9 +446,10 @@ msgCipherServed mid =
 
 -- | Message-sign/verify service: the exact @FxMessageSign@ /
 -- @FxMessageVerify@ mechanism dispatch (@Driver.hs:1957-2072@)
--- through the same recipe tables. The classic SSL3-MAC arm has no
--- message counterpart: those two rows fall through to @unsupported
--- fx@.
+-- through the same recipe tables. The classic SSL3-MAC and HOTP
+-- arms have no message counterpart: those rows fall through to
+-- @unsupported fx@ (HOTP since v0.5: PKCS#11 v3.2 defines no
+-- per-message parameter shape for it).
 msgSignServed :: MechanismId -> Bool
 msgSignServed mid =
   isJust (hmacRecipeFor mid)
@@ -456,7 +458,6 @@ msgSignServed mid =
   || isJust (cbcmacRecipeFor mid)
   || isJust (xcbcRecipeFor mid)
   || isJust (gmacRecipeFor mid)
-  || isJust (hotpRecipeFor mid)
   || isJust (poly1305RecipeFor mid)
   || isJust (rsaPkcs1RecipeFor mid)
   || isJust (rsaPssRecipeFor mid)
@@ -574,6 +575,44 @@ caseRouteInit :: IO ()
 caseRouteInit = guarded "route-init" $ do
   (parseBad, mechs) <- loadCatalog
   assertNoMismatches "route init" (parseBad ++ checkRouteInit mechs)
+
+-- | The converse of 'checkRouteInit': a row with the classic route but
+-- no @message-*@ route refuses message init with
+-- @CKR_MECHANISM_INVALID@ under full caps, whatever the parameters
+-- (the route check precedes parameter and key checks). Without it a
+-- classic-only mechanism (HOTP, SSL3-MAC) would initialize a message
+-- context that no data call can serve.
+checkRoutelessInit :: [MechRow] -> ([String], Int)
+checkRoutelessInit mechs = (concat results, length results)
+  where
+    results =
+      [ check row fam
+      | row <- mechs, fam <- [minBound .. maxBound]
+      , msgFamilyOp fam `elem` mrOps row
+      , msgOperation fam `notElem` mrOps row ]
+    check row fam =
+      let mid = MechanismId (mrId row)
+          params = either (const BS.empty) id (paramsFor (mrCodec row) mid)
+          tag = T.unpack (mrName row) ++ " " ++ show mid
+                ++ " " ++ T.unpack (operationName (msgOperation fam))
+          (_, out) = initMessageOperation fam fullEnv emptySessionOps
+            fixtureSession (argsFor (msgFamilyOp fam) mid params)
+      in ["routeless init: want CKR_MECHANISM_INVALID, got "
+          ++ show (ioCode out, ioReasons out) ++ " at " ++ tag
+         | ioCode out /= CKR_MECHANISM_INVALID]
+
+caseRoutelessInit :: IO ()
+caseRoutelessInit = guarded "routeless-init" $ do
+  (parseBad, mechs) <- loadCatalog
+  let (mm, n) = checkRoutelessInit mechs
+      hotp = [r | r <- mechs, mrId r == 0x291]
+  -- Not vacuous: the set is non-empty and includes the HOTP row.
+  assertNoMismatches "routeless init"
+    (parseBad ++ mm
+     ++ ["routeless set is empty: leg is vacuous" | n == 0]
+     ++ ["HOTP row missing or not classic-only"
+        | not (any (\r -> OpSign `elem` mrOps r
+                         && OpMessageSign `notElem` mrOps r) hotp)])
 
 -- | Flag/route correspondence per (row, family): the
 -- @CKF_MESSAGE_*@ flag is present iff the @message-*@ route is.

@@ -1248,17 +1248,16 @@ encryptDataDescs =
 -- | The OTP behavior group, derived from the recipe table:
 -- one descriptor per recipe row, codec from 'hotpCodecFor',
 -- the sign and verify routes citing the synthetic construction
--- (A37) and the real KATs (A39). Key bounds are
--- mechanism-specific (any non-empty HMAC key codes; keygen mints
--- 16-64 bytes).
+-- (A37) and the real KATs (A39). No message routes: PKCS#11 v3.2
+-- defines no per-message parameter shape for HOTP (v0.5).
+-- Key bounds are mechanism-specific (any non-empty HMAC key codes;
+-- keygen mints 16-64 bytes).
 otpDescs :: [Descriptor]
 otpDescs =
   [ promotedDesc (otpName r) allBaselines FamilyOtp
       (hotpCodecFor r)
       [ mechRoute OpSign (otpName r) ["A37", "A39"]
       , mechRoute OpVerify (otpName r) ["A37", "A39"]
-      , mechRoute OpMessageSign (otpName r) ["A37", "A39"]
-      , mechRoute OpMessageVerify (otpName r) ["A37", "A39"]
       ]
       MechanismSpecific 0 0
   | r <- hotpRecipes

@@ -671,9 +671,12 @@ initDualOperation env ops st dArgs cArgs =
 -- | Initialize one outer message context. Check order: the args op
 -- must name the family's classic counterpart (a mismatched bundle
 -- is malformed), then the slot conflict (a doomed call fails before
--- touching keys), then the shared validation against the classic
--- counterpart ('msgFamilyOp'). The context records the message
--- operation tag and starts idle with zero delivered messages.
+-- touching keys), then the mechanism's own @message-*@ route (a
+-- classic-only mechanism refuses @CKR_MECHANISM_INVALID@ instead of
+-- opening a context no data call can serve), then the shared
+-- validation against the classic counterpart ('msgFamilyOp'). The
+-- context records the message operation tag and starts idle with
+-- zero delivered messages.
 initMessageOperation
   :: MsgFamily -> OpEnv -> SessionOps -> SessionState -> InitArgs
   -> (SessionOps, InitOutcome)
@@ -682,6 +685,9 @@ initMessageOperation fam env ops st args
       reject CKR_ARGUMENTS_BAD "init args op mismatches the message family"
   | kindOccupied ops kind =
       reject CKR_OPERATION_ACTIVE "an operation is already active in this slot"
+  | Just desc <- lookupBehavior (oeRegistry env) (iaMech args)
+  , msgOperation fam `notElem` map routeOperation (descRoutes desc) =
+      reject CKR_MECHANISM_INVALID "no source-backed message route for this mechanism"
   | otherwise = case validateInit env st args of
       Left deny -> rejectDeny deny
       Right vi -> allocateMessage ops args fam vi

@@ -2464,19 +2464,18 @@ caseDriverHotp = withBackend $ \env -> do
   case badParams of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
-  -- Message variants agree on empty input and refuse input alike.
+  -- No message routes (v0.5): the message effects are unsupported,
+  -- even with a well-formed hotp-params/1 image.
   mCode <- runEffect env res
     (FxMessageSign hotpMech (Just keyOid) (encodeHotpParams 0 6) BS.empty)
-    >>= expectBytes
-  assertEqual "message agrees" "755224" mCode
+  case mCode of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
   mVer <- runEffect env res
     (FxMessageVerify hotpMech (Just keyOid) (encodeHotpParams 0 6) BS.empty "755224")
-  assertEqual "message verifies" (GotValid True) mVer
-  mBad <- runEffect env res
-    (FxMessageSign hotpMech (Just keyOid) (encodeHotpParams 0 6) "x")
-  case mBad of
-    GotCryptoError (CryptoFailed _) -> pure ()
-    other -> assertFailure ("expected Failed, got: " ++ show other)
+  case mVer of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
   -- HOTP keygen is real via the native DRBG surface (
   -- AES_KEY_GEN precedent flipped): 20 fresh bytes land framed
   -- as lone material.

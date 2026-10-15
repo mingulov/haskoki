@@ -1608,6 +1608,87 @@ int main(int argc, char **argv) {
         rv = f->C_SignInit(ssess, &hotpm, hotpk);
         CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
                "HOTP empty CK_OTP_PARAMS refused rv=0x%lx", (unsigned long)rv);
+        /* Decoder guards over the real struct. Each shape refuses at
+         * init for sign and verify; none may reach the recipe. */
+        {
+          /* The pre-v0.5 hotp-params/1 image (counter 1, 6 digits,
+           * both u64 big-endian) is no longer a caller format. */
+          CK_BYTE oldimg[16] = { 0,0,0,0,0,0,0,1, 0,0,0,0,0,0,0,6 };
+          CK_MECHANISM oldm = { CKM_HOTP, oldimg, sizeof(oldimg) };
+          CK_ULONG len4 = 4, len9 = 9;
+          CK_OTP_PARAM many[9];
+          CK_ULONG k;
+          rv = f->C_SignInit(ssess, &oldm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP old 16-byte image refused for sign rv=0x%lx", (unsigned long)rv);
+          rv = f->C_VerifyInit(ssess, &oldm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP old 16-byte image refused for verify rv=0x%lx", (unsigned long)rv);
+          /* NULL entry array with a nonzero count. */
+          hotpp.pParams = NULL_PTR;
+          hotpp.ulCount = 1;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP NULL entry array refused rv=0x%lx", (unsigned long)rv);
+          /* More than eight entries, all well formed counters. */
+          for (k = 0; k < 9; k++) {
+            many[k].type = CK_OTP_COUNTER;
+            many[k].pValue = hotpctr;
+            many[k].ulValueLen = sizeof(hotpctr);
+          }
+          hotpp.pParams = many;
+          hotpp.ulCount = 9;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP nine entries refused rv=0x%lx", (unsigned long)rv);
+          /* Duplicate counter entries. */
+          hotpp.ulCount = 2;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP duplicate counter refused rv=0x%lx", (unsigned long)rv);
+          /* A foreign entry type next to a valid counter. */
+          many[1].type = CK_OTP_PIN;
+          rv = f->C_VerifyInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP foreign CK_OTP_PIN entry refused rv=0x%lx", (unsigned long)rv);
+          /* Output-length entries: a value shorter than a CK_ULONG, a
+           * NULL value of CK_ULONG size, and out-of-range lengths. */
+          many[1].type = CK_OTP_OUTPUT_LENGTH;
+          many[1].pValue = &hotplen8;
+          many[1].ulValueLen = sizeof(CK_ULONG) - 1;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP short output-length value refused rv=0x%lx", (unsigned long)rv);
+          many[1].pValue = NULL_PTR;
+          many[1].ulValueLen = sizeof(CK_ULONG);
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP NULL output-length value refused rv=0x%lx", (unsigned long)rv);
+          many[1].pValue = &len9;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP 9-digit output length refused rv=0x%lx", (unsigned long)rv);
+          many[1].pValue = &len4;
+          rv = f->C_VerifyInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP 4-digit output length refused rv=0x%lx", (unsigned long)rv);
+          /* A NULL counter value of the right length. */
+          many[0].pValue = NULL_PTR;
+          hotpp.ulCount = 1;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP NULL counter value refused rv=0x%lx", (unsigned long)rv);
+          /* The guards refuse without poisoning the key: the valid
+           * counter-0 struct still signs 755224. */
+          hotpp.pParams = hotpent;
+          hotpent[0].pValue = hotpctr;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          sigLen = sizeof(sig);
+          if (rv == CKR_OK)
+            rv = f->C_Sign(ssess, (CK_BYTE_PTR) "", 0, sig, &sigLen);
+          CHECKC(rv == CKR_OK && sigLen == 6 && memcmp(sig, "755224", 6) == 0,
+                 "HOTP valid struct still signs after refusals rv=0x%lx", (unsigned long)rv);
+        }
       } else {
         /* The shim's check_operation rejects parameterized
          * invocations for mechanisms absent from its shape

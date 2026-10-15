@@ -102,7 +102,7 @@ mech|0x00000270|CKM_SHA512||digest|no-params/1|not-applicable:0-0|digest:A16,A37
 mech|0x00000271|CKM_SHA512_HMAC||mac|no-params/1|mechanism-specific:0-0|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39
 mech|0x00000272|CKM_SHA512_HMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39
 mech|0x00000290|CKM_HOTP_KEY_GEN||keygen|no-params/1|bits:128-512|generate-key:A37
-mech|0x00000291|CKM_HOTP||otp|hotp-params/1|mechanism-specific:0-0|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39
+mech|0x00000291|CKM_HOTP||otp|hotp-params/1|mechanism-specific:0-0|sign:A37,A39;verify:A37,A39
 mech|0x000002B0|CKM_SHA3_256||digest|no-params/1|not-applicable:0-0|digest:A16,A37,A39
 mech|0x000002B1|CKM_SHA3_256_HMAC||mac|no-params/1|mechanism-specific:0-0|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39
 mech|0x000002B2|CKM_SHA3_256_HMAC_GENERAL||mac|mac-general/1|mechanism-specific:0-0|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39

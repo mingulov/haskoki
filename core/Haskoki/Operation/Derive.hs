@@ -830,8 +830,8 @@ planDerive rules model st mech baseH blob
     -- width, ECDH-style; EXTRACT has no natural width so a
     -- missing length stays INCOMPLETE). Over-width requests
     -- refuse @CKR_KEY_SIZE_RANGE@ (the SHA-KDF\/encrypt-data
-    -- ceiling code); an XOR length mismatch refuses
-    -- @CKR_DATA_LEN_RANGE@; an EXTRACT overrun refuses
+    -- ceiling code), including an XOR length past
+    -- min(base, data) (spec 6.43.6); an EXTRACT overrun refuses
     -- @CKR_ARGUMENTS_BAD@.
     byteOpsFinish r mat mAux offN payBlob dMech ost boBlob tmpls =
       case boKind r of

@@ -69,7 +69,9 @@ is a separate provider issue; changing that code alone does not repair the
 input. This was recorded as P11C-011.
 
 HOTP message-init probes still omit the `CK_OTP_COUNTER` entry that
-Haskoki's stateless profile requires (P11C-012). Earlier CBC message recipes omitted IVs (P11C-013), and RSA
+Haskoki's stateless profile requires (P11C-012). Since v0.5 HOTP
+advertises no message flags, so those probes target an unadvertised
+operation. Earlier CBC message recipes omitted IVs (P11C-013), and RSA
 recover recipes omitted `CKA_SIGN_RECOVER`/`CKA_VERIFY_RECOVER` permissions
 (P11C-014). The latter CBC/recover findings left the demo baseline when
 the checker recipes were corrected. They are not part of the current

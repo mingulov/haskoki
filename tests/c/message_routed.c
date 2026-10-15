@@ -277,6 +277,7 @@ static void oversize_legs(MessageApi *a);
 static void sweep_legs(MessageApi *a);
 static void gcm_shape_legs(MessageApi *a);
 static void gmac_shape_legs(MessageApi *a);
+static void hotp_message_legs(MessageApi *a);
 
 int main(int argc, char **argv) {
   if (argc != 2) return 2;
@@ -323,6 +324,7 @@ int main(int argc, char **argv) {
     sweep_legs(&a);
     gcm_shape_legs(&a);
     gmac_shape_legs(&a);
+    hotp_message_legs(&a);
     if (!proxy) oversize_legs(&a);
     rv("C_Finalize","end",a.C_Finalize(NULL),CKR_OK);
     boundary_legs(&a,1,"post-finalize");
@@ -1352,6 +1354,52 @@ static void gmac_shape_legs(MessageApi *a) {
   rv("gmac-shape","classic-verify-init",a->C_VerifyInit(s,&mClassic,key),CKR_OK);
   rv("gmac-shape","classic-verify",a->C_Verify(s,data,sizeof(data),mac,macLen),CKR_OK);
   rv("gmac-shape","close",a->C_CloseSession(s),CKR_OK);
+}
+
+/* HOTP has no message-API parameter shape in PKCS#11 v3.2, so it has
+ * no message route: message init refuses CKR_MECHANISM_INVALID for the
+ * standard CK_OTP_PARAMS and for the retired 16-byte hotp-params/1
+ * image alike, while classic sign with CK_OTP_PARAMS still works. The
+ * other classic-only rows (no message arm: CCM, ChaCha20-Poly1305,
+ * the SSL3 MACs) refuse message init the same way, before any
+ * parameter or key check. */
+static void hotp_message_legs(MessageApi *a) {
+  static CK_BYTE value[20] = {'1','2','3','4','5','6','7','8','9','0',
+                              '1','2','3','4','5','6','7','8','9','0'};
+  CK_BYTE counter[8] = {0,0,0,0,0,0,0,0};
+  CK_BYTE oldimg[16] = {0,0,0,0,0,0,0,1, 0,0,0,0,0,0,0,6};
+  CK_OTP_PARAM entry = {CK_OTP_COUNTER, counter, sizeof(counter)};
+  CK_OTP_PARAMS params = {&entry, 1};
+  CK_MECHANISM mStd = {CKM_HOTP, (CK_VOID_PTR)&params, sizeof(params)};
+  CK_MECHANISM mOld = {CKM_HOTP, (CK_VOID_PTR)oldimg, sizeof(oldimg)};
+  CK_SESSION_HANDLE s = 0;
+  CK_OBJECT_HANDLE key = 0;
+  CK_BYTE code[16];
+  CK_ULONG codeLen = sizeof(code);
+  CK_RV result = a->C_OpenSession(tokenSlot,CKF_SERIAL_SESSION|CKF_RW_SESSION,NULL,NULL,&s);
+  rv("hotp-message","open",result,CKR_OK);
+  if (result != CKR_OK) exit(1);
+  key = make_key(a,s,CKK_HOTP,value,sizeof(value),CK_FALSE,CK_FALSE,CK_TRUE,CK_TRUE);
+  rv("hotp-message","std-sign-init",a->C_MessageSignInit(s,&mStd,key),CKR_MECHANISM_INVALID);
+  rv("hotp-message","std-verify-init",a->C_MessageVerifyInit(s,&mStd,key),CKR_MECHANISM_INVALID);
+  rv("hotp-message","old-image-sign-init",a->C_MessageSignInit(s,&mOld,key),CKR_MECHANISM_INVALID);
+  rv("hotp-message","old-image-verify-init",a->C_MessageVerifyInit(s,&mOld,key),CKR_MECHANISM_INVALID);
+  rv("hotp-message","classic-sign-init",a->C_SignInit(s,&mStd,key),CKR_OK);
+  rv("hotp-message","classic-sign",a->C_Sign(s,(CK_BYTE_PTR)"",0,code,&codeLen),CKR_OK);
+  check("hotp-message","classic-code",codeLen == 6 && memcmp(code,"755224",6) == 0);
+  {
+    CK_MECHANISM ccm = {CKM_AES_CCM, NULL, 0};
+    CK_MECHANISM ccp = {CKM_CHACHA20_POLY1305, NULL, 0};
+    CK_MECHANISM md5 = {CKM_SSL3_MD5_MAC, NULL, 0};
+    CK_MECHANISM sha1 = {CKM_SSL3_SHA1_MAC, NULL, 0};
+    rv("routeless","aes-ccm-encrypt-init",a->C_MessageEncryptInit(s,&ccm,key),CKR_MECHANISM_INVALID);
+    rv("routeless","aes-ccm-decrypt-init",a->C_MessageDecryptInit(s,&ccm,key),CKR_MECHANISM_INVALID);
+    rv("routeless","chacha20-poly1305-encrypt-init",a->C_MessageEncryptInit(s,&ccp,key),CKR_MECHANISM_INVALID);
+    rv("routeless","chacha20-poly1305-decrypt-init",a->C_MessageDecryptInit(s,&ccp,key),CKR_MECHANISM_INVALID);
+    rv("routeless","ssl3-md5-mac-sign-init",a->C_MessageSignInit(s,&md5,key),CKR_MECHANISM_INVALID);
+    rv("routeless","ssl3-sha1-mac-verify-init",a->C_MessageVerifyInit(s,&sha1,key),CKR_MECHANISM_INVALID);
+  }
+  rv("hotp-message","close",a->C_CloseSession(s),CKR_OK);
 }
 
 static void sweep_ecdsa_msg(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE priv, CK_OBJECT_HANDLE pub) {

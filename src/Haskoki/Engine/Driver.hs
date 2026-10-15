@@ -30,6 +30,9 @@ table by @CKM_*@ name; no hand-typed numerics):
   params) to (counter, digits); the input is always empty and the
   output is zero-padded ASCII digits). Off-shape triples are
   'CryptoFailed' parameter refusals, never 'CryptoUnsupported'.
+  Classic only: HOTP has no message routes (no per-message
+  parameter shape in PKCS#11 v3.2), so the message effects fall
+  through to 'unsupported'.
 * RSA PKCS#1 v1.5 runs the recipe 'SigSpec' ('rsaPkcs1SpecFor'):
   every mechanism takes empty parameters; an RSA mechanism with
   malformed parameters is a 'CryptoFailed' parameter refusal, never
@@ -2019,8 +2022,6 @@ runEffect env resolve fx = case fx of
         runXcbcSign mech params key input
     | isGmacMech mech -> withKey mkey $ \key ->
         runGmacSign mech params key input
-    | isHotpMech mech -> withKey mkey $ \key ->
-        runHotpSign mech params key input
     | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
         toBytes <$> macSign env spec key input
     | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
@@ -2077,8 +2078,6 @@ runEffect env resolve fx = case fx of
         runXcbcVerify mech params key input sig
     | isGmacMech mech -> withKey mkey $ \key ->
         runGmacVerify mech params key input sig
-    | isHotpMech mech -> withKey mkey $ \key ->
-        runHotpVerify mech params key input sig
     | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
         toVerifyBool <$> macVerify env spec key input sig
     | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
@@ -3707,11 +3706,11 @@ runEffect env resolve fx = case fx of
     -- | Byte-op derives: pure byte manipulation over secret
     -- material (no backend crypto — identical on both
     -- backends). Concat rows join base and second input and
-    -- truncate to the planned length; XOR folds equal-length
-    -- inputs (a mismatch is 'CryptoFailed' — the planner
-    -- refuses it first); EXTRACT slices whole bytes at the
-    -- bit offset, bit-exact (MSB-first) for sub-byte
-    -- offsets. Off-range lengths are 'CryptoFailed';
+    -- truncate to the planned length; XOR folds the first
+    -- planned-length bytes of both inputs (at most the shorter
+    -- one; the planner refuses a longer length first); EXTRACT
+    -- slices whole bytes at the bit offset, bit-exact
+    -- (MSB-first) for sub-byte offsets. Off-range lengths are 'CryptoFailed';
     -- non-bytes keys are 'CryptoBadKey'.
     runByteOps :: ByteOpsExec -> KeyMaterial -> Maybe KeyMaterial -> Int -> IO CryptoResult
     runByteOps ex key mAux outLen = case key of

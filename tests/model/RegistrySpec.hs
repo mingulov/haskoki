@@ -833,7 +833,7 @@ caseOtpPromoted = do
   -- the KEY_GEN behavior with the generate-key route; both execute
   -- under caps.
   mapM_ checkOne
-    [ (MechanismId 0x291, [OpSign, OpVerify, OpMessageSign, OpMessageVerify])
+    [ (MechanismId 0x291, [OpSign, OpVerify])
     , (MechanismId 0x290, [OpGenerateKey])
     ]
   where
