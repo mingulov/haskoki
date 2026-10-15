@@ -1,7 +1,8 @@
 name: Qualification (behavioral matrix)
 
-# Qualification lane (V4b behavioral matrix on native runners; builds
-# on the merged V4a lane): manual dispatch (Actions -> Run workflow,
+# Qualification lane (V4b behavioral matrix on GitHub-hosted
+# ubuntu-latest runners, which count as native x86_64 Linux execution
+# of the same cells; builds on the merged V4a lane): manual dispatch (Actions -> Run workflow,
 # with an optional exact revision) plus one bounded weekly schedule.
 # The lane never runs on branch or tag activity, and PR scope stays
 # explicit in the CI workflow: this file adds no push,
@@ -20,12 +21,20 @@ name: Qualification (behavioral matrix)
 # Jobs: static-gates (build-free wiring gates, strict C builds, an
 # executed canary, driver negative controls) runs first and gates
 # the toolchain and proxy-pair setup jobs; qualify needs all three
-# setups and runs on the native self-hosted label, where a mode
+# setups and runs on the hosted ubuntu-latest label (4 vCPU: the
+# N=8 fairness cells are oversubscribed, so they assert completion
+# counts, not timing; the runner record keeps nproc), where a mode
 # selection step probes the setup results and selects behavioral
 # (the 25-cell matrix through the V4a driver shims, each cell with
 # its log and a pass/fail receipt) or buildonly (the repaired V1
-# manifest, as in V4a). A native runner that cannot run the matrix
-# still produces selected-mode evidence, never a silent skip.
+# manifest, as in V4a). A runner that cannot run the matrix still
+# produces selected-mode evidence, never a silent skip, but a
+# buildonly run FAILS the qualify job as "incomplete: behavioral
+# prerequisites unmet": the fallback cannot satisfy qualification.
+# The run is judged against the exact requested revision (the
+# dispatch input, else github.sha): static-gates rejects anything
+# but a full 40-hex SHA that equals the checked-out HEAD, and the
+# receipt verifier takes that revision as its expected sha.
 # report needs qualify and always runs: it renders the pass/fail
 # matrix from the qualify evidence into the job summary and
 # attaches the matrix artifact. External versions and hashes land
@@ -56,8 +65,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: qualification-${{ github.ref }}
-  cancel-in-progress: true
+  group: qualification-${{ github.event_name }}-${{ inputs.revision || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'schedule' }}
 
 env:
   LANG: C.UTF-8
@@ -72,6 +81,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.revision || github.sha }}
+      - name: Require an exact full-SHA revision
+        env:
+          REV: ${{ inputs.revision || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REV" =~ ^[0-9a-f]{40}$ ]] && [ "$(git rev-parse HEAD)" = "$REV" ] \
+            || { echo "revision must be a full SHA: got '$REV', HEAD $(git rev-parse HEAD)"; exit 2; }
+          echo "qualifying exact revision $REV"
       - name: Build-free qualification wiring gates
         run: |
           set -euo pipefail
@@ -348,7 +365,7 @@ jobs:
   # ------------------------------------------------------------------
   qualify:
     needs: [static-gates, toolchain, proxy-pair]
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
       - name: Checkout
@@ -378,7 +395,15 @@ jobs:
           command -v docker >/dev/null 2>&1 && DOCKER_OK=yes
           if [ "$DOCKER_OK" = "yes" ] && [ -f toolchain-in/toolchain-image.tar.gz ]; then
             if gunzip -c toolchain-in/toolchain-image.tar.gz | docker load; then
-              docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 >/dev/null 2>&1 && IMAGE_OK=yes
+              # The loaded image must be the very image the toolchain
+              # job recorded (docker save/load preserves the id).
+              LOADED_ID=$(docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 2>/dev/null) || LOADED_ID=
+              RECORDED_ID=$(python3 -c 'import json;print(json.load(open("toolchain-in/toolchain-provenance.json"))["builder_image_id"])' 2>/dev/null) || RECORDED_ID=
+              if [ -n "$LOADED_ID" ] && [ "$LOADED_ID" = "$RECORDED_ID" ]; then
+                IMAGE_OK=yes
+              else
+                echo "toolchain image id mismatch: loaded '$LOADED_ID' recorded '$RECORDED_ID'"
+              fi
             fi
           fi
           if [ -f proxy-in/proxy-pair.tar.gz ] && tar xzf proxy-in/proxy-pair.tar.gz -C proxy-in; then
@@ -589,6 +614,13 @@ jobs:
           bash scripts/release-evidence.sh 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
           test -f "$HASKOKI_EVIDENCE_DIR/MANIFEST.txt" \
             || { echo "manifest receipt missing"; exit 2; }
+      - name: Fail a build-only run as incomplete
+        if: steps.select.outputs.mode == 'buildonly'
+        run: |
+          # The fallback manifest is evidence, not qualification: the
+          # job fails while the always-run upload below still keeps it.
+          echo "incomplete: behavioral prerequisites unmet (a build-only run cannot satisfy qualification)"
+          exit 1  # buildonly-incomplete
       - name: Assemble matrix receipt
         if: always()
         run: |
@@ -648,13 +680,15 @@ jobs:
           if-no-files-found: error
       - name: Verify matrix receipt
         if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
         run: |
           # Last qualify step: judge the receipt after it is uploaded.
           # Exact 25-cell set, behavioral mode, 25/25 pass and the
-          # checked-out sha; a build-only fallback fails here.
+          # requested sha; a build-only fallback fails here.
           set -euo pipefail
           python3 scripts/check-qualification-wiring.py --verify-matrix \
-            "$RUNNER_TEMP/qualify-evidence" --expect-sha "$(git rev-parse HEAD)"
+            "$RUNNER_TEMP/qualify-evidence" --expect-sha "$REQUESTED_REVISION"
 
   # ------------------------------------------------------------------
   # Report: render the pass/fail matrix from the qualify evidence
@@ -722,13 +756,15 @@ jobs:
           exit 0
       - name: Verify matrix receipt
         if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
         run: |
           # The report job exits nonzero when the receipt is missing,
           # partial, duplicated, non-behavioral, failing or for a
-          # different sha than this job's own checkout.
+          # different sha than the requested revision.
           set -euo pipefail
           python3 scripts/check-qualification-wiring.py --verify-matrix \
-            evidence-in/qualify-evidence --expect-sha "$(git rev-parse HEAD)"
+            evidence-in/qualify-evidence --expect-sha "$REQUESTED_REVISION"
       - name: Upload matrix artifact
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

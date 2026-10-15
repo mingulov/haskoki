@@ -51,9 +51,12 @@ Fails (exit 1) when any rule fails:
 * QW-LANE-JOBS: exactly the five V4b jobs exist (static-gates,
   toolchain, proxy-pair, qualify, report): no silent extra leg and
   no dropped one.
-* QW-LANE-NATIVE: the `qualify` job runs on the native self-hosted
-  runner label (behavioral execution); the setup/report jobs stay
-  on hosted runners.
+* QW-LANE-RUNNER: every job, `qualify` included, runs on the
+  GitHub-hosted `ubuntu-latest` label (ruling 1: hosted x86_64
+  Linux counts as native behavioral evidence; no self-hosted
+  registration, no other label).
+* QW-LANE-CONCURRENCY: the concurrency group includes the event
+  name, so the weekly schedule never cancels a dispatch run.
 * QW-LANE-MATRIX: every V4b matrix cell owns one table row in
   the qualify job carrying its driver and (for tuned legs) its
   selecting environment on that same row: consumer
@@ -74,10 +77,15 @@ Fails (exit 1) when any rule fails:
   wrong layout).
 * QW-LANE-FALLBACK: the qualify job keeps the build-only V1
   manifest as a fallback behind an explicit runtime
-  classification step (behavioral vs build-only mode): a native
-  runner that cannot run the matrix still produces classified
-  build evidence, never a silent skip.
-* QW-LANE-STATIC: the static-gates job runs this gate's self-test
+  classification step (behavioral vs build-only mode): a runner
+  that cannot run the matrix still produces classified build
+  evidence, never a silent skip, but a build-only run FAILS the
+  job as "incomplete: behavioral prerequisites unmet" (ruling 2):
+  a step conditioned on the buildonly mode must exit 1, with no
+  exit 0 and no continue-on-error. The evidence upload still runs.
+* QW-LANE-STATIC: static-gates validates the requested revision
+  first (40-hex and HEAD == requested, else "revision must be a
+  full SHA"); it also runs this gate's self-test
   plus the build-free driver negative controls (a bogus leg hint
   and a bogus width hint must fail fast), so new wiring ships
   with executed guards.
@@ -113,7 +121,15 @@ Receipt verifier (judges a real run, build-free):
 * QW-RCPT-MODE/RESULT/SHA: behavioral in both receipts, 25/25 pass,
   sha equals --expect-sha.
 * QW-LANE-VERIFY: qualify ends with the verifier, report runs it
-  without swallowing failure, and the builder emits the identity fields.
+  without swallowing failure (no `|| true`, no continue-on-error), the
+  expected sha is the requested revision (REQUESTED_REVISION env =
+  dispatch input or github.sha), never the checkout's own HEAD, and
+  the builder emits the identity fields. The verifier also rejects
+  requested_revision != sha, a pass cell with rc != 0, and cells
+  lacking rc or duration_s.
+* QW-LANE-GATE (ruling 7): qualify keeps `needs: toolchain`, and the
+  loaded image's id must equal the toolchain job's recorded
+  builder_image_id ("toolchain image id mismatch" guard).
 """
 import json
 import re
@@ -151,7 +167,7 @@ SETUP_JOBS = ("static-gates", "toolchain", "proxy-pair")
 QUALIFY_JOB = "qualify"
 REPORT_JOB = "report"
 ALL_JOBS = ("static-gates", "toolchain", "proxy-pair", "qualify", "report")
-NATIVE_LABEL = "self-hosted"
+RUNNER_LABEL = "ubuntu-latest"
 
 # (cell, driver script, required env tokens). Every cell owns one
 # table row starting with "name|driver|env": the driver and EVERY
@@ -494,6 +510,18 @@ def check_lane(root, failures):
     if set(blocks) != set(ALL_JOBS):
         _add(failures, "QW-LANE-JOBS",
              f"lane needs exactly the five V4b jobs, got: {sorted(blocks)}")
+    for name, block in blocks.items():
+        match = re.search(r"(?m)^    runs-on:\s*(.+?)\s*$", block)
+        if not match or match.group(1) != RUNNER_LABEL:
+            _add(failures, "QW-LANE-RUNNER",
+                 f"job {name} must run on {RUNNER_LABEL}, got "
+                 f"{match.group(1) if match else 'no runs-on'}")
+    concurrency = _section(text, "concurrency", 0) or ""
+    group_line = next((ln for ln in concurrency.splitlines()
+                       if ln.strip().startswith("group:")), "")
+    if "github.event_name" not in group_line:
+        _add(failures, "QW-LANE-CONCURRENCY",
+             "concurrency group must include github.event_name (schedule must not cancel dispatch)")
     for setup in SETUP_JOBS:
         if setup not in blocks:
             _add(failures, "QW-LANE-GATE", f"missing setup job: {setup}")
@@ -508,9 +536,11 @@ def check_lane(root, failures):
                 if setup not in needs:
                     _add(failures, "QW-LANE-GATE",
                          f"{QUALIFY_JOB} must need {setup} (setup must gate execution)")
-        if NATIVE_LABEL not in blocks[QUALIFY_JOB]:
-            _add(failures, "QW-LANE-NATIVE",
-                 f"{QUALIFY_JOB} must run on the native {NATIVE_LABEL} label")
+        if "toolchain image id mismatch" not in blocks[QUALIFY_JOB] \
+                or "builder_image_id" not in blocks[QUALIFY_JOB]:
+            _add(failures, "QW-LANE-GATE",
+                 f"{QUALIFY_JOB} must verify the loaded image id against the "
+                 "toolchain job's recorded builder_image_id")
         rows = [line.strip() for line in blocks[QUALIFY_JOB].splitlines()
                 if "|" in line and not line.strip().startswith("#")]
         for cell, driver, tokens in MATRIX_CELLS:
@@ -560,6 +590,23 @@ def check_lane(root, failures):
         if "release-evidence.sh" not in qualify:
             _add(failures, "QW-LANE-FALLBACK",
                  f"{QUALIFY_JOB} keeps no build-only manifest fallback")
+        incomplete = [st for st in re.split(r"(?m)^      - name:", qualify)
+                      if "incomplete: behavioral prerequisites unmet" in st]
+        if len(incomplete) != 1:
+            _add(failures, "QW-LANE-FALLBACK",
+                 f"{QUALIFY_JOB} needs one step failing a build-only run as "
+                 "'incomplete: behavioral prerequisites unmet'")
+        else:
+            step = incomplete[0]
+            code = [ln.split("#", 1)[0] for ln in step.splitlines()]
+            if "mode == 'buildonly'" not in step:
+                _add(failures, "QW-LANE-FALLBACK",
+                     "the incomplete step must be conditioned on the buildonly mode")
+            if not any(re.fullmatch(r"\s*exit 1\s*", ln) for ln in code) \
+                    or any(re.search(r"\bexit 0\b", ln) for ln in code) \
+                    or "continue-on-error" in step:
+                _add(failures, "QW-LANE-FALLBACK",
+                     "a build-only run must exit 1 (no exit 0, no continue-on-error)")
     if REPORT_JOB not in blocks:
         _add(failures, "QW-LANE-GATE", f"missing matrix job: {REPORT_JOB}")
     else:
@@ -576,13 +623,24 @@ def check_lane(root, failures):
             _add(failures, "QW-LANE-VERIFY",
                  f"{job}: the last step must run check-qualification-wiring.py --verify-matrix")
         verify = [ln for ln in blocks[job].splitlines()
-                  if "--verify-matrix" in ln or ("--expect-sha" in ln and "git rev-parse" in ln)]
+                  if "--verify-matrix" in ln or "--expect-sha" in ln]
         if not any("--verify-matrix" in ln for ln in verify) or \
                 "--expect-sha" not in blocks[job].split("--verify-matrix", 1)[-1]:
             _add(failures, "QW-LANE-VERIFY",
                  f"{job}: no --verify-matrix ... --expect-sha invocation")
         elif any("|| true" in ln or "|| :" in ln for ln in verify):
             _add(failures, "QW-LANE-VERIFY", f"{job}: verifier failure is swallowed")
+        vsteps = [st for st in re.split(r"(?m)^      - name:", blocks[job])
+                  if "--verify-matrix" in st]
+        if any("continue-on-error" in st for st in vsteps):
+            _add(failures, "QW-LANE-VERIFY", f"{job}: verify step has continue-on-error")
+        if '--expect-sha "$REQUESTED_REVISION"' not in blocks[job] \
+                or "REQUESTED_REVISION: ${{ inputs.revision || github.sha }}" not in blocks[job]:
+            _add(failures, "QW-LANE-VERIFY",
+                 f"{job}: expected sha must be the requested revision "
+                 "(REQUESTED_REVISION = inputs.revision || github.sha), not the checkout HEAD")
+        elif "--expect-sha" in blocks[job] and re.search(r"--expect-sha[^\n]*rev-parse", blocks[job]):
+            _add(failures, "QW-LANE-VERIFY", f"{job}: expected sha derived from the checkout")
     if QUALIFY_JOB in blocks:
         for token in ("requested_revision", "image_id", "nproc", "duration_s", "RECEIPT_SHA"):
             if token not in blocks[QUALIFY_JOB]:
@@ -593,6 +651,10 @@ def check_lane(root, failures):
         if "check-qualification-wiring.py --self-test" not in static:
             _add(failures, "QW-LANE-STATIC",
                  "static-gates must run this gate's self-test")
+        if "revision must be a full SHA" not in static or "{40}" not in static \
+                or "git rev-parse HEAD" not in static:
+            _add(failures, "QW-LANE-STATIC",
+                 "static-gates must check the requested revision is a full SHA equal to HEAD")
         if "HASKOKI_QUAL_ONLY=bogus" not in static:
             _add(failures, "QW-LANE-STATIC",
                  "static-gates must run the bogus-hint negative control")
@@ -741,9 +803,12 @@ def verify_matrix(receipt_dir, expect_sha):
             _add(failures, "QW-RCPT-MODE", f"matrix.json mode is {matrix.get('mode')!r}, need 'behavioral'")
         if matrix.get("sha") != expect_sha:
             _add(failures, "QW-RCPT-SHA", f"matrix.json sha {matrix.get('sha')!r} != expected {expect_sha!r}")
-        for key in ("requested_revision",):
-            if not matrix.get(key):
-                _add(failures, "QW-RCPT-SHAPE", f"matrix.json lacks {key}")
+        if not matrix.get("requested_revision"):
+            _add(failures, "QW-RCPT-SHAPE", "matrix.json lacks requested_revision")
+        elif matrix.get("requested_revision") != matrix.get("sha"):
+            _add(failures, "QW-RCPT-SHA",
+                 f"requested_revision {matrix.get('requested_revision')!r} != "
+                 f"checked-out sha {matrix.get('sha')!r}")
         runner = matrix.get("runner")
         if not isinstance(runner, dict) or not all(runner.get(k) for k in ("os", "nproc", "image_id")):
             _add(failures, "QW-RCPT-SHAPE", "matrix.json runner needs os, nproc and image_id")
@@ -755,6 +820,16 @@ def verify_matrix(receipt_dir, expect_sha):
             bad = [str(c.get("name")) for c in cells if c.get("result") != "pass"]
             for name in bad:
                 _add(failures, "QW-RCPT-RESULT", f"matrix.json: cell {name!r} did not pass")
+            for cell in cells:
+                rc, dur = cell.get("rc"), cell.get("duration_s")
+                if isinstance(rc, bool) or not isinstance(rc, int):
+                    _add(failures, "QW-RCPT-SHAPE", f"matrix.json: cell {cell.get('name')!r} lacks integer rc")
+                elif cell.get("result") == "pass" and rc != 0:
+                    _add(failures, "QW-RCPT-RESULT",
+                         f"matrix.json: cell {cell.get('name')!r} passes with rc={rc}")
+                if isinstance(dur, bool) or not isinstance(dur, (int, float)) or dur < 0:
+                    _add(failures, "QW-RCPT-SHAPE",
+                         f"matrix.json: cell {cell.get('name')!r} lacks duration_s")
             passed = len(cells) - len(bad)
             if passed != len(expected):
                 _add(failures, "QW-RCPT-RESULT", f"matrix.json: {passed}/{len(expected)} cells pass")
@@ -945,7 +1020,23 @@ def _receipt_controls(controls, fresh_dir):
         m["cells"] = []
         raw[:] = []
 
+    def requested_differs(m, raw, c):
+        m["requested_revision"] = "e" * 40
+
+    def pass_rc_nonzero(m, raw, c):
+        m["cells"][2]["rc"] = 3
+
+    def no_rc(m, raw, c):
+        del m["cells"][4]["rc"]
+
+    def no_duration(m, raw, c):
+        del m["cells"][4]["duration_s"]
+
     case("passing 25/25 behavioral receipt", None)
+    case("requested revision differs from the checked-out sha", "QW-RCPT-SHA", requested_differs)
+    case("pass cell with nonzero rc", "QW-RCPT-RESULT", pass_rc_nonzero)
+    case("cell missing rc", "QW-RCPT-SHAPE", no_rc)
+    case("cell missing duration_s", "QW-RCPT-SHAPE", no_duration)
     case("absent cell", "QW-RCPT-CELLS", absent)
     case("duplicated raw result line", "QW-RCPT-DUPLICATE", dup_raw)
     case("duplicated matrix cell", "QW-RCPT-DUPLICATE", dup_cell)
@@ -1119,8 +1210,38 @@ def self_test():
         # Native label, job set, fallback, and static-guard controls.
         root = fresh()
         _rewrite(root / QUALIFICATION_YML,
-                 "runs-on: [self-hosted, linux, x64]", "runs-on: ubuntu-latest")
-        controls.expect_fail("move qualify off the native label", root, "QW-LANE-NATIVE")
+                 "  qualify:\n    needs: [static-gates, toolchain, proxy-pair]\n    runs-on: ubuntu-latest",
+                 "  qualify:\n    needs: [static-gates, toolchain, proxy-pair]\n    runs-on: [self-hosted, linux, x64]")
+        controls.expect_fail("move qualify back to the self-hosted label", root, "QW-LANE-RUNNER")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "  qualify:\n    needs: [static-gates, toolchain, proxy-pair]\n    runs-on: ubuntu-latest",
+                 "  qualify:\n    needs: [static-gates, toolchain, proxy-pair]\n    runs-on: ubuntu-24.04-arm")
+        controls.expect_fail("mutate the qualify runner label", root, "QW-LANE-RUNNER")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "          exit 1  # buildonly-incomplete", "          exit 0  # buildonly-incomplete")
+        controls.expect_fail("build-only run exits green", root, "QW-LANE-FALLBACK")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "incomplete: behavioral prerequisites unmet (")
+        controls.expect_fail("drop the build-only incomplete failure", root, "QW-LANE-FALLBACK")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "        if: always()\n        env:\n          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}\n        run: |\n          # Last qualify",
+                 "        if: always()\n        continue-on-error: true\n        env:\n          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}\n        run: |\n          # Last qualify")
+        controls.expect_fail("continue-on-error on the qualify verify step", root, "QW-LANE-VERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--expect-sha "$REQUESTED_REVISION"',
+                 '--expect-sha "$(git rev-parse HEAD)"')
+        controls.expect_fail("bind expected sha to the checkout HEAD", root, "QW-LANE-VERIFY")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "revision must be a full SHA")
+        controls.expect_fail("drop the full-SHA revision gate", root, "QW-LANE-STATIC")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "group: qualification-${{ github.event_name }}-",
+                 "group: qualification-")
+        controls.expect_fail("concurrency group ignores the event name", root, "QW-LANE-CONCURRENCY")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "toolchain image id mismatch")
+        controls.expect_fail("drop the toolchain image id verification", root, "QW-LANE-GATE")
         root = fresh()
         _drop_lines(root / QUALIFICATION_YML, "  report:")
         controls.expect_fail("drop the report job", root, "QW-LANE-JOBS")
@@ -1139,8 +1260,8 @@ def self_test():
                  'check-qualification-wiring.py --self-test \\\n            "$RUNNER_TEMP/qualify-evidence"')
         controls.expect_fail("drop the qualify receipt verifier", root, "QW-LANE-VERIFY")
         root = fresh()
-        _rewrite(root / QUALIFICATION_YML, '--expect-sha "$(git rev-parse HEAD)"\n\n  #',
-                 '--expect-sha "$(git rev-parse HEAD)" || true\n\n  #')
+        _rewrite(root / QUALIFICATION_YML, '--expect-sha "$REQUESTED_REVISION"\n\n  #',
+                 '--expect-sha "$REQUESTED_REVISION" || true\n\n  #')
         controls.expect_fail("swallow a verifier failure", root, "QW-LANE-VERIFY")
         root = fresh()
         _drop_lines(root / QUALIFICATION_YML, "duration_s")
