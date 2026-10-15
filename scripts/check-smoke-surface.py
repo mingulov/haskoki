@@ -16,7 +16,7 @@ the early reduced-catalog/session-less defects be gone:
 * FIPSx2: both sessions yield the FIPS "abc" bytes.
 * NOSESSIONLESS: no C_DigestInit(1, / C_Digest(1, implicit-session call.
 * NOREDUCED: no 1-mechanism [CKM_SHA256] catalog assertion.
-* VERPIN: the lib 0.3 pin keeps the check-version.py shape.
+* VERPIN: the lib 0.4 pin keeps the check-version.py shape.
 
 STDLIB ONLY. Run on HOST python3 from anywhere:
   python3 scripts/check-smoke-surface.py [path/to/release_smoke.c]
@@ -78,8 +78,8 @@ def main() -> int:
           and "[CKM_SHA256]" not in src,
           "no 1-mechanism reduced-catalog assertion")
     check("VERPIN", "info.libraryVersion.major == 0 &&" in src
-          and "info.libraryVersion.minor == 3," in src,
-          "lib 0.3 pin keeps the version-gate shape")
+          and "info.libraryVersion.minor == 4," in src,
+          "lib 0.4 pin keeps the version-gate shape")
     check("FINALIZE", 'C_Finalize(NULL_PTR)' in src
           and "SMOKE-OK: release_smoke" in src,
           "finalize + SMOKE-OK verdict intact")

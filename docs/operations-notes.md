@@ -505,16 +505,12 @@ the stale planner-catalog rows found at `f4a967a`, for H3/V5 owners:
 
 | Set | Count | Detail |
 |---|---|---:|
-| Genuine C-table stubs (`CKR_FUNCTION_NOT_SUPPORTED` live) | 14 | 6 legacy `stub_probe` + 8 post-2.40 `x_live_check` |
+| Genuine C-table stubs (`CKR_FUNCTION_NOT_SUPPORTED` live) | 11 | 3 legacy `stub_probe` + 8 post-2.40 `x_live_check` (provisioning routed since its lifecycle lane landed) |
 | Legacy parallel pair (`CKR_FUNCTION_NOT_PARALLEL` live) | 2 | `C_GetFunctionStatus`, `C_CancelFunction` |
-| Catalog rows needing routing-context rewording | 10 | R1-R10 (7 stale denials + 3 planner-scope); R11 parallel-pair wording |
+| Catalog rows reworded for routing context | 10 | R1-R10 (B12 reword; R11 fixed reason-side) |
 
-The 14 genuine stubs keep accurate catalog reasons. R4-R10 deny C-table
-routes that exist as `std_` bodies in `cbits/standard_surface.c`, R1-R3
-state planner limits that read as serving denials, and R11 records the
-parallel-pair reason/code wording gap. See gaps D2 and D3 in the inventory
-for the V5 follow-ups. Freshness: since that survey the three
-provisioning entries left the stub table for routed bodies
-(`std_InitToken`, `std_InitPIN`, `std_SetPIN` in
-`cbits/standard_surface.c`), leaving 3 legacy `stub_probe` stubs plus
-the 8 post-2.40 ones and the unchanged parallel pair.
+The 11 genuine stubs keep accurate catalog reasons. R4-R10 no longer deny
+C-table routes (B12 reworded them to planner-scope-only claims), R1-R3
+carry serving-context wording, and R11 names the live
+`CKR_FUNCTION_NOT_PARALLEL` return. See gaps D2 and D3 in the inventory
+(closed by the B12 reword).

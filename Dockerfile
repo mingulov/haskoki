@@ -97,6 +97,7 @@ COPY --chown=$UID:$GID app/ app/
 COPY --chown=$UID:$GID tools/ tools/
 COPY --chown=$UID:$GID docs/ docs/
 COPY --chown=$UID:$GID client/ client/
+COPY --chown=$UID:$GID examples/ examples/
 # Build before testing: a fresh `cabal test all` can run haskoki-core-tests
 # before the sibling main library unit registers (Cabal-9341); the
 # explicit build first is the same workaround scripts/run-gates.sh uses.

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0.0] - Unreleased
+
+- Token provisioning lifecycle: `C_InitToken`, `C_InitPIN`, and `C_SetPIN`
+  are routed end to end with durable SQLite persistence, catalog-seeded
+  credentials until the first commit, and consumer coverage.
+- Token re-initialization now checks the caller PIN against the existing
+  SO PIN (PKCS#11 v3.2, section 5.5.7). A wrong PIN is refused with
+  `CKR_PIN_INCORRECT` and changes nothing: no objects, credentials,
+  attempts, or locks are touched.
+- Serving credential view with fail-closed resync: after an ambiguous
+  store write, authentication re-reads the durable rows instead of
+  trusting a possibly stale view.
+- Logout oracle and executable reference, plus login-reopen and
+  provisioning-guard journey tests.
+- Documentation: supported-hosts matrix, operations notes, and refreshed
+  publishing, hands-on, and results guides.
+- Function-contract catalog regenerated with reworded reason texts
+  (section 4 of the B3 docs inventory records each row).
+  The C library version is now {0, 4}.
+
 ## [0.3.1.0] - Unreleased
 
 - Shorter onboarding, a clearer development story, and dated model-usage
