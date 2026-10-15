@@ -15,6 +15,11 @@
  *     refusal, bad-slot refusal on every slot-taking entry
  *   - cross-slot object invisibility (direct-only: create on one slot,
  *     find/get/destroy from another fail typed)
+ *   - RFC 7512 URI selection (direct-only, built-in catalog): a saved
+ *     v0.5 token URI selecting by serial=000000000000001a resolves to
+ *     haskoki-ops (pinned id 26) and logs in with its PIN; each slot's
+ *     listed URI round-trips to its own slot; saved v0.4 URIs
+ *     (slot-derived serial 0000000000000002) select nothing
  *
  * Config: hermetic self-written 3-token catalog (memory storage, trace
  * off) mirroring tests/ops/fixtures/multi-token.toml plus pinned
@@ -185,6 +190,165 @@ static const char *so_pin_for(const CK_UTF8CHAR *label, CK_ULONG len) {
     }
   }
   return NULL;
+}
+
+/* ---- minimal RFC 7512 token-URI selection ----
+ * Parses the token path attributes of a pkcs11: URI (token,
+ * manufacturer, model, serial; percent-decoded) and matches them
+ * against CK_TOKEN_INFO the way p11-kit's p11_kit_uri_match_token_info
+ * does: an absent attribute matches anything, a present one must equal
+ * the blank-padded field exactly. Any other path attribute, a query
+ * part or a malformed escape refuses the URI (strict on purpose: only
+ * the four token attributes are exercised here). */
+typedef struct {
+  char token[33];
+  char manufacturer[33];
+  char model[17];
+  char serial[17];
+  int hasToken, hasManufacturer, hasModel, hasSerial;
+} TokenUri;
+
+static int hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+/* Percent-decode src[0..len) into dst (cap includes the NUL). */
+static int pct_decode(const char *src, size_t len, char *dst, size_t cap) {
+  size_t i = 0, o = 0;
+  while (i < len) {
+    char c = src[i];
+    if (c == '%') {
+      int hi, lo;
+      if (i + 2 >= len) return -1;
+      hi = hex_nibble(src[i + 1]);
+      lo = hex_nibble(src[i + 2]);
+      if (hi < 0 || lo < 0) return -1;
+      c = (char)(hi * 16 + lo);
+      i += 3;
+    } else {
+      i += 1;
+    }
+    if (o + 1 >= cap) return -1;
+    dst[o++] = c;
+  }
+  dst[o] = '\0';
+  return 0;
+}
+
+static int parse_token_uri(const char *uri, TokenUri *out) {
+  const char *p, *end;
+  memset(out, 0, sizeof(*out));
+  if (strncmp(uri, "pkcs11:", 7) != 0) return -1;
+  p = uri + 7;
+  if (strchr(p, '?') != NULL) return -1;
+  end = p + strlen(p);
+  while (p < end) {
+    const char *semi = strchr(p, ';');
+    const char *attrEnd = semi ? semi : end;
+    const char *eq = memchr(p, '=', (size_t)(attrEnd - p));
+    size_t nlen;
+    if (eq == NULL) return -1;
+    nlen = (size_t)(eq - p);
+    if (nlen == 5 && memcmp(p, "token", 5) == 0) {
+      if (pct_decode(eq + 1, (size_t)(attrEnd - eq - 1), out->token,
+                     sizeof(out->token)) != 0) return -1;
+      out->hasToken = 1;
+    } else if (nlen == 12 && memcmp(p, "manufacturer", 12) == 0) {
+      if (pct_decode(eq + 1, (size_t)(attrEnd - eq - 1), out->manufacturer,
+                     sizeof(out->manufacturer)) != 0) return -1;
+      out->hasManufacturer = 1;
+    } else if (nlen == 5 && memcmp(p, "model", 5) == 0) {
+      if (pct_decode(eq + 1, (size_t)(attrEnd - eq - 1), out->model,
+                     sizeof(out->model)) != 0) return -1;
+      out->hasModel = 1;
+    } else if (nlen == 6 && memcmp(p, "serial", 6) == 0) {
+      if (pct_decode(eq + 1, (size_t)(attrEnd - eq - 1), out->serial,
+                     sizeof(out->serial)) != 0) return -1;
+      out->hasSerial = 1;
+    } else {
+      return -1;
+    }
+    p = semi ? semi + 1 : end;
+  }
+  return 0;
+}
+
+/* A blank-padded fixed-width field equals the decoded value. */
+static int padded_equals(const CK_UTF8CHAR *field, size_t width,
+                         const char *want) {
+  size_t n = strlen(want), j;
+  if (n > width || memcmp(field, want, n) != 0) return 0;
+  for (j = n; j < width; j++) {
+    if (field[j] != ' ') return 0;
+  }
+  return 1;
+}
+
+static int uri_matches_token(const TokenUri *u, const CK_TOKEN_INFO *t) {
+  return (!u->hasToken || padded_equals(t->label, 32, u->token)) &&
+         (!u->hasManufacturer ||
+          padded_equals(t->manufacturerID, 32, u->manufacturer)) &&
+         (!u->hasModel || padded_equals(t->model, 16, u->model)) &&
+         (!u->hasSerial || padded_equals(t->serialNumber, 16, u->serial));
+}
+
+/* Select by URI over the discovered slots: the number of matching
+ * slots (-1 for an unparseable URI), the first match in *hit. */
+static long select_by_uri(CK_FUNCTION_LIST_3_2_PTR f, const CK_SLOT_ID *slots,
+                          CK_ULONG n, const char *uri, CK_SLOT_ID *hit) {
+  TokenUri u;
+  CK_ULONG i;
+  long matches = 0;
+  if (parse_token_uri(uri, &u) != 0) return -1;
+  for (i = 0; i < n; i++) {
+    CK_TOKEN_INFO t;
+    if (f->C_GetTokenInfo(slots[i], &t) != CKR_OK) continue;
+    if (uri_matches_token(&u, &t)) {
+      if (matches == 0) *hit = slots[i];
+      matches++;
+    }
+  }
+  return matches;
+}
+
+/* Append one percent-encoded attribute (RFC 7512 pchar: unreserved
+ * bytes verbatim, everything else %XX) from a blank-padded field. */
+static void uri_append(char *buf, size_t cap, const char *name,
+                       const CK_UTF8CHAR *field, size_t width, int first) {
+  static const char hex[] = "0123456789ABCDEF";
+  size_t len = width, o = strlen(buf), j;
+  int w;
+  while (len > 0 && field[len - 1] == ' ') len--;
+  if (o >= cap) return;
+  w = snprintf(buf + o, cap - o, "%s%s=", first ? "" : ";", name);
+  if (w < 0 || (size_t)w >= cap - o) return;
+  o += (size_t)w;
+  for (j = 0; j < len && o + 4 < cap; j++) {
+    unsigned char c = field[j];
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
+        c == '~') {
+      buf[o++] = (char)c;
+    } else {
+      buf[o++] = '%';
+      buf[o++] = hex[c >> 4];
+      buf[o++] = hex[c & 15];
+    }
+  }
+  buf[o] = '\0';
+}
+
+/* The token URI a listing tool prints for a token (pkcs11-tool -L
+ * attribute set: model, manufacturer, serial, token). */
+static void token_uri(const CK_TOKEN_INFO *t, char *buf, size_t cap) {
+  snprintf(buf, cap, "pkcs11:");
+  uri_append(buf, cap, "model", t->model, 16, 1);
+  uri_append(buf, cap, "manufacturer", t->manufacturerID, 32, 0);
+  uri_append(buf, cap, "serial", t->serialNumber, 16, 0);
+  uri_append(buf, cap, "token", t->label, 32, 0);
 }
 
 int main(int argc, char **argv) {
@@ -436,7 +600,14 @@ int main(int argc, char **argv) {
     CHECK(present, "every slot token-present with pinned description");
     CHECK(labeled, "every token labeled from the serving catalog");
     CHECK(serial, "token serials lowercase hex and distinct per slot");
-    CHECK(identity, "token serials are the pinned token identities");
+    /* kSerials are the built-in config's pinned ids: an explicit
+     * HASKOKI_MULTITOKEN_CONFIG override carries its own identities,
+     * so only the shape-only serial CHECK above applies there. */
+    if (g_cfg_ours || isProxy) {
+      CHECK(identity, "token serials are the pinned token identities");
+    } else {
+      printf("invent: note: config override, pinned-identity check skipped\n");
+    }
   }
   rv = tbl32->C_GetSlotInfo(999991UL, &si);
   CHECK(rv == CKR_SLOT_ID_INVALID, "bad slot slot-info rejected");
@@ -626,6 +797,81 @@ int main(int argc, char **argv) {
     }
   } else {
     printf("invent: note: single-slot serving, cross-slot scenario skipped\n");
+  }
+
+  /* ---- RFC 7512 URI selection (direct-only, built-in catalog) ----
+   * A URI saved under v0.5 selects haskoki-ops (pinned id 26) by its
+   * identity serial; the same token under v0.4 reported the slot-derived
+   * serial 0000000000000002, so URIs saved then select nothing now (the
+   * documented URI break). Selection is checked end to end: the
+   * selected slot carries the haskoki-ops label and accepts only its
+   * PIN. */
+  if (!isProxy && g_cfg_ours && n == 3) {
+    CK_SLOT_ID hit = (CK_SLOT_ID)-1;
+    long m;
+    CK_SESSION_HANDLE sess = 0;
+    CK_ULONG llen = 0;
+    m = select_by_uri(tbl32, slots, n, "pkcs11:serial=000000000000001a", &hit);
+    CHECKM(m == 1 && hit == slots[1],
+           "uri serial=000000000000001a selects exactly the haskoki-ops slot");
+    rv = (m == 1) ? tbl32->C_GetTokenInfo(hit, &ti) : CKR_GENERAL_ERROR;
+    llen = (rv == CKR_OK) ? padded_len(ti.label, 32) : 0;
+    CHECKM(rv == CKR_OK && llen == 11 && memcmp(ti.label, "haskoki-ops", 11) == 0,
+           "uri-selected token is labeled haskoki-ops");
+    rv = (m == 1) ? tbl32->C_OpenSession(hit, CKF_SERIAL_SESSION | CKF_RW_SESSION,
+                                         NULL_PTR, NULL_PTR, &sess)
+                  : CKR_GENERAL_ERROR;
+    CHECKM(rv == CKR_OK && sess != 0, "uri-selected slot opens a session");
+    if (rv == CKR_OK && sess != 0) {
+      rv = tbl32->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "1234", 4);
+      CHECKM(rv == CKR_PIN_INCORRECT,
+             "uri-selected slot refuses the home token PIN");
+      rv = tbl32->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "2345", 4);
+      CHECKM(rv == CKR_OK, "uri-selected slot accepts the haskoki-ops PIN");
+      (void)tbl32->C_Logout(sess);
+      rv = tbl32->C_CloseSession(sess);
+      CHECKM(rv == CKR_OK, "uri-selected session closes");
+    }
+    m = select_by_uri(tbl32, slots, n,
+                      "pkcs11:token=haskoki-ops;serial=000000000000001a", &hit);
+    CHECKM(m == 1 && hit == slots[1],
+           "uri token=haskoki-ops;serial=000000000000001a selects slot 1");
+    m = select_by_uri(tbl32, slots, n,
+                      "pkcs11:token=haskoki-ops;serial=0000000000000002", &hit);
+    CHECKM(m == 0, "saved v0.4 uri (slot-derived serial) selects nothing");
+    m = select_by_uri(tbl32, slots, n, "pkcs11:serial=0000000000000002", &hit);
+    CHECKM(m == 0, "saved v0.4 serial-only uri selects nothing");
+    m = select_by_uri(tbl32, slots, n,
+                      "pkcs11:token=haskoki-demo;serial=0000000000000001", &hit);
+    CHECKM(m == 1 && hit == slots[0], "home token uri selects slot 0");
+    m = select_by_uri(tbl32, slots, n,
+                      "pkcs11:manufacturer=haskoki%20contributors;serial=0000000000000003",
+                      &hit);
+    CHECKM(m == 1 && hit == slots[2],
+           "percent-encoded uri selects haskoki-audit by serial");
+    {
+      /* Each slot's listed URI (pkcs11-tool -L attribute set) carries
+       * its identity serial and selects that slot alone. */
+      int roundTrip = 1, opsListed = 0;
+      for (i = 0; i < n; i++) {
+        char uri[512];
+        CK_TOKEN_INFO t;
+        roundTrip = roundTrip && (tbl32->C_GetTokenInfo(slots[i], &t) == CKR_OK);
+        if (!roundTrip) break;
+        token_uri(&t, uri, sizeof(uri));
+        printf("invent: listed uri slot %lu: %s\n", (unsigned long)slots[i], uri);
+        if (i == 1) {
+          opsListed = strstr(uri, ";serial=000000000000001a;") != NULL &&
+                      strstr(uri, ";token=haskoki-ops") != NULL;
+        }
+        m = select_by_uri(tbl32, slots, n, uri, &hit);
+        roundTrip = roundTrip && (m == 1) && (hit == slots[i]);
+      }
+      CHECKM(opsListed, "haskoki-ops listed uri carries serial=000000000000001a");
+      CHECKM(roundTrip, "every listed token uri selects its own slot");
+    }
+  } else {
+    printf("invent: note: uri selection needs the built-in 3-token catalog direct; skipped\n");
   }
 
   /* ---- lifecycle: finalize, post-finalize, re-init ---- */
