@@ -45,11 +45,17 @@ in-progress claim on the persistent id in one STM step — carrying
 the claiming table and session identity — before the effectful
 replan\/start, then commits only that claim to the live
 attachment (or rolls only it back on refusal or interruption).
-Live bindings key by @('AsyncTableId', 'JobId')@, so two tables
-sharing this context never confuse each other's local job ids,
-and a retiring table retires only its own attachments. Claim
-transactions touch attachment @TVar@s only: no Store IO runs in
-STM on any path.
+Claim state is not per context: it lives in the store handle's
+claim authority ('storeClaims', keyed by token, then persistent
+id), so every detach context over one open store sees and
+arbitrates the same attachments — two contexts cannot both join
+one persistent id. Live bindings key by
+@('AsyncTableId', 'JobId')@, so two tables never confuse each
+other's local job ids, and a retiring table retires only its own
+attachments; a context retires only tables it claimed through.
+Claim transactions touch the authority's @TVar@ (and the
+context's served-table set) only: no Store IO runs in STM on any
+path.
 -}
 module Haskoki.Runtime.Detached
   ( -- * Context
@@ -97,7 +103,8 @@ module Haskoki.Runtime.Detached
   ) where
 
 import Control.Concurrent.STM
-  ( TVar
+  ( STM
+  , TVar
   , atomically
   , newTVarIO
   , readTVar
@@ -171,7 +178,15 @@ import Haskoki.Runtime.Async
   , startSeededJob
   , withDetachLease
   )
-import Haskoki.Runtime.Attach (Attachment (..), ClaimPrior (..))
+import Haskoki.Runtime.Attach
+  ( Attachment (..)
+  , ClaimAuthority
+  , ClaimPrior (..)
+  , TokenClaims (..)
+  , claimCensus
+  , readTokenClaims
+  , writeTokenClaims
+  )
 import Haskoki.Runtime.Lifecycle (Env, envRules, snapshotModel)
 import Haskoki.Rules (Rules)
 import Haskoki.Session (SessionLogin (..), TokenAuth (..))
@@ -207,29 +222,37 @@ import Haskoki.Types
 -- Context
 -- ---------------------------------------------------------------------------
 
--- | Detach state bound to one durable store (NOT to one provider
--- generation): the attachment registry, the live-job reverse
--- map keyed by table and job identity, the adapter's opaque
--- marks, the TEST-ONLY join-transfer hook (a no-op unless
--- a test sets it), and the retired-table set. Persistent ids are
--- NOT minted here: every detach reserves its id from the store
--- ('storeReserveJobId'), so two contexts on one store never
--- share an id. One context may serve several live tables at
--- once (two FFI contexts on one store box); a restart reopens
--- the store and calls 'openDetached' again; durable records
--- survive, live attachments do not (close drains them first).
--- A table that retires records its identity: its in-progress
--- claims roll back, and its late claims and commits are refused,
--- so no join publishes a live binding after its table closed.
+-- | A detach view over one open store handle and one home token
+-- (NOT bound to one provider generation). The attachment
+-- registry, the live-job reverse map keyed by table and job
+-- identity, and the retired-table set are NOT held here: they
+-- live in the store handle's claim authority ('storeClaims'),
+-- shared by every context over that handle (and every
+-- record-update wrapper of it), so two contexts over one store
+-- arbitrate one persistent id through one claim. The context
+-- itself holds only the set of tables it claimed through (the
+-- scope of its retirement: a context never retires a table it
+-- did not serve), the adapter's opaque marks, and the TEST-ONLY
+-- join-transfer hook (a no-op unless a test sets it).
+-- Persistent ids are NOT minted here: every detach reserves its
+-- id from the store ('storeReserveJobId'), so two contexts on
+-- one store never share an id. One context may serve several
+-- live tables at once (two FFI contexts on one store box); a
+-- restart reopens the store and calls 'openDetached' again;
+-- durable records survive, live attachments do not (a reopened
+-- handle has a fresh, empty authority, so close must retire
+-- them first). A table that retires records its identity: its
+-- in-progress claims roll back, and its late claims and commits
+-- are refused, so no join publishes a live binding after its
+-- table closed.
 data DetachCtx = DetachCtx
   { dcStore :: !Store
   , dcToken :: !TokenId
   , dcSlot :: !SlotId
-  , dcAttach :: !(TVar (Map Word64 Attachment))
-  , dcReverse :: !(TVar (Map (AsyncTableId, JobId) Word64))
+  , dcClaims :: !ClaimAuthority
+  , dcServed :: !(TVar (Set AsyncTableId))
   , dcOpaque :: !(TVar (Map JobId String))
   , dcJoinHook :: !(TVar (IO ()))
-  , dcRetired :: !(TVar (Set AsyncTableId))
   }
 
 -- | Why a detach context failed to open.
@@ -239,10 +262,12 @@ data OpenDeny
   | OpenJobs !StoreError
   deriving (Eq, Show)
 
--- | Open detach state over a store homed to one token. The token
+-- | Open a detach view over a store homed to one token. The token
 -- record must exist (it carries the slot and the generation jobs
 -- are stamped with); the stored jobs must load (a corrupt job
 -- table refuses the context rather than serving half a view).
+-- The view binds the store handle's claim authority: contexts
+-- opened over one handle share every attachment and claim.
 -- The store owns id allocation ('storeReserveJobId'), so ids
 -- are never recycled — not across restarts, not across detach
 -- failures, not across sibling contexts (allocation gaps are
@@ -259,20 +284,17 @@ openDetached store tok = do
         case eJobs of
           Left err -> pure (Left (OpenJobs err))
           Right _ -> do
-            attachVar <- newTVarIO Map.empty
-            revVar <- newTVarIO Map.empty
+            servedVar <- newTVarIO Set.empty
             opaqueVar <- newTVarIO Map.empty
             hookVar <- newTVarIO (pure ())
-            retiredVar <- newTVarIO Set.empty
             pure (Right DetachCtx
               { dcStore = store
               , dcToken = tok
               , dcSlot = trSlot trec
-              , dcAttach = attachVar
-              , dcReverse = revVar
+              , dcClaims = storeClaims store
+              , dcServed = servedVar
               , dcOpaque = opaqueVar
               , dcJoinHook = hookVar
-              , dcRetired = retiredVar
               })
 
 -- | The home token jobs are stamped with.
@@ -282,6 +304,25 @@ detachToken = dcToken
 -- | The home token's slot (target-session compatibility).
 detachSlot :: DetachCtx -> SlotId
 detachSlot = dcSlot
+
+-- | This context's token's claim state on the shared authority.
+readClaims :: DetachCtx -> STM TokenClaims
+readClaims dc = readTokenClaims (dcClaims dc) (dcToken dc)
+
+-- | Replace this context's token's claim state.
+writeClaims :: DetachCtx -> TokenClaims -> STM ()
+writeClaims dc = writeTokenClaims (dcClaims dc) (dcToken dc)
+
+-- | One persistent id's current attachment on the shared authority.
+lookupAttachment :: DetachCtx -> Word64 -> IO (Maybe Attachment)
+lookupAttachment dc pid =
+  Map.lookup pid . tcAttach <$> atomically (readClaims dc)
+
+-- | Record one attachment state for a persistent id.
+putAttachment :: DetachCtx -> Word64 -> Attachment -> IO ()
+putAttachment dc pid att = atomically $ do
+  tc <- readClaims dc
+  writeClaims dc tc { tcAttach = Map.insert pid att (tcAttach tc) }
 
 -- ---------------------------------------------------------------------------
 -- Saveability
@@ -821,12 +862,12 @@ attView AttIdle = AvIdle
 attView (AttTerminal st) = AvTerminal st
 attView (AttClaim _ _ _ _) = AvIdle
 
--- | Inspect a persistent job's attachment ('Nothing' = never
--- detached in this context generation — rejoin resolves those
--- against the durable record instead).
+-- | Inspect a persistent job's attachment on the store handle's
+-- shared authority ('Nothing' = never detached or touched through
+-- this handle — rejoin resolves those against the durable record
+-- instead). Every context over the handle sees the same answer.
 inspectAttachment :: DetachCtx -> Word64 -> IO (Maybe AttachmentView)
-inspectAttachment dc pid =
-  (fmap attView . Map.lookup pid) <$> readTVarIO (dcAttach dc)
+inspectAttachment dc pid = fmap attView <$> lookupAttachment dc pid
 
 -- | Resolve a live job to its persistent id through the reverse
 -- map, keyed by the job's own table and job identity. Colliding
@@ -834,51 +875,51 @@ inspectAttachment dc pid =
 -- Focused test\/diagnostic helper (the map itself stays private).
 inspectReverse :: DetachCtx -> AsyncTableId -> JobId -> IO (Maybe Word64)
 inspectReverse dc tid jid =
-  Map.lookup (tid, jid) <$> readTVarIO (dcReverse dc)
+  Map.lookup (tid, jid) . tcReverse <$> atomically (readClaims dc)
 
--- | Registry census: @(active, idle, terminal)@ over the public
--- projection (in-progress claims count as idle: still awaiting a
--- live binding).
+-- | Registry census for this context's token on the store
+-- handle's shared authority: @(active, idle, terminal)@ over the
+-- public projection (in-progress claims count as idle: still
+-- awaiting a live binding).
 detachStats :: DetachCtx -> IO (Int, Int, Int)
-detachStats dc = do
-  attach <- readTVarIO (dcAttach dc)
-  let views = map attView (Map.elems attach)
-      active = length [() | AvActive _ <- views]
-      idle = length [() | AvIdle <- views]
-  pure (active, idle, length views - active - idle)
+detachStats dc = claimCensus (dcClaims dc) (dcToken dc)
 
 -- | Record a fresh detach as idle (awaiting join).
 setIdle :: DetachCtx -> Word64 -> IO ()
-setIdle dc pid = atomically $ do
-  attach <- readTVar (dcAttach dc)
-  writeTVar (dcAttach dc) (Map.insert pid AttIdle attach)
+setIdle dc pid = putAttachment dc pid AttIdle
 
 -- | Take the in-progress join claim for a persistent id in one
 -- STM step, stamping it with the attempt token the caller
 -- minted. Succeeds only from idle or absent on a table whose
 -- attachments are not retired; anything else (another claim, an
 -- active, a terminal, or a retired table) refuses with 'Nothing'
--- and the map untouched. The claim records what it replaced so
--- retirement can roll exactly it back. STM touches the
--- attachment map only — never Store IO.
+-- and the authority untouched. The claim lives on the store
+-- handle's shared authority, so a claim (or active) taken
+-- through any context over the handle refuses this one. The
+-- claim records what it replaced so retirement can roll exactly
+-- it back; a granted claim also records its table in this
+-- context's served set (the scope of this context's
+-- retirement). STM touches the authority and the served set
+-- only — never Store IO.
 tryClaim
   :: DetachCtx -> Word64 -> AsyncTableId -> SessionId -> Unique
   -> IO (Maybe ClaimPrior)
 tryClaim dc pid tid sid uniq = atomically $ do
-  retired <- readTVar (dcRetired dc)
-  attach <- readTVar (dcAttach dc)
-  if tid `Set.member` retired
+  tc <- readClaims dc
+  if tid `Set.member` tcRetired tc
     then pure Nothing
-    else case Map.lookup pid attach of
-      Just AttIdle -> do
-        let claim = AttClaim tid sid uniq ClaimHadIdle
-        writeTVar (dcAttach dc) (Map.insert pid claim attach)
-        pure (Just ClaimHadIdle)
-      Nothing -> do
-        let claim = AttClaim tid sid uniq ClaimHadNone
-        writeTVar (dcAttach dc) (Map.insert pid claim attach)
-        pure (Just ClaimHadNone)
+    else case Map.lookup pid (tcAttach tc) of
+      Just AttIdle -> grant tc ClaimHadIdle
+      Nothing -> grant tc ClaimHadNone
       _ -> pure Nothing
+  where
+    grant :: TokenClaims -> ClaimPrior -> STM (Maybe ClaimPrior)
+    grant tc prior = do
+      let claim = AttClaim tid sid uniq prior
+      writeClaims dc tc { tcAttach = Map.insert pid claim (tcAttach tc) }
+      served <- readTVar (dcServed dc)
+      writeTVar (dcServed dc) (Set.insert tid served)
+      pure (Just prior)
 
 -- | Roll back only our own claim attempt, restoring exactly
 -- what it replaced (idle or absent). Anything else in the slot —
@@ -889,14 +930,15 @@ rollbackClaim
   :: DetachCtx -> Word64 -> AsyncTableId -> SessionId -> Unique
   -> ClaimPrior -> IO ()
 rollbackClaim dc pid tid sid uniq prior = atomically $ do
-  attach <- readTVar (dcAttach dc)
+  tc <- readClaims dc
+  let attach = tcAttach tc
   case Map.lookup pid attach of
     Just (AttClaim tid' sid' uniq' _)
       | tid' == tid && sid' == sid && uniq' == uniq ->
           let attach' = case prior of
                 ClaimHadIdle -> Map.insert pid AttIdle attach
                 ClaimHadNone -> Map.delete pid attach
-          in writeTVar (dcAttach dc) attach'
+          in writeClaims dc tc { tcAttach = attach' }
     _ -> pure ()
 
 -- | Commit only our own claim attempt to the live attachment,
@@ -912,15 +954,15 @@ commitClaim
   :: DetachCtx -> Word64 -> AsyncTableId -> SessionId -> Unique
   -> JobId -> IO Bool
 commitClaim dc pid tid sid uniq jid = atomically $ do
-  retired <- readTVar (dcRetired dc)
-  attach <- readTVar (dcAttach dc)
-  case Map.lookup pid attach of
+  tc <- readClaims dc
+  case Map.lookup pid (tcAttach tc) of
     Just (AttClaim tid' sid' uniq' _)
       | tid' == tid && sid' == sid && uniq' == uniq
-      , tid `Set.notMember` retired -> do
-          writeTVar (dcAttach dc) (Map.insert pid (AttActive tid jid) attach)
-          rev <- readTVar (dcReverse dc)
-          writeTVar (dcReverse dc) (Map.insert (tid, jid) pid rev)
+      , tid `Set.notMember` tcRetired tc -> do
+          writeClaims dc tc
+            { tcAttach = Map.insert pid (AttActive tid jid) (tcAttach tc)
+            , tcReverse = Map.insert (tid, jid) pid (tcReverse tc)
+            }
           pure True
     _ -> pure False
 
@@ -1045,7 +1087,7 @@ joinRecord dc env table req rec = do
 attachmentGate
   :: DetachCtx -> AsyncTable -> Word64 -> JobRecord -> IO (Maybe JoinOutcome)
 attachmentGate dc table pid rec = do
-  mAtt <- Map.lookup pid <$> readTVarIO (dcAttach dc)
+  mAtt <- lookupAttachment dc pid
   case mAtt of
     Just (AttTerminal s) -> pure (Just (JoinTerminal s))
     Just (AttClaim _ _ _ _) ->
@@ -1213,7 +1255,7 @@ joinRecipe dc env table req st recFunc recipe mSeed = do
 -- reports the existing already-attached refusal.
 claimLost :: DetachCtx -> Word64 -> IO JoinOutcome
 claimLost dc pid = do
-  mAtt <- Map.lookup pid <$> readTVarIO (dcAttach dc)
+  mAtt <- lookupAttachment dc pid
   case mAtt of
     Just (AttTerminal s) -> pure (JoinTerminal s)
     _ -> pure (JoinAlreadyAttached joinPolicyName)
@@ -1431,7 +1473,7 @@ cancelJoined dc table jid = do
 -- that table's own record, never this one.
 markResolved :: DetachCtx -> AsyncTable -> JobId -> JobExecState -> IO (Maybe StoreError)
 markResolved dc table jid st = do
-  rev <- readTVarIO (dcReverse dc)
+  rev <- tcReverse <$> atomically (readClaims dc)
   case Map.lookup (asyncTableId table, jid) rev of
     Nothing -> pure Nothing
     Just pid -> do
@@ -1446,16 +1488,21 @@ markResolved dc table jid st = do
             pure (Just (StoreRevisionConflict "durable job is gone"))
           (rec : _) -> markState dc pid rec st
 
--- | Retire the live table (provider close): every active attachment
--- resolves canceled, durably and in memory, every in-progress
--- claim rolls back to what it replaced, and the adapter's opaque
--- marks clear (a new table generation starts unflagged). Returns one
--- entry per retired attachment with its mark error, if any. This is
--- whole-context retirement for single-table owners (the Standard
--- adapter, whose instance owns exactly one table and one detach
--- context); callers sharing one context across tables retire with
--- 'retireLiveTableFor' so a closing table never cancels a sibling's
--- attachments.
+-- | Retire every live table this context served (provider close):
+-- each active attachment owned by a table this context claimed
+-- through resolves canceled, durably and in memory, each of
+-- those tables' in-progress claims rolls back to what it
+-- replaced, and the adapter's opaque marks clear (a new table
+-- generation starts unflagged). Tables this context never
+-- claimed through — including a sibling context's tables on the
+-- same store — are untouched, so a refused (losing) context can
+-- never retire the winner. Returns one entry per retired
+-- attachment with its mark error, if any. This is whole-context
+-- retirement for single-table owners (the Standard adapter, whose
+-- instance owns exactly one table and one detach context);
+-- callers sharing one context across tables retire with
+-- 'retireLiveTableFor' so a closing table never cancels a
+-- sibling's attachments.
 retireLiveTable :: DetachCtx -> IO [(Word64, Maybe StoreError)]
 retireLiveTable dc = do
   atomically (writeTVar (dcOpaque dc) Map.empty)
@@ -1468,7 +1515,9 @@ retireLiveTable dc = do
 -- table records its retirement so their late commits — and any
 -- later claim from it — are refused. Sibling tables'
 -- attachments — active, idle, terminal, or mid-claim — are
--- untouched. Returns one entry per retired attachment with its
+-- untouched. A table this context never claimed through is not
+-- this context's to retire: the call is a no-op returning @[]@
+-- (a losing context cannot retire the winner's table). Returns one entry per retired attachment with its
 -- mark error, if any (rolled-back claims are not retired
 -- attachments: their durable jobs stand untouched and joinable).
 -- Opaque marks are NOT cleared here: they are keyed by bare job
@@ -1478,45 +1527,48 @@ retireLiveTableFor
   :: DetachCtx -> AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireLiveTableFor dc tid = retireMatching dc (Just tid)
 
--- | Shared retire worker: 'Nothing' retires every live
--- attachment (whole context), @'Just' tid@ retires only that
--- table's. Actives resolve canceled, durably and in memory;
--- in-progress claims owned by the retiring scope roll back to
--- exactly what they replaced, and the retiring tables record
--- their identity so the claims' late commits — and any later
--- claim from those tables — are refused rather than publishing
--- a live binding after the drain.
+-- | Shared retire worker over the tables this context served:
+-- 'Nothing' retires all of them (whole context), @'Just' tid@
+-- only that one — and nothing when this context never claimed
+-- through @tid@. One STM step on the shared authority: the
+-- retiring tables record their identity (so the claims' late
+-- commits — and any later claim from those tables — are refused
+-- rather than publishing a live binding after the drain), their
+-- in-progress claims roll back to exactly what they replaced,
+-- their opaque marks drop, and their actives are collected.
+-- The durable cancel marks run after the STM step, outside it.
 retireMatching
   :: DetachCtx -> Maybe AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireMatching dc mTid = do
   actives <- atomically $ do
-    attach <- readTVar (dcAttach dc)
-    let owned owner = case mTid of
-          Nothing -> True
-          Just tid -> owner == tid
-        actives =
-          [ pid
-          | (pid, AttActive owner _) <- Map.toList attach
-          , owned owner
-          ]
-        claims =
-          [ (pid, prior)
-          | (pid, AttClaim owner _ _ prior) <- Map.toList attach
-          , owned owner
-          ]
-        tids = case mTid of
-          Just tid -> [tid]
-          Nothing ->
-            [ owner
-            | (_, AttActive owner _) <- Map.toList attach
-            ] ++
-            [ owner
-            | (_, AttClaim owner _ _ _) <- Map.toList attach
-            ]
-    retired <- readTVar (dcRetired dc)
-    writeTVar (dcRetired dc) (foldr Set.insert retired tids)
-    writeTVar (dcAttach dc) (foldr rollbackClaimed attach claims)
-    pure actives
+    served <- readTVar (dcServed dc)
+    let tids = case mTid of
+          Nothing -> served
+          Just tid
+            | tid `Set.member` served -> Set.singleton tid
+            | otherwise -> Set.empty
+    if Set.null tids
+      then pure []
+      else do
+        tc <- readClaims dc
+        let attach = tcAttach tc
+            owned owner = owner `Set.member` tids
+            actives =
+              [ pid
+              | (pid, AttActive owner _) <- Map.toList attach
+              , owned owner
+              ]
+            claims =
+              [ (pid, prior)
+              | (pid, AttClaim owner _ _ prior) <- Map.toList attach
+              , owned owner
+              ]
+        writeClaims dc tc
+          { tcAttach = foldr rollbackClaimed attach claims
+          , tcOpaque = Map.filterWithKey (\(t, _) _ -> not (owned t)) (tcOpaque tc)
+          , tcRetired = Set.union tids (tcRetired tc)
+          }
+        pure actives
   eJobs <- storeLoadJobs (dcStore dc)
   case eJobs of
     Left err -> do
@@ -1563,9 +1615,7 @@ markState dc pid rec st = do
 
 -- | Record a terminal attachment.
 setTerminal :: DetachCtx -> Word64 -> JobExecState -> IO ()
-setTerminal dc pid st = atomically $ do
-  attach <- readTVar (dcAttach dc)
-  writeTVar (dcAttach dc) (Map.insert pid (AttTerminal st) attach)
+setTerminal dc pid st = putAttachment dc pid (AttTerminal st)
 
 -- ---------------------------------------------------------------------------
 -- Join-claim test seam
