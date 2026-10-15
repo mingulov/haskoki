@@ -896,8 +896,8 @@ assembleStdInstance env be mStore cfg slots unbind release invoker = do
       case opened of
         Left deny -> ioError (userError ("standard detached context: " ++ show deny))
         Right dc -> pure (Just dc)
-  serving <- newServingView mStore cfg
-  dirty <- newIORef []
+  (serving, unbacked) <- newServingView mStore cfg
+  dirty <- newIORef unbacked
   views <- newIORef Map.empty
   bindings <- newIORef Map.empty
   notify <- newIORef Map.empty
@@ -915,34 +915,50 @@ seatedIdentities mStore cfg = case mStore of
   Just ss -> stdTokenIds ss
   Nothing -> Map.map fst (identityCatalog cfg)
 
--- | Seed the live serving-credential view: every catalog slot
--- serves its catalog label and PINs unless the store holds a
--- provisioned credential row for its token, which wins (both
--- halves: the first provisioning call freezes the token's
--- effective credential durably). A credential load failure
--- fails the whole open loudly, exactly like the detached
--- refusal above: serving must never start on an unknown
--- credential.
-newServingView :: Maybe StdStore -> Config -> IO (IORef (Map SlotId ServingCredential))
+-- | Seed the live serving-credential view. Without a store
+-- (memory mode) every catalog slot serves its catalog label and
+-- PINs. With a store the durable credential row is the only
+-- authority: a token's row serves both halves, and a token with
+-- no row (a legacy store the open should have refused) is
+-- returned as unbacked, so the instance starts with it dirty and
+-- authentication against it fails closed instead of falling back
+-- to the catalog PINs. A credential load failure fails the whole
+-- open loudly, exactly like the detached refusal above: serving
+-- must never start on an unknown credential.
+newServingView
+  :: Maybe StdStore -> Config
+  -> IO (IORef (Map SlotId ServingCredential), [SlotId])
 newServingView mStore cfg = do
   eCreds <- case mStore of
     Nothing -> pure (Right [])
     Just ss -> storeLoadCredentials (stdStore ss)
   case eCreds of
     Left err -> ioError (userError ("standard credential view: " ++ show err))
-    Right creds -> newIORef (Map.fromList
-      [ (slot, entry slot triple)
-      | (slot, triple) <- Map.toAscList (effectiveCatalog cfg)
-      ])
+    Right creds -> do
+      ref <- newIORef (Map.fromList
+        [ (slot, entry slot triple)
+        | (slot, triple) <- Map.toAscList (effectiveCatalog cfg)
+        ])
+      pure (ref, unbacked)
       where
         ids = case mStore of
           Nothing -> Map.empty
           Just ss -> stdTokenIds ss
         tokenOf slot = Map.findWithDefault (tokenIdForSlot slot) slot ids
-        entry slot (label, so, user) =
-          case find ((== tokenOf slot) . crToken) creds of
-            Just c -> ServingCredential label (crSoPin c) (crUserPin c)
-            Nothing -> ServingCredential label (BC8.pack so) (Just (BC8.pack user))
+        rowOf slot = find ((== tokenOf slot) . crToken) creds
+        entry slot (label, so, user) = case (mStore, rowOf slot) of
+          (_, Just c) -> ServingCredential label (crSoPin c) (crUserPin c)
+          (Nothing, Nothing) ->
+            ServingCredential label (BC8.pack so) (Just (BC8.pack user))
+          -- Store-backed and no row: the entry keeps the label only
+          -- and is never read for authentication (the slot starts
+          -- dirty and its re-sync refuses).
+          (Just _, Nothing) -> ServingCredential label BS.empty Nothing
+        unbacked = case mStore of
+          Nothing -> []
+          Just _ ->
+            [ slot | slot <- Map.keys (effectiveCatalog cfg)
+            , Nothing <- [rowOf slot] ]
 
 -- | Seat every catalog slot in index order. The first refusal
 -- (past the seating bound) fails the whole open loudly — catalogs
@@ -3275,12 +3291,14 @@ resyncServing inst slot = case siStore inst of
       (Right loaded, Right creds) ->
         let tid = Map.findWithDefault (tokenIdForSlot slot) slot ids
         in case (find ((== tid) . trId . fst) loaded, find ((== tid) . crToken) creds) of
-          (Just (row, _), mCred) -> do
-            let (_, catSo, catUser) = Map.findWithDefault homeCatalogEntry slot (siCatalog inst)
-                entry = ServingCredential
+          -- The durable row is the only authority for a stored
+          -- token: no row means no credential to serve, never a
+          -- fallback to the configured PINs.
+          (Just (row, _), Just cred) -> do
+            let entry = ServingCredential
                   { scLabel = trLabel row
-                  , scSoPin = maybe (BC8.pack catSo) crSoPin mCred
-                  , scUserPin = maybe (Just (BC8.pack catUser)) crUserPin mCred
+                  , scSoPin = crSoPin cred
+                  , scUserPin = crUserPin cred
                   }
             atomicModifyIORef' (siServing inst) (\m -> (Map.insert slot entry m, ()))
             atomicModifyIORef' (siDirty inst) (\s -> (filter (/= slot) s, ()))
