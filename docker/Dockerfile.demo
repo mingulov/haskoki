@@ -38,9 +38,12 @@
 # leave REVISION=unknown (honest: .git is dockerignored, so the
 # build cannot see the SHA); release-candidate builds pass
 # --build-arg REVISION=<source SHA> (CI publish path does).
-# The image never contains its own final digest.
+# The image never contains its own final digest. CREATED is the commit
+# time of REVISION (reproducible, not the build's wall clock); without it
+# the runtime stage would inherit the base image's own created label.
 ARG VERSION=0.4.0.0
 ARG REVISION=unknown
+ARG CREATED=unknown
 ARG SOURCE=https://github.com/mingulov/haskoki
 
 # ---------------------------------------------------------------------------
@@ -171,11 +174,13 @@ FROM ubuntu:26.04 AS runtime
 ARG VERSION
 ARG REVISION
 ARG SOURCE
+ARG CREATED
 LABEL org.opencontainers.image.title="haskoki-demo" \
       org.opencontainers.image.description="Haskoki PKCS#11 soft-token demo: bundle + pinned proxy + external checker" \
       org.opencontainers.image.source="${SOURCE}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 ENV DEBIAN_FRONTEND=noninteractive

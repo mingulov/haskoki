@@ -170,15 +170,20 @@ note "build image $TAG"
 # Optional label input (R8 staged-only identity): when set, the
 # source SHA is baked into the revision label; unset builds
 # exactly as before (revision=unknown). No lane behavior changes.
+# The created label is the revision's commit time (reproducible).
 if [ -n "${HASKOKI_DEMO_REVISION:-}" ]; then
-  BUILD_CMD="docker build -f docker/Dockerfile.demo --build-arg VERSION=$VER --build-arg REVISION=$HASKOKI_DEMO_REVISION -t $TAG ."
+  DEMO_CREATED=$(git show -s --format=%cI "$HASKOKI_DEMO_REVISION" 2>/dev/null) \
+    && [ -n "$DEMO_CREATED" ] \
+    || fail "cannot read the commit time of revision $HASKOKI_DEMO_REVISION"
+  BUILD_CMD="docker build -f docker/Dockerfile.demo --build-arg VERSION=$VER --build-arg REVISION=$HASKOKI_DEMO_REVISION --build-arg CREATED=$DEMO_CREATED -t $TAG ."
 else
   BUILD_CMD="docker build -f docker/Dockerfile.demo --build-arg VERSION=$VER -t $TAG ."
 fi
 echo "build command: $BUILD_CMD"
 if [ -n "${HASKOKI_DEMO_REVISION:-}" ]; then
   docker build -f docker/Dockerfile.demo \
-    --build-arg "VERSION=$VER" --build-arg "REVISION=$HASKOKI_DEMO_REVISION" -t "$TAG" . \
+    --build-arg "VERSION=$VER" --build-arg "REVISION=$HASKOKI_DEMO_REVISION" \
+    --build-arg "CREATED=$DEMO_CREATED" -t "$TAG" . \
     > "$OUT/build.log" 2>&1 \
     || fail "image build failed (see $OUT/build.log)"
 else
@@ -211,10 +216,14 @@ TAG="$IMGID"
 if [ -n "${HASKOKI_DEMO_REVISION:-}" ]; then
   LABELS=$(docker inspect --format '{{json .Config.Labels}}' "$TAG") \
     || fail "cannot read image labels"
-  python3 - "$LABELS" "$HASKOKI_DEMO_REVISION" "$VER" <<'PYLABEL' || fail "image labels differ"
+  python3 - "$LABELS" "$HASKOKI_DEMO_REVISION" "$VER" "${DEMO_CREATED:-}" <<'PYLABEL' || fail "image labels differ"
 import json, sys
 labels = json.loads(sys.argv[1])
 assert labels["org.opencontainers.image.revision"] == sys.argv[2]
+# The build phase knows the expected commit time; test-only phases load a
+# saved candidate whose labels the build phase already checked.
+if sys.argv[4]:
+    assert labels["org.opencontainers.image.created"] == sys.argv[4]
 assert labels["org.opencontainers.image.version"] == sys.argv[3]
 assert labels["org.opencontainers.image.source"] == "https://github.com/mingulov/haskoki"
 PYLABEL

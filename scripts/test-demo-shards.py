@@ -46,7 +46,8 @@ exit 47
         docker.chmod(0o755)
         self.labels = {'org.opencontainers.image.version': '0.3.0.0',
                        'org.opencontainers.image.revision': SOURCE,
-                       'org.opencontainers.image.source': 'https://github.com/mingulov/haskoki'}
+                       'org.opencontainers.image.source': 'https://github.com/mingulov/haskoki',
+                       'org.opencontainers.image.created': '2026-10-15T15:05:00+03:00'}
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}',
                         FIXTURE_IMAGE=IMAGE, FIXTURE_LABELS=json.dumps(self.labels),
                         HASKOKI_DEMO_IMAGE='fixture:owned', HASKOKI_DEMO_REVISION=SOURCE,

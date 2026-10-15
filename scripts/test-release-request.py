@@ -248,9 +248,15 @@ class BoundaryTests(unittest.TestCase):
         valid = {"id": expected, "digest": "sha256:" + "c" * 64,
                  "labels": {"org.opencontainers.image.version": "0.3.0.0",
                             "org.opencontainers.image.revision": "a" * 40,
-                            "org.opencontainers.image.source": "https://github.com/mingulov/haskoki"}}
+                            "org.opencontainers.image.source": "https://github.com/mingulov/haskoki",
+                            "org.opencontainers.image.created": "2026-10-15T15:05:00+03:00"}}
         release.check_image(req, expected, valid)
-        for key, changed in [("id", "sha256:" + "d" * 64), ("labels", {})]:
+        # The base image's inherited label or a missing one must not pass.
+        inherited = valid["labels"] | {"org.opencontainers.image.created": "unknown"}
+        missing = {k: v for k, v in valid["labels"].items()
+                   if k != "org.opencontainers.image.created"}
+        for key, changed in [("id", "sha256:" + "d" * 64), ("labels", {}),
+                             ("labels", inherited), ("labels", missing)]:
             with self.subTest(key=key), self.assertRaises(release.Refusal):
                 release.check_image(req, expected, valid | {key: changed})
 

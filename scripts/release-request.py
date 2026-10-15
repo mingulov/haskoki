@@ -208,6 +208,9 @@ def check_labels(request, labels):
             "org.opencontainers.image.source": "https://github.com/mingulov/haskoki"}
     if any(labels.get(k) != v for k, v in want.items()):
         raise Refusal("image source/version labels disagree with the selected release")
+    created = labels.get("org.opencontainers.image.created", "")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}:\d{2})", created):
+        raise Refusal("image created label is not the revision's commit time")
 
 
 def check_image(request, tested_config_id, identity):
