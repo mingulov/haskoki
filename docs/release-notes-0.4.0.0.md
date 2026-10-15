@@ -50,15 +50,72 @@ shows how to keep them, generate a key with `pkcs11-tool`, and sign a message.
   key type must be a served symmetric type (or data) and the length must fit
   that type, otherwise `CKR_TEMPLATE_INCONSISTENT`. A request past the
   mechanism's own output ceiling still returns `CKR_KEY_SIZE_RANGE` first.
-  PKCS#11 length defaults are applied for the SHA-based, concatenation and
-  XOR derivations (for example DES3 defaults to 24 bytes; an untyped SHA-256
-  derive yields a 32-byte generic secret).
-- <!-- TODO(task4): confirm --> Multi-output derivation atomicity is pinned by a public regression.
+  PKCS#11 length defaults are applied for the hash (MD5, SHA-1, SHA-2,
+  SHA-3 and BLAKE2B), concatenation and XOR derivations (for example DES3
+  defaults to 24 bytes; an untyped SHA-256 derive yields a 32-byte generic
+  secret). For hash derivation an explicit `CKK_GENERIC_SECRET` without a
+  length now fails `CKR_TEMPLATE_INCOMPLETE`; BLAKE2B used to give it the
+  digest width.
+- A multi-output derivation that mixes valid and invalid destinations
+  publishes nothing. This was already so; it is now pinned by the public
+  regression `tests/c/consumer_derive_atomic.c` (SQLite store closed and
+  reopened) and `KeyManagementSpec`.
+- SP 800-108 additional-key templates decode like the primary template: a
+  badly shaped value fails `CKR_TEMPLATE_INCONSISTENT` (a short `CK_ULONG`
+  was accepted before), an unknown attribute type
+  `CKR_ATTRIBUTE_TYPE_INVALID`, a `CK_ULONG` larger than a platform integer
+  `CKR_KEY_SIZE_RANGE`, and a byte value over 4 MiB
+  `CKR_TEMPLATE_INCONSISTENT` (these were `CKR_ARGUMENTS_BAD`). A new
+  total packed-size limit fails `CKR_ARGUMENTS_BAD`. `CKA_EC_PARAMS` OIDs
+  are mapped to a curve name as for primary-created objects. The whole
+  request creates nothing.
 - Test oracles only (no product change): the native DSA domain-parameter
   check no longer demands a 128-byte generator and is length-aware with a
   shorter-generator fixture; DH short-public and padding-tamper checks are
   deterministic; a native matrix exercises per-use context-specific
   authentication for marked keys through the public C interface.
+
+## Client-visible behavior changes
+
+Storage:
+
+- A statement failure after SQLite has already rolled back the transaction
+  no longer lets later write groups commit independently while the caller
+  is told "not committed" (this could durably clear a user PIN).
+- A `COMMIT` error after the transaction ended is an unknown outcome and
+  the store reconciles: if the write landed the call returns `CKR_OK`; if
+  not, `CKR_GENERAL_ERROR` and the affected token is quarantined until
+  `C_Finalize`. While quarantined its writes, including login-counter
+  writes, fail with `CKR_GENERAL_ERROR`.
+- A `ROLLBACK` failure is no longer discarded. If the transaction still
+  ended, affected tokens are quarantined; if it stays open, the whole
+  connection is quarantined and `C_Login`, `C_InitToken`/`C_InitPIN`/
+  `C_SetPIN`, token-object creation, derive and job reservation fail with
+  `CKR_GENERAL_ERROR` until `C_Finalize` and a fresh `C_Initialize`.
+- `COMMIT` returning `SQLITE_BUSY` is unchanged (a clean "not committed"),
+  now pinned by a test. No on-disk format change; quarantine is
+  process-local.
+
+`C_DeriveKey`:
+
+- A length that does not fit the destination key type now fails
+  `CKR_TEMPLATE_INCONSISTENT` in every shared derive family (it used to
+  succeed): AES not 16/24/32, DES3 not 24, ChaCha20 not 32, HOTP outside
+  16-64, RC4 outside 1-256, other served types outside their sizes, and
+  TLS/SSL3 key-material outputs.
+- Asymmetric, unserved or vendor key types on a secret-key destination fail
+  `CKR_TEMPLATE_INCONSISTENT`. A request past the mechanism's maximum
+  output still fails first with `CKR_KEY_SIZE_RANGE`.
+- Hash derivation (MD5, SHA-1/2/3) with no type and no length now succeeds
+  with a generic secret of digest width (it was `CKR_TEMPLATE_INCOMPLETE`).
+- Fixed-length key types with no length take their defined length on hash
+  derivation, concatenate and XOR; if the mechanism cannot produce that
+  many bytes the result is `CKR_KEY_SIZE_RANGE`, and types without a single
+  defined length (AES, HMAC) give `CKR_TEMPLATE_INCOMPLETE`.
+- BLAKE2B with explicit `CKK_GENERIC_SECRET` and no length now fails
+  `CKR_TEMPLATE_INCOMPLETE` (it used to give the digest width).
+- SP 800-108 additional-key template error codes changed as described
+  above.
 
 ## Known limitations and v0.5 deferrals
 

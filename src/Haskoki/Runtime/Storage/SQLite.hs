@@ -1288,6 +1288,14 @@ txnFailureError f = case f of
 -- ROLLBACK decides: success is a proven rollback, an error is
 -- surfaced (never discarded) as unknown, or as still open when
 -- the transaction survived it.
+--
+-- A failed ROLLBACK that nonetheless ended the transaction is
+-- classified unknown, not 'TxnRolledBack': conservatively, an I/O
+-- error on ROLLBACK signals storage trouble, and quarantine plus
+-- reload re-establishes the durable truth. AC-01 notes that a
+-- rollback error alone is not proof of corruption, so this is a
+-- deliberate availability trade-off for v0.4, to be revisited in
+-- v0.5.
 endFailedTxn :: SQLiteConn -> S.Database -> TxnStep -> StoreError -> IO TxnFailure
 endFailedTxn conn db step err = do
   case step of
