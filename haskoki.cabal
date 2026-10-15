@@ -653,3 +653,18 @@ test-suite haskoki-logout-oracle-tests
     tasty-hunit >= 0.10 && < 0.11
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
   default-language: GHC2024
+
+-- Buffered multipart accumulation cost (measurement, not a gate):
+-- one OS process per payload/chunk case, 60 s in-process cap.
+benchmark buffered-updates
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          BufferedUpdates.hs
+  hs-source-dirs:   bench
+  build-depends:
+    base       >= 4.14 && < 5,
+    bytestring >= 0.10 && < 0.13,
+    process    >= 1.6  && < 1.7,
+    haskoki:haskoki-core
+  ghc-options:      -Wall -threaded -rtsopts "-with-rtsopts=-T -N1"
+  default-language: GHC2024
