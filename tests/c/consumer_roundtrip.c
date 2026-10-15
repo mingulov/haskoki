@@ -176,6 +176,158 @@ static void write_config(void) {
   }
 }
 
+/* ---- DSA domain-parameter oracle helpers --------------------------
+ * CKA_PRIME / CKA_SUBPRIME / CKA_BASE are unsigned big-endian
+ * integers: the length a provider reports is the minimal encoding of
+ * the value, so a valid generator g (a random element mod p) is
+ * shorter than |p| with probability about 1/256 per byte position.
+ * The oracle therefore (a) reads the lengths the provider returns,
+ * (b) validates the value (bit length, range), and (c) forwards
+ * exactly those lengths to key templates -- never a fixed width with
+ * an unfilled tail.
+ *
+ * Fixed deterministic domain (FIPS 186 shape, p 1024-bit, q 160-bit),
+ * generated offline with Python pow()/Miller-Rabin (seed 20261015):
+ * q prime with bit 159 set, p = k*q + 1 prime with 1024 bits, and
+ * g = h^((p-1)/q) mod p for the smallest h (24) whose result is
+ * shorter than 128 bytes.  Verified: g^q mod p == 1, 1 < g < p-1,
+ * q | p-1, p.bit_length()==1024, q.bit_length()==160.  g is 127
+ * bytes (1013 bits, leading byte 0x1c) so its minimal encoding is
+ * one byte shorter than p's. */
+static const CK_BYTE kDsaP[128] = {
+    0xcd, 0xb5, 0xd2, 0x81, 0x97, 0x06, 0x98, 0xde,
+    0xd8, 0x9f, 0xdb, 0x8b, 0x9b, 0x92, 0x53, 0x0b,
+    0x2f, 0xc7, 0x78, 0x8e, 0xa1, 0x13, 0x90, 0xbe,
+    0xca, 0x58, 0x1f, 0x1d, 0x85, 0x72, 0x13, 0x96,
+    0x0f, 0x36, 0x9b, 0xed, 0x9c, 0x50, 0x1b, 0x70,
+    0xbc, 0x42, 0x6a, 0x60, 0x01, 0xcf, 0x0f, 0x4e,
+    0x97, 0xfb, 0xb7, 0x24, 0x09, 0xa7, 0xae, 0xd7,
+    0x01, 0xdd, 0xfd, 0x99, 0xec, 0x97, 0xce, 0x0c,
+    0x17, 0xdb, 0xa5, 0xd6, 0xc4, 0xcb, 0xc5, 0x75,
+    0xe7, 0xfc, 0x59, 0xc8, 0xaf, 0xac, 0xcc, 0x36,
+    0x91, 0x1a, 0xbb, 0xf7, 0xce, 0xc2, 0x99, 0x02,
+    0x2b, 0x9f, 0xa2, 0x91, 0xde, 0x09, 0xf1, 0xa6,
+    0xea, 0x83, 0x0f, 0xdf, 0x1b, 0x3a, 0xac, 0x6a,
+    0xa2, 0x6e, 0xf6, 0x53, 0x29, 0x95, 0xb2, 0xd3,
+    0xa3, 0x77, 0xb9, 0xec, 0x31, 0xfc, 0x19, 0x92,
+    0x8a, 0x7a, 0xc6, 0x25, 0x15, 0xe5, 0x67, 0x2b,
+};
+static const CK_BYTE kDsaQ[20] = {
+    0xb2, 0x41, 0x53, 0x54, 0xa0, 0x92, 0x47, 0x23,
+    0x79, 0x4e, 0xf9, 0xb8, 0x3e, 0x81, 0xfc, 0x5b,
+    0x22, 0x7d, 0x6a, 0xcb,
+};
+static const CK_BYTE kDsaG127[127] = {
+    0x1c, 0x7f, 0x7c, 0xe8, 0xc2, 0xac, 0x2c, 0x29,
+    0x6d, 0x08, 0x99, 0xcd, 0x76, 0xb5, 0x47, 0x7b,
+    0x1d, 0x1a, 0x23, 0x25, 0x15, 0x83, 0xb3, 0x43,
+    0xf3, 0x8d, 0xba, 0x82, 0x0e, 0x62, 0x91, 0xdf,
+    0x84, 0xd9, 0x9e, 0xda, 0x11, 0x95, 0xf8, 0x65,
+    0xa3, 0x95, 0x0b, 0xfd, 0x56, 0x59, 0x68, 0x78,
+    0xa8, 0x70, 0xfa, 0x5e, 0x0e, 0x8b, 0x1e, 0x39,
+    0x65, 0x5d, 0xcb, 0x2d, 0x29, 0x33, 0xb6, 0x06,
+    0x1e, 0xdc, 0x6f, 0xa3, 0x41, 0x50, 0x12, 0xa0,
+    0x12, 0xa9, 0x96, 0x59, 0xa0, 0x2a, 0xc1, 0x13,
+    0x06, 0x2b, 0xbc, 0x9b, 0xac, 0x0b, 0x8b, 0xfa,
+    0x9e, 0x29, 0x09, 0x53, 0x50, 0x0d, 0x23, 0x37,
+    0xee, 0x7c, 0xc4, 0xe2, 0xbe, 0xf6, 0x7c, 0xfe,
+    0xe2, 0xda, 0x76, 0x86, 0xc8, 0xea, 0xf1, 0x71,
+    0x9a, 0x40, 0xe2, 0x98, 0x5c, 0x5a, 0x47, 0x2f,
+    0x65, 0x29, 0xa0, 0x02, 0xfa, 0x36, 0xf6,
+};
+
+/* Bit length of an unsigned big-endian integer (leading zeros ignored). */
+static unsigned be_bitlen(const CK_BYTE *v, CK_ULONG n) {
+  CK_ULONG i = 0;
+  unsigned b = 0;
+  CK_BYTE top;
+  while (i < n && v[i] == 0) i++;
+  if (i == n) return 0;
+  top = v[i];
+  while (top) { b++; top >>= 1; }
+  return b + (unsigned) (n - i - 1) * 8u;
+}
+
+/* Compare unsigned big-endian integers (leading zeros ignored). */
+static int be_cmp(const CK_BYTE *a, CK_ULONG an, const CK_BYTE *b, CK_ULONG bn) {
+  unsigned ab = be_bitlen(a, an), bb = be_bitlen(b, bn);
+  CK_ULONG ai, bi;
+  if (ab != bb) return ab < bb ? -1 : 1;
+  if (ab == 0) return 0;
+  ai = an - (CK_ULONG) ((ab + 7) / 8);
+  bi = bn - (CK_ULONG) ((bb + 7) / 8);
+  for (; ai < an; ai++, bi++) {
+    if (a[ai] != b[bi]) return a[ai] < b[bi] ? -1 : 1;
+  }
+  return 0;
+}
+
+static void dump_hex(const char *label, const CK_BYTE *v, CK_ULONG n) {
+  CK_ULONG i;
+  printf("crypto: diag: %s (%lu bytes):", label, (unsigned long) n);
+  for (i = 0; i < n; i++) printf("%s%02x", (i % 32 == 0) ? "\n  " : "", v[i]);
+  printf("\n");
+}
+
+/* Mint an (unwrapped, session) DSA pair from explicit domain bytes of
+ * the given lengths.  Returns the C_GenerateKeyPair result and the
+ * handles; on failure dumps what was forwarded. */
+static CK_RV dsa_pair_from_domain(CK_FUNCTION_LIST_PTR f, CK_SESSION_HANDLE s,
+                                  const CK_BYTE *p, CK_ULONG pl,
+                                  const CK_BYTE *q, CK_ULONG ql,
+                                  const CK_BYTE *g, CK_ULONG gl,
+                                  CK_OBJECT_HANDLE *pub,
+                                  CK_OBJECT_HANDLE *priv) {
+  CK_OBJECT_CLASS pcls = CKO_PUBLIC_KEY, scls = CKO_PRIVATE_KEY;
+  CK_KEY_TYPE kt = CKK_DSA;
+  CK_BBOOL bF = CK_FALSE, bT = CK_TRUE;
+  CK_MECHANISM m;
+  CK_ATTRIBUTE pubT[7], privT[4];
+  *pub = 0;
+  *priv = 0;
+  pubT[0].type = CKA_CLASS; pubT[0].pValue = &pcls; pubT[0].ulValueLen = sizeof(pcls);
+  pubT[1].type = CKA_KEY_TYPE; pubT[1].pValue = &kt; pubT[1].ulValueLen = sizeof(kt);
+  pubT[2].type = CKA_PRIME; pubT[2].pValue = (CK_VOID_PTR) p; pubT[2].ulValueLen = pl;
+  pubT[3].type = CKA_SUBPRIME; pubT[3].pValue = (CK_VOID_PTR) q; pubT[3].ulValueLen = ql;
+  pubT[4].type = CKA_BASE; pubT[4].pValue = (CK_VOID_PTR) g; pubT[4].ulValueLen = gl;
+  pubT[5].type = CKA_TOKEN; pubT[5].pValue = &bF; pubT[5].ulValueLen = sizeof(bF);
+  pubT[6].type = CKA_VERIFY; pubT[6].pValue = &bT; pubT[6].ulValueLen = sizeof(bT);
+  privT[0].type = CKA_CLASS; privT[0].pValue = &scls; privT[0].ulValueLen = sizeof(scls);
+  privT[1].type = CKA_KEY_TYPE; privT[1].pValue = &kt; privT[1].ulValueLen = sizeof(kt);
+  privT[2].type = CKA_TOKEN; privT[2].pValue = &bF; privT[2].ulValueLen = sizeof(bF);
+  privT[3].type = CKA_SIGN; privT[3].pValue = &bT; privT[3].ulValueLen = sizeof(bT);
+  m.mechanism = CKM_DSA_KEY_PAIR_GEN;
+  m.pParameter = NULL_PTR;
+  m.ulParameterLen = 0;
+  return f->C_GenerateKeyPair(s, &m, pubT, 7, privT, 4, pub, priv);
+}
+
+/* Sign/verify/tamper round-trip on a minted DSA pair. */
+static void dsa_pair_roundtrip(CK_FUNCTION_LIST_PTR f, CK_SESSION_HANDLE s,
+                               CK_OBJECT_HANDLE pub, CK_OBJECT_HANDLE priv,
+                               const char *tag) {
+  CK_MECHANISM m;
+  CK_BYTE sg[64];
+  CK_ULONG sl = sizeof(sg);
+  CK_RV r;
+  m.mechanism = CKM_DSA_SHA256;
+  m.pParameter = NULL_PTR;
+  m.ulParameterLen = 0;
+  r = f->C_SignInit(s, &m, priv);
+  CHECKC(r == CKR_OK, "%s: DSA SignInit ok", tag);
+  r = f->C_Sign(s, (CK_BYTE_PTR) "dsa-domain", 10, sg, &sl);
+  CHECKC(r == CKR_OK && sl == 40, "%s: DSA sign yields 40 bytes", tag);
+  r = f->C_VerifyInit(s, &m, pub);
+  CHECKC(r == CKR_OK, "%s: DSA VerifyInit ok", tag);
+  r = f->C_Verify(s, (CK_BYTE_PTR) "dsa-domain", 10, sg, sl);
+  CHECKC(r == CKR_OK, "%s: DSA verify ok", tag);
+  r = f->C_VerifyInit(s, &m, pub);
+  CHECKC(r == CKR_OK, "%s: DSA re-init for tamper", tag);
+  sg[sl - 1] ^= 0xFF;
+  r = f->C_Verify(s, (CK_BYTE_PTR) "dsa-domain", 10, sg, sl);
+  CHECKC(r == CKR_SIGNATURE_INVALID, "%s: tampered DSA refused", tag);
+}
+
 int main(int argc, char **argv) {
   void *handle;
   CK_C_GetFunctionList pGetList;
@@ -1593,7 +1745,7 @@ int main(int argc, char **argv) {
       CK_ULONG pbits = 1024;
       CK_OBJECT_HANDLE dparams = 0, dpub = 0, dpriv = 0;
       CK_BYTE pbuf[128], qbuf[32], gbuf[128];
-      CK_MECHANISM dpgm, dkgm, dsm, drm;
+      CK_MECHANISM dpgm, dsm, drm;
       CK_ATTRIBUTE pgtmpl[] = {
         { CKA_CLASS, &dpcls, sizeof(dpcls) },
         { CKA_KEY_TYPE, &dkt, sizeof(dkt) },
@@ -1604,8 +1756,8 @@ int main(int argc, char **argv) {
         { CKA_TOKEN, &bFalse, sizeof(bFalse) }
       };
       CK_ATTRIBUTE pget[3];
-      CK_ATTRIBUTE dpubT[7];
-      CK_ATTRIBUTE dprivT[4];
+      CK_ULONG plen = 0, qlen = 0, glen = 0;
+      int dsaOk = 0;
       CK_BYTE digest[20] = { 1 };
       CK_BYTE shortd[7] = { 0 };
       dpgm.mechanism = CKM_DSA_PARAMETER_GEN;
@@ -1616,6 +1768,11 @@ int main(int argc, char **argv) {
              "DSA paramgen without prime bits is INCOMPLETE");
       rv = f->C_GenerateKey(ssess, &dpgm, pgtmpl, 4, &dparams);
       CHECKC(rv == CKR_OK && dparams != 0, "DSA params mint");
+      /* Query the lengths the provider reports, then fill with exactly
+       * those (a value's minimal encoding may be shorter than |p|). */
+      memset(pbuf, 0xA5, sizeof(pbuf));
+      memset(qbuf, 0xA5, sizeof(qbuf));
+      memset(gbuf, 0xA5, sizeof(gbuf));
       pget[0].type = CKA_PRIME;
       pget[0].pValue = NULL_PTR;
       pget[0].ulValueLen = 0;
@@ -1626,53 +1783,56 @@ int main(int argc, char **argv) {
       pget[2].pValue = NULL_PTR;
       pget[2].ulValueLen = 0;
       rv = f->C_GetAttributeValue(ssess, dparams, pget, 3);
-      CHECKC(rv == CKR_OK && pget[0].ulValueLen == 128 &&
-                 pget[1].ulValueLen == 20 && pget[2].ulValueLen == 128,
-             "DSA params read back 128/20/128");
+      plen = pget[0].ulValueLen;
+      qlen = pget[1].ulValueLen;
+      glen = pget[2].ulValueLen;
+      CHECKC(rv == CKR_OK && plen >= 1 && plen <= sizeof(pbuf) &&
+                 qlen >= 1 && qlen <= sizeof(qbuf) &&
+                 glen >= 1 && glen <= sizeof(gbuf),
+             "DSA params length query is sane");
+      if (rv != CKR_OK || plen > sizeof(pbuf) || qlen > sizeof(qbuf) ||
+          glen > sizeof(gbuf) || plen == 0 || qlen == 0 || glen == 0) {
+        printf("crypto: diag: DSA length query rv=0x%lx p=%lu q=%lu g=%lu\n",
+               (unsigned long) rv, (unsigned long) plen, (unsigned long) qlen,
+               (unsigned long) glen);
+        plen = qlen = glen = 0;
+      }
       pget[0].pValue = pbuf;
+      pget[0].ulValueLen = plen;
       pget[1].pValue = qbuf;
+      pget[1].ulValueLen = qlen;
       pget[2].pValue = gbuf;
+      pget[2].ulValueLen = glen;
       rv = f->C_GetAttributeValue(ssess, dparams, pget, 3);
-      CHECKC(rv == CKR_OK, "DSA params fill");
-      dpubT[0].type = CKA_CLASS;
-      dpubT[0].pValue = &pcls;
-      dpubT[0].ulValueLen = sizeof(pcls);
-      dpubT[1].type = CKA_KEY_TYPE;
-      dpubT[1].pValue = &dkt;
-      dpubT[1].ulValueLen = sizeof(dkt);
-      dpubT[2].type = CKA_PRIME;
-      dpubT[2].pValue = pbuf;
-      dpubT[2].ulValueLen = 128;
-      dpubT[3].type = CKA_SUBPRIME;
-      dpubT[3].pValue = qbuf;
-      dpubT[3].ulValueLen = 20;
-      dpubT[4].type = CKA_BASE;
-      dpubT[4].pValue = gbuf;
-      dpubT[4].ulValueLen = 128;
-      dpubT[5].type = CKA_TOKEN;
-      dpubT[5].pValue = &bFalse;
-      dpubT[5].ulValueLen = sizeof(bFalse);
-      dpubT[6].type = CKA_VERIFY;
-      dpubT[6].pValue = &bTrue;
-      dpubT[6].ulValueLen = sizeof(bTrue);
-      dprivT[0].type = CKA_CLASS;
-      dprivT[0].pValue = &scls;
-      dprivT[0].ulValueLen = sizeof(scls);
-      dprivT[1].type = CKA_KEY_TYPE;
-      dprivT[1].pValue = &dkt;
-      dprivT[1].ulValueLen = sizeof(dkt);
-      dprivT[2].type = CKA_TOKEN;
-      dprivT[2].pValue = &bFalse;
-      dprivT[2].ulValueLen = sizeof(bFalse);
-      dprivT[3].type = CKA_SIGN;
-      dprivT[3].pValue = &bTrue;
-      dprivT[3].ulValueLen = sizeof(bTrue);
-      dkgm.mechanism = CKM_DSA_KEY_PAIR_GEN;
-      dkgm.pParameter = NULL_PTR;
-      dkgm.ulParameterLen = 0;
-      rv = f->C_GenerateKeyPair(ssess, &dkgm, dpubT, 7, dprivT, 4,
+      CHECKC(rv == CKR_OK && pget[0].ulValueLen == plen &&
+                 pget[1].ulValueLen == qlen && pget[2].ulValueLen == glen,
+             "DSA params fill returns the queried lengths");
+      /* Value oracle (unsigned big-endian): p 1024-bit, q 160-bit,
+       * 1 < g < p, independent of how many bytes each takes. */
+      dsaOk = be_bitlen(pbuf, plen) == 1024 && be_bitlen(qbuf, qlen) == 160 &&
+              be_bitlen(gbuf, glen) >= 2 && be_cmp(gbuf, glen, pbuf, plen) < 0;
+      CHECKC(dsaOk, "DSA params are 1024/160-bit with 1 < g < p");
+      if (!dsaOk || rv != CKR_OK) {
+        printf("crypto: diag: DSA params rv=0x%lx lens p=%lu q=%lu g=%lu "
+               "bits p=%u q=%u g=%u\n",
+               (unsigned long) rv, (unsigned long) plen, (unsigned long) qlen,
+               (unsigned long) glen, be_bitlen(pbuf, plen),
+               be_bitlen(qbuf, qlen), be_bitlen(gbuf, glen));
+        dump_hex("p", pbuf, plen);
+        dump_hex("q", qbuf, qlen);
+        dump_hex("g", gbuf, glen);
+      }
+      rv = dsa_pair_from_domain(f, ssess, pbuf, plen, qbuf, qlen, gbuf, glen,
                                 &dpub, &dpriv);
       CHECKC(rv == CKR_OK && dpub != 0 && dpriv != 0, "DSA pair mints");
+      if (rv != CKR_OK) {
+        printf("crypto: diag: DSA pair rv=0x%lx forwarded lens p=%lu q=%lu "
+               "g=%lu\n", (unsigned long) rv, (unsigned long) plen,
+               (unsigned long) qlen, (unsigned long) glen);
+        dump_hex("p", pbuf, plen);
+        dump_hex("q", qbuf, qlen);
+        dump_hex("g", gbuf, glen);
+      }
       dsm.mechanism = CKM_DSA_SHA256;
       dsm.pParameter = NULL_PTR;
       dsm.ulParameterLen = 0;
@@ -1707,6 +1867,115 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK, "raw DSA VerifyInit ok");
       rv = f->C_Verify(ssess, digest, sizeof(digest), sig, sigLen);
       CHECKC(rv == CKR_OK, "raw DSA verify ok");
+    }
+    /* DSA fixed-domain fixtures: a valid domain whose generator has a
+     * SHORTER minimal encoding (127 < 128 bytes) must import, read back
+     * with its true length, and mint a working pair; malformed domains
+     * stay refused.  Deterministic -- the random paramgen path above only
+     * hits a shorter g about 1 run in 256. */
+    {
+      CK_OBJECT_CLASS fpcls = CKO_DOMAIN_PARAMETERS;
+      CK_KEY_TYPE fkt = CKK_DSA;
+      CK_OBJECT_HANDLE fdp = 0, fpub = 0, fpriv = 0;
+      CK_BYTE fp[128], fq[32], fg[128];
+      CK_BYTE gpad[128], gtail[128], gone[1] = { 1 };
+      CK_ATTRIBUTE fct[] = {
+        { CKA_CLASS, &fpcls, sizeof(fpcls) },
+        { CKA_KEY_TYPE, &fkt, sizeof(fkt) },
+        { CKA_PRIME, (CK_VOID_PTR) kDsaP, sizeof(kDsaP) },
+        { CKA_SUBPRIME, (CK_VOID_PTR) kDsaQ, sizeof(kDsaQ) },
+        { CKA_BASE, (CK_VOID_PTR) kDsaG127, sizeof(kDsaG127) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE fget[3];
+      memset(gpad, 0, sizeof(gpad));
+      memcpy(gpad + 1, kDsaG127, sizeof(kDsaG127));
+      memset(gtail, 0, sizeof(gtail));
+      memcpy(gtail, kDsaG127, sizeof(kDsaG127)); /* g * 256: tail byte 0 */
+      rv = f->C_CreateObject(ssess, fct, 6, &fdp);
+      CHECKC(rv == CKR_OK && fdp != 0, "DSA fixture domain imports");
+      memset(fp, 0xA5, sizeof(fp));
+      memset(fq, 0xA5, sizeof(fq));
+      memset(fg, 0xA5, sizeof(fg));
+      fget[0].type = CKA_PRIME; fget[0].pValue = NULL_PTR; fget[0].ulValueLen = 0;
+      fget[1].type = CKA_SUBPRIME; fget[1].pValue = NULL_PTR; fget[1].ulValueLen = 0;
+      fget[2].type = CKA_BASE; fget[2].pValue = NULL_PTR; fget[2].ulValueLen = 0;
+      rv = f->C_GetAttributeValue(ssess, fdp, fget, 3);
+      CHECKC(rv == CKR_OK && fget[0].ulValueLen == 128 &&
+                 fget[1].ulValueLen == 20 &&
+                 fget[2].ulValueLen == sizeof(kDsaG127),
+             "DSA fixture lengths are 128/20/127 (shorter generator)");
+      if (rv != CKR_OK || fget[0].ulValueLen != 128 || fget[1].ulValueLen != 20 ||
+          fget[2].ulValueLen != sizeof(kDsaG127)) {
+        printf("crypto: diag: DSA fixture rv=0x%lx lens p=%lu q=%lu g=%lu\n",
+               (unsigned long) rv, (unsigned long) fget[0].ulValueLen,
+               (unsigned long) fget[1].ulValueLen,
+               (unsigned long) fget[2].ulValueLen);
+      }
+      fget[0].pValue = fp;
+      fget[1].pValue = fq;
+      fget[2].pValue = fg;
+      rv = f->C_GetAttributeValue(ssess, fdp, fget, 3);
+      CHECKC(rv == CKR_OK && fget[0].ulValueLen == 128 &&
+                 fget[1].ulValueLen == 20 &&
+                 fget[2].ulValueLen == sizeof(kDsaG127) &&
+                 memcmp(fp, kDsaP, 128) == 0 && memcmp(fq, kDsaQ, 20) == 0 &&
+                 memcmp(fg, kDsaG127, sizeof(kDsaG127)) == 0,
+             "DSA fixture reads back byte-exact at its true lengths");
+      if (rv != CKR_OK || memcmp(fg, kDsaG127, sizeof(kDsaG127)) != 0) {
+        printf("crypto: diag: DSA fixture fill rv=0x%lx\n", (unsigned long) rv);
+        dump_hex("p", fp, fget[0].ulValueLen);
+        dump_hex("q", fq, fget[1].ulValueLen);
+        dump_hex("g", fg, fget[2].ulValueLen);
+      }
+      CHECKC(be_bitlen(kDsaP, 128) == 1024 && be_bitlen(kDsaQ, 20) == 160 &&
+                 be_bitlen(kDsaG127, 127) == 1013 &&
+                 be_cmp(kDsaG127, 127, kDsaP, 128) < 0,
+             "DSA fixture oracle: 1024/160-bit, g shorter than p and < p");
+      rv = dsa_pair_from_domain(f, ssess, kDsaP, 128, kDsaQ, 20, kDsaG127,
+                                sizeof(kDsaG127), &fpub, &fpriv);
+      CHECKC(rv == CKR_OK && fpub != 0 && fpriv != 0,
+             "DSA pair mints from the shorter-generator fixture");
+      if (rv != CKR_OK) {
+        printf("crypto: diag: DSA fixture pair rv=0x%lx (p=128 q=20 g=127)\n",
+               (unsigned long) rv);
+      } else {
+        dsa_pair_roundtrip(f, ssess, fpub, fpriv, "fixture g127");
+      }
+      /* Leading zero on the generator is the same unsigned value. */
+      rv = dsa_pair_from_domain(f, ssess, kDsaP, 128, kDsaQ, 20, gpad,
+                                sizeof(gpad), &fpub, &fpriv);
+      CHECKC(rv == CKR_OK && fpub != 0 && fpriv != 0,
+             "DSA pair mints from a leading-zero generator encoding");
+      if (rv != CKR_OK) {
+        printf("crypto: diag: DSA leading-zero g rv=0x%lx\n", (unsigned long) rv);
+      } else {
+        dsa_pair_roundtrip(f, ssess, fpub, fpriv, "fixture g128-padded");
+      }
+      /* Malformed-domain controls: each must be refused with no handles.
+       * (Exact CKR for a semantically invalid domain is the provider's
+       * choice; the oracle pins refusal, not the code, except the
+       * structural empty-value case.) */
+      rv = dsa_pair_from_domain(f, ssess, kDsaP, 128, kDsaQ, 20, gone,
+                                sizeof(gone), &fpub, &fpriv);
+      CHECKC(rv != CKR_OK && fpub == 0 && fpriv == 0, "DSA g=1 domain refused");
+      rv = dsa_pair_from_domain(f, ssess, kDsaP, 128, kDsaQ, 20, kDsaP, 128,
+                                &fpub, &fpriv);
+      CHECKC(rv != CKR_OK && fpub == 0 && fpriv == 0, "DSA g=p domain refused");
+      /* The old fixed-width forwarding: the 127-byte g followed by an
+       * unfilled (zero) tail byte is the value g*256, NOT the domain's g. */
+      rv = dsa_pair_from_domain(f, ssess, kDsaP, 128, kDsaQ, 20, gtail, 128,
+                                &fpub, &fpriv);
+      CHECKC(rv != CKR_OK && fpub == 0 && fpriv == 0,
+             "DSA g with an unfilled fixed-width tail refused");
+      rv = dsa_pair_from_domain(f, ssess, kDsaP, 128, kDsaQ, 20, kDsaG127, 0,
+                                &fpub, &fpriv);
+      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT && fpub == 0 && fpriv == 0,
+             "DSA empty generator is INCONSISTENT");
+      rv = dsa_pair_from_domain(f, ssess, kDsaP, 128, kDsaP, 20, kDsaG127, 127,
+                                &fpub, &fpriv);
+      CHECKC(rv != CKR_OK && fpub == 0 && fpriv == 0,
+             "DSA domain with q not dividing p-1 refused");
     }
     /* DH: two PKCS#3 pairs on ffdhe2048 agree both directions;
      * keygen without CKA_BASE is INCOMPLETE, derive without the
@@ -1747,6 +2016,7 @@ int main(int argc, char **argv) {
         { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
       };
       CK_BYTE dhYA[256], dhYB[256], dhSAB[256], dhSBA[256];
+      CK_ULONG dhLenA = 0, dhLenB = 0, dhLenS1 = 0;
       CK_ATTRIBUTE dhGY[1], dhGS[1];
       dhPubT[0].type = CKA_CLASS;
       dhPubT[0].pValue = &pcls;
@@ -1787,34 +2057,270 @@ int main(int argc, char **argv) {
       rv = f->C_GenerateKeyPair(ssess, &dhkgm, dhPubT, 6, dhPrivT, 4,
                                 &dhPubB, &dhPrivB);
       CHECKC(rv == CKR_OK && dhPubB != 0 && dhPrivB != 0, "DH pair B mints");
+      /* CKA_VALUE of a DH public key is an unsigned big integer: its
+       * minimal encoding is shorter than 256 bytes whenever the top byte
+       * is zero (about 1 pair in 128).  Read the returned lengths and
+       * forward exactly those as the peer value. */
+      memset(dhYA, 0xA5, sizeof(dhYA));
+      memset(dhYB, 0xA5, sizeof(dhYB));
       dhGY[0].type = CKA_VALUE;
       dhGY[0].pValue = dhYA;
       dhGY[0].ulValueLen = sizeof(dhYA);
       rv = f->C_GetAttributeValue(ssess, dhPubA, dhGY, 1);
-      CHECKC(rv == CKR_OK && dhGY[0].ulValueLen == 256, "DH pub A reads 256 bytes");
+      dhLenA = dhGY[0].ulValueLen;
+      CHECKC(rv == CKR_OK && dhLenA >= 1 && dhLenA <= 256 &&
+                 be_bitlen(dhYA, dhLenA) >= 2,
+             "DH pub A reads a valid public value");
       dhGY[0].pValue = dhYB;
       dhGY[0].ulValueLen = sizeof(dhYB);
       rv = f->C_GetAttributeValue(ssess, dhPubB, dhGY, 1);
-      CHECKC(rv == CKR_OK && dhGY[0].ulValueLen == 256, "DH pub B reads 256 bytes");
+      dhLenB = dhGY[0].ulValueLen;
+      CHECKC(rv == CKR_OK && dhLenB >= 1 && dhLenB <= 256 &&
+                 be_bitlen(dhYB, dhLenB) >= 2,
+             "DH pub B reads a valid public value");
+      if (dhLenA > 256 || dhLenB > 256 || dhLenA == 0 || dhLenB == 0) {
+        printf("crypto: diag: DH pub lens A=%lu B=%lu rv=0x%lx\n",
+               (unsigned long) dhLenA, (unsigned long) dhLenB, (unsigned long) rv);
+        dhLenA = dhLenB = 256;
+      }
       dhdm.mechanism = CKM_DH_PKCS_DERIVE;
       dhdm.pParameter = dhYB;
-      dhdm.ulParameterLen = sizeof(dhYB);
+      dhdm.ulParameterLen = dhLenB;
       rv = f->C_DeriveKey(ssess, &dhdm, dhPrivA, dhDtmpl, 6, &dhS1);
       CHECKC(rv == CKR_OK && dhS1 != 0, "DH derive A->B ok");
       dhdm.pParameter = dhYA;
+      dhdm.ulParameterLen = dhLenA;
       rv = f->C_DeriveKey(ssess, &dhdm, dhPrivB, dhDtmpl, 6, &dhS2);
       CHECKC(rv == CKR_OK && dhS2 != 0, "DH derive B->A ok");
       dhGS[0].type = CKA_VALUE;
       dhGS[0].pValue = dhSAB;
       dhGS[0].ulValueLen = sizeof(dhSAB);
       rv = f->C_GetAttributeValue(ssess, dhS1, dhGS, 1);
-      CHECKC(rv == CKR_OK && dhGS[0].ulValueLen == 256, "DH secret reads 256 bytes");
+      dhLenS1 = dhGS[0].ulValueLen;
+      CHECKC(rv == CKR_OK && dhLenS1 == 256, "DH secret reads 256 bytes");
       dhGS[0].pValue = dhSBA;
       dhGS[0].ulValueLen = sizeof(dhSBA);
       rv = f->C_GetAttributeValue(ssess, dhS2, dhGS, 1);
       CHECKC(rv == CKR_OK && dhGS[0].ulValueLen == 256 &&
                  memcmp(dhSAB, dhSBA, 256) == 0,
              "DH agreement commutes");
+      if (rv != CKR_OK || dhGS[0].ulValueLen != 256 ||
+          memcmp(dhSAB, dhSBA, 256) != 0) {
+        printf("crypto: diag: DH rv=0x%lx pub lens A=%lu B=%lu secret lens "
+               "%lu/%lu\n", (unsigned long) rv, (unsigned long) dhLenA,
+               (unsigned long) dhLenB, (unsigned long) dhLenS1,
+               (unsigned long) dhGS[0].ulValueLen);
+        dump_hex("YA", dhYA, dhLenA);
+        dump_hex("YB", dhYB, dhLenB);
+        dump_hex("S(A,YB)", dhSAB, 256);
+        dump_hex("S(B,YA)", dhSBA, 256);
+      }
+      /* Deterministic shorter-public fixture.  xA/xB are fixed 256-bit
+       * private exponents with g = 2 over ffdhe2048, chosen offline
+       * (Python pow(), seed 20261015) so that YA = 2^xA mod p is 255
+       * bytes (2039 bits) and YB = 2^xB mod p is 255 bytes (2040 bits);
+       * Z = YA^xB = YB^xA mod p is the independent expected secret. */
+      {
+        static const CK_BYTE xA[32] = {
+        0xf9, 0xdc, 0xa8, 0xbc, 0x90, 0x15, 0x10, 0x10,
+        0x1e, 0x29, 0x05, 0xaf, 0x97, 0x1e, 0x9d, 0x64,
+        0xd9, 0x32, 0xe6, 0x68, 0xab, 0xd0, 0x8c, 0xf3,
+        0x4b, 0x5c, 0x01, 0x3e, 0xeb, 0x0b, 0xd8, 0x8c
+        };
+        static const CK_BYTE yA255[255] = {
+        0x73, 0x54, 0xf7, 0x1d, 0x79, 0x32, 0xb6, 0xdc,
+        0xea, 0xc7, 0xe5, 0x28, 0x40, 0xea, 0x2f, 0x83,
+        0x40, 0x8f, 0x45, 0x33, 0x7f, 0xbc, 0x2a, 0x3a,
+        0xa3, 0x71, 0xbf, 0x20, 0x95, 0xdd, 0xe7, 0xdd,
+        0x40, 0xb2, 0x01, 0xb1, 0x75, 0x77, 0xc7, 0x94,
+        0x01, 0xd8, 0xca, 0x66, 0x07, 0x9d, 0x38, 0xc3,
+        0x2a, 0xe1, 0xcc, 0x6f, 0xe6, 0xaf, 0x08, 0xe6,
+        0x4e, 0x64, 0xeb, 0xc9, 0xcb, 0xea, 0x76, 0x73,
+        0x89, 0x7b, 0xc9, 0x12, 0x71, 0x10, 0xbd, 0xc9,
+        0xab, 0xa6, 0x8c, 0x9c, 0x86, 0x71, 0xf6, 0x8f,
+        0xfc, 0x6e, 0x7e, 0xa3, 0x3b, 0x3e, 0x73, 0x39,
+        0xe3, 0xdb, 0xa4, 0xe5, 0xa0, 0x41, 0x9f, 0x00,
+        0x4e, 0x91, 0x12, 0xa9, 0xc0, 0xa0, 0xdd, 0x4d,
+        0xb3, 0x2a, 0xab, 0xbd, 0xd0, 0xdb, 0x64, 0x5d,
+        0x37, 0x8f, 0x47, 0x9c, 0x12, 0x00, 0x6e, 0x3e,
+        0x10, 0xaf, 0xc7, 0xb6, 0x45, 0xc8, 0x92, 0x26,
+        0xae, 0x3c, 0xcd, 0xe1, 0x10, 0x8c, 0x4d, 0x35,
+        0x93, 0x62, 0x9c, 0xcd, 0x67, 0x04, 0x0b, 0xee,
+        0x50, 0x04, 0xa3, 0x3e, 0x85, 0x42, 0x99, 0x2e,
+        0xf0, 0xf3, 0x36, 0x36, 0xaf, 0x72, 0xcc, 0xf1,
+        0x50, 0x11, 0x50, 0xad, 0x50, 0xad, 0xfe, 0x70,
+        0xee, 0xc9, 0xc7, 0xe3, 0x3a, 0x15, 0x39, 0xc9,
+        0x63, 0x3f, 0x2c, 0x2c, 0x33, 0x03, 0x45, 0x1c,
+        0x59, 0x8a, 0x5d, 0x08, 0x42, 0x3b, 0xbd, 0xb6,
+        0x0f, 0x9f, 0xf3, 0x17, 0x65, 0xef, 0x0d, 0xb1,
+        0x58, 0xa4, 0xd0, 0xda, 0x70, 0xeb, 0x53, 0x4b,
+        0x12, 0x01, 0x08, 0x0e, 0x09, 0x23, 0xb4, 0x34,
+        0xd0, 0xf4, 0xbd, 0x80, 0x0d, 0x2e, 0xaf, 0xf2,
+        0x0c, 0xb0, 0xc6, 0x45, 0x23, 0xb0, 0x6f, 0xa4,
+        0xbe, 0xba, 0x96, 0xb4, 0x7d, 0x8a, 0x76, 0x9f,
+        0x88, 0x4a, 0xdb, 0x52, 0x1a, 0x77, 0x90, 0x85,
+        0x4a, 0xc9, 0x47, 0x0f, 0xdf, 0x5e, 0xae
+        };
+        static const CK_BYTE xB[32] = {
+        0xf4, 0xdc, 0x30, 0xc7, 0x7b, 0x2c, 0xca, 0x08,
+        0xb9, 0xb4, 0xd0, 0xa2, 0x38, 0x51, 0xe8, 0x39,
+        0x67, 0xb1, 0x00, 0xa8, 0x94, 0x98, 0x48, 0xf9,
+        0xf8, 0x8e, 0x97, 0xf0, 0x10, 0x94, 0x13, 0x6e
+        };
+        static const CK_BYTE yB255[255] = {
+        0xb3, 0x34, 0xbf, 0x3e, 0x62, 0x95, 0xbc, 0xde,
+        0x5a, 0x7e, 0xac, 0x27, 0x6a, 0x39, 0x0c, 0xf0,
+        0xad, 0xf8, 0x01, 0x35, 0xc2, 0xba, 0xbc, 0xc6,
+        0xfc, 0x7a, 0xeb, 0x09, 0x2a, 0xe4, 0x8e, 0x71,
+        0x7b, 0xa1, 0x0d, 0xe2, 0xac, 0x5d, 0xd2, 0x07,
+        0x5a, 0xcb, 0x27, 0x28, 0x18, 0x7e, 0x9d, 0xe8,
+        0x49, 0x71, 0x19, 0x93, 0x56, 0x08, 0x55, 0x2c,
+        0x6b, 0x35, 0x29, 0x28, 0xb2, 0x08, 0x6a, 0x51,
+        0xde, 0xfc, 0x0c, 0x51, 0x0b, 0xf5, 0x63, 0xe7,
+        0xae, 0xf1, 0x9e, 0xc7, 0xa1, 0xba, 0x29, 0xb9,
+        0x0b, 0x0d, 0xba, 0x2b, 0xbc, 0x86, 0xd1, 0xee,
+        0x7e, 0x0b, 0x51, 0xd8, 0x24, 0xfa, 0xcf, 0x5f,
+        0xcb, 0xf7, 0x2a, 0x1f, 0xb0, 0x7b, 0x9f, 0xc2,
+        0x8a, 0x8b, 0x42, 0xe3, 0x8d, 0x82, 0x78, 0x13,
+        0xb8, 0x14, 0xfe, 0xfa, 0xae, 0xc9, 0x0f, 0x8f,
+        0x99, 0x42, 0x9a, 0x3e, 0x71, 0x84, 0xa1, 0x5c,
+        0xb8, 0xbc, 0x59, 0xd9, 0xf7, 0xe2, 0xa5, 0x54,
+        0xf6, 0x17, 0x26, 0xa8, 0xbd, 0xf1, 0xa6, 0x27,
+        0x2f, 0x14, 0x78, 0xcd, 0xc2, 0x4f, 0xc1, 0x33,
+        0x05, 0x90, 0x09, 0x01, 0x54, 0x8f, 0xfd, 0x8d,
+        0xd4, 0x54, 0x4b, 0x2a, 0x3f, 0x38, 0x2f, 0x8a,
+        0x18, 0x41, 0x98, 0x58, 0x8c, 0x8c, 0xb1, 0xf6,
+        0x7a, 0x42, 0xf4, 0x3c, 0x74, 0xb8, 0x59, 0x05,
+        0x7f, 0x80, 0x48, 0x72, 0x53, 0x46, 0x84, 0x85,
+        0x31, 0x53, 0xc1, 0x46, 0x6f, 0x99, 0x75, 0x94,
+        0x8c, 0x78, 0x22, 0x8a, 0x34, 0x79, 0x07, 0x2b,
+        0x17, 0x78, 0x3e, 0x10, 0x9a, 0xdc, 0x0b, 0x22,
+        0x14, 0xad, 0x79, 0x5e, 0xe5, 0x64, 0xe5, 0xad,
+        0x72, 0x1d, 0x99, 0x93, 0x6d, 0x10, 0x42, 0xbc,
+        0x7d, 0x95, 0xc9, 0x47, 0x74, 0x4e, 0x13, 0xae,
+        0x79, 0xc6, 0xed, 0x4f, 0xef, 0x3e, 0x64, 0xfb,
+        0x21, 0xba, 0x22, 0xa6, 0xd8, 0x8b, 0x70
+        };
+        static const CK_BYTE zExp[256] = {
+        0x42, 0xb8, 0x29, 0x49, 0x99, 0xd5, 0x38, 0x58,
+        0x8b, 0x43, 0x5a, 0x6b, 0xc0, 0x8c, 0x58, 0xdf,
+        0x87, 0x3f, 0x8a, 0xdb, 0x5e, 0x8e, 0x4d, 0x60,
+        0x81, 0xb4, 0x1c, 0x39, 0xda, 0xe8, 0x76, 0x8f,
+        0x58, 0xdf, 0x80, 0x4c, 0x78, 0xda, 0x0d, 0x01,
+        0x52, 0xd6, 0x7d, 0xc6, 0xa7, 0xbc, 0x68, 0xeb,
+        0x23, 0x19, 0xee, 0x59, 0xfa, 0x91, 0x48, 0x0a,
+        0xe4, 0xdd, 0x7e, 0xfb, 0xf4, 0x56, 0xcc, 0xcf,
+        0xcb, 0xd7, 0x53, 0xcb, 0x8c, 0x24, 0xcd, 0x68,
+        0x74, 0x26, 0xb3, 0xde, 0xd2, 0x39, 0x19, 0xb8,
+        0x79, 0xed, 0x68, 0x28, 0x3f, 0xce, 0x4c, 0x1e,
+        0x72, 0xe7, 0x74, 0xda, 0xe3, 0xe5, 0x19, 0x9a,
+        0x21, 0x66, 0x3a, 0x9d, 0xdd, 0xeb, 0xe0, 0xd3,
+        0x02, 0x03, 0x25, 0xb3, 0x60, 0x26, 0x11, 0x2f,
+        0x97, 0xbb, 0xb0, 0x2e, 0xd5, 0xfd, 0xb2, 0xee,
+        0x3f, 0x2a, 0x06, 0x19, 0xe8, 0xb3, 0xd5, 0x8b,
+        0xcf, 0xb8, 0xf9, 0x47, 0x61, 0x53, 0x11, 0x1a,
+        0xa4, 0xc5, 0xbd, 0xbf, 0x48, 0xbf, 0x12, 0x1a,
+        0x95, 0xf3, 0x60, 0xfe, 0x36, 0xf4, 0x9c, 0xdc,
+        0x53, 0x6e, 0x5f, 0x43, 0xbc, 0x80, 0xb0, 0x50,
+        0x74, 0xb0, 0x6e, 0x50, 0x0f, 0x93, 0x63, 0xc4,
+        0xfe, 0x9f, 0xcc, 0xb2, 0x24, 0x74, 0x28, 0x61,
+        0xe9, 0x9a, 0x3e, 0xf5, 0xe1, 0x8f, 0xaf, 0x88,
+        0x09, 0x41, 0xe5, 0xb4, 0x66, 0x51, 0x2f, 0xf5,
+        0x58, 0xf2, 0xbc, 0x93, 0xa2, 0x17, 0x52, 0x89,
+        0x2c, 0xca, 0x58, 0xe5, 0x7f, 0x9e, 0xb0, 0xa2,
+        0x87, 0x7e, 0x74, 0xc6, 0x14, 0x94, 0xf2, 0xef,
+        0x4c, 0x82, 0x90, 0xee, 0xe8, 0x22, 0x8c, 0xd0,
+        0xfa, 0xfe, 0x49, 0x62, 0x3a, 0xa4, 0xb9, 0x71,
+        0xa4, 0x7e, 0x45, 0x05, 0xfc, 0x72, 0x1f, 0xf8,
+        0x5b, 0xae, 0x5e, 0x77, 0x7c, 0x60, 0x29, 0x0f,
+        0xaa, 0xf8, 0xe0, 0x05, 0x5f, 0x09, 0x76, 0x25
+        };
+        CK_OBJECT_CLASS fvcls = CKO_PRIVATE_KEY;
+        CK_OBJECT_HANDLE fhA = 0, fhB = 0, fs1 = 0, fs2 = 0, fs3 = 0, fs4 = 0;
+        CK_BYTE yA256[256], tailed[256], got[256];
+        CK_ATTRIBUTE fvA[] = {
+          { CKA_CLASS, &fvcls, sizeof(fvcls) },
+          { CKA_KEY_TYPE, &dhkt, sizeof(dhkt) },
+          { CKA_PRIME, (CK_VOID_PTR) ffdhe2048, sizeof(ffdhe2048) },
+          { CKA_BASE, dhg, sizeof(dhg) },
+          { CKA_VALUE, (CK_VOID_PTR) xA, sizeof(xA) },
+          { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+          { CKA_DERIVE, &bTrue, sizeof(bTrue) }
+        };
+        CK_ATTRIBUTE fvB[7];
+        CK_ATTRIBUTE fget[1];
+        memcpy(fvB, fvA, sizeof(fvA));
+        fvB[4].pValue = (CK_VOID_PTR) xB;
+        memset(yA256, 0, sizeof(yA256));
+        memcpy(yA256 + 1, yA255, sizeof(yA255));
+        memset(tailed, 0xA5, sizeof(tailed));
+        memcpy(tailed, yA255, sizeof(yA255));
+        CHECKC(be_bitlen(yA255, 255) == 2039 && be_bitlen(yB255, 255) == 2040,
+               "DH fixture publics are shorter than 256 bytes");
+        rv = f->C_CreateObject(ssess, fvA, 7, &fhA);
+        CHECKC(rv == CKR_OK && fhA != 0, "DH fixture private A imports");
+        rv = f->C_CreateObject(ssess, fvB, 7, &fhB);
+        CHECKC(rv == CKR_OK && fhB != 0, "DH fixture private B imports");
+        fget[0].type = CKA_VALUE;
+        dhdm.mechanism = CKM_DH_PKCS_DERIVE;
+        /* peer = YB (255 bytes, true length) -> A. */
+        dhdm.pParameter = (CK_VOID_PTR) yB255;
+        dhdm.ulParameterLen = sizeof(yB255);
+        rv = f->C_DeriveKey(ssess, &dhdm, fhA, dhDtmpl, 6, &fs1);
+        CHECKC(rv == CKR_OK && fs1 != 0, "DH short-peer derive A ok");
+        /* peer = YA (255 bytes) -> B. */
+        dhdm.pParameter = (CK_VOID_PTR) yA255;
+        dhdm.ulParameterLen = sizeof(yA255);
+        rv = f->C_DeriveKey(ssess, &dhdm, fhB, dhDtmpl, 6, &fs2);
+        CHECKC(rv == CKR_OK && fs2 != 0, "DH short-peer derive B ok");
+        /* peer = YA with a leading zero byte (256 bytes): same value. */
+        dhdm.pParameter = yA256;
+        dhdm.ulParameterLen = sizeof(yA256);
+        rv = f->C_DeriveKey(ssess, &dhdm, fhB, dhDtmpl, 6, &fs3);
+        CHECKC(rv == CKR_OK && fs3 != 0, "DH leading-zero peer derive ok");
+        fget[0].pValue = got; fget[0].ulValueLen = sizeof(got);
+        rv = f->C_GetAttributeValue(ssess, fs1, fget, 1);
+        CHECKC(rv == CKR_OK && fget[0].ulValueLen == 256 &&
+                   memcmp(got, zExp, 256) == 0,
+               "DH short-peer secret A equals independent expected");
+        if (rv != CKR_OK || memcmp(got, zExp, 256) != 0) {
+          printf("crypto: diag: DH fixture A rv=0x%lx len=%lu\n",
+                 (unsigned long) rv, (unsigned long) fget[0].ulValueLen);
+          dump_hex("got", got, fget[0].ulValueLen <= 256 ? fget[0].ulValueLen : 256);
+          dump_hex("expected", zExp, 256);
+        }
+        fget[0].pValue = got; fget[0].ulValueLen = sizeof(got);
+        rv = f->C_GetAttributeValue(ssess, fs2, fget, 1);
+        CHECKC(rv == CKR_OK && fget[0].ulValueLen == 256 &&
+                   memcmp(got, zExp, 256) == 0,
+               "DH short-peer secret B equals independent expected");
+        if (rv != CKR_OK || memcmp(got, zExp, 256) != 0) {
+          printf("crypto: diag: DH fixture B rv=0x%lx len=%lu\n",
+                 (unsigned long) rv, (unsigned long) fget[0].ulValueLen);
+          dump_hex("got", got, fget[0].ulValueLen <= 256 ? fget[0].ulValueLen : 256);
+          dump_hex("expected", zExp, 256);
+        }
+        fget[0].pValue = got; fget[0].ulValueLen = sizeof(got);
+        rv = f->C_GetAttributeValue(ssess, fs3, fget, 1);
+        CHECKC(rv == CKR_OK && fget[0].ulValueLen == 256 &&
+                   memcmp(got, zExp, 256) == 0,
+               "DH leading-zero peer gives the same secret");
+        /* Control: the old fixed-width forwarding (255-byte YA followed
+         * by an unfilled tail, length 256) is a DIFFERENT number; it must
+         * not yield the agreed secret.  This is the failure shape of the
+         * former oracle whenever a public value was shorter. */
+        dhdm.pParameter = tailed;
+        dhdm.ulParameterLen = sizeof(tailed);
+        rv = f->C_DeriveKey(ssess, &dhdm, fhB, dhDtmpl, 6, &fs4);
+        if (rv == CKR_OK) {
+          fget[0].pValue = got; fget[0].ulValueLen = sizeof(got);
+          rv = f->C_GetAttributeValue(ssess, fs4, fget, 1);
+          CHECKC(rv == CKR_OK && memcmp(got, zExp, 256) != 0,
+                 "DH peer with an unfilled fixed-width tail does not agree");
+        } else {
+          CHECKC(fs4 == 0, "DH peer with an unfilled fixed-width tail refused");
+        }
+      }
       dhdm.pParameter = NULL_PTR;
       dhdm.ulParameterLen = 0;
       rv = f->C_DeriveKey(ssess, &dhdm, dhPrivA, dhDtmpl, 6, &dhBad);
@@ -2436,13 +2942,30 @@ int main(int argc, char **argv) {
     rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
     CHECKC(rv == CKR_OK && ptLen == 3 && memcmp(pt, "abc", 3) == 0,
            "one-shot after query recovers abc");
-    rv = f->C_DecryptInit(esess, &dm, ekey);
-    CHECKC(rv == CKR_OK, "re-init for tamper");
-    ct[ctLen - 1] ^= 0xFF;
-    ptLen = sizeof(pt);
-    rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
-    CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "tampered ciphertext refused");
-    ct[ctLen - 1] ^= 0xFF;
+    /* Deterministic padding tamper.  Flipping a ciphertext byte
+     * randomizes the whole last plaintext block, so the padding is still
+     * valid about 1 time in 256.  Instead use CBC malleability: the
+     * single plaintext block is "abc" + 13 x 0x0d, and P = D(C) xor IV,
+     * so XOR-ing 0x0d into IV[15] turns the pad byte into 0x00, which is
+     * never valid PKCS#7 padding (valid is 1..16). */
+    {
+      CK_BYTE badIv[16];
+      CK_MECHANISM bdm;
+      memcpy(badIv, iv, sizeof(badIv));
+      badIv[15] ^= 0x0d;
+      bdm = dm;
+      bdm.pParameter = badIv;
+      bdm.ulParameterLen = sizeof(badIv);
+      rv = f->C_DecryptInit(esess, &bdm, ekey);
+      CHECKC(rv == CKR_OK, "re-init for tamper");
+      ptLen = sizeof(pt);
+      rv = f->C_Decrypt(esess, ct, ctLen, pt, &ptLen);
+      CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "tampered ciphertext refused");
+      if (rv != CKR_ENCRYPTED_DATA_INVALID) {
+        printf("crypto: diag: padding tamper rv=0x%lx ptLen=%lu\n",
+               (unsigned long) rv, (unsigned long) ptLen);
+      }
+    }
     /* AES-XTS: import a 32-byte CKK_AES_XTS key, one-shot a 21-byte
      * data unit under the 16-byte tweak, roundtrip; short units
      * refused at the planner floor. */
@@ -3434,15 +3957,26 @@ int main(int argc, char **argv) {
                    memcmp(pt, "wrap-proved", 11) == 0,
                "target decrypts unwrapped-key ciphertext");
       }
-      blob[blobLen - 1] ^= 0xFF;
+      /* Deterministic padding tamper (flipping the last ciphertext byte
+       * randomizes the last plaintext block and leaves valid padding
+       * about 1 time in 256).  The 16-byte key wraps to 32 bytes: one
+       * data block then a full block of 16 x 0x10 padding.  In CBC
+       * P_last = D(C_last) xor C_prev, so XOR-ing 0x10 into the final
+       * byte of the previous block turns the pad byte into 0x00, never
+       * valid padding. */
+      blob[blobLen - 17] ^= 0x10;
       {
         CK_OBJECT_HANDLE bad = 0;
         rv = f->C_UnwrapKey(wsess, &um, wrapKey, blob, blobLen,
                             dtmpl, 6, &bad);
         CHECKC(rv == CKR_ENCRYPTED_DATA_INVALID, "tampered blob refused");
         CHECKC(bad == 0, "refused unwrap writes no handle");
+        if (rv != CKR_ENCRYPTED_DATA_INVALID) {
+          printf("crypto: diag: unwrap tamper rv=0x%lx blobLen=%lu\n",
+                 (unsigned long) rv, (unsigned long) blobLen);
+        }
       }
-      blob[blobLen - 1] ^= 0xFF;
+      blob[blobLen - 17] ^= 0x10;
     }
     /* AES-KW wrap/unwrap: the 16-byte target wraps to 24 (+8 IV);
      * KWP agrees on block-aligned input and unwraps the same way. */

@@ -9,7 +9,7 @@ reserved. Reserved values parse and appear in reports but do not change the
 behavior described below. Unknown keys and sections return `CfgUnknownKey`.
 Invalid values return `CfgInvalid`; configuration errors stop the open.
 
-## Accepted settings (43 keys)
+## Accepted settings (44 keys)
 
 `E` = ENFORCED, `R` = REFUSED (non-default/misleading values),
 `D` = CONFIG-NOT-POLICY (reserved, disclosed).
@@ -59,6 +59,7 @@ Invalid values return `CfgInvalid`; configuration errors stop the open.
 | `tokens.labels` | E | catalog seating + served labels | `MultiTokenSpec` labels + `ConfigSpec` catalog validation |
 | `tokens.so_pins` | E | per-slot SO auth | `MultiTokenSpec` SO per-slot |
 | `tokens.user_pins` | E | per-slot user auth | `MultiTokenSpec` per-slot PINs |
+| `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity; the public token serial is still slot-derived (see limitations) | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) |
 
 Sections (9): `storage`, `engine`, `async`, `trace`, `control`,
 `fixtures`, `limits`, `sim`, `tokens`. Any other section name is
@@ -150,6 +151,25 @@ Unknown keys/sections: `CfgUnknownKey` naming the dotted key
 - `profile`: validated label; `demo-maximal` is marked a target
   profile in the report (gaps remain, not a completeness claim).
 
+## Configured versus effective policy
+
+A value that parses is not necessarily an enforced limit. Only the rows
+marked `E` above change behavior, and `R` rows accept a single pinned
+value. The `D` (reserved) rows (`limits.buffer_bytes`,
+`limits.attribute_entries`, `limits.attribute_depth`,
+`limits.transcript_bytes`, `limits.aggregate_payload_bytes`,
+`async.persist_detached`) are reported but are not enforced limits: the
+effective attribute bounds are the fixed constants in `template-bounds`,
+and no transcript, aggregate-payload or depth bound exists. Read the
+`capabilities` report, not the configuration file, for what is in force.
+There is no per-key inventory yet of configured value, effective value and
+native-versus-scenario applicability, and the completeness test compares
+selected keyword lists rather than the full parser key list; that audit is
+v0.5 work. Also note that `tokens.token_ids` pins internal identity only:
+the serial number a PKCS#11 client sees is derived from the slot index, and
+until a token is first provisioned the configuration remains the PIN
+authority (see [operations notes](operations-notes.md)).
+
 ## Serving presence and private scenario scope
 
 All configured tokens start present, with clear pending slot flags. With
@@ -161,7 +181,19 @@ tokens as present again without resetting their durable objects or lockout
 counters.
 
 The CLI scenario runner and `[sim].token_script` operate on an owned local
-model, separately from native serving. Native slot changes and Digest
+model, separately from native serving. `scenario-ok` means that logical
+simulation completed and every step's expectation matched; it is not a
+statement about native behavior. The runner validates the type of several
+operational scenario arguments but does not consume them: fixture name,
+token name, read/write mode, key name, mechanism, base64 data, output
+capacity (any integer is accepted) and the polled function name are
+documentary, so a step naming a missing token, an unknown mechanism, or
+malformed data can still report `CKR_OK`/`CKR_PENDING` and no signature
+bytes are produced or verified. Login state and finalize are recorded but
+not enforced on later steps. A wrong PIN on `session.login` aborts the
+scenario as a runner error before the step's `expect.return` is compared,
+so an expected `CKR_PIN_INCORRECT` cannot be expressed. Tightening these
+fields is v0.5 work. Native slot changes and Digest
 callbacks follow the [runtime contract](operations-notes.md).
 
 ## Example configurations

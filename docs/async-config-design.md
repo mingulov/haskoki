@@ -31,7 +31,7 @@ The separate private test API uses context/job tokens, completion version
 [Detached.hs](../src/Haskoki/Runtime/Detached.hs);
 [async_routed.c](../tests/c/async_routed.c) exercises the public table.
 
-Configuration currently has 43 accepted keys. Unknown keys and sections
+Configuration currently has 44 accepted keys. Unknown keys and sections
 are rejected. `haskoki-ctl` provides `config check`, `capabilities`,
 `scenario run`, `store inspect`, and `store reset`. Native async does not
 consult the scenario runner's `async.enabled` or `async.pending_polls`.
