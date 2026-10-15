@@ -13,7 +13,13 @@ checked anonymous access. The second release,
 [v0.3.1.0](https://github.com/mingulov/haskoki/releases/tag/v0.3.1.0),
 was published on October 12, 2026 from source `a89fb09` (image digest
 `sha256:4f8f152fd283aa9aec864eab18cb3eb2cb7ca7b1bae10875080721bb9c0587fe`,
-five unsigned assets). Each new release must repeat those checks on its
+five unsigned assets). The third release,
+[v0.4.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.4.0.0),
+was published on October 15, 2026 from source `d35650d` (image digest
+`sha256:9c1bef4b58a95373bbbdb979107a655e85f14e5a0acc80c04586c9df5dcd9c4f`, five unsigned assets;
+[release run](https://github.com/mingulov/haskoki/actions/runs/38748844491), where one
+intermittent storage test failure on the first attempt was re-run with
+**Re-run failed jobs**). Each new release must repeat those checks on its
 own source and artifacts.
 
 For **GitHub-only validation without publication**, open or update a pull

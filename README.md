@@ -21,7 +21,7 @@ With Docker running, paste this into a terminal:
 ```sh
 mkdir -p out
 docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:v0.3.1.0 demo
+  -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:v0.4.0.0 demo
 ```
 
 Docker downloads the image on the first run. The demo itself works offline:
@@ -35,18 +35,18 @@ demo-ok: 8/8 verifications hold
 That's the complete first run. No clone, compiler, account, PIN setup, or
 physical token is needed. Reports and disposable keys remain in `out/demo-*/`.
 
-This checkout prepares **v0.4.0.0**, adding token provisioning
+The latest published release is
+[**v0.4.0.0**](https://github.com/mingulov/haskoki/releases/tag/v0.4.0.0)
+(October 15, 2026). It adds token provisioning
 (`C_InitToken`/`C_InitPIN`/`C_SetPIN`), authorized re-initialization, and
-logout-oracle coverage on top of the v0.3.1.0 demo experience. Its registry
-tag is available only after publication; the latest published release is
-v0.3.1.0. v0.4.0.0 is a bounded release: its
+logout-oracle coverage on top of the v0.3.1.0 demo experience. v0.4.0.0 is a bounded release: its
 [limitations](docs/release-notes-0.4.0.0.md#known-limitations-and-v05-deferrals)
 are stated up front. The
-[hands-on guide](docs/try-it.md) shows how to load a tested candidate,
+[hands-on guide](docs/try-it.md) shows how to pin the published image,
 generate a key with `pkcs11-tool`, and sign your own message.
 
 The demo image includes Haskoki, its runtime and crypto libraries, OpenSC
-`pkcs11-tool`, `pkcs11-check`, and `pkcs11-proxy-ng`; the candidate adds
+`pkcs11-tool`, `pkcs11-check`, and `pkcs11-proxy-ng`, plus
 p11-kit server/client examples. Extra
 test-vector collections are an optional download. The tested platform is
 **Linux x86-64 (amd64)**; Docker supplies the Linux libraries. Other platforms
