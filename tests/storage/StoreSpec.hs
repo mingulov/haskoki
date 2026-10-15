@@ -89,6 +89,7 @@ import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
   , DesiredToken (..)
+  , FaultPoint (..)
   , IdentityRefusal (..)
   , JobBody (..)
   , JobExecState (..)
@@ -103,6 +104,7 @@ import Haskoki.Runtime.Storage
   , StoreError (..)
   , StoredDoc (..)
   , TokenRecord (..)
+  , defaultLimits
   , docTopKeys
   , emptyDelta
   , encodeHex16
@@ -115,6 +117,7 @@ import Haskoki.Runtime.Storage
   , renderIdentityRefusal
   , renderSlotMoveRefusal
   , reserveRestoredIds
+  , scriptedFaults
   )
 import Haskoki.FFI.Standard
   ( ObjectProjection (..)
@@ -129,6 +132,7 @@ import Haskoki.FFI.Standard
   , haskokiStdOpenSession
   , openStdInstance
   , openStdStore
+  , openStdStoreWith
   )
 import Haskoki.Runtime.Catalog (effectiveCatalog, identityCatalog, tokenSerial)
 import Haskoki.Runtime.Config
@@ -141,7 +145,7 @@ import Haskoki.Runtime.Config
   )
 import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
-import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), livenessFromProbes, openSQLiteStore)
+import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), livenessFromProbes, openSQLiteStore, openSQLiteStoreWith)
 import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
@@ -266,6 +270,8 @@ spec = testGroup "store contract"
       ]
   , testGroup "standard open reconciliation"
       [ testCase "standard open seeds a fresh file positionally" caseOpenSeedsFresh
+      , testCase "a failed seed commit leaves neither tokens nor credentials" caseOpenSeedFailsAtomically
+      , testCase "an appended catalog token seeds one token and one credential" caseOpenAppendSeedsOne
       , testCase "standard open refuses a reorder with the actionable message" caseOpenReorderRefuses
       , testCase "standard open refuses a removal, preserving the file" caseOpenRemovalRefuses
       , testCase "standard open accepts after an explicit move" caseOpenAcceptsMoved
@@ -3674,6 +3680,81 @@ caseOpenSeedsFresh = withOpenFile $ \path -> do
     [trGeneration t | (t, _) <- loaded]
   assertEqual "seed auths" [tokenAuthNew, tokenAuthNew, tokenAuthNew]
     [trAuth t | (t, _) <- loaded]
+  creds <- fileCredentials path
+  assertEqual "one durable credential per seeded token, from the catalog"
+    [ (TokenId 1, "5678", Just "1234")
+    , (TokenId 2, "6789", Just "2345")
+    , (TokenId 3, "7890", Just "3456") ]
+    creds
+
+-- | A seed whose commit fails before it lands leaves the file
+-- with neither token rows nor credential rows (tokens and
+-- credentials ride one delta), and a clean reopen seeds both.
+caseOpenSeedFailsAtomically :: IO ()
+caseOpenSeedFailsAtomically = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  inj <- scriptedFaults [FaultBeforeCommit]
+  env <- newEnv (rulesFromConfig cfg)
+  eAcq <- openStdStoreWith (\p -> openSQLiteStoreWith p defaultLimits inj) env
+    cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+  case eAcq of
+    Left StdStoreCommit -> pure ()
+    Left err -> assertFailure ("faulted seed failed for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "faulted seed commit accepted"
+  loaded <- fileLoaded path
+  assertEqual "no token rows after the failed seed" 0 (length loaded)
+  creds <- fileCredentials path
+  assertEqual "no credential rows after the failed seed" [] creds
+  eAgain <- openReconciled path cfg
+  case eAgain of
+    Left err -> assertFailure ("clean reopen must seed: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  loadedAgain <- fileLoaded path
+  assertEqual "clean reopen seeds three tokens" 3 (length loadedAgain)
+  credsAgain <- fileCredentials path
+  assertEqual "clean reopen seeds three credentials"
+    [TokenId 1, TokenId 2, TokenId 3] [tid | (tid, _, _) <- credsAgain]
+
+-- | Appending one catalog entry to a seeded store seeds exactly
+-- that token and its credential; the existing rows stay as they
+-- were.
+caseOpenAppendSeedsOne :: IO ()
+caseOpenAppendSeedsOne = withOpenFile $ \path -> do
+  seedOpenSeeded path
+  credsBefore <- fileCredentials path
+  assertEqual "seeded store holds three credentials" 3 (length credsBefore)
+  cfgAppended <- parseCatalog (catalogDoc
+    (threeLabels ++ ["haskoki-extra"]) (threeSo ++ ["8901"])
+    (threeUser ++ ["4567"]) [])
+  eAcq <- openReconciled path cfgAppended
+  case eAcq of
+    Left err -> assertFailure ("appended catalog refused: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  loaded <- fileLoaded path
+  assertEqual "one token appended"
+    [(TokenId 4, SlotId 3, "haskoki-extra")]
+    [(trId t, trSlot t, trLabel t) | (t, _) <- loaded, trId t == TokenId 4]
+  assertEqual "four tokens in all" 4 (length loaded)
+  credsAfter <- fileCredentials path
+  assertEqual "existing credentials untouched" credsBefore
+    [c | c@(tid, _, _) <- credsAfter, tid /= TokenId 4]
+  assertEqual "one credential appended, from the catalog"
+    [(TokenId 4, "8901", Just "4567")]
+    [c | c@(tid, _, _) <- credsAfter, tid == TokenId 4]
+
+-- | Every credential row of a closed file, by token, PINs as
+-- text.
+fileCredentials :: FilePath -> IO [(TokenId, String, Maybe String)]
+fileCredentials path = do
+  eStore <- openSQLiteStore path
+  s <- either (assertFailure . show) pure eStore
+  eCreds <- storeLoadCredentials s
+  storeClose s
+  creds <- either (assertFailure . show) pure eCreds
+  pure (sort [ (crToken c, BC8.unpack (crSoPin c), BC8.unpack <$> crUserPin c)
+             | c <- creds ])
 
 -- | A reordered catalog refuses at the production open with
 -- the actionable message; the file survives byte-exact and

@@ -1052,9 +1052,20 @@ openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
                                   storeClose store
                                   pure (Left (StdStoreSeating deny))
                                 Right () -> do
+                                  -- A fresh durable token carries its
+                                  -- catalog PINs as its credential from
+                                  -- the start, in the same transaction:
+                                  -- a later catalog PIN edit never
+                                  -- rebinds a token that already exists.
+                                  let seedCreds =
+                                        [ CredentialRecord (trId t) (BC8.pack so) (Just (BC8.pack user))
+                                        | t <- seeds
+                                        , Just (_, so, user) <- [Map.lookup (trSlot t) catalog]
+                                        ]
                                   res <- if null seeds
                                     then pure Committed
-                                    else storeCommit store emptyDelta { sdPutTokens = seeds }
+                                    else storeCommit store emptyDelta
+                                      { sdPutTokens = seeds, sdPutCredentials = seedCreds }
                                   case res of
                                     Committed ->
                                       let slotIds = Map.fromList
