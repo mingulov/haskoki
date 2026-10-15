@@ -82,8 +82,26 @@
 #   flows through the real normalize+diff path); the script MUST
 #   fail and report the divergent call plus both outputs.
 #
+# 2026-10-15 (#17, v0.5 WP11): consumer_policy_metadata is no longer
+# DIRECT_ONLY. Group P (after group R) runs it proxied: each policy
+# scenario gets its own daemon started on the config the consumer prints
+# via --print-config (the driver holds no TOML for it), the direct and
+# proxied transcripts are diffed, and a NEGATIVE-CONTROL leg proves the
+# comparison can fail (limit2-null against the unconfigured global
+# backend must exit 3 with policy:backend-mismatch). The three PIN
+# refusal scenarios have no proxied session shape; their proxied
+# equivalent is a STARTUP-REFUSAL (the daemon must exit nonzero without
+# ever accepting on the port). stop_daemon verifies each daemon is gone
+# and the port free before the next leg; a self-check at startup proves
+# the squatter guard refuses a pre-bound port.
+#
 # Usage:
 #   scripts/test-proxy-parity.sh             # full parity (must PASS)
+#   HASKOKI_PARITY_GROUPS="P" scripts/test-proxy-parity.sh
+#                                           # development filter: run only
+#                                           # the listed groups (R C P,
+#                                           # default all); never use it
+#                                           # for evidence
 #   HASKOKI_PARITY_SEED_MISMATCH=1 scripts/test-proxy-parity.sh
 #                                           # must FAIL (seeded)
 #
@@ -139,6 +157,16 @@ SCEN_LIST=$(
   || fail "recover consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_notifications_poll.c')" -eq 1 ] \
   || fail "notifications polling consumer must occur exactly once"
+# Group P owns consumer_policy_metadata (per-scenario configs); the
+# generic group-R list excludes it, and the guard below fails if both
+# groups would run it.
+RUN_LIST=$(printf '%s\n' "$SCEN_LIST" | grep -vx 'tests/c/consumer_policy_metadata.c')
+POLICY_SCEN=tests/c/consumer_policy_metadata.c
+[ -f "$POLICY_SCEN" ] || fail "policy consumer missing"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "$POLICY_SCEN")" -eq 1 ] \
+  || fail "policy consumer must occur exactly once"
+[ "$(printf '%s\n' "$RUN_LIST" | grep -cx "$POLICY_SCEN")" -eq 0 ] \
+  || fail "consumer_policy_metadata must not run in both the generic list and group P"
 for scen in $SCEN_LIST; do
   if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
     fail "consumer independence violated: $scen"
@@ -208,7 +236,6 @@ done
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
 async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
 notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25
-consumer_policy_metadata:https://github.com/mingulov/haskoki/issues/17
 consumer_certificates:visibility:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
 consumer_certificates:restart:https://github.com/mingulov/pkcs11-proxy-ng/issues/27"
 for entry in $DIRECT_ONLY; do
@@ -474,6 +501,16 @@ done
 # live daemon explicitly (kill + wait, log retained) before the next
 # group/mode starts, and still runs on EXIT.
 SRV=""
+port_open() {
+  bash -c "echo > /dev/tcp/127.0.0.1/$PROXY_PORT" 2>/dev/null
+}
+pid_alive() {
+  # live and not a zombie (an unreaped child still answers kill -0)
+  [ -r "/proc/$1/stat" ] || return 1
+  st=$(sed -e 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -c1)
+  [ -n "$st" ] && [ "$st" != "Z" ]
+}
+# EXIT-trap cleanup: best effort, never fails.
 cleanup() {
   if [ -n "${SRV:-}" ]; then
     kill $SRV 2>/dev/null || true
@@ -482,6 +519,43 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# Verified stop (#17): TERM, wait up to 10 s, then KILL; the pid must be
+# gone and the port must refuse connections before the next leg starts.
+# The log is kept.
+stop_daemon() {
+  [ -n "${SRV:-}" ] || fail "stop_daemon: no live daemon recorded"
+  _pid=$SRV
+  kill "$_pid" 2>/dev/null || true
+  _i=0
+  while pid_alive "$_pid" && [ "$_i" -lt 10 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  if pid_alive "$_pid"; then
+    kill -KILL "$_pid" 2>/dev/null || true
+    _i=0
+    while pid_alive "$_pid" && [ "$_i" -lt 10 ]; do
+      sleep 1
+      _i=$((_i + 1))
+    done
+  fi
+  wait "$_pid" 2>/dev/null || true
+  SRV=""
+  if kill -0 "$_pid" 2>/dev/null; then
+    fail "daemon pid $_pid still alive after stop"
+  fi
+  # The daemon may hand the port to a lingering child; give the kernel
+  # a moment to drop the listener, then require a refused connect.
+  _i=0
+  while port_open && [ "$_i" -lt 5 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  if port_open; then
+    fail "port $PROXY_PORT still bound after stop"
+  fi
+  echo "proxy daemon stopped (pid $_pid)"
+}
 start_daemon() {
   # $1 = backend.toml, $2 = server log
   # Squatter guard: a stale manual daemon on our port would answer the
@@ -519,6 +593,104 @@ start_daemon() {
     fail "proxy daemon not listening on $ENDPOINT after 30s"
   fi
   echo "proxy daemon ready: $ENDPOINT (pid $SRV)"
+}
+
+# Startup-refusal check (#17): the daemon, started on a config the
+# backend must refuse, has to exit nonzero within 30 s, without the port
+# ever accepting, and its log has to show the backend load failure.
+# $1 = backend.toml, $2 = server log, $3 = scenario label
+start_daemon_expect_refusal() {
+  if port_open; then
+    fail "port $PROXY_PORT already bound (stale daemon squatting?)"
+  fi
+  RUST_LOG=info HASKOKI_CONFIG="$1" "$SERVER_BIN" "$TMPD/proxy.toml" \
+    >"$2" 2>&1 &
+  _rpid=$!
+  _i=0
+  _gone=0
+  while [ "$_i" -lt 30 ]; do
+    if port_open; then
+      kill -KILL "$_rpid" 2>/dev/null || true
+      wait "$_rpid" 2>/dev/null || true
+      echo "--- daemon log:"; cat "$2"
+      fail "STARTUP-REFUSAL: $3: daemon accepted on port $PROXY_PORT"
+    fi
+    if ! pid_alive "$_rpid"; then
+      _gone=1
+      break
+    fi
+    _i=$((_i + 1))
+    sleep 1
+  done
+  if [ "$_gone" -ne 1 ]; then
+    kill -KILL "$_rpid" 2>/dev/null || true
+    wait "$_rpid" 2>/dev/null || true
+    echo "--- daemon log:"; cat "$2"
+    fail "STARTUP-REFUSAL: $3: daemon neither exited nor accepted within 30s"
+  fi
+  _rc=0
+  wait "$_rpid" 2>/dev/null || _rc=$?
+  if [ "$_rc" -eq 0 ]; then
+    echo "--- daemon log:"; cat "$2"
+    fail "STARTUP-REFUSAL: $3: daemon exited 0 (must refuse nonzero)"
+  fi
+  if port_open; then
+    fail "STARTUP-REFUSAL: $3: port $PROXY_PORT accepting after refusal"
+  fi
+  if grep -q 'listening on tcp' "$2"; then
+    echo "--- daemon log:"; cat "$2"
+    fail "STARTUP-REFUSAL: $3: log shows the listener came up"
+  fi
+  if ! grep -q "$REFUSAL_PATTERN" "$2"; then
+    echo "--- daemon log:"; cat "$2"
+    fail "STARTUP-REFUSAL: $3: log lacks the backend load error ($REFUSAL_PATTERN)"
+  fi
+  echo "STARTUP-REFUSAL: $3 (daemon exit $_rc, NOT_SERVING logged, never listened)"
+}
+
+# expect_fail <desc> <cmd...>: run cmd in a subshell; it MUST exit
+# nonzero (a driver fail() inside it is the expected outcome).
+expect_fail() {
+  _desc=$1; shift
+  _out=$( ( "$@" ) 2>&1 ); _ec=$?
+  if [ "$_ec" -eq 0 ]; then
+    echo "$_out"
+    fail "expected failure did not occur: $_desc"
+  fi
+  echo "expected failure observed: $_desc"
+}
+
+# Self-check of the squatter guard (runs before any group): with a
+# throwaway listener on the port (the daemon itself on the global
+# backend, started outside start_daemon), start_daemon must refuse.
+selfcheck_squatter() {
+  RUST_LOG=info HASKOKI_CONFIG="$TMPD/backend.toml" "$SERVER_BIN" \
+    "$TMPD/proxy.toml" >"$TMPD/server-squatter.log" 2>&1 &
+  _sq=$!
+  _i=0
+  while ! port_open && [ "$_i" -lt 30 ]; do
+    pid_alive "$_sq" || break
+    sleep 1
+    _i=$((_i + 1))
+  done
+  port_open || { kill -KILL "$_sq" 2>/dev/null; cat "$TMPD/server-squatter.log"; fail "self-check listener did not bind"; }
+  expect_fail "start_daemon refuses a pre-bound port" \
+    start_daemon "$TMPD/backend.toml" "$TMPD/server-selfcheck.log"
+  kill "$_sq" 2>/dev/null || true
+  _i=0
+  while pid_alive "$_sq" && [ "$_i" -lt 10 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  pid_alive "$_sq" && kill -KILL "$_sq" 2>/dev/null
+  wait "$_sq" 2>/dev/null || true
+  _i=0
+  while port_open && [ "$_i" -lt 5 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  port_open && fail "self-check listener still bound"
+  echo "SELF-CHECK: squatter guard refuses a pre-bound port"
 }
 
 normalize() {
@@ -760,28 +932,122 @@ if [ -n "${1:-}" ]; then
   fail "usage: scripts/test-proxy-parity.sh"
 fi
 
+GROUPS_RUN="${HASKOKI_PARITY_GROUPS:-R C P}"
+group_on() {
+  case " $GROUPS_RUN " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+selfcheck_squatter
+
 # Group R: all retained scenarios on the default backend, each with a
 # FRESH daemon: token-auth/object state (e.g. roundtrip's deliberate
 # SO lockout) must not leak across scenarios. Direct legs each get a
 # fresh in-process backend, so proxied legs get a fresh daemon each.
-for scen in $SCEN_LIST; do
+# consumer_policy_metadata is excluded here (group P owns it).
+if group_on R; then
+for scen in $RUN_LIST; do
   base="$(basename "$scen" .c)"
   if [ "$base" = "consumer_certificates" ]; then
     continue
   fi
   start_daemon "$TMPD/backend.toml" "$TMPD/server-$base.log"
   run_parity "$base"
-  cleanup
+  stop_daemon
 done
+fi
 
 # Group C: the certificate scenario only, once per storage mode, each
 # with a fresh daemon on its own catalog backend.
 CERT_MODE=""
+if group_on C; then
 for CERT_MODE in $HASKOKI_PARITY_STORAGE; do
   write_cert_backend "$CERT_MODE" "$TMPD/backend-cert-$CERT_MODE.toml"
   start_daemon "$TMPD/backend-cert-$CERT_MODE.toml" "$TMPD/server-cert-$CERT_MODE.log"
   run_parity consumer_certificates
-  cleanup
+  stop_daemon
 done
+fi
+
+# Group P (#17): policy/metadata scenarios, one daemon per scenario on
+# the config the consumer itself prints.
+run_policy_child_direct() {
+  # $1 = scenario; sets PDLOG/PDNORM
+  ec=0; env -u HASKOKI_CONSUMER_TOPOLOGY -u HASKOKI_CONFIG \
+    "$PBIN" "$SO" "$1" >"$PDLOG" 2>&1 || ec=$?
+  echo "direct exit: consumer_policy_metadata:$1 $ec"
+  if [ "$ec" -ne 0 ]; then echo "--- direct log:"; cat "$PDLOG"; fail "consumer_policy_metadata:$1 FAILED direct"; fi
+}
+run_policy_child_proxied() {
+  # $1 = scenario, $2 = log; sets ec
+  ec=0; env -u HASKOKI_CONFIG HASKOKI_CONSUMER_TOPOLOGY=proxy \
+    PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
+    PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
+    "$PBIN" "$SHIM_SO" "$1" >"$2" 2>&1 || ec=$?
+  echo "proxied exit: consumer_policy_metadata:$1 $ec"
+}
+if group_on P; then
+PBIN="$TMPD/consumer_policy_metadata"
+# The pinned daemon prints no backend error text: a backend that fails
+# to load exits 70 after logging only this health line (observed on
+# the pinned pair); a healthy start logs "listening on tcp" instead.
+REFUSAL_PATTERN="Health status: NOT_SERVING"
+
+# 1. Negative control: the same limit2-null child against the global
+# daemon (no [limits]) must be refused with the backend-mismatch line.
+echo "--- parity: consumer_policy_metadata negative control"
+start_daemon "$TMPD/backend.toml" "$TMPD/server-policy-negctl.log"
+NCLOG="$TMPD/consumer_policy_metadata-negctl.proxied.log"
+run_policy_child_proxied limit2-null "$NCLOG"
+if [ "$ec" -ne 3 ] || ! grep -qx 'policy:backend-mismatch max want=2 got=1024' "$NCLOG"; then
+  echo "--- proxied log:"; cat "$NCLOG"
+  fail "negative control: limit2-null against the unconfigured daemon was not refused (exit $ec)"
+fi
+stop_daemon
+archive_logs "$NCLOG"
+echo "NEGATIVE-CONTROL: policy limit2-null vs unconfigured daemon refused"
+
+# 2. Configured parity legs.
+for pscen in limit2-null limit2-os limit2-app multitoken pin; do
+  PCFG="$TMPD/policy-$pscen.toml"
+  PDLOG="$TMPD/consumer_policy_metadata-$pscen.direct.log"
+  PPLOG="$TMPD/consumer_policy_metadata-$pscen.proxied.log"
+  PDNORM="$TMPD/consumer_policy_metadata-$pscen.direct.norm"
+  PPNORM="$TMPD/consumer_policy_metadata-$pscen.proxied.norm"
+  echo "--- parity: consumer_policy_metadata:$pscen"
+  "$PBIN" "$SO" --print-config "$pscen" >"$PCFG" || fail "cannot print config for $pscen"
+  [ -s "$PCFG" ] || fail "empty config for $pscen"
+  run_policy_child_direct "$pscen"
+  start_daemon "$PCFG" "$TMPD/server-policy-$pscen.log"
+  run_policy_child_proxied "$pscen" "$PPLOG"
+  if [ "$ec" -ne 0 ]; then echo "--- proxied log:"; cat "$PPLOG"; fail "consumer_policy_metadata:$pscen FAILED proxied"; fi
+  seed_mutate "$PPLOG"
+  normalize "$PDLOG" "$PDNORM"
+  normalize "$PPLOG" "$PPNORM"
+  if ! diff -u "$PDNORM" "$PPNORM" > "$TMPD/consumer_policy_metadata-$pscen.diff"; then
+    echo "PARITY DIVERGENCE in consumer_policy_metadata:$pscen:"
+    cat "$TMPD/consumer_policy_metadata-$pscen.diff"
+    echo "--- full direct log:"; cat "$PDLOG"
+    echo "--- full proxied log:"; cat "$PPLOG"
+    fail "consumer_policy_metadata:$pscen: forwarded-call transcripts differ direct-vs-proxied"
+  fi
+  echo "parity holds: consumer_policy_metadata:$pscen ($(wc -l < "$PDNORM") forwarded lines identical)"
+  stop_daemon
+  archive_logs "$PDLOG" "$PPLOG" "$PDNORM" "$PPNORM" "$TMPD/consumer_policy_metadata-$pscen.diff" "$TMPD/server-policy-$pscen.log"
+done
+
+# 3. PIN-refusal scenarios: direct refusal assertions, proxied
+# equivalent = daemon startup refusal.
+for pscen in pin-short pin-empty pin-long; do
+  PCFG="$TMPD/policy-$pscen.toml"
+  PDLOG="$TMPD/consumer_policy_metadata-$pscen.direct.log"
+  echo "--- parity: consumer_policy_metadata:$pscen (startup refusal)"
+  "$PBIN" "$SO" --print-config "$pscen" >"$PCFG" || fail "cannot print config for $pscen"
+  [ -s "$PCFG" ] || fail "empty config for $pscen"
+  run_policy_child_direct "$pscen"
+  start_daemon_expect_refusal "$PCFG" "$TMPD/server-policy-$pscen.log" "$pscen"
+  archive_logs "$PDLOG" "$TMPD/server-policy-$pscen.log"
+done
+fi
 
 echo "PASS: test-proxy-parity.sh (direct/proxy parity)"
