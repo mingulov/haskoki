@@ -212,6 +212,7 @@ jobs:
           python3 scripts/check-qualification-wiring.py --self-test
           python3 scripts/test-ownership-matrix-controls.py
           python3 scripts/check-findings-ledger.py --self-test
+          python3 scripts/check-seed-honesty.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
           python3 scripts/test-demo-shards.py

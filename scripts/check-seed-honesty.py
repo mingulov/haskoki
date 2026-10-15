@@ -23,6 +23,11 @@ Fails (exit 1) when any rule fails:
 * NO-STALE stale-claim scan: no residual "SeedRandom is unsupported"-shaped
   claim outside the documented allowlist (historical slice notes,
   executed behavior pins, planner-scope catalog rows owned by ROW-MIRROR/PLANNED-COUNT).
+  The coverage.md exemption matches the whole generated row.
+
+--self-test runs the negative controls for that exemption (a prose
+claim, a rewritten row, a changed reason cell, trailing prose, and the
+row outside coverage.md must all be stale hits).
 """
 import json
 import re
@@ -39,6 +44,70 @@ HOLDOUT_SHAPES = (r"unsupport|refus|not supported|honestly NA"
                   r"|NOT_SUPPORTED|not yet|not implement|holdout|N/A")
 
 failures = []
+
+# The generated function-contract row in docs/coverage.md, matched as
+# the whole line (cells and reason). Any other wording of the row,
+# including a different reason cell, is a stale-claim hit.
+COVERAGE_SEED_ROW = ("| C_SeedRandom | 64 | served | unsupported-with-reason "
+                     "| no model planning (served above the planner by the "
+                     "routed entry) |")
+
+STALE_NEG = re.compile(r"SeedRandom.*(" + HOLDOUT_SHAPES + r")|"
+                       r"(" + HOLDOUT_SHAPES + r").*SeedRandom",
+                       re.IGNORECASE)
+
+# (path, line regex): dated history or executed pins, not prose claims.
+STALE_ALLOW = [
+    ("scripts/check-seed-honesty.py", re.compile(r".")),
+    ("tests/c/consumer_roundtrip.c", re.compile(r".")),
+    ("tests/c/consumer_discovery.c", re.compile(r".")),
+    # Dated R5 evidence mirror of the executed seed-contract
+    # negatives (absent from CI checkouts; local worktree only).
+    ("ws/r5-evidence/probe-src/consumer_roundtrip.c", re.compile(r".")),
+    # The generated function-contract table in coverage.md renders
+    # the planner-scope catalog row (ROW-MIRROR owns its content);
+    # it states "served" before the planner contract. Exactly that
+    # row, nothing else in the file.
+    ("docs/coverage.md", re.compile(r"^" + re.escape(COVERAGE_SEED_ROW) + r"$")),
+]
+
+
+def stale_hit(rel, line):
+    """True when this line of the file at rel is a stale claim."""
+    if "SeedRandom" not in line or not STALE_NEG.search(line):
+        return False
+    return not any(rel == suf and rx.search(line) for suf, rx in STALE_ALLOW)
+
+
+def self_test():
+    """Negative controls for the coverage.md allowlist."""
+    cases = [
+        ("exact generated row is allowed", COVERAGE_SEED_ROW, False),
+        ("prose claim in coverage.md is stale",
+         "C_SeedRandom is not supported by this token.", True),
+        ("row rewritten to refused is stale",
+         "| C_SeedRandom | 64 | refused | unsupported-with-reason "
+         "| no model planning (served above the planner by the routed entry) |",
+         True),
+        ("row with a different reason is stale",
+         "| C_SeedRandom | 64 | served | unsupported-with-reason "
+         "| SeedRandom not supported |", True),
+        ("row with trailing prose is stale",
+         COVERAGE_SEED_ROW + " SeedRandom unsupported", True),
+        ("same row outside coverage.md is stale", COVERAGE_SEED_ROW, True),
+    ]
+    bad = 0
+    for i, (name, line, want) in enumerate(cases):
+        rel = "docs/release-results.md" if i == len(cases) - 1 else "docs/coverage.md"
+        got = stale_hit(rel, line)
+        ok = got == want
+        bad += not ok
+        print(f"{'ok' if ok else 'FAIL'}: self-test: {name}")
+    if bad:
+        print(f"seed-honesty self-test: FAIL ({bad} controls)")
+        return 1
+    print(f"seed-honesty self-test: OK ({len(cases)} controls)")
+    return 0
 
 
 def check(rule, cond, detail):
@@ -108,24 +177,6 @@ def main():
     # --- NO-STALE: stale-claim scan (shared HOLDOUT_SHAPES, both
     # directions: the reversed branch previously omitted
     # NOT_SUPPORTED|not yet|not implement and the newer holdout|N/A) ---
-    neg = re.compile(r"SeedRandom.*(" + HOLDOUT_SHAPES + r")|"
-                     r"(" + HOLDOUT_SHAPES + r").*SeedRandom",
-                     re.IGNORECASE)
-    # (path suffix, line regex): dated history or executed pins, not prose claims.
-    allow = [
-        ("scripts/check-seed-honesty.py", re.compile(r".")),
-        ("tests/c/consumer_roundtrip.c", re.compile(r".")),
-        ("tests/c/consumer_discovery.c", re.compile(r".")),
-        # Dated R5 evidence mirror of the executed seed-contract
-        # negatives (absent from CI checkouts; local worktree only).
-        ("ws/r5-evidence/probe-src/consumer_roundtrip.c", re.compile(r".")),
-        # The generated function-contract table in coverage.md renders
-        # the planner-scope catalog row (ROW-MIRROR owns its content);
-        # it states "served" before the planner contract. Exactly that
-        # row shape, nothing else in the file.
-        ("docs/coverage.md", re.compile(
-            r"^\| C_SeedRandom \| 64 \| served \| unsupported-with-reason \| ")),
-    ]
     skip_dirs = {"dist-newstyle", "dist-release", "dist-release-evidence", ".git"}
     skip_files = {"spec/function-contracts.json",  # owned by ROW-MIRROR/PLANNED-COUNT
                   "scripts/generate-function-contracts.py"}  # planner-scope table
@@ -141,9 +192,7 @@ def main():
         if rel in skip_files:
             continue
         for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
-            if "SeedRandom" not in line or not neg.search(line):
-                continue
-            if any(rel == suf and rx.search(line) for suf, rx in allow):
+            if not stale_hit(rel, line):
                 continue
             stale.append(f"{rel}:{lineno}: {line.strip()[:100]}")
     check("NO-STALE", not stale,
@@ -159,4 +208,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        sys.exit(self_test())
     sys.exit(main())

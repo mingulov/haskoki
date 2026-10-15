@@ -51,6 +51,7 @@ python3 scripts/check-ossl4-surface.py
 python3 scripts/check-version.py
 python3 scripts/check-ckr.py
 python3 scripts/check-seed-honesty.py
+python3 scripts/check-seed-honesty.py --self-test
 python3 scripts/check-warnings-zero.py
 python3 scripts/check-docs.py
 python3 scripts/check-fork-stance.py
