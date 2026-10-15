@@ -252,7 +252,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (ord)
 import qualified Data.ByteString.Unsafe as BSU
-import Data.List (find)
+import Data.List (find, sort)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -999,6 +999,11 @@ data StdStoreError
   -- 'StdStoreIdentityRefusal' with the reconciler's message.
   | StdStoreCatalogMismatch
   | StdStoreIdentityRefusal !String
+  -- | Stored tokens with no durable credential row (a store
+  -- written before credentials were seeded with each token).
+  -- Lists every such token, ascending; the open writes nothing
+  -- and never invents a credential from the catalog PINs.
+  | StdStoreMigrationRequired ![TokenId]
   deriving (Eq, Show)
 
 openStdStore :: Env -> Config -> IO (Either StdStoreError (Maybe StdStore))
@@ -1061,42 +1066,68 @@ openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
                               storeClose store
                               pure (Left (StdStoreIdentityRefusal (renderIdentityRefusal refusal)))
                             Right plan -> do
-                              let seeds = planSeeds plan
-                              eSeat <- seatAll env [trSlot t | t <- seeds]
-                              case eSeat of
-                                Left deny -> do
+                              -- Every stored token must carry its
+                              -- durable credential row. A token
+                              -- written before credentials were
+                              -- seeded refuses as migration-required,
+                              -- after the identity check so drift
+                              -- reports first; the catalog PINs never
+                              -- stand in for a missing row.
+                              eCreds <- storeLoadCredentials store
+                              case eCreds of
+                                Left err -> do
                                   storeClose store
-                                  pure (Left (StdStoreSeating deny))
-                                Right () -> do
-                                  -- A fresh durable token carries its
-                                  -- catalog PINs as its credential from
-                                  -- the start, in the same transaction:
-                                  -- a later catalog PIN edit never
-                                  -- rebinds a token that already exists.
-                                  let seedCreds =
-                                        [ CredentialRecord (trId t) (BC8.pack so) (Just (BC8.pack user))
-                                        | t <- seeds
-                                        , Just (_, so, user) <- [Map.lookup (trSlot t) catalog]
-                                        ]
-                                  res <- if null seeds
-                                    then pure Committed
-                                    else storeCommit store emptyDelta
-                                      { sdPutTokens = seeds, sdPutCredentials = seedCreds }
-                                  case res of
-                                    Committed ->
-                                      let slotIds = Map.fromList
-                                            ([(trSlot t, trId t) | (t, _) <- loaded]
-                                              ++ [(trSlot t, trId t) | t <- seeds])
-                                      in pure (Right (Just (StdStore store homeTokenId slotIds)))
-                                    _ -> do
+                                  pure (Left (StdStoreSQLite err))
+                                Right creds ->
+                                  case missingCredentials [t | (t, _) <- loaded] creds of
+                                    legacy@(_ : _) -> do
                                       storeClose store
-                                      pure (Left StdStoreCommit)
+                                      pure (Left (StdStoreMigrationRequired legacy))
+                                    [] -> seatAndSeed store loaded plan
   where
     catalog = effectiveCatalog cfg
+    seatAndSeed store loaded plan = do
+      let seeds = planSeeds plan
+      eSeat <- seatAll env [trSlot t | t <- seeds]
+      case eSeat of
+        Left deny -> do
+          storeClose store
+          pure (Left (StdStoreSeating deny))
+        Right () -> do
+          -- A fresh durable token carries its catalog PINs as its
+          -- credential from the start, in the same transaction: a
+          -- later catalog PIN edit never rebinds a token that already
+          -- exists.
+          let seedCreds =
+                [ CredentialRecord (trId t) (BC8.pack so) (Just (BC8.pack user))
+                | t <- seeds
+                , Just (_, so, user) <- [Map.lookup (trSlot t) catalog]
+                ]
+          res <- if null seeds
+            then pure Committed
+            else storeCommit store emptyDelta
+              { sdPutTokens = seeds, sdPutCredentials = seedCreds }
+          case res of
+            Committed ->
+              let slotIds = Map.fromList
+                    ([(trSlot t, trId t) | (t, _) <- loaded]
+                      ++ [(trSlot t, trId t) | t <- seeds])
+              in pure (Right (Just (StdStore store homeTokenId slotIds)))
+            _ -> do
+              storeClose store
+              pure (Left StdStoreCommit)
     desired =
       [ DesiredToken slot tid label
       | (slot, (tid, label)) <- Map.toAscList (identityCatalog cfg)
       ]
+
+-- | The stored tokens with no durable credential row, ascending
+-- by id.
+missingCredentials :: [TokenRecord] -> [CredentialRecord] -> [TokenId]
+missingCredentials tokens creds =
+  sort [trId t | t <- tokens, trId t `Set.notMember` withRow]
+  where
+    withRow = Set.fromList (map crToken creds)
 
 -- | Reserve the durable handle/revision high-waters after a
 -- store reload: @mNextHandle@ advances past the maximum of the
@@ -1897,9 +1928,10 @@ publishStd :: StdInstance -> StateDelta -> IO (Either ModelFault ())
 publishStd inst delta = publishStdWithCred inst Nothing delta
 
 -- | One gate-held credential rewrite: the home token, the seed
--- when no durable row exists yet (catalog-derived: the token
--- serves catalog PINs until its first provisioning commit),
--- and the pure modification producing the committed row. The
+-- used only when no durable row exists (catalog-derived; a store
+-- opened through 'openStdStore' always has a row for every
+-- token, because the open refuses rowless tokens), and the pure
+-- modification producing the committed row. The
 -- read-modify-put runs inside the gate-held publish section,
 -- so concurrent provisioning calls linearize instead of losing
 -- each other's halves.

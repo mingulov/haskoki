@@ -318,9 +318,9 @@ data JobRecord = JobRecord
 -- every owned object, job, and credential; dropping a token
 -- removes its owned objects, jobs, and credential;
 -- 'storeResetToken' is the generation-guarded
--- replacement-plus-removal path (the credential goes with the
--- reset: the replacement token serves catalog PINs until it is
--- provisioned again).
+-- replacement-plus-removal path for objects and jobs. The
+-- credential row stays: an existing durable credential always
+-- wins over the catalog PINs.
 --
 -- Duplicate credential puts for one token resolve first-wins in
 -- both backends (the token-row precedent): the validated
@@ -1109,7 +1109,8 @@ renderSlotMoveRefusal r = case r of
 -- quarantine listing, authoritative reload, commit counters, job
 -- loads, durable job-id reservation, and token reset:
 -- 'storeResetToken' replaces the token (expected-generation
--- guarded) and atomically removes its objects and jobs.
+-- guarded) and atomically removes its objects and jobs, keeping
+-- its credential row.
 --
 -- Quarantine is a live-handle property: it guards a handle whose
 -- view may have diverged from durable truth. A fresh handle loads

@@ -991,7 +991,8 @@ resetTokenConn conn tid wantGen replacement =
 -- | Build the reset's effective delta from one consistent read
 -- (runs under the connection guard, so the generation check is
 -- exact). Owned objects and jobs are dropped explicitly (the
--- foreign-key cascades backstop the same outcome).
+-- foreign-key cascades backstop the same outcome); the credential
+-- row stays with the token.
 resetEffectiveDb :: S.Database -> TokenId -> Generation -> TokenRecord -> IO (Either StoreError StoreDelta)
 resetEffectiveDb db tid wantGen replacement = do
   eToks <- queryRows db "SELECT record_json FROM tokens WHERE token_id = ?"
@@ -1024,7 +1025,7 @@ resetEffectiveDb db tid wantGen replacement = do
                     , sdDropJobs = pids
                     , sdPutMeta = []
                     , sdPutCredentials = []
-                    , sdDropCredentials = [tid]
+                    , sdDropCredentials = []
                     })
                   _ -> pure (Left (StoreCorrupt "corrupt reset ownership rows"))
               (Left err, _) -> pure (Left err)

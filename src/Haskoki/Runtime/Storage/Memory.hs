@@ -331,7 +331,7 @@ resetEffective world tid wantGen replacement = withMVar (mwState world) $ \st ->
           , sdDropJobs = [jrPersistentId j | j <- Map.elems (wsJobs st), jrToken j == tid]
           , sdPutMeta = []
           , sdPutCredentials = []
-          , sdDropCredentials = [tid]
+          , sdDropCredentials = []
           })
 
 -- | Reserve one store-wide persistent job id: closed-handle

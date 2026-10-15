@@ -278,6 +278,9 @@ spec = testGroup "store contract"
       , testCase "standard open refuses an interrupted move until completed" caseOpenInterruptedRefuses
       , testCase "standard open refuses a positional downgrade over a moved store" caseOpenDowngradeRefuses
       , testCase "a config PIN edit leaves the seeded credentials in force" caseOpenPinEditIgnoredAfterSeed
+      , testCase "legacy tokens without credentials refuse as migration-required" caseOpenLegacyRefusesMigrationRequired
+      , testCase "a mixed store names only its legacy tokens" caseOpenMixedLegacyNamesOnlyLegacy
+      , testCase "identity drift refuses before missing credentials" caseOpenIdentityRefusalPrecedesMigration
       , testCase "publication resolves moved slots through the reconciled layout" caseProjectionUsesReconciledLayout
       ]
   ]
@@ -365,8 +368,8 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener testCredentialCascade
   , testCase "token refresh preserves the credential" $
       withOpener mkOpener testTokenRefreshPreservesCredential
-  , testCase "reset drops the credential" $
-      withOpener mkOpener testResetDropsCredential
+  , testCase "reset keeps the credential" $
+      withOpener mkOpener testResetKeepsCredential
   , testCase "refused commits preserve stored bytes" $
       withOpener mkOpener testRefusedPreservesBytes
   , testCase "credential Show redacts both PINs" $
@@ -3369,11 +3372,11 @@ testCredentialCascade o = withStore o $ \s -> do
   creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
   assertEqual "credential cascaded away" [] creds
 
--- | Reset drops the token's credential with its objects and
--- jobs: the replacement token serves catalog PINs until it is
--- provisioned again.
-testResetDropsCredential :: Opener -> IO ()
-testResetDropsCredential o = withStore o $ \s -> do
+-- | Reset drops the token's objects and jobs but keeps its
+-- credential row: an existing durable credential always wins
+-- over the catalog PINs.
+testResetKeepsCredential :: Opener -> IO ()
+testResetKeepsCredential o = withStore o $ \s -> do
   (tok, _) <- seedStore s
   let tid = trId tok
       cred = CredentialRecord tid "so-pin-1" (Just "user-pin-1")
@@ -3384,7 +3387,7 @@ testResetDropsCredential o = withStore o $ \s -> do
   assertEqual "reset commits" Committed rr
   eCreds <- storeLoadCredentials s
   creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
-  assertEqual "reset drops the credential" [] creds
+  assertEqual "reset keeps the credential" [cred] creds
   eLoaded <- storeLoadTokens s
   loaded <- either (\e -> assertFailure ("load tokens: " ++ show e)) pure eLoaded
   assertEqual "replacement token present" [replacement] (map fst loaded)
@@ -3773,6 +3776,82 @@ fileCredentials path = do
   creds <- either (assertFailure . show) pure eCreds
   pure (sort [ (crToken c, BC8.unpack (crSoPin c), BC8.unpack <$> crUserPin c)
              | c <- creds ])
+
+-- | Commit the catalog's fresh token rows through the raw
+-- backend, with no credential rows: the shape of a store
+-- written before durable credentials were seeded.
+seedLegacyTokens :: FilePath -> Config -> IO ()
+seedLegacyTokens path cfg = do
+  loaded <- fileLoaded path
+  plan <- case reconcileIdentities (desiredOf cfg) [t | (t, _) <- loaded] of
+    Left refusal -> assertFailure ("legacy seed must plan: " ++ show refusal)
+    Right plan -> pure plan
+  r <- commitFile path emptyDelta { sdPutTokens = planSeeds plan }
+  assertEqual "legacy token rows commit" Committed r
+
+-- | Expect the open to refuse as migration-required naming
+-- exactly the given tokens, and leave the file byte-exact.
+expectMigrationRequired :: FilePath -> Config -> [TokenId] -> IO ()
+expectMigrationRequired path cfg want = do
+  bytesBefore <- fileBytes path
+  eAcq <- openReconciled path cfg
+  case eAcq of
+    Left (StdStoreMigrationRequired got) ->
+      assertEqual "refusal names exactly the legacy tokens" want got
+    Left err -> assertFailure ("legacy open refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "legacy store opened without credentials"
+  bytesAfter <- fileBytes path
+  assertEqual "refused legacy open preserves bytes exactly" bytesBefore bytesAfter
+
+-- | Stored tokens with no credential row refuse at the
+-- production open as migration-required, naming every such
+-- token; nothing is written and no credential is invented
+-- from the catalog.
+caseOpenLegacyRefusesMigrationRequired :: IO ()
+caseOpenLegacyRefusesMigrationRequired = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  seedLegacyTokens path cfg
+  expectMigrationRequired path cfg [TokenId 1, TokenId 2, TokenId 3]
+  creds <- fileCredentials path
+  assertEqual "no credential invented from the catalog" [] creds
+
+-- | One provisioned token and one legacy token: the refusal
+-- names only the legacy token.
+caseOpenMixedLegacyNamesOnlyLegacy :: IO ()
+caseOpenMixedLegacyNamesOnlyLegacy = withOpenFile $ \path -> do
+  cfgOne <- parseCatalog (catalogDoc ["haskoki-demo"] ["5678"] ["1234"] [])
+  eAcq <- openReconciled path cfgOne
+  case eAcq of
+    Left err -> assertFailure ("fresh open must seed: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  cfgTwo <- parseCatalog (catalogDoc
+    ["haskoki-demo", "haskoki-ops"] ["5678", "6789"] ["1234", "2345"] [])
+  seedLegacyTokens path cfgTwo
+  expectMigrationRequired path cfgTwo [TokenId 2]
+  creds <- fileCredentials path
+  assertEqual "the provisioned credential is untouched"
+    [(TokenId 1, "5678", Just "1234")] creds
+
+-- | A legacy store opened under a reordered catalog reports
+-- the identity refusal, not the missing credentials.
+caseOpenIdentityRefusalPrecedesMigration :: IO ()
+caseOpenIdentityRefusalPrecedesMigration = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  seedLegacyTokens path cfg
+  bytesBefore <- fileBytes path
+  cfgSwap <- parseCatalog swappedDoc
+  eAcq <- openReconciled path cfgSwap
+  case eAcq of
+    Left (StdStoreIdentityRefusal msg) ->
+      assertBool "refusal names the explicit move" ("planSlotMoves" `isInfixOf` msg)
+    Left err -> assertFailure ("identity drift refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "reordered legacy open accepted"
+  bytesAfter <- fileBytes path
+  assertEqual "refused open preserves bytes exactly" bytesBefore bytesAfter
 
 -- | A reordered catalog refuses at the production open with
 -- the actionable message; the file survives byte-exact and
