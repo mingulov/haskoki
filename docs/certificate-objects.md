@@ -66,7 +66,8 @@ The [native certificate consumer](../tests/c/consumer_certificates.c)
 exercises the C surface. The pinned proxy forwards the qualified lifecycle
 subset, but certificate visibility/restart legs remain direct-only under
 [proxy issue 27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27).
-The [parity driver](../scripts/test-proxy-parity.sh) defines the exact subset.
+The [parity driver](../scripts/test-proxy-parity.sh) defines the exact subset,
+and [proxy exclusions](proxy-exclusions.md) records the dated re-probes.
 
 ## Client journeys
 

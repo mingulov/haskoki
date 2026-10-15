@@ -730,6 +730,60 @@ archive_logs() {
   done
 }
 
+# Opt-in re-probe (HASKOKI_PARITY_REPROBE=1, WP11): an excluded proxied
+# leg is queued instead of skipped, and flush_reprobes runs the queue on a
+# fresh daemon (same backend config) after the group's gate daemon has
+# stopped, so a re-probe never shares state with a gated leg (observed:
+# re-probing consumer_certificates:visibility on the live cert daemon
+# left objects that failed the next atomicity census). Each outcome goes
+# to $ARTIFACTS/reprobe.tsv: the entry with the version and storage it
+# ran under appended after '@' (when the entry leaves them open), the
+# see-URL, pass|diff|error:<rc>, the diff sha256 and the daemon sha256.
+# A re-probe never fails the run; without the variable the excluded leg
+# is skipped exactly as before.
+REPROBE_QUEUE="$TMPD/reprobe.queue"
+: > "$REPROBE_QUEUE"
+reprobe() {
+  # $1 = entry label, $2 = see-URL, $3 = direct log, $4 = proxied log,
+  # remaining = the proxied child argv (no argument contains whitespace)
+  [ "${HASKOKI_PARITY_REPROBE:-}" = "1" ] || return 0
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$(shift 4; echo "$*")" \
+    >> "$REPROBE_QUEUE"
+  echo "REPROBE: $1 queued"
+}
+run_reprobe() {
+  RL="$1"; RU="$2"; RD="$3"; RP="$4"; shift 4
+  rc=0; HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
+    PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
+    timeout -s KILL 300 "$@" >"$RP" 2>&1 || rc=$?
+  normalize "$RD" "$RP.reprobe-direct.norm"
+  normalize "$RP" "$RP.reprobe-proxied.norm"
+  if [ "$rc" -ne 0 ]; then
+    res="error:$rc"
+  elif diff -u "$RP.reprobe-direct.norm" "$RP.reprobe-proxied.norm" > "$RP.reprobe.diff"; then
+    res="pass"
+  else
+    res="diff"
+  fi
+  [ -f "$RP.reprobe.diff" ] || : > "$RP.reprobe.diff"
+  dsha=$(sha256sum < "$RP.reprobe.diff" | cut -c1-64)
+  printf '%s\t%s\t%s\t%s\t%s\n' "$RL" "$RU" "$res" "$dsha" \
+    "$(sha256sum < "$SERVER_BIN" | cut -c1-64)" >> "$ARTIFACTS/reprobe.tsv"
+  echo "REPROBE: $RL -> $res"
+  archive_logs "$RP" "$RP.reprobe.diff"
+}
+flush_reprobes() {
+  # $1 = backend.toml of the group's gate daemon, $2 = server log
+  [ -s "$REPROBE_QUEUE" ] || return 0
+  start_daemon "$1" "$2"
+  while IFS="$(printf '\t')" read -r ql qu qd qp qargv; do
+    # shellcheck disable=SC2086
+    run_reprobe "$ql" "$qu" "$qd" "$qp" $qargv
+  done < "$REPROBE_QUEUE"
+  stop_daemon
+  : > "$REPROBE_QUEUE"
+}
+
 run_parity_cert_leg() {
   # $1 = version, $2 = leg; $CERT_MODE is the LIVE daemon's storage mode
   V="$1"; L="$2"; M="$CERT_MODE"
@@ -753,6 +807,7 @@ run_parity_cert_leg() {
     case "$entry" in
       "consumer_certificates:$L:$V:"*)
         echo "DIRECT-ONLY: consumer_certificates:$L:$V (proxied leg skipped, see ${entry#consumer_certificates:$L:$V:})"
+        reprobe "consumer_certificates:$L:$V@$M" "${entry#consumer_certificates:$L:$V:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D"
         archive_logs "$DLOG"
         return 0
         ;;
@@ -763,6 +818,7 @@ run_parity_cert_leg() {
             ;;
           https://?*)
             echo "DIRECT-ONLY: consumer_certificates:$L (proxied leg skipped, see ${entry#consumer_certificates:$L:})"
+            reprobe "consumer_certificates:$L@$V/$M" "${entry#consumer_certificates:$L:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D"
             archive_logs "$DLOG"
             return 0
             ;;
@@ -773,6 +829,7 @@ run_parity_cert_leg() {
         ;;
       "consumer_certificates:http"*)
         echo "DIRECT-ONLY: consumer_certificates (proxied leg skipped, see ${entry#consumer_certificates:})"
+        reprobe "consumer_certificates@$V/$M" "${entry#consumer_certificates:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D"
         archive_logs "$DLOG"
         return 0
         ;;
@@ -816,6 +873,7 @@ run_parity_routed_leg() {
     case "$entry" in
       "$B:$L:$V:"*)
         echo "DIRECT-ONLY: $B:$L:$V (proxied leg skipped, see ${entry#$B:$L:$V:})"
+        reprobe "$B:$L:$V" "${entry#$B:$L:$V:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --legs "$L"
         archive_logs "$DLOG"
         return 0
         ;;
@@ -826,6 +884,7 @@ run_parity_routed_leg() {
             ;;
           https://?*)
             echo "DIRECT-ONLY: $B:$L (proxied leg skipped, see ${entry#$B:$L:})"
+            reprobe "$B:$L@$V" "${entry#$B:$L:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --legs "$L"
             archive_logs "$DLOG"
             return 0
             ;;
@@ -836,6 +895,7 @@ run_parity_routed_leg() {
         ;;
       "$B:http"*)
         echo "DIRECT-ONLY: $B (proxied leg skipped, see ${entry#$B:})"
+        reprobe "$B@$V" "${entry#$B:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --legs "$L"
         archive_logs "$DLOG"
         return 0
         ;;
@@ -902,6 +962,7 @@ run_parity() {
   for entry in $DIRECT_ONLY; do
     if [ "${entry%%:*}" = "$base" ]; then
       echo "DIRECT-ONLY: $base (proxied leg skipped, see ${entry#*:})"
+      reprobe "$base" "${entry#*:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO"
       archive_logs "$DLOG"
       return 0
     fi
@@ -954,6 +1015,7 @@ for scen in $RUN_LIST; do
   start_daemon "$TMPD/backend.toml" "$TMPD/server-$base.log"
   run_parity "$base"
   stop_daemon
+  flush_reprobes "$TMPD/backend.toml" "$TMPD/server-$base-reprobe.log"
 done
 fi
 
@@ -966,6 +1028,7 @@ for CERT_MODE in $HASKOKI_PARITY_STORAGE; do
   start_daemon "$TMPD/backend-cert-$CERT_MODE.toml" "$TMPD/server-cert-$CERT_MODE.log"
   run_parity consumer_certificates
   stop_daemon
+  flush_reprobes "$TMPD/backend-cert-$CERT_MODE.toml" "$TMPD/server-cert-$CERT_MODE-reprobe.log"
 done
 fi
 
