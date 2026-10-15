@@ -20,7 +20,7 @@ import Control.Exception (AsyncException (..), SomeException, fromException, try
 import Control.Monad (forM_)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.IORef (IORef, newIORef, modifyIORef', readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, modifyIORef', readIORef, writeIORef)
 import Data.List (nub, sort)
 import Data.Word (Word64)
 import System.Timeout (timeout)
@@ -191,6 +191,8 @@ spec = testGroup "Detached jobs"
   , testCase "two contexts: a parked transfer refuses the other context" (counted "m5-detached-jobs" "two-contexts-a-parked-transfer-refuses-the-other-context" (caseTwoContextsParkedTransfer))
   , testCase "two contexts: simultaneous joins admit exactly one" (counted "m5-detached-jobs" "two-contexts-simultaneous-joins-admit-exactly-one" (caseTwoContextsJoinRace))
   , testCase "loser cannot retire or cancel the winner" (counted "m5-detached-jobs" "loser-cannot-retire-or-cancel-the-winner" (caseLoserCannotRetireOrCancel))
+  , testCase "retired unserved table refuses a late claim through its context" (counted "m5-detached-jobs" "retired-unserved-table-refuses-a-late-claim-through-its-context" (caseRetiredUnservedRefuses))
+  , testCase "retire racing a pre-claim join refuses the join" (counted "m5-detached-jobs" "retire-racing-a-pre-claim-join-refuses-the-join" (caseRetireRacesPreClaimJoin))
   ]
 
 tokHome :: TokenId
@@ -2287,9 +2289,22 @@ caseLoserCannotRetireOrCancel = do
   assertEqual "loser whole-context retire finds nothing" [] whole
   scoped <- retireLiveTableFor dcB tidA
   assertEqual "loser cannot retire the winner's table" [] scoped
+  -- Make the loser's table hold its OWN unrelated job at the
+  -- winner's local job id, so the cancel really lands on a live
+  -- job: it must resolve through table B's identity, never the
+  -- winner's (tidA, jA) binding.
+  let genB = gen { lgTable = tableB }
+      fillTo n
+        | n > unJobId jA + 1 = assertFailure "table B never reached the winner's job id"
+        | otherwise = do
+            j <- startDigestJob genB "xyz" 32 1
+            if j == jA then pure () else fillTo (n + 1)
+  fillTo (0 :: Int)
   (cout, merr) <- cancelJoined dcB tableB jA
-  assertEqual "winner's job is unknown to the loser table" CancelUnknown cout
+  assertEqual "loser cancels only its own colliding job" CancelOk cout
   assertEqual "no durable mark" Nothing merr
+  revB <- inspectReverse dcB (asyncTableId tableB) jA
+  assertEqual "the loser's job resolves to no persistent id" Nothing revB
   commits1 <- ssCommits <$> storeStats (tcStore tc)
   assertEqual "loser wrote nothing durable" commits0 commits1
   avA <- inspectAttachment dcA pid
@@ -2304,3 +2319,81 @@ caseLoserCannotRetireOrCancel = do
   assertEqual "exactly one engine run" 1 nRuns
   durableState (tcStore tc) pid >>= assertEqual "record delivered" JobDelivered
   storeClose (tcStore tc)
+
+-- A context that retires a table it never claimed through
+-- leaves the shared authority untouched but refuses its own late
+-- claims through that table (the per-context late-join refusal):
+-- no start, the record stays idle. A sibling context over the
+-- same store is not bound by that refusal.
+caseRetiredUnservedRefuses :: IO ()
+caseRetiredUnservedRefuses = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dc <- mkDetached store
+  let sid = ssId (lgSession gen)
+  tableX <- newAsyncTable 8
+  enableAsyncSession tableX sid
+  let tidX = asyncTableId tableX
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dc (lgTable gen) j0 JobDigest
+  retired <- retireLiveTableFor dc tidX
+  assertEqual "nothing to retire" [] retired
+  statsX0 <- tableStats tableX
+  late <- joinJob dc (lgEnv gen) tableX (digestJoin pid sid)
+  assertEqual "retired table refuses the late claim"
+    (JoinAlreadyAttached joinPolicyName) late
+  statsX1 <- tableStats tableX
+  assertEqual "no start in the retired table" statsX0 statsX1
+  av <- inspectAttachment dc pid
+  assertEqual "record stays idle" (Just AvIdle) av
+  dcOther <- mkDetached store
+  out <- joinJob dcOther (lgEnv gen) tableX (digestJoin pid sid)
+  case out of
+    JoinOk _ -> pure ()
+    other -> assertFailure ("sibling context must not be refused: " ++ show other)
+  storeClose store
+
+-- Retirement racing a join that is still before its claim: the
+-- joiner parks in its token check (pre-claim) on a context that
+-- has never claimed through the table; the table retires; on
+-- release the join is refused with no start and the record idle.
+caseRetireRacesPreClaimJoin :: IO ()
+caseRetireRacesPreClaimJoin = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  armed <- newIORef False
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  let parkOnce = do
+        fire <- atomicModifyIORef' armed (\a -> (False, a))
+        if fire then putMVar entered () >> takeMVar proceed else pure ()
+      parked = store { storeLoadTokens = parkOnce >> storeLoadTokens store }
+  dc <- mkDetached parked
+  let sid = ssId (lgSession gen)
+  tableX <- newAsyncTable 8
+  enableAsyncSession tableX sid
+  let tidX = asyncTableId tableX
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dc (lgTable gen) j0 JobDigest
+  writeIORef armed True
+  done <- newEmptyMVar
+  _ <- forkIO $ do
+    r <- try (joinJob dc (lgEnv gen) tableX (digestJoin pid sid))
+    putMVar done (r :: Either SomeException JoinOutcome)
+  mEntered <- timeout 10000000 (takeMVar entered)
+  case mEntered of
+    Nothing -> assertFailure "joiner never parked before its claim"
+    Just () -> pure ()
+  retired <- retireLiveTableFor dc tidX
+  putMVar proceed ()
+  assertEqual "nothing to retire" [] retired
+  r <- joinBounded "pre-claim joiner" done
+  case r of
+    Right out -> assertEqual "late join refused"
+      (JoinAlreadyAttached joinPolicyName) out
+    Left e -> assertFailure ("joiner threw: " ++ show e)
+  stats <- tableStats tableX
+  assertEqual "no start in the retired table" (0, 0, 0) stats
+  av <- inspectAttachment dc pid
+  assertEqual "record stays idle" (Just AvIdle) av
+  storeClose store

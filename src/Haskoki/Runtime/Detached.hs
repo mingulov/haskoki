@@ -232,8 +232,12 @@ import Haskoki.Types
 -- arbitrate one persistent id through one claim. The context
 -- itself holds only the set of tables it claimed through (the
 -- scope of its retirement: a context never retires a table it
--- did not serve), the adapter's opaque marks, and the TEST-ONLY
--- join-transfer hook (a no-op unless a test sets it).
+-- did not serve), the context-local refused set (tables retired
+-- through this context before it ever claimed through them: its
+-- own later claims through them are refused, while the shared
+-- authority and sibling contexts are untouched), the adapter's
+-- opaque marks, and the TEST-ONLY join-transfer hook (a no-op
+-- unless a test sets it).
 -- Persistent ids are NOT minted here: every detach reserves its
 -- id from the store ('storeReserveJobId'), so two contexts on
 -- one store never share an id. One context may serve several
@@ -251,6 +255,7 @@ data DetachCtx = DetachCtx
   , dcSlot :: !SlotId
   , dcClaims :: !ClaimAuthority
   , dcServed :: !(TVar (Set AsyncTableId))
+  , dcRefused :: !(TVar (Set AsyncTableId))
   , dcOpaque :: !(TVar (Map JobId String))
   , dcJoinHook :: !(TVar (IO ()))
   }
@@ -285,6 +290,7 @@ openDetached store tok = do
           Left err -> pure (Left (OpenJobs err))
           Right _ -> do
             servedVar <- newTVarIO Set.empty
+            refusedVar <- newTVarIO Set.empty
             opaqueVar <- newTVarIO Map.empty
             hookVar <- newTVarIO (pure ())
             pure (Right DetachCtx
@@ -293,6 +299,7 @@ openDetached store tok = do
               , dcSlot = trSlot trec
               , dcClaims = storeClaims store
               , dcServed = servedVar
+              , dcRefused = refusedVar
               , dcOpaque = opaqueVar
               , dcJoinHook = hookVar
               })
@@ -891,22 +898,25 @@ setIdle dc pid = putAttachment dc pid AttIdle
 -- | Take the in-progress join claim for a persistent id in one
 -- STM step, stamping it with the attempt token the caller
 -- minted. Succeeds only from idle or absent on a table whose
--- attachments are not retired; anything else (another claim, an
--- active, a terminal, or a retired table) refuses with 'Nothing'
--- and the authority untouched. The claim lives on the store
+-- attachments are not retired (in the shared authority) and that
+-- this context has not refused (retired through it before it
+-- ever claimed through it); anything else (another claim, an
+-- active, a terminal, or a retired or refused table) refuses
+-- with 'Nothing' and the authority untouched. The claim lives on the store
 -- handle's shared authority, so a claim (or active) taken
 -- through any context over the handle refuses this one. The
 -- claim records what it replaced so retirement can roll exactly
 -- it back; a granted claim also records its table in this
 -- context's served set (the scope of this context's
--- retirement). STM touches the authority and the served set
--- only — never Store IO.
+-- retirement). STM touches the authority and this context's
+-- table sets only — never Store IO.
 tryClaim
   :: DetachCtx -> Word64 -> AsyncTableId -> SessionId -> Unique
   -> IO (Maybe ClaimPrior)
 tryClaim dc pid tid sid uniq = atomically $ do
   tc <- readClaims dc
-  if tid `Set.member` tcRetired tc
+  refused <- readTVar (dcRefused dc)
+  if tid `Set.member` tcRetired tc || tid `Set.member` refused
     then pure Nothing
     else case Map.lookup pid (tcAttach tc) of
       Just AttIdle -> grant tc ClaimHadIdle
@@ -1516,37 +1526,51 @@ retireLiveTable dc = do
 -- later claim from it — are refused. Sibling tables'
 -- attachments — active, idle, terminal, or mid-claim — are
 -- untouched. A table this context never claimed through is not
--- this context's to retire: the call is a no-op returning @[]@
--- (a losing context cannot retire the winner's table). Returns one entry per retired attachment with its
--- mark error, if any (rolled-back claims are not retired
--- attachments: their durable jobs stand untouched and joinable).
--- Opaque marks are NOT cleared here: they are keyed by bare job
--- id (table-blind), so a scoped retire cannot attribute them —
--- clearing would drop a sibling table's live marks.
+-- this context's to retire in the shared authority (a losing
+-- context cannot retire the winner's table): the call returns
+-- @[]@ and only records the table in this context's refused
+-- set, so this context's own later claims through it are
+-- refused while other contexts are unaffected. Returns one entry
+-- per retired attachment with its mark error, if any
+-- (rolled-back claims are not retired attachments: their durable
+-- jobs stand untouched and joinable). The retiring table's
+-- table-keyed opaque marks in the shared authority drop with it
+-- (see 'retireMatching'); this context's legacy per-job-id marks
+-- are NOT cleared here: they are table-blind, so a scoped retire
+-- cannot attribute them — clearing would drop a sibling table's
+-- live marks.
 retireLiveTableFor
   :: DetachCtx -> AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireLiveTableFor dc tid = retireMatching dc (Just tid)
 
 -- | Shared retire worker over the tables this context served:
 -- 'Nothing' retires all of them (whole context), @'Just' tid@
--- only that one — and nothing when this context never claimed
--- through @tid@. One STM step on the shared authority: the
+-- only that one. When this context never claimed through @tid@,
+-- the shared authority is untouched and @tid@ only joins this
+-- context's refused set (its later claims through @tid@ refuse;
+-- an unserved table is never written into the shared retired
+-- set, which would let a loser defeat the winner's in-flight
+-- commit). Otherwise, one STM step on the shared authority: the
 -- retiring tables record their identity (so the claims' late
 -- commits — and any later claim from those tables — are refused
 -- rather than publishing a live binding after the drain), their
 -- in-progress claims roll back to exactly what they replaced,
 -- their opaque marks drop, and their actives are collected.
--- The durable cancel marks run after the STM step, outside it.
+-- The durable cancel marks run after the STM step, outside it,
+-- and only when there are actives to mark.
 retireMatching
   :: DetachCtx -> Maybe AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireMatching dc mTid = do
   actives <- atomically $ do
     served <- readTVar (dcServed dc)
-    let tids = case mTid of
-          Nothing -> served
-          Just tid
-            | tid `Set.member` served -> Set.singleton tid
-            | otherwise -> Set.empty
+    tids <- case mTid of
+      Nothing -> pure served
+      Just tid
+        | tid `Set.member` served -> pure (Set.singleton tid)
+        | otherwise -> do
+            refused <- readTVar (dcRefused dc)
+            writeTVar (dcRefused dc) (Set.insert tid refused)
+            pure Set.empty
     if Set.null tids
       then pure []
       else do
@@ -1569,12 +1593,15 @@ retireMatching dc mTid = do
           , tcRetired = Set.union tids (tcRetired tc)
           }
         pure actives
-  eJobs <- storeLoadJobs (dcStore dc)
-  case eJobs of
-    Left err -> do
-      mapM_ (\pid -> setTerminal dc pid JobCanceled) actives
-      pure [(pid, Just err) | pid <- actives]
-    Right jobs -> mapM (retireOne jobs) actives
+  if null actives
+    then pure []
+    else do
+      eJobs <- storeLoadJobs (dcStore dc)
+      case eJobs of
+        Left err -> do
+          mapM_ (\pid -> setTerminal dc pid JobCanceled) actives
+          pure [(pid, Just err) | pid <- actives]
+        Right jobs -> mapM (retireOne jobs) actives
   where
     -- | Roll one retired claim back to what it replaced.
     rollbackClaimed
