@@ -2,23 +2,23 @@
 
 You need Docker running on Linux amd64. No Haskell setup or hardware
 token is needed. The [README](../README.md#try-it-with-docker) runs the
-published v0.3.1.0 demo, the latest published release; this guide uses the
-same v0.3.1.0 commands. v0.4.0.0 is not published until its release workflow completes.
+published v0.4.0.0 demo, the latest published release; this guide uses the
+same v0.4.0.0 commands.
 
 ## Choose the image
 
 Use the published image:
 
 ```sh
-HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:v0.3.1.0
+HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:v0.4.0.0
 ```
 
 Keep that variable in your host terminal for the commands below. The
-release was published on October 12, 2026 from source `a89fb09`
-([release page](https://github.com/mingulov/haskoki/releases/tag/v0.3.1.0),
+release was published on October 15, 2026 from source `d35650d`
+([release page](https://github.com/mingulov/haskoki/releases/tag/v0.4.0.0),
 image digest
-`sha256:4f8f152fd283aa9aec864eab18cb3eb2cb7ca7b1bae10875080721bb9c0587fe`);
-the [release manifest](https://github.com/mingulov/haskoki/releases/download/v0.3.1.0/release-manifest.json)
+`sha256:9c1bef4b58a95373bbbdb979107a655e85f14e5a0acc80c04586c9df5dcd9c4f`);
+the [release manifest](https://github.com/mingulov/haskoki/releases/download/v0.4.0.0/release-manifest.json)
 records the exact source and digest. Trying an unpublished branch
 instead? See [Contributor builds](#contributor-builds).
 
@@ -151,7 +151,10 @@ The published **v0.3.1.0** image (October 12, 2026, source `a89fb09`)
 is **113.64 MiB compressed** (sum of registry layer sizes from an
 anonymous `docker manifest inspect`) and **346.66 MiB unpacked**
 (363,496,136 bytes in the release `image-record.txt`, the same bytes
-as the pre-publication candidate). Those are different measurements,
+as the pre-publication candidate). The published **v0.4.0.0** image
+(October 15, 2026, source `d35650d`) is **113.95 MiB compressed** and
+**348.11 MiB unpacked** (365,021,250 bytes in the release
+`image-record.txt`). Those are different measurements,
 not extra amounts to add together. Each build records its size in the
 GitHub `demo-image-build` job. Actual disk use also depends on shared
 Docker layers and retained reports.

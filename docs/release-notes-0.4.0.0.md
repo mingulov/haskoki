@@ -176,4 +176,4 @@ archives and manifest alongside the checksums, run `sha256sum -c SHA256SUMS`.
 The [publishing guide](https://github.com/mingulov/haskoki/blob/v0.4.0.0/docs/publishing.md)
 explains the GitHub-only build and publication workflow. A source branch
 preparing this version does not mean its release or image has been published.
-The latest published release at the time of writing is v0.3.1.0.
+This version was published on October 15, 2026 as [v0.4.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.4.0.0) from source `d35650d`.
