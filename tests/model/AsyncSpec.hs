@@ -23,6 +23,7 @@ import Foreign.Ptr (plusPtr)
 import System.Mem (performGC)
 import System.Mem.Weak (Weak, deRefWeak, mkWeak)
 
+import OwnershipCounters (assertZero, counted)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model
   ( HandleBinding (..)
@@ -157,43 +158,43 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Attached async"
-  [ testCase "async sign: pending polls keep canaries; complete delivers once" caseFirstTest
-  , testCase "cancel wins: engine never runs; complete-after-cancel rejected" caseCancelWins
-  , testCase "complete wins: late cancel loses and writes nothing" caseCompleteWins
-  , testCase "start on sync-only session refused without allocating" caseSessionGate
-  , testCase "drive error fails the job; nothing delivered" caseDriveError
-  , testCase "completion codecs round-trip all three shapes" caseCodecRoundTrip
-  , testCase "completion decode rejects adversarial frames" caseCodecAdversarial
-  , testCase "wrong-function polling rejected; job intact" caseWrongFunction
-  , testCase "one-handle job delivers a generated key" caseGenKey
-  , testCase "two-handle job delivers a generated pair" caseGenKeyPair
-  , testCase "over-capacity refuses before pending" caseCapacity
-  , testCase "attached capacity bounds enforced at submit" caseBadCapacity
-  , testCase "reap drops tombstones; live jobs survive" caseReap
-  , testCase "sync sessions stay synchronous under async storm" caseSyncStaysSync
-  , testCase "short buffers size without delivering or re-running" caseShortBuffer
-  , testCase "handle completions need no byte buffer" caseHandleNoBuffer
-  , testCase "stale drive fails before running the effect" caseDriveStale
-  , testCase "stale complete fails without publishing" caseCompleteStale
-  , testCase "complete of a closed session fails cleanly" caseClosedSession
-  , testCase "cancel during drive waits, then wins" caseCancelDuringDrive
-  , testCase "concurrent complete vs cancel: exactly one winner" caseConcurrentWinner
-  , testCase "drain after publish: short drains nothing, deliver drains once" caseDrainAfterPublish
-  , testCase "retention bound: N delivered digests keep at most cap tombstones" caseRetentionBound
-  , testCase "capped store: delivery + retry + cancel semantics unchanged" caseCappedSemantics
-  , testCase "byte retention bound: N max-size digests keep bytes within budget" caseByteRetentionBound
-  , testCase "byte budget clears suite-shaped fills with headroom" caseByteBudgetHeadroom
-  , testCase "byte accounting prices every retained field" caseByteAccountingFields
-  , testCase "byte-evicted store: delivery + retry + cancel semantics unchanged" caseByteEvictionSemantics
-  , testCase "retained cipher slices are independent copies" caseCipherSlicesIndependent
-  , testCase "committed eviction reclaims without a later table read" caseCommitReclaimsWithoutRead
-  , testCase "eviction race under count trigger observes winner-or-unknown" caseEvictionRaceCount
-  , testCase "eviction race under byte trigger observes winner-or-unknown" caseEvictionRaceBytes
-  , testCase "disable is idempotent; count tracks the enabled set" caseDisableIdempotent
-  , testCase "lease snapshots: queued arbitration keeps epochs and writes exact" caseLeaseSnapshotQueue
-  , testCase "incoherent call submit refused without consuming an id" caseCallMismatchRefused
-  , testCase "call submit with a mismatched session refused" caseCallSessionRefused
-  , testCase "legacy unstepped submits still admitted" caseLegacyUnsteppedAdmitted
+  [ testCase "async sign: pending polls keep canaries; complete delivers once" (counted "m7-attached-async" "async-sign-pending-polls-keep-canaries-complete-delivers-once" (caseFirstTest))
+  , testCase "cancel wins: engine never runs; complete-after-cancel rejected" (counted "m7-attached-async" "cancel-wins-engine-never-runs-complete-after-cancel-rejected" (caseCancelWins))
+  , testCase "complete wins: late cancel loses and writes nothing" (counted "m7-attached-async" "complete-wins-late-cancel-loses-and-writes-nothing" (caseCompleteWins))
+  , testCase "start on sync-only session refused without allocating" (counted "m7-attached-async" "start-on-sync-only-session-refused-without-allocating" (caseSessionGate))
+  , testCase "drive error fails the job; nothing delivered" (counted "m7-attached-async" "drive-error-fails-the-job-nothing-delivered" (caseDriveError))
+  , testCase "completion codecs round-trip all three shapes" (counted "m7-attached-async" "completion-codecs-round-trip-all-three-shapes" (caseCodecRoundTrip))
+  , testCase "completion decode rejects adversarial frames" (counted "m7-attached-async" "completion-decode-rejects-adversarial-frames" (caseCodecAdversarial))
+  , testCase "wrong-function polling rejected; job intact" (counted "m7-attached-async" "wrong-function-polling-rejected-job-intact" (caseWrongFunction))
+  , testCase "one-handle job delivers a generated key" (counted "m7-attached-async" "one-handle-job-delivers-a-generated-key" (caseGenKey))
+  , testCase "two-handle job delivers a generated pair" (counted "m7-attached-async" "two-handle-job-delivers-a-generated-pair" (caseGenKeyPair))
+  , testCase "over-capacity refuses before pending" (counted "m7-attached-async" "over-capacity-refuses-before-pending" (caseCapacity))
+  , testCase "attached capacity bounds enforced at submit" (counted "m7-attached-async" "attached-capacity-bounds-enforced-at-submit" (caseBadCapacity))
+  , testCase "reap drops tombstones; live jobs survive" (counted "m7-attached-async" "reap-drops-tombstones-live-jobs-survive" (caseReap))
+  , testCase "sync sessions stay synchronous under async storm" (counted "m7-attached-async" "sync-sessions-stay-synchronous-under-async-storm" (caseSyncStaysSync))
+  , testCase "short buffers size without delivering or re-running" (counted "m7-attached-async" "short-buffers-size-without-delivering-or-re-running" (caseShortBuffer))
+  , testCase "handle completions need no byte buffer" (counted "m7-attached-async" "handle-completions-need-no-byte-buffer" (caseHandleNoBuffer))
+  , testCase "stale drive fails before running the effect" (counted "m7-attached-async" "stale-drive-fails-before-running-the-effect" (caseDriveStale))
+  , testCase "stale complete fails without publishing" (counted "m7-attached-async" "stale-complete-fails-without-publishing" (caseCompleteStale))
+  , testCase "complete of a closed session fails cleanly" (counted "m7-attached-async" "complete-of-a-closed-session-fails-cleanly" (caseClosedSession))
+  , testCase "cancel during drive waits, then wins" (counted "m7-attached-async" "cancel-during-drive-waits-then-wins" (caseCancelDuringDrive))
+  , testCase "concurrent complete vs cancel: exactly one winner" (counted "m7-attached-async" "concurrent-complete-vs-cancel-exactly-one-winner" (caseConcurrentWinner))
+  , testCase "drain after publish: short drains nothing, deliver drains once" (counted "m7-attached-async" "drain-after-publish-short-drains-nothing-deliver-drains-once" (caseDrainAfterPublish))
+  , testCase "retention bound: N delivered digests keep at most cap tombstones" (counted "m7-attached-async" "retention-bound-n-delivered-digests-keep-at-most-cap-tombstones" (caseRetentionBound))
+  , testCase "capped store: delivery + retry + cancel semantics unchanged" (counted "m7-attached-async" "capped-store-delivery-retry-cancel-semantics-unchanged" (caseCappedSemantics))
+  , testCase "byte retention bound: N max-size digests keep bytes within budget" (counted "m7-attached-async" "byte-retention-bound-n-max-size-digests-keep-bytes-within-budget" (caseByteRetentionBound))
+  , testCase "byte budget clears suite-shaped fills with headroom" (counted "m7-attached-async" "byte-budget-clears-suite-shaped-fills-with-headroom" (caseByteBudgetHeadroom))
+  , testCase "byte accounting prices every retained field" (counted "m7-attached-async" "byte-accounting-prices-every-retained-field" (caseByteAccountingFields))
+  , testCase "byte-evicted store: delivery + retry + cancel semantics unchanged" (counted "m7-attached-async" "byte-evicted-store-delivery-retry-cancel-semantics-unchanged" (caseByteEvictionSemantics))
+  , testCase "retained cipher slices are independent copies" (counted "m7-attached-async" "retained-cipher-slices-are-independent-copies" (caseCipherSlicesIndependent))
+  , testCase "committed eviction reclaims without a later table read" (counted "m7-attached-async" "committed-eviction-reclaims-without-a-later-table-read" (caseCommitReclaimsWithoutRead))
+  , testCase "eviction race under count trigger observes winner-or-unknown" (counted "m7-attached-async" "eviction-race-under-count-trigger-observes-winner-or-unknown" (caseEvictionRaceCount))
+  , testCase "eviction race under byte trigger observes winner-or-unknown" (counted "m7-attached-async" "eviction-race-under-byte-trigger-observes-winner-or-unknown" (caseEvictionRaceBytes))
+  , testCase "disable is idempotent; count tracks the enabled set" (counted "m7-attached-async" "disable-is-idempotent-count-tracks-the-enabled-set" (caseDisableIdempotent))
+  , testCase "lease snapshots: queued arbitration keeps epochs and writes exact" (counted "m7-attached-async" "lease-snapshots-queued-arbitration-keeps-epochs-and-writes-exact" (caseLeaseSnapshotQueue))
+  , testCase "incoherent call submit refused without consuming an id" (counted "m7-attached-async" "incoherent-call-submit-refused-without-consuming-an-id" (caseCallMismatchRefused))
+  , testCase "call submit with a mismatched session refused" (counted "m7-attached-async" "call-submit-with-a-mismatched-session-refused" (caseCallSessionRefused))
+  , testCase "legacy unstepped submits still admitted" (counted "m7-attached-async" "legacy-unstepped-submits-still-admitted" (caseLegacyUnsteppedAdmitted))
   ]
 
 sid1 :: SessionId
@@ -949,7 +950,7 @@ caseReap = do
   rMissing <- reapJob table (JobId 4242)
   assertEqual "missing reap unknown" ReapUnknown rMissing
   (live, term, _) <- tableStats table
-  assertEqual "no live" 0 live
+  assertZero "live_jobs" "no live" live
   assertEqual "no tombstones" 0 term
   _ <- pure (del, cap)
   pure ()
@@ -1056,7 +1057,7 @@ caseSyncStaysSync = do
   jobsA <- sessionJobs table (ssId stA)
   assertEqual "async session job ids" 5 (length jobsA)
   (live, term, _) <- tableStats table
-  assertEqual "storm leaves no live jobs" 0 live
+  assertZero "live_jobs" "storm leaves no live jobs" live
   assertEqual "storm tombstones" 5 term
 
 -- ---------------------------------------------------------------------------
@@ -1345,7 +1346,7 @@ caseRetentionBound = do
   writes <- writesOf cap
   assertEqual "every digest delivered exactly once" n (length writes)
   (live, term, nextId) <- tableStats table
-  assertEqual "no live jobs left" 0 live
+  assertZero "live_jobs" "no live jobs left" live
   assertEqual "tombstones bounded by the retention cap" retentionCap term
   assertEqual "job ids contiguous" n nextId
   -- Oldest-first eviction: the first jobs observe unknown, like
@@ -1383,7 +1384,7 @@ caseCappedSemantics = do
   -- Fill past the cap so eviction is active for everything below.
   mapM_ (cancelOneJob table) [1 .. retentionCap + 16]
   (live0, term0, _) <- tableStats table
-  assertEqual "fill leaves no live jobs" 0 live0
+  assertZero "live_jobs" "fill leaves no live jobs" live0
   assertEqual "store is at the retention cap" retentionCap term0
   -- Delivery: exact bytes, exactly once, winner observable.
   Right jd <- startJob table (digestRequest sid1 1)
@@ -1438,7 +1439,7 @@ caseCappedSemantics = do
   rOld <- reapJob table (JobId 0)
   assertEqual "evicted fill job reaps unknown" ReapUnknown rOld
   (liveF, termF, _) <- tableStats table
-  assertEqual "no live jobs left" 0 liveF
+  assertZero "live_jobs" "no live jobs left" liveF
   assertEqual "store still at the retention cap" retentionCap termF
 
 -- ---------------------------------------------------------------------------
@@ -1498,7 +1499,7 @@ caseByteRetentionBound = do
   writes <- writesOf cap
   assertEqual "every big digest delivered exactly once" n (length writes)
   (live, term, _) <- tableStats table
-  assertEqual "no live jobs left" 0 live
+  assertZero "live_jobs" "no live jobs left" live
   bytes <- retainedBytes table
   if bytes <= maxRetainedBytes
     then pure ()
@@ -1544,7 +1545,7 @@ caseByteBudgetHeadroom = do
   let run = countingRunner runs
   mapM_ (deliverOneDigest table env run del) [1 .. n]
   (live, term, _) <- tableStats table
-  assertEqual "no live jobs left" 0 live
+  assertZero "live_jobs" "no live jobs left" live
   assertEqual "count cap (not the byte budget) bounds small fills"
     retentionCap term
   bytes <- retainedBytes table
@@ -1715,7 +1716,7 @@ caseByteEvictionSemantics = do
   mapM_ (deliverOneBigDigest table env run delFill size) [1 .. 16]
   (live0, term0, _) <- tableStats table
   bytes0 <- retainedBytes table
-  assertEqual "fill leaves no live jobs" 0 live0
+  assertZero "live_jobs" "fill leaves no live jobs" live0
   if bytes0 <= maxRetainedBytes
     then pure ()
     else assertFailure
@@ -1784,7 +1785,7 @@ caseByteEvictionSemantics = do
   assertEqual "evicted big job reaps unknown" ReapUnknown rOld
   (liveF, termF, _) <- tableStats table
   bytesF <- retainedBytes table
-  assertEqual "no live jobs left" 0 liveF
+  assertZero "live_jobs" "no live jobs left" liveF
   assertEqual "store holds 7 big + 3 small" 10 termF
   if bytesF <= maxRetainedBytes
     then pure ()

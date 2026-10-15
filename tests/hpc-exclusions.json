@@ -1,0 +1,11 @@
+{
+  "schema": "haskoki-hpc-exclusions/1",
+  "exclusions": [
+    {
+      "module": "Haskoki.PKCS11",
+      "class": "deprecated-stub",
+      "reason": "Deprecated placeholder API: four functions that return CKR_GENERAL_ERROR. No executable calls them, so the object is never linked into a test binary and registers no ticks; the hpc workflow also passes --exclude=Haskoki.PKCS11 to the reports.",
+      "reviewed": "2026-10-15"
+    }
+  ]
+}

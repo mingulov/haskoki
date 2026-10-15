@@ -5,7 +5,7 @@
 #
 # Pin policy: same as ci.yml — every third-party action pinned to a
 # full commit SHA with the tag as a trailing comment
-# (checkout v7.0.1, cache v6.1.0). Coverage of this file by
+# (checkout v7.0.1, cache v6.1.0, upload-artifact v7.0.2). Coverage of this file by
 # scripts/check-actions-pinned.py follows at integration time.
 name: Haskell reference
 
@@ -14,6 +14,9 @@ on:
     branches: ["main"]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   # ------------------------------------------------------------------
@@ -53,10 +56,41 @@ jobs:
       - name: Build example and oracle
         run: |
           set -euo pipefail
+          mkdir -p reference-logs
           cabal update
-          cabal build exe:logout-journey test-suite:haskoki-logout-oracle-tests
+          cabal build exe:logout-journey test-suite:haskoki-logout-oracle-tests \
+            2>&1 | tee reference-logs/build.log
       - name: Run example and oracle
         run: |
           set -euo pipefail
-          cabal run exe:logout-journey
-          cabal test haskoki-logout-oracle-tests
+          mkdir -p reference-logs
+          cabal run exe:logout-journey 2>&1 | tee reference-logs/logout-journey.log
+          cabal test haskoki-logout-oracle-tests --test-show-details=direct \
+            2>&1 | tee reference-logs/logout-oracle.log
+      - name: Receipt (revision and toolchain)
+        # Runs even after a failure, so the logs above always carry the
+        # revision and the stock toolchain they were produced with.
+        if: always()
+        env:
+          RECEIPT_REVISION: ${{ github.sha }}
+          RECEIPT_REF: ${{ github.ref }}
+          RECEIPT_RUN: ${{ github.run_id }}
+          RECEIPT_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          mkdir -p reference-logs
+          {
+            echo "revision: $RECEIPT_REVISION"
+            echo "ref: $RECEIPT_REF"
+            echo "run: $RECEIPT_RUN attempt $RECEIPT_ATTEMPT"
+            echo "ghc: $(ghc --numeric-version 2>&1 || echo unavailable)"
+            echo "cabal: $(cabal --numeric-version 2>&1 || echo unavailable)"
+            echo "image: ubuntu:26.04"
+          } > reference-logs/receipt.txt
+          cat reference-logs/receipt.txt
+      - name: Upload reference logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: haskell-reference-logs
+          path: reference-logs/
+          if-no-files-found: error

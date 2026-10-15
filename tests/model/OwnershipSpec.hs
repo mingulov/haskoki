@@ -94,6 +94,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import OwnershipCounters (assertCensusZero, assertZero, counted, emitCounters)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import qualified Haskoki.Engine.Backend as B
 import Haskoki.Engine.Driver (encodeResult, runEffect, toCryptoError)
@@ -295,49 +296,49 @@ spec = testGroup "Ownership"
     , testCase "init vs close stays typed"
         (guarded "gate-race-init" caseGateRaceInit)
     , testCase "update vs close stays typed"
-        (guarded "gate-race-update" caseGateRaceUpdate)
+        (counted "m2-lifetime-gate" "gate-race-update" (guarded "gate-race-update" caseGateRaceUpdate))
     , testCase "final vs close stays typed"
-        (guarded "gate-race-final" caseGateRaceFinal)
+        (counted "m2-lifetime-gate" "gate-race-final" (guarded "gate-race-final" caseGateRaceFinal))
     , testCase "release vs close frees once"
-        (guarded "gate-race-release" caseGateRaceRelease)
+        (counted "m2-lifetime-gate" "gate-race-release" (guarded "gate-race-release" caseGateRaceRelease))
     , testCase "import vs close stays typed"
         (guarded "gate-race-import" caseGateRaceImportClose)
     , testCase "export vs close stays typed"
         (guarded "gate-race-export" caseGateRaceExportClose)
     , testCase "simultaneous close stays total"
-        (guarded "gate-simultaneous-close" caseGateSimultaneousClose)
+        (counted "m2-lifetime-gate" "gate-simultaneous-close" (guarded "gate-simultaneous-close" caseGateSimultaneousClose))
     , testCase "close waits for an admitted borrower"
-        (guarded "gate-close-waits-borrow" caseGateCloseWaitsForBorrow)
+        (counted "m2-lifetime-gate" "gate-close-waits-borrow" (guarded "gate-close-waits-borrow" caseGateCloseWaitsForBorrow))
     , testCase "close waits through the take-to-consume window"
-        (guarded "gate-close-waits-final" caseGateCloseWaitsForFinal)
+        (counted "m2-lifetime-gate" "gate-close-waits-final" (guarded "gate-close-waits-final" caseGateCloseWaitsForFinal))
     , testCase "interruption cleanup releases the gate for close"
-        (guarded "gate-close-after-interrupt" caseGateCloseAfterInterrupt)
+        (counted "m2-lifetime-gate" "gate-close-after-interrupt" (guarded "gate-close-after-interrupt" caseGateCloseAfterInterrupt))
     , testCase "cancel while closing preserves the gate"
-        (guarded "gate-cancel-closing" caseGateCancelWhileClosing)
+        (counted "m2-lifetime-gate" "gate-cancel-closing" (guarded "gate-cancel-closing" caseGateCancelWhileClosing))
     ]
   , testGroup "native ownership transfers"
     [ testCase "gated copy fault frees the output (sync)"
-        (guarded "gated-copy-fault" caseGatedCopyFaultSync)
+        (counted "m1-native-transfers" "gated-copy-fault" (guarded "gated-copy-fault" caseGatedCopyFaultSync))
     , testCase "parked copy dies ThreadKilled with zero outstanding"
-        (guarded "gated-copy-park" caseGatedCopyParkKill)
+        (counted "m1-native-transfers" "gated-copy-park" (guarded "gated-copy-park" caseGatedCopyParkKill))
     , testCase "pair fault between copies frees both"
-        (guarded "gated-pair-between" caseGatedPairBetweenFault)
+        (counted "m1-native-transfers" "gated-pair-between" (guarded "gated-pair-between" caseGatedPairBetweenFault))
     , testCase "consuming final plus copy fault frees once (sync)"
-        (guarded "gated-final-fault" caseGatedFinalFaultSync)
+        (counted "m1-native-transfers" "gated-final-fault" (guarded "gated-final-fault" caseGatedFinalFaultSync))
     , testCase "consuming final plus kill at copy frees once"
-        (guarded "gated-final-park" caseGatedFinalParkKill)
+        (counted "m1-native-transfers" "gated-final-park" (guarded "gated-final-park" caseGatedFinalParkKill))
     , testCase "alloc fault before adoption fails clean"
-        (guarded "gated-adoption-alloc" caseGatedAdoptionAllocFail)
+        (counted "m1-native-transfers" "gated-adoption-alloc" (guarded "gated-adoption-alloc" caseGatedAdoptionAllocFail))
     , testCase "load fault before adoption frees the live env"
-        (guarded "gated-adoption-load" caseGatedAdoptionLoadFault)
+        (counted "m1-native-transfers" "gated-adoption-load" (guarded "gated-adoption-load" caseGatedAdoptionLoadFault))
     , testCase "parked pre-adoption load dies ThreadKilled, env freed"
-        (guarded "gated-adoption-park" caseGatedAdoptionParkKill)
+        (counted "m1-native-transfers" "gated-adoption-park" (guarded "gated-adoption-park" caseGatedAdoptionParkKill))
     , testCase "alloc fault in digest init fails typed"
-        (guarded "gated-init-alloc" caseGatedInitAllocFail)
+        (counted "m1-native-transfers" "gated-init-alloc" (guarded "gated-init-alloc" caseGatedInitAllocFail))
     , testCase "alloc fault in one-shot digest answers NOMEM"
-        (guarded "gated-digest-alloc" caseGatedDigestAllocFail)
+        (counted "m1-native-transfers" "gated-digest-alloc" (guarded "gated-digest-alloc" caseGatedDigestAllocFail))
     , testCase "gated normal paths match production, zero outstanding"
-        (guarded "gated-normal-zero" caseGatedNormalZero)
+        (counted "m1-native-transfers" "gated-normal-zero" (guarded "gated-normal-zero" caseGatedNormalZero))
     ]
   , testGroup "publication contract"
     [ testCase "faulted publish drains releases, fails terminal, sink untouched"
@@ -369,39 +370,39 @@ spec = testGroup "Ownership"
     ]
   , testGroup "handle registry"
     [ testCase "key codec roundtrips; salts distinguish"
-        (guarded "handle-key-codec" caseHandleKeyCodec)
+        (counted "m3-handle-registry" "handle-key-codec" (guarded "handle-key-codec" caseHandleKeyCodec))
     , testCase "deterministic retire-then-use stays typed"
-        (guarded "handle-retire-then-use" caseHandleRetireThenUse)
+        (counted "m3-handle-registry" "handle-retire-then-use" (guarded "handle-retire-then-use" caseHandleRetireThenUse))
     , testCase "deterministic resolve-then-close stays typed"
-        (guarded "handle-resolve-then-close" caseHandleResolveThenClose)
+        (counted "m3-handle-registry" "handle-resolve-then-close" (guarded "handle-resolve-then-close" caseHandleResolveThenClose))
     , testCase "resolve-vs-retire race stays typed"
-        (guarded "handle-resolve-retire" caseHandleResolveRetire)
+        (counted "m3-handle-registry" "handle-resolve-retire" (guarded "handle-resolve-retire" caseHandleResolveRetire))
     , testCase "admission storm stays consistent"
-        (guarded "handle-admission-storm" caseHandleAdmissionStorm)
+        (counted "m3-handle-registry" "handle-admission-storm" (guarded "handle-admission-storm" caseHandleAdmissionStorm))
     , testCase "kill storm over admission retires clean"
-        (guarded "handle-kill-storm" caseHandleKillStorm)
+        (counted "m3-handle-registry" "handle-kill-storm" (guarded "handle-kill-storm" caseHandleKillStorm))
     , testCase "close-drain vs in-flight stays typed"
-        (guarded "handle-close-race" caseHandleCloseRace)
+        (counted "m3-handle-registry" "handle-close-race" (guarded "handle-close-race" caseHandleCloseRace))
     , testCase "foreign and bogus handles stay stale"
-        (guarded "handle-foreign-stale" caseHandleForeignStale)
+        (counted "m3-handle-registry" "handle-foreign-stale" (guarded "handle-foreign-stale" caseHandleForeignStale))
     , testCase "table salts are stable and distinguish contexts"
-        (guarded "handle-salt-stable" caseHandleSaltStable)
+        (counted "m3-handle-registry" "handle-salt-stable" (guarded "handle-salt-stable" caseHandleSaltStable))
     , testCase "table salts are exact, nonzero, and stable"
-        (guarded "table-salt-exact" caseTableSaltExact)
+        (counted "m3-handle-registry" "table-salt-exact" (guarded "table-salt-exact" caseTableSaltExact))
     , testCase "table salt mint refuses past the 32-bit bound"
-        (guarded "table-salt-bound" caseTableSaltBound)
+        (counted "m3-handle-registry" "table-salt-bound" (guarded "table-salt-bound" caseTableSaltBound))
     ]
   , testGroup "attachment claims"
     [ testCase "table identities are unique and stable"
-        (guarded "claim-table-id-unique" caseTableIdUnique)
+        (counted "m5-attachment-claims" "claim-table-id-unique" (guarded "claim-table-id-unique" caseTableIdUnique))
     , testCase "scoped retire is exact and idempotent"
-        (guarded "claim-scoped-retire" caseScopedRetireExactlyOnce)
+        (counted "m5-attachment-claims" "claim-scoped-retire" (guarded "claim-scoped-retire" caseScopedRetireExactlyOnce))
     , testCase "rival refusal preserves the owner's cancel"
-        (guarded "claim-rival-refusal" caseRivalRefusalPreservesOwner)
+        (counted "m5-attachment-claims" "claim-rival-refusal" (guarded "claim-rival-refusal" caseRivalRefusalPreservesOwner))
     , testCase "session churn and removal retire async enablement"
-        (guarded "retire-churn-removal" caseSessionRetirementAccounting)
+        (counted "m5-attachment-claims" "retire-churn-removal" (guarded "retire-churn-removal" caseSessionRetirementAccounting))
     , testCase "failed close and removal leave enablement intact"
-        (guarded "retire-rollback" caseRetirementRollback)
+        (counted "m5-attachment-claims" "retire-rollback" (guarded "retire-rollback" caseRetirementRollback))
     ]
   ]
 
@@ -1343,6 +1344,7 @@ assertOutstandingZero g = do
   b <- c_gateBufOutstanding g
   d <- c_gateDigestOutstanding g
   e <- c_gateEnvOutstanding g
+  emitCounters [("bufs", show b), ("digests", show d), ("envs", show e)]
   assertEqual "no stranded buffers" 0 b
   assertEqual "no stranded digests" 0 d
   assertEqual "no stranded envs" 0 e
@@ -1353,6 +1355,7 @@ assertDigestCountersClean :: IO ()
 assertDigestCountersClean = do
   df <- c_digestDoublefree
   du <- c_digestUntracked
+  emitCounters [("digest_doublefree", show df), ("digest_untracked", show du)]
   assertEqual "no digest double-free" 0 df
   assertEqual "complete digest tracking" 0 du
 
@@ -1362,6 +1365,7 @@ assertEnvCountersClean :: IO ()
 assertEnvCountersClean = do
   ef <- c_envDoublefree
   eu <- c_envUntracked
+  emitCounters [("env_doublefree", show ef), ("env_untracked", show eu)]
   assertEqual "no env double-free" 0 ef
   assertEqual "complete env tracking" 0 eu
 
@@ -1938,7 +1942,7 @@ caseHandleRetireThenUse = do
   out <- cancelJob (acTable ctx) j0
   assertEqual "owned id still cancels" CancelOk out
   nLive <- asyncLiveHandles ctx
-  assertEqual "no live handles" 0 nLive
+  assertZero "live_handles" "no live handles" nLive
   asyncCloseCtx ctx
 
 -- | Deterministic close-window reproduction (no threads): resolve
@@ -1960,7 +1964,7 @@ caseHandleResolveThenClose = do
     CancelAlready _ -> pure ()
     other -> assertFailure ("expected CancelAlready, got " ++ show other)
   nLive <- asyncLiveHandles ctx
-  assertEqual "no live handles" 0 nLive
+  assertZero "live_handles" "no live handles" nLive
 
 -- | Resolution racing retirement: four workers resolve one handle
 -- while the owner cycles retirement and re-admission around them
@@ -1994,7 +1998,7 @@ caseHandleResolveRetire = do
   mFinal <- resolveJobHandle ctx h
   assertEqual "retired handle stale" Nothing mFinal
   nLive <- asyncLiveHandles ctx
-  assertEqual "no live handles" 0 nLive
+  assertZero "live_handles" "no live handles" nLive
   asyncCloseCtx ctx
 
 -- | Admission storm: four workers admit\/resolve\/retire their own
@@ -2019,7 +2023,7 @@ caseHandleAdmissionStorm = do
   donesOut <- mapM takeMVar dones
   mapM_ assertWorkerOk donesOut
   nLive <- asyncLiveHandles ctx
-  assertEqual "storm drains to zero" 0 nLive
+  assertZero "live_handles" "storm drains to zero" nLive
   asyncCloseCtx ctx
 
 -- | Kill storm over admission: two workers admit\/resolve\/retire in
@@ -2072,7 +2076,7 @@ caseHandleKillStorm = do
   mapM_ (checkRecorded ctx ja jb) hs
   asyncCloseCtx ctx
   nLive <- asyncLiveHandles ctx
-  assertEqual "close drains storm" 0 nLive
+  assertZero "live_handles" "close drains storm" nLive
   -- The storm never cancels jobs (handles only), so retired jobs
   -- may still be pending: cancel them explicitly before the census.
   _ <- cancelJob (acTable ctx) ja
@@ -2121,9 +2125,9 @@ caseHandleCloseRace = do
   donesOut <- mapM takeMVar dones
   mapM_ assertWorkerOk donesOut
   nLive <- asyncLiveHandles ctx
-  assertEqual "no live handles" 0 nLive
+  assertZero "live_handles" "no live handles" nLive
   (liveJobs, _, _) <- tableStats (acTable ctx)
-  assertEqual "no live jobs" 0 liveJobs
+  assertZero "live_jobs" "no live jobs" liveJobs
 
 -- | Per-context authority: a handle admitted on one context stays
 -- stale on another, while staying live on its own; bogus and null
@@ -2395,7 +2399,7 @@ caseRivalRefusalPreservesOwner = do
   rival <- joinOn tableB
   assertEqual "rival refused" (JoinAlreadyAttached joinPolicyName) rival
   censusB <- tableStats tableB
-  assertEqual "rival table untouched" (0, 0, 0) censusB
+  assertCensusZero "rival table untouched" censusB
   (cout, cerr) <- cancelJoined dc tableA jA
   assertEqual "owner cancel wins" CancelOk cout
   assertEqual "owner mark clean" Nothing cerr

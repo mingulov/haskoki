@@ -1,7 +1,8 @@
 name: Qualification (behavioral matrix)
 
-# Qualification lane (V4b behavioral matrix on native runners; builds
-# on the merged V4a lane): manual dispatch (Actions -> Run workflow,
+# Qualification lane (V4b behavioral matrix on GitHub-hosted
+# ubuntu-latest runners, which count as native x86_64 Linux execution
+# of the same cells; builds on the merged V4a lane): manual dispatch (Actions -> Run workflow,
 # with an optional exact revision) plus one bounded weekly schedule.
 # The lane never runs on branch or tag activity, and PR scope stays
 # explicit in the CI workflow: this file adds no push,
@@ -20,12 +21,20 @@ name: Qualification (behavioral matrix)
 # Jobs: static-gates (build-free wiring gates, strict C builds, an
 # executed canary, driver negative controls) runs first and gates
 # the toolchain and proxy-pair setup jobs; qualify needs all three
-# setups and runs on the native self-hosted label, where a mode
+# setups and runs on the hosted ubuntu-latest label (4 vCPU: the
+# N=8 fairness cells are oversubscribed, so they assert completion
+# counts, not timing; the runner record keeps nproc), where a mode
 # selection step probes the setup results and selects behavioral
 # (the 25-cell matrix through the V4a driver shims, each cell with
 # its log and a pass/fail receipt) or buildonly (the repaired V1
-# manifest, as in V4a). A native runner that cannot run the matrix
-# still produces selected-mode evidence, never a silent skip.
+# manifest, as in V4a). A runner that cannot run the matrix still
+# produces selected-mode evidence, never a silent skip, but a
+# buildonly run FAILS the qualify job as "incomplete: behavioral
+# prerequisites unmet": the fallback cannot satisfy qualification.
+# The run is judged against the exact requested revision (the
+# dispatch input, else github.sha): static-gates rejects anything
+# but a full 40-hex SHA that equals the checked-out HEAD, and the
+# receipt verifier takes that revision as its expected sha.
 # report needs qualify and always runs: it renders the pass/fail
 # matrix from the qualify evidence into the job summary and
 # attaches the matrix artifact. External versions and hashes land
@@ -56,8 +65,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: qualification-${{ github.ref }}
-  cancel-in-progress: true
+  group: qualification-${{ github.event_name }}-${{ inputs.revision || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'schedule' }}
 
 env:
   LANG: C.UTF-8
@@ -72,6 +81,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.revision || github.sha }}
+      - name: Require an exact full-SHA revision
+        env:
+          REV: ${{ inputs.revision || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REV" =~ ^[0-9a-f]{40}$ ]] && [ "$(git rev-parse HEAD)" = "$REV" ] \
+            || { echo "revision must be a full SHA: got '$REV', HEAD $(git rev-parse HEAD)"; exit 2; }
+          echo "qualifying exact revision $REV"
       - name: Build-free qualification wiring gates
         run: |
           set -euo pipefail
@@ -83,6 +100,8 @@ jobs:
             python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
             python3 scripts/check-actions-pinned.py .github/workflows/qualification.yml
             python3 scripts/test-release-workflow.py
+            python3 scripts/test-ownership-matrix-controls.py
+            sh -n scripts/test-ownership-matrix.sh
             for d in scripts/test-sim-threaded.sh scripts/test-finalize-race.sh \
                 scripts/test-c-mutexes.sh scripts/test-consumers.sh \
                 scripts/test-async-attached.sh scripts/test-async-detached.sh \
@@ -348,7 +367,7 @@ jobs:
   # ------------------------------------------------------------------
   qualify:
     needs: [static-gates, toolchain, proxy-pair]
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
       - name: Checkout
@@ -378,7 +397,15 @@ jobs:
           command -v docker >/dev/null 2>&1 && DOCKER_OK=yes
           if [ "$DOCKER_OK" = "yes" ] && [ -f toolchain-in/toolchain-image.tar.gz ]; then
             if gunzip -c toolchain-in/toolchain-image.tar.gz | docker load; then
-              docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 >/dev/null 2>&1 && IMAGE_OK=yes
+              # The loaded image must be the very image the toolchain
+              # job recorded (docker save/load preserves the id).
+              LOADED_ID=$(docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 2>/dev/null) || LOADED_ID=
+              RECORDED_ID=$(python3 -c 'import json;print(json.load(open("toolchain-in/toolchain-provenance.json"))["builder_image_id"])' 2>/dev/null) || RECORDED_ID=
+              if [ -n "$LOADED_ID" ] && [ "$LOADED_ID" = "$RECORDED_ID" ]; then
+                IMAGE_OK=yes
+              else
+                echo "toolchain image id mismatch: loaded '$LOADED_ID' recorded '$RECORDED_ID'"
+              fi
             fi
           fi
           if [ -f proxy-in/proxy-pair.tar.gz ] && tar xzf proxy-in/proxy-pair.tar.gz -C proxy-in; then
@@ -445,6 +472,8 @@ jobs:
           sudo chmod -R a+rwX "$GITHUB_WORKSPACE"
       - name: Run behavioral matrix
         if: steps.select.outputs.mode == 'behavioral'
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
         run: |
           set -euo pipefail
           {
@@ -483,6 +512,7 @@ jobs:
           ossl4/default|test-ossl4-bounds.sh|
           EOF
           : > cell-results.txt
+          : > cell-meta.txt
           FAILURES=""
           # Read from the file (never a pipeline) so the failure
           # accumulator survives the loop; collect-all with a
@@ -500,46 +530,92 @@ jobs:
             for assign in $assignments; do
               ENV_ARGS="$ENV_ARGS --env $assign"
             done
+            started=$(date +%s)
+            rc=0
             # shellcheck disable=SC2086
-            if docker run --rm $ENV_ARGS -v "$PWD:/work" -w /work \
-                "$HASKOKI_IMAGE" "scripts/$driver" >"$log" 2>&1; then
+            docker run --rm $ENV_ARGS -v "$PWD:/work" -w /work \
+                "$HASKOKI_IMAGE" "scripts/$driver" >"$log" 2>&1 || rc=$?
+            echo "$cell|$rc|$(( $(date +%s) - started ))" >> cell-meta.txt
+            if [ "$rc" -eq 0 ]; then
               echo "$cell pass" >> cell-results.txt
               echo "cell $cell: pass"
             else
               echo "$cell FAIL" >> cell-results.txt
-              echo "cell $cell: FAIL (see cells/$safe.log)"
+              echo "cell $cell: FAIL rc=$rc (see cells/$safe.log)"
               FAILURES="$FAILURES $cell"
             fi
           done < cells.txt
-          python3 - cells.txt cell-results.txt \
+          # Receipt identity: the commit actually checked out, the
+          # revision that was requested, and the runner/image that
+          # executed the cells.
+          export RECEIPT_SHA="$(git rev-parse HEAD)"
+          export RECEIPT_REQUESTED="$REQUESTED_REVISION"
+          export RECEIPT_OS="$(uname -sr) $(uname -m) ${ImageOS:-unknown}/${ImageVersion:-unknown}"
+          export RECEIPT_NPROC="$(nproc)"
+          export RECEIPT_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$HASKOKI_IMAGE")"
+          python3 - cells.txt cell-results.txt cell-meta.txt \
             > "$HASKOKI_EVIDENCE_DIR/matrix.json" <<'PY' || { echo "matrix receipt failed"; exit 2; }
-          import json, sys
-          rows, results = {}, {}
+          import json, os, sys
+          # Lists, never dicts keyed by name: a duplicated row or
+          # result line must stay visible to the receipt verifier.
+          rows, results, meta = [], [], {}
           for line in open(sys.argv[1]):
               line = line.strip()
-              if not line:
-                  continue
-              name, driver, env = line.split("|")
-              rows[name] = {"name": name, "driver": driver, "env": env,
-                            "result": "missing"}
+              if line:
+                  name, driver, env = line.split("|")
+                  rows.append((name, driver, env))
           for line in open(sys.argv[2]):
               line = line.strip()
-              if not line:
-                  continue
-              name, result = line.rsplit(" ", 1)
-              results[name] = result
+              if line:
+                  name, result = line.rsplit(" ", 1)
+                  results.append((name, result))
+          for line in open(sys.argv[3]):
+              line = line.strip()
+              if line:
+                  name, rc, dur = line.split("|")
+                  meta.setdefault(name, []).append((int(rc), int(dur)))
           cells, failures = [], []
-          for name, row in rows.items():
-              row["result"] = results.get(name, "missing")
-              cells.append(row)
-              if row["result"] != "pass":
+          for name, driver, env in rows:
+              matched = [r for n, r in results if n == name]
+              result = matched[0] if len(matched) == 1 else (
+                  "missing" if not matched else "duplicate")
+              rc, dur = (meta.get(name) or [(None, None)])[0]
+              cells.append({"name": name, "driver": driver, "env": env,
+                            "result": result, "rc": rc, "duration_s": dur})
+              if result != "pass":
                   failures.append(name)
-          print(json.dumps({"mode": "behavioral", "cells": cells,
-                            "failures": failures}, indent=2))
+          print(json.dumps({
+              "mode": "behavioral",
+              "sha": os.environ["RECEIPT_SHA"],
+              "requested_revision": os.environ["RECEIPT_REQUESTED"],
+              "runner": {"os": os.environ["RECEIPT_OS"],
+                         "nproc": int(os.environ["RECEIPT_NPROC"]),
+                         "image_id": os.environ["RECEIPT_IMAGE_ID"]},
+              "cells": cells, "failures": failures}, indent=2))
           PY
           cat "$HASKOKI_EVIDENCE_DIR/matrix.json"
           [ -z "$FAILURES" ] || { echo "matrix failures:$FAILURES"; exit 1; }
           } 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
+      - name: Run ownership matrix (private RTS)
+        # Separate obligation from the 25-cell matrix and from the
+        # 19-step manifest (scripts/driver-inventory.json role
+        # qualification): one receipt per (case, RTS -N1/-N2/-N4)
+        # under qualify-evidence/ownership. Runs even when the matrix
+        # step failed so both verdicts are recorded; fails the job on
+        # any failing or missing receipt.
+        if: always() && steps.select.outputs.mode == 'behavioral'
+        run: |
+          set -euo pipefail
+          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
+          OWN_DIR="$RUNNER_TEMP/qualify-evidence/ownership"
+          mkdir -p "$OWN_DIR"
+          chmod a+rwx "$OWN_DIR"
+          docker run --rm --network host -v "$PWD:/work" -w /work \
+            -v "$OWN_DIR:/ownership" \
+            --env HASKOKI_OWN_SHA="$(git rev-parse HEAD)" \
+            --env HASKOKI_OWN_RECEIPTS=/ownership \
+            "$HASKOKI_IMAGE" scripts/test-ownership-matrix.sh 2>&1 \
+            | tee "$RUNNER_TEMP/qualify-evidence/ownership.log"
       - name: Run the build-only fallback manifest
         if: steps.select.outputs.mode == 'buildonly'
         run: |
@@ -560,6 +636,13 @@ jobs:
           bash scripts/release-evidence.sh 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
           test -f "$HASKOKI_EVIDENCE_DIR/MANIFEST.txt" \
             || { echo "manifest receipt missing"; exit 2; }
+      - name: Fail a build-only run as incomplete
+        if: steps.select.outputs.mode == 'buildonly'
+        run: |
+          # The fallback manifest is evidence, not qualification: the
+          # job fails while the always-run upload below still keeps it.
+          echo "incomplete: behavioral prerequisites unmet (a build-only run cannot satisfy qualification)"
+          exit 1  # buildonly-incomplete
       - name: Assemble matrix receipt
         if: always()
         run: |
@@ -593,7 +676,7 @@ jobs:
           done
           # Cell table and per-cell results exist only when the
           # matrix step ran; stage them when present.
-          for f in cells.txt cell-results.txt; do
+          for f in cells.txt cell-results.txt cell-meta.txt; do
             [ -f "$f" ] && cp "$f" "$RUNNER_TEMP/qualify-evidence/" 2>/dev/null
           done || true
           echo "mode=$MODE" >> "$RUNNER_TEMP/qualify-evidence-run.log" 2>/dev/null || true
@@ -617,6 +700,29 @@ jobs:
             ${{ runner.temp }}/qualify-evidence/
             ${{ runner.temp }}/qualify-evidence-run.log
           if-no-files-found: error
+      - name: Verify ownership receipts
+        if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          # Post-hoc, driver-independent: the expected case x RTS set
+          # lives in check-qualification-wiring.py, not in the driver's
+          # own table, so a dropped or renamed row, a missing receipt,
+          # a wrong sha or a wrong RTS value fails the job.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-ownership \
+            "$RUNNER_TEMP/qualify-evidence/ownership" --expect-sha "$REQUESTED_REVISION"
+      - name: Verify matrix receipt
+        if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          # Last qualify step: judge the receipt after it is uploaded.
+          # Exact 25-cell set, behavioral mode, 25/25 pass and the
+          # requested sha; a build-only fallback fails here.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-matrix \
+            "$RUNNER_TEMP/qualify-evidence" --expect-sha "$REQUESTED_REVISION"
 
   # ------------------------------------------------------------------
   # Report: render the pass/fail matrix from the qualify evidence
@@ -631,6 +737,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision || github.sha }}
       - name: Download qualification evidence
         if: always()
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -678,6 +788,27 @@ jobs:
           PY
           cat MATRIX.md
           exit 0
+      - name: Verify matrix receipt
+        if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          # The report job exits nonzero when the receipt is missing,
+          # partial, duplicated, non-behavioral, failing or for a
+          # different sha than the requested revision.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-matrix \
+            evidence-in/qualify-evidence --expect-sha "$REQUESTED_REVISION"
+      - name: Verify ownership receipts
+        if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          # Same independent expected case x RTS set as the qualify
+          # job, applied to the downloaded artifact.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-ownership \
+            evidence-in/qualify-evidence/ownership --expect-sha "$REQUESTED_REVISION"
       - name: Upload matrix artifact
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -99,6 +99,7 @@
         "CryptoExportSpec",
         "DetachedEngineSpec",
         "EnvLock",
+        "OwnershipCounters",
         "FfiAcquireSpec",
         "LeaseWedgeDenseSpec",
         "LeaseWedgeSpec",
@@ -141,6 +142,7 @@
           "Detached engine"
         ],
         "EnvLock": [],
+        "OwnershipCounters": [],
         "FfiAcquireSpec": [
           "Acquisition hooks"
         ],
@@ -213,6 +215,7 @@
         "NotificationsSpec",
         "ObjectSpec",
         "OperationSpec",
+        "OwnershipCounters",
         "OwnershipSpec",
         "OutputSpec",
         "RecipeByteOpsSpec",
@@ -390,6 +393,7 @@
         "OperationSpec": [
           "operation lifecycles"
         ],
+        "OwnershipCounters": [],
         "OwnershipSpec": [
           "Ownership"
         ],
@@ -568,6 +572,7 @@
       ],
       "allowed_imports": {
         "Gen": ["propCases", "propSeedOverride"],
+        "System.IO": ["hPutStrLn", "stderr"],
         "Test.Tasty": ["defaultMain", "testGroup"]
       },
       "executed_by": [

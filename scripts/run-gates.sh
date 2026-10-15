@@ -76,6 +76,8 @@ python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
 python3 scripts/check-actions-pinned.py --self-test
 # V1: release-evidence runner fixtures (fake docker/timeout/build only).
 python3 scripts/test-release-evidence.py
+# WP03: ownership-matrix driver controls (fake binaries, no build).
+python3 scripts/test-ownership-matrix-controls.py
 echo "=== forced build + cabal test all (pinned container) ==="
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal build all --enable-tests
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all

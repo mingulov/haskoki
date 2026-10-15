@@ -340,6 +340,16 @@ def join_suite(root, inventory_path, suite, list_path, result, out_path):
         print(f"test-execution join: FAIL (no-test: {suite} emitted "
               f"zero test names)")
         return 1
+    # Every captured line must be a test name under a required root:
+    # a banner or any other stdout line is never counted as a test.
+    stray = [n for n in names if not any(group_hit(n, g) for g in groups)]
+    if stray:
+        kind = "no-test, stray-line" if len(stray) == len(names) \
+            else "stray-line"
+        print(f"test-execution join: FAIL ({kind}: {suite} emitted "
+              f"{len(stray)} line(s) under no required root: "
+              f"{stray[:3]})")
+        return 1
     hits = {}
     for g in groups:
         hits[g] = sum(1 for n in names if group_hit(n, g))
@@ -379,10 +389,70 @@ def join_suite(root, inventory_path, suite, list_path, result, out_path):
     return 0
 
 
-def check_hpc(root, inventory_path, tix_root, mix_dirs, reports, out_path):
+HPC_EXCLUSION_CLASSES = ("deprecated-stub", "zero-tick-reexport", "unlinked")
+
+
+def mix_tick_count(path):
+    """Tick count of one `.mix` file, or None when it is not one.
+
+    A `.mix` is the shown `Mix "<file>" <time> <hash> <tabstop>
+    [(<pos>,<BoxLabel>)...]`; each tick is one BoxLabel. String
+    literals (the file path, binder names) are blanked before the
+    constructors are counted. Unreadable or foreign text is None,
+    never zero: only a parsed empty tick list classifies a module
+    as zero-tick.
+    """
+    try:
+        text = Path(path).read_text(errors="replace")
+    except Exception:  # noqa: BLE001
+        return None
+    if not text.startswith('Mix "'):
+        return None
+    stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '""', text)
+    return len(re.findall(
+        r"\b(?:ExpBox|TopLevelBox|LocalBox|BinBox)\b", stripped))
+
+
+def load_hpc_exclusions(path):
+    """Parse the reviewed exclusion list: ({module: entry}, error)."""
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return None, f"cannot read exclusions {path}: {e}"
+    if not isinstance(doc, dict) \
+            or doc.get("schema") != "haskoki-hpc-exclusions/1" \
+            or not isinstance(doc.get("exclusions"), list):
+        return None, (f"exclusions {path}: want schema "
+                      "haskoki-hpc-exclusions/1 with an exclusions list")
+    out = {}
+    for e in doc["exclusions"]:
+        if not isinstance(e, dict):
+            return None, f"exclusions {path}: entry is not an object"
+        mod = e.get("module")
+        if not isinstance(mod, str) or not mod.strip():
+            return None, f"exclusions {path}: entry without module"
+        if e.get("class") not in HPC_EXCLUSION_CLASSES:
+            return None, (f"exclusions {path}: {mod}: class must be one "
+                          f"of {list(HPC_EXCLUSION_CLASSES)}")
+        for field in ("reason", "reviewed"):
+            if not isinstance(e.get(field), str) or not e[field].strip():
+                return None, f"exclusions {path}: {mod}: empty {field}"
+        if mod in out:
+            return None, f"exclusions {path}: {mod} listed twice"
+        out[mod] = e
+    return out, None
+
+
+def check_hpc(root, inventory_path, tix_root, mix_dirs, reports, out_path,
+              exclusions_path=None):
     """Reconcile coverage artifacts against the inventory.
 
-    The artifact is always written; gaps return 1.
+    A compiled module missing from the reports is excluded when the
+    reviewed exclusion list names it, classified zero-tick-reexport
+    when its `.mix` parses to zero ticks, and a gap otherwise. An
+    exclusion whose module is reported, or no longer compiled, is a
+    stale-exclusion gap. The artifact is always written; gaps
+    return 1.
     """
     wiring = _load_sibling("check-test-wiring")
     root = Path(root)
@@ -396,8 +466,14 @@ def check_hpc(root, inventory_path, tix_root, mix_dirs, reports, out_path):
         owned = [str(p) for p in tixes
                  if f"/t/{suite}/" in str(p) or suite in Path(p).name]
         tix_by_suite[suite] = owned
-    expected = set()
+    expected = {}
     gaps = []
+    exclusions = {}
+    if exclusions_path is not None:
+        exclusions, xerr = load_hpc_exclusions(exclusions_path)
+        if xerr is not None:
+            gaps.append(f"bad-exclusions: {xerr}")
+            exclusions = {}
     for mix in mix_dirs:
         if str(mix).strip() in ("", "."):
             # Empty discovery (or a bare ".", which would scan the
@@ -411,7 +487,7 @@ def check_hpc(root, inventory_path, tix_root, mix_dirs, reports, out_path):
         for unit in unit_roots:
             for mix_file in unit.rglob("*.mix"):
                 rel = mix_file.relative_to(unit).with_suffix("")
-                expected.add(".".join(rel.parts))
+                expected[".".join(rel.parts)] = mix_file
     if not expected and not gaps:
         gaps.append("no compiled modules found under the mix dirs")
     reported_text = ""
@@ -426,13 +502,37 @@ def check_hpc(root, inventory_path, tix_root, mix_dirs, reports, out_path):
     for suite in sorted(inv):
         if not tix_by_suite[suite]:
             gaps.append(f"no-tix: {suite} owns no .tix under {tix_root}")
-    for mod in sorted(expected - reported):
-        gaps.append(f"missing-module: {mod} compiled but not reported")
+    classified = []
+    excluded = []
+    for mod in sorted(set(expected) - reported):
+        ticks = mix_tick_count(expected[mod])
+        if mod in exclusions:
+            e = exclusions[mod]
+            excluded.append({"module": mod, "class": e["class"],
+                             "reason": e["reason"],
+                             "reviewed": e["reviewed"], "ticks": ticks})
+        elif ticks == 0:
+            classified.append({"module": mod,
+                               "class": "zero-tick-reexport",
+                               "ticks": 0})
+        else:
+            shown = "unparsed" if ticks is None else ticks
+            gaps.append(f"missing-module: {mod} compiled but not "
+                        f"reported (ticks={shown}, not excluded)")
+    for mod in sorted(exclusions):
+        if mod in reported:
+            gaps.append(f"stale-exclusion: {mod} is excluded but now "
+                        "reported")
+        elif mod not in expected:
+            gaps.append(f"stale-exclusion: {mod} is excluded but not "
+                        "compiled")
     doc = {
         "schema": "haskoki-hpc-reconciliation/1",
         "tix_by_suite": {s: tix_by_suite[s] for s in sorted(inv)},
         "modules_expected": len(expected),
         "modules_reported": len(reported),
+        "classified": classified,
+        "excluded": excluded,
         "gaps": gaps,
         "verdict": "RECONCILED" if not gaps else "GAPS",
     }
@@ -444,7 +544,8 @@ def check_hpc(root, inventory_path, tix_root, mix_dirs, reports, out_path):
             print(f"  gap: {g}")
         return 1
     print(f"test-execution hpc: RECONCILED ({len(tixes)} tix, "
-          f"{len(expected)} modules reported)")
+          f"{len(reported)} of {len(expected)} modules reported, "
+          f"{len(classified)} zero-tick, {len(excluded)} excluded)")
     return 0
 
 
@@ -530,13 +631,16 @@ def _write(path, text):
 
 def self_test():
     """Durable controls: the join fails empty captures, missing
-    groups, emptied module batteries, hostile Main trees, and
+    groups, lines under no required root (a banner beside names or
+    alone), emptied module batteries, hostile Main trees, and
     failed suites; roots anchor at position zero and batteries
     at depth two, so no decoy spelling credits an emptied
     battery; shared catalog rows fan into one executed name;
     HPC reconciliation fails
     missing tix, missing modules, and missing reports, and
-    matches modules by full identity."""
+    matches modules by full identity; it classifies zero-tick
+    modules, honors reviewed exclusions, and fails stale,
+    malformed, or missing ones."""
     fails = []
     ran = []
 
@@ -601,7 +705,8 @@ def self_test():
                and len(receipt["names_sha256_16"]) == 16,
                repr(receipt))
 
-        # A name extending the group word is not a member.
+        # A name extending the group word is not a member: it is a
+        # line under no required root.
         decoy_path = root / "decoy.list"
         decoy_path.write_text("alpha groupX/only\n")
         buf = io.StringIO()
@@ -609,7 +714,32 @@ def self_test():
             rc = join_suite(root, inv_path, "suite-a", decoy_path,
                             "pass", root / "decoy.receipt.json")
         expect("join-word-extension-misses",
-               rc == 1 and "missing-required-group" in buf.getvalue(),
+               rc == 1 and "stray-line" in buf.getvalue(),
+               buf.getvalue())
+
+        # A banner line beside real names is never counted as a test.
+        banner = "suite-a: effective PROP_SEED=random PROP_CASES=100\n"
+        banner_path = root / "banner.list"
+        banner_path.write_text(banner + list_path.read_text())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = join_suite(root, inv_path, "suite-a", banner_path,
+                            "pass", root / "banner.receipt.json")
+        expect("join-banner-with-names-fails-stray-line",
+               rc == 1 and "stray-line" in buf.getvalue()
+               and "PROP_SEED" in buf.getvalue(),
+               buf.getvalue())
+
+        # A banner alone is no test at all.
+        banner_only = root / "banner-only.list"
+        banner_only.write_text(banner)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = join_suite(root, inv_path, "suite-a", banner_only,
+                            "pass", root / "banner-only.receipt.json")
+        expect("join-banner-only-fails-no-test",
+               rc == 1 and "no-test" in buf.getvalue()
+               and "stray-line" in buf.getvalue(),
                buf.getvalue())
 
         # The empty battery: zero names fails even with result pass.
@@ -902,6 +1032,88 @@ def self_test():
                        for g in empty_recon["gaps"]) == 2,
                buf.getvalue())
 
+        # Classification fixtures: a fresh mix tree with one reported
+        # module, a ticked stub, and a zero-tick re-export.
+        cls_mix = root / "cls-mix"
+        (cls_mix / "unit-1" / "Haskoki").mkdir(parents=True)
+        ticked = ('Mix "src/X.hs" 2026-10-15 00:00:00 UTC 1 8 '
+                  '[(1:1-2:2,TopLevelBox ["f"]),(1:5-1:9,ExpBox False)]')
+        (cls_mix / "unit-1" / "Haskoki" / "Types.mix").write_text(ticked)
+        (cls_mix / "unit-1" / "Haskoki" / "PKCS11.mix").write_text(ticked)
+        (cls_mix / "unit-1" / "Haskoki.mix").write_text(
+            'Mix "src/Haskoki.hs" 2026-10-15 00:00:00 UTC 1 8 []')
+        cls_rep = root / "cls-report.txt"
+        cls_rep.write_text(" 90% expressions used (9/10)\n Haskoki.Types\n")
+        excl = root / "hpc-exclusions.json"
+
+        def write_excl(entries):
+            excl.write_text(json.dumps({
+                "schema": "haskoki-hpc-exclusions/1",
+                "exclusions": entries}))
+
+        stub = {"module": "Haskoki.PKCS11", "class": "deprecated-stub",
+                "reason": "returns CKR_GENERAL_ERROR; no caller",
+                "reviewed": "2026-10-15"}
+
+        def run_cls(exclusions_path):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = check_hpc(root, inv_path, tix_root, [cls_mix],
+                               [cls_rep], root / "cls.json",
+                               exclusions_path=exclusions_path)
+            return rc, buf.getvalue(), json.loads(
+                (root / "cls.json").read_text())
+
+        write_excl([stub])
+        rc, out, doc = run_cls(excl)
+        expect("hpc-classified-and-excluded-pass",
+               rc == 0
+               and [c["module"] for c in doc["classified"]] == ["Haskoki"]
+               and doc["classified"][0]["ticks"] == 0
+               and [x["module"] for x in doc["excluded"]]
+               == ["Haskoki.PKCS11"]
+               and doc["excluded"][0]["ticks"] == 2, out)
+
+        rc, out, doc = run_cls(None)
+        expect("hpc-ticked-unlisted-unreported-fails",
+               rc == 1 and "Haskoki.PKCS11 compiled but not reported "
+               "(ticks=2, not excluded)" in out
+               and [c["module"] for c in doc["classified"]] == ["Haskoki"],
+               out)
+
+        cls_rep.write_text(" 90% expressions used (9/10)\n Haskoki.Types\n"
+                           " Haskoki.PKCS11\n")
+        rc, out, doc = run_cls(excl)
+        expect("hpc-reported-exclusion-is-stale",
+               rc == 1 and "stale-exclusion: Haskoki.PKCS11 is excluded "
+               "but now reported" in out, out)
+        cls_rep.write_text(" 90% expressions used (9/10)\n Haskoki.Types\n")
+
+        write_excl([stub, {"module": "Haskoki.Gone",
+                           "class": "unlinked", "reason": "removed",
+                           "reviewed": "2026-10-15"}])
+        rc, out, doc = run_cls(excl)
+        expect("hpc-uncompiled-exclusion-is-stale",
+               rc == 1 and "stale-exclusion: Haskoki.Gone is excluded "
+               "but not compiled" in out, out)
+
+        (cls_mix / "unit-1" / "Haskoki" / "Extra.mix").write_text("m")
+        write_excl([stub])
+        rc, out, doc = run_cls(excl)
+        expect("hpc-unparsed-mix-is-a-gap",
+               rc == 1 and "Haskoki.Extra compiled but not reported "
+               "(ticks=unparsed, not excluded)" in out, out)
+        (cls_mix / "unit-1" / "Haskoki" / "Extra.mix").unlink()
+
+        write_excl([dict(stub, reason=" ")])
+        rc, out, doc = run_cls(excl)
+        expect("hpc-exclusion-without-reason-fails",
+               rc == 1 and "bad-exclusions" in out, out)
+        write_excl([dict(stub, **{"class": "trivial"})])
+        rc, out, doc = run_cls(excl)
+        expect("hpc-exclusion-unknown-class-fails",
+               rc == 1 and "bad-exclusions" in out, out)
+
         # Collect fixtures: fake suite binaries (executable scripts
         # answering --list-tests; no Haskell toolchain needed).
         def fake_binary(path, body):
@@ -1070,6 +1282,7 @@ def main(argv=None):
     ap.add_argument("--tix-root", default=None)
     ap.add_argument("--mix-dirs", default=None)
     ap.add_argument("--reports", default=None)
+    ap.add_argument("--exclusions", default=None)
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
@@ -1104,7 +1317,9 @@ def main(argv=None):
         return check_hpc(root, inv, Path(args.tix_root),
                          [Path(d) for d in args.mix_dirs.split(",")],
                          [Path(r) for r in args.reports.split(",")],
-                         Path(args.out))
+                         Path(args.out),
+                         exclusions_path=(Path(args.exclusions)
+                                          if args.exclusions else None))
     global failures
     failures = []
     fails = check_tree(root, inv)

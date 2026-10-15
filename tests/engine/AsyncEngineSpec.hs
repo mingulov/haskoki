@@ -39,6 +39,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import OwnershipCounters (assertZero, counted)
 import Haskoki.Engine.Backend
   ( BackendEnv
   , CryptoBackend (..)
@@ -191,31 +192,31 @@ import Haskoki.Types
 
 spec :: MVar () -> TestTree
 spec envLock = testGroup "Async engine"
-  [ testCase "planned digest completes shaped with KAT bytes" caseDigestShaped
-  , testCase "hmac sign completes with RFC 4231 bytes" caseHmacSign
-  , testCase "call mismatch refused before the engine runner" caseCallMismatchEngine
-  , testCase "new return codes pin to header values" caseRvPins
-  , testCase "FFI digest: pending canaries, exact delivery" (caseFfiDigestFlow envLock)
-  , testCase "FFI wrong function refused; job intact" (caseFfiWrongFunction envLock)
-  , testCase "FFI cancel frees; late use is stale" (caseFfiCancel envLock)
-  , testCase "FFI refusals: typed codes, null handles" (caseFfiRefusals envLock)
-  , testCase "FFI null-value probe sizes without consuming" (caseFfiProbe envLock)
-  , testCase "FFI short complete sizes; retry delivers" (caseFfiShort envLock)
-  , testCase "FFI drive error frees the handle exactly once" (caseFfiDriveError envLock)
-  , testCase "FFI close drains pending jobs exactly once" (caseFfiDrain envLock)
-  , testCase "FFI double close is silent" (caseFfiDoubleClose envLock)
-  , testCase "FFI concurrent cancel: exactly one wins" (caseFfiCancelRace envLock)
-  , testCase "FFI concurrent complete: single delivery" (caseFfiCompleteRace envLock)
-  , testCase "FFI cross-context handle use is stale" (caseFfiCrossContext envLock)
-  , testCase "FFI bogus handle refused, nothing touched" (caseFfiBogusHandle envLock)
-  , testCase "struct sink writes all three shapes exactly" caseSinkShapes
-  , testCase "caseAsyncBorrowedOwnership" (caseAsyncBorrowedOwnership envLock)
-  , testCase "caseAsyncAdmissionWidths" (caseAsyncAdmissionWidths envLock)
-  , testCase "caseAsyncPublicCompletion" (caseAsyncPublicCompletion envLock)
-  , testCase "caseAsyncEpochSurface" (caseAsyncEpochSurface envLock)
-  , testCase "caseAsyncCleanupSurface" (caseAsyncCleanupSurface envLock)
-  , testCase "FFI close-one keeps other context live" (caseFfiCloseOneKeepsOther envLock)
-  , testCase "FFI simultaneous join: exactly one wins" (caseFfiJoinRace envLock)
+  [ testCase "planned digest completes shaped with KAT bytes" (counted "m3-async-engine" "planned-digest-completes-shaped-with-kat-bytes" (caseDigestShaped))
+  , testCase "hmac sign completes with RFC 4231 bytes" (counted "m3-async-engine" "hmac-sign-completes-with-rfc-4231-bytes" (caseHmacSign))
+  , testCase "call mismatch refused before the engine runner" (counted "m3-async-engine" "call-mismatch-refused-before-the-engine-runner" (caseCallMismatchEngine))
+  , testCase "new return codes pin to header values" (counted "m3-async-engine" "new-return-codes-pin-to-header-values" (caseRvPins))
+  , testCase "FFI digest: pending canaries, exact delivery" (counted "m3-async-engine" "ffi-digest-pending-canaries-exact-delivery" (caseFfiDigestFlow envLock))
+  , testCase "FFI wrong function refused; job intact" (counted "m3-async-engine" "ffi-wrong-function-refused-job-intact" (caseFfiWrongFunction envLock))
+  , testCase "FFI cancel frees; late use is stale" (counted "m3-async-engine" "ffi-cancel-frees-late-use-is-stale" (caseFfiCancel envLock))
+  , testCase "FFI refusals: typed codes, null handles" (counted "m3-async-engine" "ffi-refusals-typed-codes-null-handles" (caseFfiRefusals envLock))
+  , testCase "FFI null-value probe sizes without consuming" (counted "m3-async-engine" "ffi-null-value-probe-sizes-without-consuming" (caseFfiProbe envLock))
+  , testCase "FFI short complete sizes; retry delivers" (counted "m3-async-engine" "ffi-short-complete-sizes-retry-delivers" (caseFfiShort envLock))
+  , testCase "FFI drive error frees the handle exactly once" (counted "m3-async-engine" "ffi-drive-error-frees-the-handle-exactly-once" (caseFfiDriveError envLock))
+  , testCase "FFI close drains pending jobs exactly once" (counted "m3-async-engine" "ffi-close-drains-pending-jobs-exactly-once" (caseFfiDrain envLock))
+  , testCase "FFI double close is silent" (counted "m3-async-engine" "ffi-double-close-is-silent" (caseFfiDoubleClose envLock))
+  , testCase "FFI concurrent cancel: exactly one wins" (counted "m3-async-engine" "ffi-concurrent-cancel-exactly-one-wins" (caseFfiCancelRace envLock))
+  , testCase "FFI concurrent complete: single delivery" (counted "m3-async-engine" "ffi-concurrent-complete-single-delivery" (caseFfiCompleteRace envLock))
+  , testCase "FFI cross-context handle use is stale" (counted "m3-async-engine" "ffi-cross-context-handle-use-is-stale" (caseFfiCrossContext envLock))
+  , testCase "FFI bogus handle refused, nothing touched" (counted "m3-async-engine" "ffi-bogus-handle-refused-nothing-touched" (caseFfiBogusHandle envLock))
+  , testCase "struct sink writes all three shapes exactly" (counted "m3-async-engine" "struct-sink-writes-all-three-shapes-exactly" (caseSinkShapes))
+  , testCase "caseAsyncBorrowedOwnership" (counted "m3-async-engine" "caseasyncborrowedownership" (caseAsyncBorrowedOwnership envLock))
+  , testCase "caseAsyncAdmissionWidths" (counted "m3-async-engine" "caseasyncadmissionwidths" (caseAsyncAdmissionWidths envLock))
+  , testCase "caseAsyncPublicCompletion" (counted "m3-async-engine" "caseasyncpubliccompletion" (caseAsyncPublicCompletion envLock))
+  , testCase "caseAsyncEpochSurface" (counted "m3-async-engine" "caseasyncepochsurface" (caseAsyncEpochSurface envLock))
+  , testCase "caseAsyncCleanupSurface" (counted "m3-async-engine" "caseasynccleanupsurface" (caseAsyncCleanupSurface envLock))
+  , testCase "FFI close-one keeps other context live" (counted "m3-async-engine" "ffi-close-one-keeps-other-context-live" (caseFfiCloseOneKeepsOther envLock))
+  , testCase "FFI simultaneous join: exactly one wins" (counted "m3-async-engine" "ffi-simultaneous-join-exactly-one-wins" (caseFfiJoinRace envLock))
   ]
 
 hex :: String -> ByteString
@@ -624,7 +625,7 @@ caseFfiDigestFlow envLock = withACtx envLock $ \ctx -> do
     assertEqual "FIPS 180-4 digest of abc" sha256Abc out
   -- Terminal delivery freed the native handle exactly once.
   nLive2 <- deRefStablePtr ctx >>= asyncLiveHandles
-  assertEqual "handle freed on delivery" 0 nLive2
+  assertZero "live_handles" "handle freed on delivery" nLive2
   rvPoll3 <- haskokiAsyncPoll ctx hJob fnDigest
   assertEqual "poll-after-deliver stale" rvBad rvPoll3
   rvComp2 <- haskokiAsyncComplete ctx hJob fnDigest nullPtr
@@ -662,7 +663,7 @@ caseFfiCancel envLock = withACtx envLock $ \ctx -> do
   rvCancel <- haskokiAsyncCancel ctx hJob
   assertEqual "cancel ok" rvOK rvCancel
   nLive <- deRefStablePtr ctx >>= asyncLiveHandles
-  assertEqual "handle freed on cancel" 0 nLive
+  assertZero "live_handles" "handle freed on cancel" nLive
   withStruct 32 $ \(pS, pV) -> do
     rvComp <- haskokiAsyncComplete ctx hJob fnDigest pS
     assertEqual "complete-after-cancel stale" rvBad rvComp
@@ -705,7 +706,7 @@ caseFfiCancelRace envLock = withACtx envLock $ \ctx -> do
   let loser = if rv1 == rvOK then rv2 else rv1
   assertBool "loser typed" (loser == rvBad || loser == rvCancel)
   nLive <- deRefStablePtr ctx >>= asyncLiveHandles
-  assertEqual "handle retired once" 0 nLive
+  assertZero "live_handles" "handle retired once" nLive
 
 -- | Two threads complete the same ready job into disjoint canary
 -- structs. Delivery happens exactly once — one struct lands KAT
@@ -743,7 +744,7 @@ caseFfiCompleteRace envLock = withACtx envLock $ \ctx -> do
     when (rv1 == rvBad) (intact pS1 pV1)
     when (rv2 == rvBad) (intact pS2 pV2)
   nLive <- deRefStablePtr ctx >>= asyncLiveHandles
-  assertEqual "handle retired once" 0 nLive
+  assertZero "live_handles" "handle retired once" nLive
   where
     delivered pS pV = do
       ver <- readField pS offVersion
@@ -808,7 +809,7 @@ caseFfiCrossContext envLock = withACtx2 envLock $ \ctxA ctxB -> do
   assertEqual "B job intact" rvPending rvPollB
   nA <- deRefStablePtr ctxA >>= asyncLiveHandles
   nB <- deRefStablePtr ctxB >>= asyncLiveHandles
-  assertEqual "A drained" 0 nA
+  assertZero "live_handles" "A drained" nA
   assertEqual "B keeps one handle" 1 nB
 
 -- | Bogus and null handles are refused on every entry with nothing
@@ -829,7 +830,7 @@ caseFfiBogusHandle envLock = withACtx envLock $ \ctx -> do
   rvNull <- haskokiAsyncPoll ctx nullJob fnDigest
   assertEqual "null poll stale" rvBad rvNull
   nLive <- deRefStablePtr ctx >>= asyncLiveHandles
-  assertEqual "nothing admitted" 0 nLive
+  assertZero "live_handles" "nothing admitted" nLive
   h <- hSessionOf ctx
   rvInit <- initDigestFfi ctx h
   assertEqual "init ok" rvOK rvInit
@@ -938,7 +939,7 @@ caseFfiDriveError envLock = withACtx envLock $ \ctx -> do
   rvPoll <- haskokiAsyncPoll ctx hJob fnDigest
   assertEqual "stale drive fails typed" rvGeneral rvPoll
   nLive <- asyncLiveHandles c
-  assertEqual "error path frees the handle" 0 nLive
+  assertZero "live_handles" "error path frees the handle" nLive
   rvPoll2 <- haskokiAsyncPoll ctx hJob fnDigest
   assertEqual "late poll stale, not double-free" rvBad rvPoll2
   withStruct 32 $ \(pS, pV) -> do
@@ -963,7 +964,7 @@ caseFfiDrain envLock = do
   -- The export's own worker: every pending job cancels exactly once.
   asyncCloseCtx c
   nLive2 <- asyncLiveHandles c
-  assertEqual "drained" 0 nLive2
+  assertZero "live_handles" "drained" nLive2
   -- Value-level teardown frees no pointer: retire the
   -- registration the open installed before freeing, so the
   -- pointer value keeps its tombstone after it frees.
@@ -1091,11 +1092,11 @@ assertSameObject label a b = do
 assertStdEmpty :: StdInstance -> IO ()
 assertStdEmpty inst = do
   (live, _, _) <- tableStats (siAsyncTable inst)
-  assertEqual "zero live jobs" 0 live
+  assertZero "live_jobs" "zero live jobs" live
   assertEqual "zero bindings" 0 . Map.size =<< readIORef (siAsyncBindings inst)
   views <- readIORef (siAsyncViews inst)
   forM_ (Map.elems views) $ \view ->
-    deRefStablePtr view >>= asyncLiveHandles >>= assertEqual "zero native handles" 0
+    deRefStablePtr view >>= asyncLiveHandles >>= assertZero "live_handles" "zero native handles"
 
 stdDigestCall :: StablePtr StdInstance -> CULong -> Ptr Word8 -> Ptr CULong -> IO CULong
 stdDigestCall ctx h pOut pLen = BS.useAsCStringLen "abc" $ \(pIn, nIn) ->
@@ -1121,7 +1122,7 @@ completeStdBorrowed inst h pOut width = do
     pokeByteOff pS offValueLen (CULong (fromIntegral width))
     haskokiAsyncComplete view (sabHandle binding) fnDigest pS >>= assertEqual "worker delivery" rvOK
     readField pS offValueLen >>= assertEqual "recipe output width" (fromIntegral width)
-  asyncLiveHandles c >>= assertEqual "worker released handle" 0
+  asyncLiveHandles c >>= assertZero "live_handles" "worker released handle"
 
 caseAsyncBorrowedOwnership :: MVar () -> IO ()
 caseAsyncBorrowedOwnership envLock = do
@@ -1174,7 +1175,7 @@ caseAsyncBorrowedOwnership envLock = do
         haskokiAsyncGetId va (sabHandle binding) fnDigest pId >>= assertEqual "memory no-store error" rvGeneral
         peek pId >>= assertEqual "private no-store worker zeros id" 0
       haskokiStdCloseSession ctx a >>= assertEqual "close one borrowed view" rvOK
-      asyncLiveHandles ca >>= assertEqual "closed view drained" 0
+      asyncLiveHandles ca >>= assertZero "live_handles" "closed view drained"
       asyncLiveHandles cb >>= assertEqual "other view remains live" 1
       completeStdBorrowed inst b pOut 32
       readBytes pOut 32 >>= assertEqual "backend still usable after view close" sha256Abc
@@ -1265,7 +1266,7 @@ caseAsyncBorrowedOwnership envLock = do
           views <- mapM (fmap snd . stdAsyncView inst) hs
           pure (inst, views)
       assertStdEmpty inst
-      forM_ views $ \view -> asyncLiveHandles view >>= assertEqual "finalize frees pending handles" 0
+      forM_ views $ \view -> asyncLiveHandles view >>= assertZero "live_handles" "finalize frees pending handles"
       assertEqual "finalize frees every borrowed view" 0 . Map.size =<< readIORef (siAsyncViews inst)
       tableStats (siAsyncTable inst) >>= assertEqual "finalize cancels both jobs" (0, 2, 2)
       readIORef finalCloses >>= assertEqual "finalize closes writer once" 1
@@ -1539,7 +1540,7 @@ caseAsyncPublicCompletion envLock = do
       forM_ [(0, 0), (16, 32), (24, 0), (32, 0)] $ \(offset, value) ->
         readField result offset >>= assertEqual "public version/length/objects" value
       assertNoBinding inst h
-      asyncLiveHandles c >>= assertEqual "private handle freed" 0
+      asyncLiveHandles c >>= assertZero "live_handles" "private handle freed"
       deliveredCount (siAsyncTable inst) >>= assertEqual "delivered once" 1
       after <- peekArray 40 (castPtr result :: Ptr Word8)
       expectAsync "repeat Complete" CKR_OPERATION_NOT_INITIALIZED (haskokiStdAsyncComplete ctx h name result)
@@ -1569,7 +1570,7 @@ caseAsyncPublicCompletion envLock = do
       forM_ [0, 16, 24, 32] $ \offset ->
         readField result offset >>= assertEqual "error leaves other fields" 0xa5a5a5a5a5a5a5a5
       assertCanaryBuf "error payload unchanged" bound 32
-      asyncLiveHandles c >>= assertEqual "error reconciles/cancels handle" 0
+      asyncLiveHandles c >>= assertZero "live_handles" "error reconciles/cancels handle"
       assertNoBinding inst h
       tableStats (siAsyncTable inst) >>= assertEqual "error tombstone" (0, 1, 1)
 
@@ -1791,7 +1792,7 @@ caseFfiCloseOneKeepsOther envLock =
       assertEqual "length" (CULong 32) len
       assertEqual "KAT bytes" sha256Abc bytes
     nLiveB2 <- asyncLiveHandles cB
-    assertEqual "B handle retired" 0 nLiveB2
+    assertZero "live_handles" "B handle retired" nLiveB2
     haskokiAsyncClose pB
     nulledB <- peek pB
     assertBool "slot B nulled" (castStablePtrToPtr nulledB == nullPtr)

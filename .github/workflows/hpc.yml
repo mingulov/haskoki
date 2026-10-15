@@ -21,10 +21,13 @@ name: hpc
 # the deliverable. The test step itself keeps its honest exit code —
 # no `|| true` anywhere.
 #
-# Documented excludes (T-5): `Haskoki.PKCS11` (untested stub) and the
-# cabal autogen module `Paths_haskoki`. Suite runners (`Main`) and
-# spec/helpers never enter the reports: only the two LIBRARY mix dirs
-# are passed as --hpcdir, so harness modules cannot inflate a number.
+# Documented excludes (T-5): `Haskoki.PKCS11` (untested stub, listed
+# with its reason in tests/hpc-exclusions.json) and the cabal autogen
+# module `Paths_haskoki`. Suite runners (`Main`) and spec/helpers never
+# enter the reports: only the two LIBRARY mix dirs are passed as
+# --hpcdir, so harness modules cannot inflate a number. The separate
+# haskoki-client package is outside module reconciliation (its suite
+# still has to leave a .tix); see docs/hpc-triage.md.
 #
 # Hardened case, not a lane defect: the
 # worktree-new `AsyncSpec` case "committed eviction reclaims without
@@ -152,12 +155,14 @@ jobs:
           # flag takes the mix/ parent, never the unit-id dir itself.
           CORE_MIX=$(find dist-newstyle -type d \
             -path '*l/haskoki-core/build/*/extra-compilation-artifacts/hpc/vanilla/mix')
+          # The main library of the haskoki package only: the
+          # haskoki-<version> package dir, never haskoki-client.
           MAIN_MIX=$(find dist-newstyle -type d \
-            -path '*extra-compilation-artifacts/hpc/vanilla/mix' \
-            | grep -v '/l/\|/t/' | sort | head -n 1)
+            -path '*/haskoki-[0-9]*/build/extra-compilation-artifacts/hpc/vanilla/mix')
           [ -n "$CORE_MIX" ] || { echo 'core mix dir not found'; exit 2; }
           [ -n "$MAIN_MIX" ] || { echo 'main mix dir not found'; exit 2; }
           [ "$(printf '%s\n' "$CORE_MIX" | wc -l)" -eq 1 ] || { echo 'core mix dir ambiguous'; exit 2; }
+          [ "$(printf '%s\n' "$MAIN_MIX" | wc -l)" -eq 1 ] || { echo 'main mix dir ambiguous'; exit 2; }
           # Unit ids are derived, never hardcoded: a version bump
           # renames them (haskoki-<ver>-inplace[-<lib>]).
           CORE_UNIT=$(ls "$CORE_MIX")
@@ -200,9 +205,12 @@ jobs:
             --include="$MAIN_UNIT:" > hpc/total-haskoki.txt
           head -n 2 hpc/total-haskoki.txt
       - name: Reconcile compiled vs reported modules
-        # Informational like the rest of this lane: gaps print loudly
-        # and land in the uploaded bundle as explicit gaps, never as
-        # a silent pass — and never as a lane failure.
+        # Gaps fail the lane: a compiled module missing from the
+        # reports must be zero-tick (auto-classified from its .mix) or
+        # listed with a reviewed reason in tests/hpc-exclusions.json,
+        # and a listed module that is reported again is a stale
+        # exclusion. Percentages stay informational. The JSON lands
+        # in the uploaded bundle either way.
         if: always()
         shell: bash
         run: |
@@ -215,14 +223,13 @@ jobs:
           CORE_MIX=$(find dist-newstyle -type d \
             -path '*l/haskoki-core/build/*/extra-compilation-artifacts/hpc/vanilla/mix' 2>/dev/null || true)
           MAIN_MIX=$(find dist-newstyle -type d \
-            -path '*extra-compilation-artifacts/hpc/vanilla/mix' 2>/dev/null \
-            | grep -v '/l/\|/t/' | sort | head -n 1 || true)
+            -path '*/haskoki-[0-9]*/build/extra-compilation-artifacts/hpc/vanilla/mix' 2>/dev/null || true)
           python3 scripts/check-test-execution.py --check-hpc \
             --tix-root dist-newstyle \
             --mix-dirs "$CORE_MIX,$MAIN_MIX" \
             --reports hpc/report-haskoki-core.txt,hpc/report-haskoki.txt \
-            --out hpc/module-reconciliation.json \
-            || echo 'RECONCILIATION-GAPS: see hpc/module-reconciliation.json'
+            --exclusions tests/hpc-exclusions.json \
+            --out hpc/module-reconciliation.json
       - name: Upload coverage bundle
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

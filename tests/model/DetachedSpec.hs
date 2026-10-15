@@ -27,6 +27,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
+import OwnershipCounters (assertZero, counted)
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Model (Model (..), SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Codec (encodeInitInput)
@@ -149,41 +150,41 @@ import Haskoki.Types
 
 spec :: TestTree
 spec = testGroup "Detached jobs"
-  [ testCase "FIRST: detach pending digest is durable and revoked" caseFirstDetach
-  , testCase "detach lease abort preserves the live job" caseLeaseAbort
-  , testCase "detach lease revoke removes exactly one job" caseLeaseRevoke
-  , testCase "detach refusals preserve state" caseDetachRefusals
-  , testCase "detach store failure preserves the live attachment" caseDetachStoreFailure
-  , testCase "seeded start validates like start" caseSeededValidates
-  , testCase "rejoin delivers exactly once after restart" caseRejoinHappy
-  , testCase "detach ready: join delivers without re-running" caseRejoinReady
-  , testCase "wrong-function join rejected; job intact" caseJoinWrongFunction
-  , testCase "undersized join leaves the durable job intact" caseJoinShort
-  , testCase "HASKOKI-JOIN-FIRST-WINS: competing join refused" caseJoinFirstWins
-  , testCase "delivered jobs never rejoin" caseJoinAfterDelivered
-  , testCase "canceled joins stay canceled" caseJoinAfterCancel
-  , testCase "token reset kills old ids" caseJoinStaleGeneration
-  , testCase "unknown recipe version rejected" caseJoinUnknownVersion
-  , testCase "join validates session and capacity" caseJoinSessionCapacity
-  , testCase "join requires a matching initialized session" caseJoinIncompatible
-  , testCase "auth: logged-in token rejects a public join" caseJoinAuthRequired
-  , testCase "opaque native work is unsaveable; attachment kept" caseOpaqueUnsaveable
-  , testCase "retireLiveTable cancels active attachments" caseRetireCancels
-  , testCase "ambiguous commit reconciles present: durable wins" caseAmbiguousPresent
-  , testCase "ambiguous insertion reconciles present at the detach layer" caseAmbiguousInsertPresent
-  , testCase "ambiguous commit reconciles absent: kept live" caseAmbiguousAbsent
-  , testCase "simultaneous two-session joins admit exactly one" caseJoinRaceTwoSessions
-  , testCase "colliding job zero resolves per table" caseJoinRaceTwoTables
-  , testCase "scoped retire closes one table, keeps the other" caseRetireScopedKeepsOther
-  , testCase "start refusal rolls the claim back" caseJoinStartRefusalRollsBack
-  , testCase "interruption after start retires the fresh job" caseJoinInterruptionRollsBack
-  , testCase "two contexts on one store mint distinct ids" caseTwoContextsDistinctIds
-  , testCase "two tokens share the store-wide counter" caseTwoTokensStoreWideCounter
-  , testCase "stale pre-reset id never names new work" caseStaleIdNeverReused
-  , testCase "failed insertion burns its id, never reuses it" caseFailedInsertBurnsId
-  , testCase "token mismatch refuses before replan" caseTokenMismatchBeforeReplan
-  , testCase "retire rolls a racing claim back; the join cannot commit" caseRetireRollsBackClaim
-  , testCase "retired table refuses a late claim; siblings keep joining" caseRetiredTableRefusesLateClaim
+  [ testCase "FIRST: detach pending digest is durable and revoked" (counted "m5-detached-jobs" "first-detach-pending-digest-is-durable-and-revoked" (caseFirstDetach))
+  , testCase "detach lease abort preserves the live job" (counted "m5-detached-jobs" "detach-lease-abort-preserves-the-live-job" (caseLeaseAbort))
+  , testCase "detach lease revoke removes exactly one job" (counted "m5-detached-jobs" "detach-lease-revoke-removes-exactly-one-job" (caseLeaseRevoke))
+  , testCase "detach refusals preserve state" (counted "m5-detached-jobs" "detach-refusals-preserve-state" (caseDetachRefusals))
+  , testCase "detach store failure preserves the live attachment" (counted "m5-detached-jobs" "detach-store-failure-preserves-the-live-attachment" (caseDetachStoreFailure))
+  , testCase "seeded start validates like start" (counted "m5-detached-jobs" "seeded-start-validates-like-start" (caseSeededValidates))
+  , testCase "rejoin delivers exactly once after restart" (counted "m5-detached-jobs" "rejoin-delivers-exactly-once-after-restart" (caseRejoinHappy))
+  , testCase "detach ready: join delivers without re-running" (counted "m5-detached-jobs" "detach-ready-join-delivers-without-re-running" (caseRejoinReady))
+  , testCase "wrong-function join rejected; job intact" (counted "m5-detached-jobs" "wrong-function-join-rejected-job-intact" (caseJoinWrongFunction))
+  , testCase "undersized join leaves the durable job intact" (counted "m5-detached-jobs" "undersized-join-leaves-the-durable-job-intact" (caseJoinShort))
+  , testCase "HASKOKI-JOIN-FIRST-WINS: competing join refused" (counted "m5-detached-jobs" "haskoki-join-first-wins-competing-join-refused" (caseJoinFirstWins))
+  , testCase "delivered jobs never rejoin" (counted "m5-detached-jobs" "delivered-jobs-never-rejoin" (caseJoinAfterDelivered))
+  , testCase "canceled joins stay canceled" (counted "m5-detached-jobs" "canceled-joins-stay-canceled" (caseJoinAfterCancel))
+  , testCase "token reset kills old ids" (counted "m5-detached-jobs" "token-reset-kills-old-ids" (caseJoinStaleGeneration))
+  , testCase "unknown recipe version rejected" (counted "m5-detached-jobs" "unknown-recipe-version-rejected" (caseJoinUnknownVersion))
+  , testCase "join validates session and capacity" (counted "m5-detached-jobs" "join-validates-session-and-capacity" (caseJoinSessionCapacity))
+  , testCase "join requires a matching initialized session" (counted "m5-detached-jobs" "join-requires-a-matching-initialized-session" (caseJoinIncompatible))
+  , testCase "auth: logged-in token rejects a public join" (counted "m5-detached-jobs" "auth-logged-in-token-rejects-a-public-join" (caseJoinAuthRequired))
+  , testCase "opaque native work is unsaveable; attachment kept" (counted "m5-detached-jobs" "opaque-native-work-is-unsaveable-attachment-kept" (caseOpaqueUnsaveable))
+  , testCase "retireLiveTable cancels active attachments" (counted "m5-detached-jobs" "retirelivetable-cancels-active-attachments" (caseRetireCancels))
+  , testCase "ambiguous commit reconciles present: durable wins" (counted "m5-detached-jobs" "ambiguous-commit-reconciles-present-durable-wins" (caseAmbiguousPresent))
+  , testCase "ambiguous insertion reconciles present at the detach layer" (counted "m5-detached-jobs" "ambiguous-insertion-reconciles-present-at-the-detach-layer" (caseAmbiguousInsertPresent))
+  , testCase "ambiguous commit reconciles absent: kept live" (counted "m5-detached-jobs" "ambiguous-commit-reconciles-absent-kept-live" (caseAmbiguousAbsent))
+  , testCase "simultaneous two-session joins admit exactly one" (counted "m5-detached-jobs" "simultaneous-two-session-joins-admit-exactly-one" (caseJoinRaceTwoSessions))
+  , testCase "colliding job zero resolves per table" (counted "m5-detached-jobs" "colliding-job-zero-resolves-per-table" (caseJoinRaceTwoTables))
+  , testCase "scoped retire closes one table, keeps the other" (counted "m5-detached-jobs" "scoped-retire-closes-one-table-keeps-the-other" (caseRetireScopedKeepsOther))
+  , testCase "start refusal rolls the claim back" (counted "m5-detached-jobs" "start-refusal-rolls-the-claim-back" (caseJoinStartRefusalRollsBack))
+  , testCase "interruption after start retires the fresh job" (counted "m5-detached-jobs" "interruption-after-start-retires-the-fresh-job" (caseJoinInterruptionRollsBack))
+  , testCase "two contexts on one store mint distinct ids" (counted "m5-detached-jobs" "two-contexts-on-one-store-mint-distinct-ids" (caseTwoContextsDistinctIds))
+  , testCase "two tokens share the store-wide counter" (counted "m5-detached-jobs" "two-tokens-share-the-store-wide-counter" (caseTwoTokensStoreWideCounter))
+  , testCase "stale pre-reset id never names new work" (counted "m5-detached-jobs" "stale-pre-reset-id-never-names-new-work" (caseStaleIdNeverReused))
+  , testCase "failed insertion burns its id, never reuses it" (counted "m5-detached-jobs" "failed-insertion-burns-its-id-never-reuses-it" (caseFailedInsertBurnsId))
+  , testCase "token mismatch refuses before replan" (counted "m5-detached-jobs" "token-mismatch-refuses-before-replan" (caseTokenMismatchBeforeReplan))
+  , testCase "retire rolls a racing claim back; the join cannot commit" (counted "m5-detached-jobs" "retire-rolls-a-racing-claim-back-the-join-cannot-commit" (caseRetireRollsBackClaim))
+  , testCase "retired table refuses a late claim; siblings keep joining" (counted "m5-detached-jobs" "retired-table-refuses-a-late-claim-siblings-keep-joining" (caseRetiredTableRefusesLateClaim))
   ]
 
 tokHome :: TokenId
@@ -1645,7 +1646,7 @@ caseJoinInterruptionRollsBack = do
   rev <- inspectReverse dc tid freshJid
   assertEqual "fresh job unregistered" Nothing rev
   (liveAfter, termAfter, _nextAfter) <- tableStats table
-  assertEqual "no live orphan" 0 liveAfter
+  assertZero "live_jobs" "no live orphan" liveAfter
   assertEqual "one retired tombstone" 1 termAfter
   cout <- cancelJob table freshJid
   case cout of
@@ -1927,7 +1928,7 @@ caseRetireRollsBackClaim = do
   rev <- inspectReverse dc tid freshJid
   assertEqual "fresh job unregistered" Nothing rev
   (liveAfter, termAfter, _nextAfter) <- tableStats table
-  assertEqual "no live orphan" 0 liveAfter
+  assertZero "live_jobs" "no live orphan" liveAfter
   assertEqual "one retired tombstone" 1 termAfter
   cout <- cancelJob table freshJid
   case cout of
