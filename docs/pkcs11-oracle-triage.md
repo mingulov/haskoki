@@ -51,7 +51,7 @@ The frozen full profile has 22 findings shared by direct and proxy modes:
 | Family | Count | Interpretation |
 | --- | ---: | --- |
 | GMAC message shape | 2 | Haskoki's message-init path accepts its classic-shaped parameters, not native `CK_GCM_MESSAGE_PARAMS` |
-| HOTP parameters | 2 | Checker message-init probes send NULL; the provider requires its counter/digit parameter image |
+| HOTP parameters | 2 | Checker message-init probes send NULL. The provider takes the standard `CK_OTP_PARAMS` and, keeping no token counter, requires its `CK_OTP_COUNTER` entry; NULL refuses with `CKR_MECHANISM_PARAM_INVALID` |
 | BLAKE2B key type | 16 | Checker defect. Its wrong-key test uses a generic-secret key, but PKCS#11 3.1 sections 6.33.3 to 6.36.3 list "generic secret or CKK_BLAKE2B_n_HMAC" for these mechanisms, so Haskoki correctly accepts it. A native leg pins the acceptance and the refusal of a key type outside the list ([upstream report](pkcs11-check-upstream-issues.md#pending-upstream-reports)) |
 | Async child results | 2 | A checker child passes a ctypes character buffer where its declared binding expects unsigned bytes; it fails before the module call |
 

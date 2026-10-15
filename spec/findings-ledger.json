@@ -58,8 +58,8 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.5.0.0: adopt standard CK_OTP_PARAMS, retire 16-byte BE image (ruling 3, Task 5)",
-   "test": "pending: WP12 Task 5",
-   "receipt": "pending: WP12 Task 5",
+   "test": "tests/recipes/RecipeOtpSpec.hs::caseNativeEntries",
+   "receipt": "tests/c/consumer_roundtrip.c::HOTP CK_OTP_PARAMS legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {
@@ -88,8 +88,8 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.5.0.0: adopt standard CK_OTP_PARAMS, retire 16-byte BE image (ruling 3, Task 5)",
-   "test": "pending: WP12 Task 5",
-   "receipt": "pending: WP12 Task 5",
+   "test": "tests/recipes/RecipeOtpSpec.hs::caseNativeEntries",
+   "receipt": "tests/c/consumer_roundtrip.c::HOTP CK_OTP_PARAMS legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
   },
   {

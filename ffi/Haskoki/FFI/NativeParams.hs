@@ -192,6 +192,11 @@ module Haskoki.FFI.NativeParams
   , normalizeByteOpsExtractParams
   , byteOpsUlongNativeSize
   , byteOpsStringDataNativeSize
+  , OtpEntry (..)
+  , otpEntriesToCanonical
+  , otpParamsNativeSize
+  , otpParamNativeSize
+  , maxOtpParamEntries
   , pssStructToCanonical
   , oaepStructToCanonical
   , ecdhStructToCanonical
@@ -260,6 +265,7 @@ import Haskoki.Recipe.WrapCompRsa (encodeWrapCompRsaParams, wrapCompRsaRecipeFor
 import Haskoki.Recipe.Eddsa (eddsaRecipeFor, encodeEddsaParams)
 import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.Gmac (gmacRecipeFor)
+import Haskoki.Recipe.Otp (encodeHotpParams, hotpRecipeFor)
 import Haskoki.Recipe.MlDsa (encodeMldsaParams, hedgeOfWord, mldsaRecipeFor)
 import Haskoki.Recipe.SlhDsa (encodeSlhdsaParams, slhdsaRecipeFor)
 import qualified Haskoki.Recipe.SlhDsa as SlhDsa
@@ -387,6 +393,48 @@ byteOpsUlongNativeSize = wordSize
 -- @spec\/vendor\/pkcs11.h:1699-1702@; 16 bytes on LP64).
 byteOpsStringDataNativeSize :: Int
 byteOpsStringDataNativeSize = ptrSize + wordSize
+
+-- | Native @CK_OTP_PARAMS@ image size: (pointer, count) for the
+-- @CK_OTP_PARAM@ array (@spec\/vendor\/pkcs11.h@; 16 bytes on LP64).
+otpParamsNativeSize :: Int
+otpParamsNativeSize = ptrSize + wordSize
+
+-- | Native @CK_OTP_PARAM@ entry size: type, value pointer, value
+-- length (24 bytes on LP64).
+otpParamNativeSize :: Int
+otpParamNativeSize = wordSize + ptrSize + wordSize
+
+-- | Entry ceiling for one @CK_OTP_PARAMS@ array. The standard
+-- defines eight parameter types; a longer array cannot be valid
+-- without duplicates.
+maxOtpParamEntries :: Word64
+maxOtpParamEntries = 8
+
+-- | One decoded @CK_OTP_PARAM@ entry: the counter's value bytes,
+-- the requested output length, or any other parameter type.
+data OtpEntry
+  = OtpCounter !ByteString
+  | OtpOutputLength !Word64
+  | OtpOther !Word64
+  deriving (Eq, Show)
+
+-- | The HOTP stateless profile (PKCS#11 6.53.7.1, 6.53.9.3): a
+-- @CK_OTP_COUNTER@ entry is required (8 bytes, big-endian), a
+-- @CK_OTP_OUTPUT_LENGTH@ entry is optional (6-8 digits, default
+-- 6). Any other parameter type, a duplicate entry, or an
+-- out-of-range value refuses ('Nothing'). The result is the
+-- canonical @hotp-params\/1@ image the recipe already reads.
+otpEntriesToCanonical :: [OtpEntry] -> Maybe ByteString
+otpEntriesToCanonical entries = do
+  guard (null [t | OtpOther t <- entries])
+  counter <- case [c | OtpCounter c <- entries] of
+    [c] | BS.length c == 8 -> Just (BS.foldl' (\a b -> a * 256 + fromIntegral b) 0 c)
+    _ -> Nothing
+  digits <- case [d | OtpOutputLength d <- entries] of
+    [] -> Just 6
+    [d] | d >= 6 && d <= 8 -> Just (fromIntegral d)
+    _ -> Nothing
+  pure (encodeHotpParams counter digits)
 
 -- | Native @CK_IKE1_PRF_DERIVE_PARAMS@ image size: the PRF id,
 -- the prev-key flag (padded to a word), the keygxy and
@@ -518,6 +566,12 @@ mgfStemByCkg = Map.fromList
 -- OAEP label source with pointed-to bytes.
 ckzDataSpecified :: Word64
 ckzDataSpecified = 0x01
+
+-- | @CK_OTP_COUNTER@ and @CK_OTP_OUTPUT_LENGTH@ parameter types
+-- (@spec\/vendor\/pkcs11.h@).
+ckOtpCounter, ckOtpOutputLength :: Word64
+ckOtpCounter = 4
+ckOtpOutputLength = 6
 
 -- | @CKD_NULL@ (@spec/vendor/pkcs11.h:306@): the only served ECDH
 -- KDF selector (canonical code 0).
@@ -1821,6 +1875,10 @@ normalizeMechParams mid pParams paramsLen raw
   | isJust (rsaOaepRecipeFor mid) = fromMaybe raw <$> decodeOaepNative
   | isJust (gcmRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
   | isJust (gmacRecipeFor mid) = fromMaybe raw <$> decodeGcmNative
+  -- HOTP takes only the standard CK_OTP_PARAMS: a refused decode
+  -- maps to the empty image (refused by the recipe), never to the
+  -- raw bytes, so a pointer image can never parse as parameters.
+  | isJust (hotpRecipeFor mid) = fromMaybe BS.empty <$> decodeOtpNative
   | isJust (ccmRecipeFor mid) = fromMaybe raw <$> decodeCcmNative
   | isJust (ctrRecipeFor mid) = fromMaybe raw <$> decodeCtrNative
   | isJust (rc2RecipeFor mid) = fromMaybe raw <$> decodeRc2Native
@@ -1872,6 +1930,32 @@ normalizeMechParams mid pParams paramsLen raw
           mIv <- chaseBytes pIv ivLen
           mAad <- chaseBytes pAad aadLen
           pure (mIv >>= \iv -> mAad >>= \aad -> gcmStructToCanonical iv aad ivBits tagBits)
+    decodeOtpNative :: IO (Maybe ByteString)
+    decodeOtpNative
+      | paramsLen /= fromIntegral otpParamsNativeSize = pure Nothing
+      | otherwise = do
+          pArr <- peekByteOff pParams 0
+          CULong count <- peekByteOff pParams ptrSize
+          if count == 0 || count > maxOtpParamEntries || pArr == nullPtr
+            then pure Nothing
+            else do
+              es <- mapM (otpEntryAt pArr) [0 .. fromIntegral count - 1]
+              pure (sequence es >>= otpEntriesToCanonical)
+    otpEntryAt :: Ptr Word8 -> Int -> IO (Maybe OtpEntry)
+    otpEntryAt pArr i = do
+      let base = i * otpParamNativeSize
+      CULong ty <- peekByteOff pArr base
+      pVal <- peekByteOff pArr (base + wordSize)
+      CULong vlen <- peekByteOff pArr (base + wordSize + ptrSize)
+      if ty == ckOtpCounter
+        then fmap OtpCounter <$> chaseBytes pVal vlen
+        else if ty == ckOtpOutputLength
+          then if vlen /= fromIntegral wordSize || pVal == nullPtr
+            then pure Nothing
+            else do
+              CULong d <- peekByteOff (pVal :: Ptr Word8) 0
+              pure (Just (OtpOutputLength d))
+          else pure (Just (OtpOther ty))
     decodeCcmNative :: IO (Maybe ByteString)
     decodeCcmNative
       | paramsLen /= fromIntegral ccmNativeSize = pure Nothing

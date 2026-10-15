@@ -3,7 +3,9 @@
 One header mechanism executes: @CKM_HOTP@ is HOTP (RFC 4226) as a
 keyed sign\/verify MAC over HMAC-SHA1. Its parameters are
 @hotp-params\/1@: @counter:u64be digits:u64be@ (16 bytes, digits
-6-8); the input is always empty (HOTP signs the counter only) and
+6-8), the canonical image the FFI builds from the caller's standard
+@CK_OTP_PARAMS@ ('Haskoki.FFI.NativeParams.otpEntriesToCanonical');
+the input is always empty (HOTP signs the counter only) and
 the output is ASCII decimal digits, zero-padded to the width.
 @CKM_HOTP_KEY_GEN@ mints 16-64 byte @CKK_HOTP@ secrets and has no
 sign recipe row (the @CKM_AES_KEY_GEN@ precedent: keygen lengths

@@ -120,7 +120,7 @@ in `spec/mechanisms.json` routes and `dumpRegistry`):
 | `sig-encoding/1` | `RAW`, `DER`, or empty (empty means `DER`) | ECDSA rows |
 | `iv-bytes/1` | exactly `crIvBytes` raw bytes (CBC: one block; ECB: empty) | block-cipher rows |
 | `oaep-params/1` | 2× 8-byte big-endian table codes (digest, MGF) + label bytes (possibly empty) | `CKM_RSA_PKCS_OAEP` |
-| `hotp-params/1` | 2× 8-byte big-endian: counter, digit count (digits 6–8) | `CKM_HOTP` |
+| `hotp-params/1` | 2× 8-byte big-endian: counter, digit count (digits 6–8); translated from the caller's standard `CK_OTP_PARAMS` (counter entry required, output length optional, default 6) | `CKM_HOTP` |
 | `ecdh-params/1`, `pbkd2-params/2`, `hkdf-params/3` | family params for derive ops (non-classic; never cross classic init) | KDF/ECDH rows |
 
 Digest wire codes (PSS/OAEP shared convention): 1 MD5, 2 SHA_1, 3

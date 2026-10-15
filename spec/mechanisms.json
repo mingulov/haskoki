@@ -12249,7 +12249,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "OTP recipe (core/Haskoki/Recipe/Otp.hs): HOTP (RFC 4226) as a keyed sign/verify MAC over HMAC-SHA1 with hotp-params/1 (counter:u64be digits:u64be, 6-8 digits); empty input only, zero-padded ASCII digit output. Real KATs pinned (RoutingE2ESpec caseDriverHotp: full RFC 4226 Appendix D set + oracle 7/8-digit pins); constructions pinned (SyntheticSpec caseHotp); params/truncate/init/keygen pinned (RecipeOtpSpec).",
+      "notes": "OTP recipe (core/Haskoki/Recipe/Otp.hs): HOTP (RFC 4226) as a keyed sign/verify MAC over HMAC-SHA1 with hotp-params/1 (counter:u64be digits:u64be, 6-8 digits); native callers pass the standard CK_OTP_PARAMS (stateless profile: a CK_OTP_COUNTER entry of 8 big-endian bytes is required for sign and verify, CK_OTP_OUTPUT_LENGTH 6-8 is optional with default 6, any other entry, a duplicate or a NULL/short parameter refuses CKR_MECHANISM_PARAM_INVALID; no token counter, GAP-OTP-STATEFUL), which the FFI translates into that image (NativeParams otpEntriesToCanonical; consumer_roundtrip HOTP legs); empty input only, zero-padded ASCII digit output. Real KATs pinned (RoutingE2ESpec caseDriverHotp: full RFC 4226 Appendix D set + oracle 7/8-digit pins); constructions pinned (SyntheticSpec caseHotp); params/truncate/init/keygen pinned (RecipeOtpSpec).",
       "numeric_id": "0x00000291",
       "routes": [
         {

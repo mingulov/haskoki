@@ -68,8 +68,8 @@ The raw RSA X9.31 recipe needs prehashed input rather than the generic
 is a separate provider issue; changing that code alone does not repair the
 input. This was recorded as P11C-011.
 
-HOTP message-init probes still omit the required counter/digit parameters
-(P11C-012). Earlier CBC message recipes omitted IVs (P11C-013), and RSA
+HOTP message-init probes still omit the `CK_OTP_COUNTER` entry that
+Haskoki's stateless profile requires (P11C-012). Earlier CBC message recipes omitted IVs (P11C-013), and RSA
 recover recipes omitted `CKA_SIGN_RECOVER`/`CKA_VERIFY_RECOVER` permissions
 (P11C-014). The latter CBC/recover findings left the demo baseline when
 the checker recipes were corrected. They are not part of the current

@@ -1542,11 +1542,25 @@ int main(int argc, char **argv) {
         { CKA_VERIFY, &bTrue, sizeof(bTrue) }
       };
       CK_MECHANISM hotpm;
-      CK_BYTE hotpp[16] = { 0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,6 };
+      /* Standard CK_OTP_PARAMS (PKCS#11 6.53.7.1): CK_OTP_COUNTER is
+       * 8 bytes big-endian; CK_OTP_OUTPUT_LENGTH is a CK_ULONG. */
+      CK_BYTE hotpctr[8] = { 0,0,0,0,0,0,0,0 };
+      CK_BYTE hotpctr1[8] = { 0,0,0,0,0,0,0,1 };
+      CK_ULONG hotplen8 = 8;
+      CK_OTP_PARAM hotpent[2];
+      CK_OTP_PARAMS hotpp;
+      hotpent[0].type = CK_OTP_COUNTER;
+      hotpent[0].pValue = hotpctr;
+      hotpent[0].ulValueLen = sizeof(hotpctr);
+      hotpent[1].type = CK_OTP_OUTPUT_LENGTH;
+      hotpent[1].pValue = &hotplen8;
+      hotpent[1].ulValueLen = sizeof(hotplen8);
+      hotpp.pParams = hotpent;
+      hotpp.ulCount = 1;
       rv = f->C_CreateObject(ssess, hott, 6, &hotpk);
       CHECKC(rv == CKR_OK && hotpk != 0, "HOTP key imports");
       hotpm.mechanism = CKM_HOTP;
-      hotpm.pParameter = hotpp;
+      hotpm.pParameter = &hotpp;
       hotpm.ulParameterLen = sizeof(hotpp);
       if (!isProxy) {
         rv = f->C_SignInit(ssess, &hotpm, hmkey);
@@ -1562,6 +1576,38 @@ int main(int argc, char **argv) {
         CHECKC(rv == CKR_OK, "HOTP VerifyInit with HOTP key ok");
         rv = f->C_Verify(ssess, (CK_BYTE_PTR) "", 0, sig, sigLen);
         CHECKC(rv == CKR_OK, "HOTP verify of its own digits ok");
+        /* RFC 4226 vector 1 with an 8-digit output-length entry:
+         * the 31-bit value 1094287082 gives "94287082". */
+        hotpent[0].pValue = hotpctr1;
+        hotpp.ulCount = 2;
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_OK, "HOTP SignInit with counter 1 and 8 digits ok");
+        sigLen = sizeof(sig);
+        rv = f->C_Sign(ssess, (CK_BYTE_PTR) "", 0, sig, &sigLen);
+        CHECKC(rv == CKR_OK && sigLen == 8 && memcmp(sig, "94287082", 8) == 0,
+               "HOTP counter 1, 8 digits yields 94287082");
+        /* Verify needs the counter (6.53.9.3): the counter-free array
+         * (output length only) refuses, and so does sign, since this
+         * stateless profile keeps no token counter. */
+        hotpp.pParams = &hotpent[1];
+        hotpp.ulCount = 1;
+        rv = f->C_VerifyInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "HOTP VerifyInit without a counter refused rv=0x%lx", (unsigned long)rv);
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "HOTP SignInit without a counter refused rv=0x%lx", (unsigned long)rv);
+        /* A short counter and an empty array refuse. */
+        hotpp.pParams = hotpent;
+        hotpent[0].ulValueLen = 4;
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "HOTP 4-byte counter refused rv=0x%lx", (unsigned long)rv);
+        hotpent[0].ulValueLen = sizeof(hotpctr);
+        hotpp.ulCount = 0;
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "HOTP empty CK_OTP_PARAMS refused rv=0x%lx", (unsigned long)rv);
       } else {
         /* The shim's check_operation rejects parameterized
          * invocations for mechanisms absent from its shape
