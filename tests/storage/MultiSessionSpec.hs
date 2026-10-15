@@ -133,6 +133,7 @@ import Haskoki.Types
   )
 import StoreSpec
   ( awaitHolderExit
+  , demoJobPending
   , expectCreated
   , expectInspect
   , expectJust
@@ -197,6 +198,10 @@ spec = testGroup "Multi-session store"
   , testCase "landed login publishes despite reload failure" caseLoginReloadFailsLanded
   , testCase "per-token lockout is independent and durable" caseLoginTokenIndependent
   , testCase "token serial is the durable identity, not the slot" caseSerialFromIdentity
+  , testCase "serials and credentials follow a non-home move" caseSerialFollowsMove
+  , testCase "the same label under a different id has a different serial" caseSameLabelDifferentId
+  , testCase "InitToken keeps the serial and replaces the credential row" caseInitTokenKeepsSerial
+  , testCase "a restart keeps the serial, objects and jobs, never a login" caseRestartPreservesIdentity
   , testCase "changed PIN persists across close and reopen" caseSetPinDurable
   , testCase "SO InitPIN recovers a locked-out user" caseInitPinRecovery
   , testCase "InitToken resets the token and unsets the user PIN" caseInitTokenResets
@@ -1172,6 +1177,164 @@ caseSerialFromIdentity =
       tokenSerialOf ctx 1 >>= assertEqual "serial survives reopen" (CULong 0, "000000000000001a")
   where
     sentinel16 = replicate 16 'Z'
+
+-- | A non-home move changes no identity: after
+-- @planSlotMoves [(2,2),(3,1)]@ and a reopen under the matching
+-- pinned catalog, slot 1 reports token 3's serial and serves
+-- token 3's credentials, slot 2 the same for token 2. Serials
+-- stay distinct across every slot before and after. (The
+-- objects following the move are pinned by the store-level
+-- @caseOpenAcceptsMoved@.)
+caseSerialFollowsMove :: IO ()
+caseSerialFollowsMove =
+  bracket (makeTempDir "haskoki-serial-move") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "move.db"
+    cfg <- threeTokenConfig path
+      ["haskoki-demo", "haskoki-ops", "haskoki-audit"]
+      ["5678", "6789", "7890"] ["1234", "2345", "3456"] []
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      serials <- mapM (fmap snd . tokenSerialOf ctx) [0, 1, 2]
+      assertEqual "positional serials, all distinct"
+        ["0000000000000001", "0000000000000002", "0000000000000003"] serials
+    eSt <- openSQLiteStore path
+    st <- either (assertFailure . show) pure eSt
+    eLoaded <- storeLoadTokens st
+    loaded <- either (assertFailure . show) pure eLoaded
+    move <- case planSlotMoves [(TokenId 2, SlotId 2), (TokenId 3, SlotId 1)] [t | (t, _) <- loaded] of
+      Left refusal -> storeClose st >> assertFailure ("swap must plan: " ++ show refusal)
+      Right delta -> pure delta
+    r <- storeCommit st move
+    storeClose st
+    assertEqual "swap commits" Committed r
+    cfgSwap <- threeTokenConfig path
+      ["haskoki-demo", "haskoki-audit", "haskoki-ops"]
+      ["5678", "7890", "6789"] ["1234", "3456", "2345"] ["1", "3", "2"]
+    withAuthInstanceOnCfg stdAcquisition cfgSwap $ \ctx -> do
+      serials <- mapM (fmap snd . tokenSerialOf ctx) [0, 1, 2]
+      assertEqual "serials follow identity, all distinct"
+        ["0000000000000001", "0000000000000003", "0000000000000002"] serials
+      audit <- openAuthSessionOn ctx 1
+      loginAs ctx audit 1 "3456" >>= assertEqual "slot 1 serves token 3's PIN" (CULong 0)
+      ops <- openAuthSessionOn ctx 2
+      loginAs ctx ops 1 "2345" >>= assertEqual "slot 2 serves token 2's PIN" (CULong 0)
+
+-- | Two stores label @haskoki-ops@ under different ids: their
+-- serials differ, and opening the id-2 store with the id-5
+-- catalog refuses (the stored token has no catalog entry)
+-- without writing.
+caseSameLabelDifferentId :: IO ()
+caseSameLabelDifferentId =
+  bracket (makeTempDir "haskoki-same-label") removeDirectoryRecursive $ \dir -> do
+    let pathA = dir </> "a.db"
+        pathB = dir </> "b.db"
+    cfgA <- pinnedTwoTokenConfig pathA ["1", "2"]
+    cfgB <- pinnedTwoTokenConfig pathB ["1", "5"]
+    serialA <- withAuthInstanceOnCfg stdAcquisition cfgA $ \ctx -> tokenSerialOf ctx 1
+    serialB <- withAuthInstanceOnCfg stdAcquisition cfgB $ \ctx -> tokenSerialOf ctx 1
+    assertEqual "store A ops serial" (CULong 0, "0000000000000002") serialA
+    assertEqual "store B ops serial" (CULong 0, "0000000000000005") serialB
+    cfgCross <- pinnedTwoTokenConfig pathA ["1", "5"]
+    env <- newEnv (rulesFromConfig cfgCross)
+    eAcq <- openStdStore env cfgCross
+    case eAcq of
+      Left (StdStoreIdentityRefusal msg) ->
+        assertBool "refusal names the unconfigured stored token"
+          ("has no catalog entry" `isInfixOf` msg)
+      Left err -> assertFailure ("cross-id open refused for the wrong reason: " ++ show err)
+      Right mAcq -> do
+        mapM_ (storeClose . stdStore) mAcq
+        assertFailure "store opened under a catalog naming another id"
+    withAuthInstanceOnCfg stdAcquisition cfgA $ \ctx ->
+      tokenSerialOf ctx 1 >>= assertEqual "store A unchanged after the refusal" serialA
+
+-- | In-band InitToken on slot 1 keeps the token's identity, so
+-- the serial does not move, while its credential row is
+-- replaced (the user PIN is unset; the SO PIN stays).
+caseInitTokenKeepsSerial :: IO ()
+caseInitTokenKeepsSerial =
+  bracket (makeTempDir "haskoki-inittoken-serial") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "reset.db"
+    cfg <- twoTokenConfig path
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      before <- tokenSerialOf ctx 1
+      assertEqual "ops serial before" (CULong 0, "0000000000000002") before
+      credsBefore <- liveCredentials ctx
+      assertEqual "ops row before"
+        [("6789", Just "2345")] (opsRow credsBefore)
+      callInitToken ctx 1 "6789" "haskoki-ops" >>= assertEqual "init-token" (CULong 0)
+      tokenSerialOf ctx 1 >>= assertEqual "serial survives InitToken" before
+      credsAfter <- liveCredentials ctx
+      assertEqual "ops row replaced: SO PIN kept, user PIN unset"
+        [("6789", Nothing)] (opsRow credsAfter)
+      assertEqual "demo row untouched"
+        [c | c <- credsBefore, crToken c == TokenId 1]
+        [c | c <- credsAfter, crToken c == TokenId 1]
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx ->
+      tokenSerialOf ctx 1 >>= assertEqual "serial survives reopen" (CULong 0, "0000000000000002")
+  where
+    opsRow creds =
+      [ (BC8.unpack (crSoPin c), BC8.unpack <$> crUserPin c)
+      | c <- creds, crToken c == TokenId 2 ]
+
+-- | A restart (close, then a fresh open of the same file) keeps
+-- every serial, the token's stored object and its detached job,
+-- and never restores a login: the session that was logged in
+-- before the close is gone, and a new session starts public.
+caseRestartPreservesIdentity :: IO ()
+caseRestartPreservesIdentity =
+  bracket (makeTempDir "haskoki-restart-identity") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "restart.db"
+    cfg <- twoTokenConfig path
+    serialsBefore <- withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      h <- openAuthSessionOn ctx 1
+      loginAs ctx h 1 "2345" >>= assertEqual "ops user login" (CULong 0)
+      sessionLoginOf ctx h >>= assertEqual "logged in before the restart" (CULong 1)
+      mapM (tokenSerialOf ctx) [0, 1]
+    eSt <- openSQLiteStore path
+    st <- either (assertFailure . show) pure eSt
+    let obj = ObjectRecord
+          { orId = ObjectId 41
+          , orToken = TokenId 2
+          , orClass = 3
+          , orKeyType = Nothing
+          , orAttrs = Map.fromList [(AttrClass, ValULong 3)]
+          , orMaterialEncoding = "none"
+          , orMaterial = Nothing
+          , orRevision = Revision 1
+          }
+        job = demoJobPending 41 (TokenId 2) (Generation 0)
+    r <- storeCommit st emptyDelta
+      { sdPutObjects = [ObjectPut Nothing obj], sdPutJobs = [job] }
+    storeClose st
+    assertEqual "object and job commit" Committed r
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      serialsAfter <- mapM (tokenSerialOf ctx) [0, 1]
+      assertEqual "serials survive the restart" serialsBefore serialsAfter
+      h <- openAuthSessionOn ctx 1
+      sessionLoginOf ctx h >>= assertEqual "no login restored" (CULong 0)
+    eSt2 <- openSQLiteStore path
+    st2 <- either (assertFailure . show) pure eSt2
+    eLoaded <- storeLoadTokens st2
+    eJobs <- storeLoadJobs st2
+    storeClose st2
+    loaded <- either (assertFailure . show) pure eLoaded
+    jobs <- either (assertFailure . show) pure eJobs
+    assertEqual "the object survives the restart"
+      [ObjectId 41] [orId o | (t, os) <- loaded, trId t == TokenId 2, o <- os]
+    assertEqual "the detached job survives the restart" [job] jobs
+
+-- | A three-token SQLite config with explicit labels, PINs and
+-- (when non-empty) pinned @token_ids@.
+threeTokenConfig :: FilePath -> [String] -> [String] -> [String] -> [String] -> IO Config
+threeTokenConfig path labels soPins userPins ids = case parseConfig (unlines (
+  [ "schema_version = 1"
+  , "[tokens]"
+  , "labels = " ++ show labels
+  , "so_pins = " ++ show soPins
+  , "user_pins = " ++ show userPins
+  ] ++ ["token_ids = " ++ show ids | not (null ids)])) of
+    Left err -> assertFailure ("three-token config must parse: " ++ show err)
+    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })
 
 -- | Read one slot's 16-byte serial through the export into a
 -- buffer pre-filled with @Z@, returning the code and the bytes.

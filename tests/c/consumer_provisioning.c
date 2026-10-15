@@ -98,9 +98,12 @@ static void die(const char *what) {
 }
 
 /* Write the two-token SQLite config (slot 0 demo, slot 1 ops).
- * Both labels are parameters so the relabel leg can rewrite the
- * catalog to match a provisioned label. */
-static void write_config(const char *slot0_label, const char *slot1_label) {
+ * Labels and PINs are parameters so the relabel leg can rewrite
+ * the catalog to match a provisioned label, and the PIN-rewrite
+ * leg can edit the configured PINs under a seeded store. */
+static void write_config_pins(const char *slot0_label, const char *slot1_label,
+                              const char *so0, const char *so1,
+                              const char *user0, const char *user1) {
   FILE *f;
   if (!g_dir[0]) {
     char pattern[] = "/tmp/haskoki-provisioning-XXXXXX";
@@ -116,8 +119,8 @@ static void write_config(const char *slot0_label, const char *slot1_label) {
               "profile = \"real-crypto\"\n"
               "[tokens]\n"
               "labels = [\"%s\", \"%s\"]\n"
-              "so_pins = [\"5678\", \"6789\"]\n"
-              "user_pins = [\"1234\", \"2345\"]\n"
+              "so_pins = [\"%s\", \"%s\"]\n"
+              "user_pins = [\"%s\", \"%s\"]\n"
               "[storage]\n"
               "kind = \"sqlite\"\n"
               "path = \"%s\"\n"
@@ -127,12 +130,16 @@ static void write_config(const char *slot0_label, const char *slot1_label) {
               "private_library_context = true\n"
               "[trace]\n"
               "enabled = false\n",
-              slot0_label, slot1_label, g_db) < 0) {
+              slot0_label, slot1_label, so0, so1, user0, user1, g_db) < 0) {
     fclose(f);
     die("config write");
   }
   if (fclose(f) != 0) die("config close");
   if (setenv("HASKOKI_CONFIG", g_cfg, 1) != 0) die("setenv");
+}
+
+static void write_config(const char *slot0_label, const char *slot1_label) {
+  write_config_pins(slot0_label, slot1_label, "5678", "6789", "1234", "2345");
 }
 
 static CK_RV open_rw(CK_SLOT_ID slot, CK_SESSION_HANDLE *ph) {
@@ -881,6 +888,65 @@ static void phase_relabel(void) {
   }
 }
 
+/* ---------- phase: config PIN rewrite under a seeded store ---------- */
+
+/* The durable credentials win over edited config PINs: rewrite
+ * every configured PIN and restart. The provisioned PINs still
+ * serve, the edited ones are refused, and the identity-derived
+ * serial does not move. */
+static void phase_pin_rewrite(void) {
+  CK_RV rv;
+  CK_SESSION_HANDLE sess = 0;
+  CK_TOKEN_INFO info;
+  CK_UTF8CHAR serial_before[16];
+
+  rv = token_info(1, &info);
+  CHECKC(rv == CKR_OK && memcmp(info.serialNumber, "0000000000000002", 16) == 0,
+         "pin-rewrite: ops serial is its durable identity");
+  memcpy(serial_before, info.serialNumber, sizeof(serial_before));
+
+  rv = g_api->C_Finalize(NULL_PTR);
+  CHECKC(rv == CKR_OK, "pin-rewrite: finalize");
+  write_config_pins("haskoki-demo", "renamed-ops", "1111", "2222", "3333", "4444");
+  rv = g_api->C_Initialize(NULL_PTR);
+  CHECKC(rv == CKR_OK, "pin-rewrite: re-initialize on edited PINs");
+  if (rv != CKR_OK) return;
+
+  rv = token_info(1, &info);
+  CHECKC(rv == CKR_OK && memcmp(info.serialNumber, serial_before, 16) == 0,
+         "pin-rewrite: serial survives the restart");
+
+  rv = open_rw(0, &sess);
+  CHECKC(rv == CKR_OK && sess != 0, "pin-rewrite: slot-0 session opens");
+  if (rv != CKR_OK) return;
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "3333", 4);
+  CHECKC(rv == CKR_PIN_INCORRECT, "pin-rewrite: edited user PIN refused");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "race-done!", 10);
+  CHECKC(rv == CKR_OK, "pin-rewrite: provisioned user PIN serves");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "pin-rewrite: user logout");
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "1111", 4);
+  CHECKC(rv == CKR_PIN_INCORRECT, "pin-rewrite: edited SO PIN refused");
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+  CHECKC(rv == CKR_OK, "pin-rewrite: provisioned SO PIN serves");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "pin-rewrite: SO logout");
+  rv = g_api->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "pin-rewrite: slot-0 session closes");
+
+  rv = open_rw(1, &sess);
+  CHECKC(rv == CKR_OK && sess != 0, "pin-rewrite: slot-1 session opens");
+  if (rv != CKR_OK) return;
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "4444", 4);
+  CHECKC(rv == CKR_PIN_INCORRECT, "pin-rewrite: edited sibling PIN refused");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "renamed-u!", 10);
+  CHECKC(rv == CKR_OK, "pin-rewrite: provisioned sibling PIN serves");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "pin-rewrite: sibling logout");
+  rv = g_api->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "pin-rewrite: slot-1 session closes");
+}
+
 static void run_scenario(void) {
   phase_reinit_guard();
   phase_init_token();
@@ -891,6 +957,7 @@ static void run_scenario(void) {
   phase_restart();
   phase_race();
   phase_relabel();
+  phase_pin_rewrite();
 }
 
 int main(int argc, char **argv) {
