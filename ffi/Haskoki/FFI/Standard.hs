@@ -132,6 +132,7 @@ module Haskoki.FFI.Standard
   , haskokiStdTokenLive
   , haskokiStdTokenPolicy
   , haskokiStdTokenLabel
+  , haskokiStdTokenSerial
   , haskokiStdSlotPresent
     -- * objects (pure helpers + exports)
   , nativeEncodeAttr
@@ -327,7 +328,7 @@ import Haskoki.FFI.Encode
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.Instance (Instance (..), InstanceCell, readLiveInstance)
 import Haskoki.FFI.Notify
-import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry, identityCatalog)
+import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry, identityCatalog, tokenSerial)
 import Haskoki.Runtime.Control (PresenceOwner (..), bindPresenceOwner)
 import Haskoki.Runtime.SlotEvents
   ( SlotEvents, SlotDefinition (..), SlotSnapshot (..), PresenceError (..), newSlotEvents
@@ -628,7 +629,10 @@ data StdStore = StdStore
 -- | The owned standard-surface instance: model environment, live
 -- OpenSSL4 backend, per-session find cursors, the optional process
 -- store, the effective serving catalog (per-slot labels/PINs as
--- configured), the live serving-credential view (per-slot
+-- configured), the seated slot-to-identity layout (the reconciled
+-- 'stdTokenIds' for SQLite, the pinned 'identityCatalog' for
+-- memory; an empty map reads positionally), the live
+-- serving-credential view (per-slot
 -- effective labels/PINs: catalog-seeded, durable-winning,
 -- rewritten by granted provisioning calls), and the dirty slots
 -- (serving entries whose authority is unknown after a failed
@@ -640,6 +644,7 @@ data StdInstance = StdInstance
   , siFind :: !(IORef (Map SessionId [ExternalHandle]))
   , siStore :: !(Maybe StdStore)
   , siCatalog :: !(Map SlotId (String, String, String))
+  , siTokenIds :: !(Map SlotId TokenId)
   , siServing :: !(IORef (Map SlotId ServingCredential))
   , siDirty :: !(IORef [SlotId])
   , siSlots :: !SlotEvents
@@ -897,7 +902,18 @@ assembleStdInstance env be mStore cfg slots unbind release invoker = do
   bindings <- newIORef Map.empty
   notify <- newIORef Map.empty
   pure (StdInstance env be cursors mStore (effectiveCatalog cfg)
+    (seatedIdentities mStore cfg)
     serving dirty slots unbind release table detach views bindings notify invoker Nothing)
+
+-- | The instance's slot-to-identity layout: the reconciled store
+-- layout where a store is open (restored slots plus seeds), else
+-- the configured identity catalog, so pinned @token_ids@ hold for
+-- memory instances too (never a positional guess for a pinned
+-- slot).
+seatedIdentities :: Maybe StdStore -> Config -> Map SlotId TokenId
+seatedIdentities mStore cfg = case mStore of
+  Just ss -> stdTokenIds ss
+  Nothing -> Map.map fst (identityCatalog cfg)
 
 -- | Seed the live serving-credential view: every catalog slot
 -- serves its catalog label and PINs unless the store holds a
@@ -2586,6 +2602,8 @@ haskokiStdTokenPolicy ctx slot
 
 foreign export ccall "haskoki_std_token_label" haskokiStdTokenLabel
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO CULong
+foreign export ccall "haskoki_std_token_serial" haskokiStdTokenSerial
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO CULong
 foreign export ccall "haskoki_std_slot_present" haskokiStdSlotPresent
   :: StablePtr StdInstance -> CULong -> IO CULong
 
@@ -2613,6 +2631,27 @@ haskokiStdTokenLabel ctx slot pOut =
                 serving <- readIORef (siServing inst)
                 pokeArray pOut (padLabel32 (scLabel (servingFor serving sid)))
                 pure ckrOk
+
+-- | Project a seated slot's durable identity onto the 16-byte
+-- @CK_TOKEN_INFO@ serial field ('tokenSerial': canonical
+-- lowercase hex, the C side copies the bytes verbatim). The
+-- identity comes from the seated layout ('slotTokenId'), so the
+-- serial follows the token across slot moves and is independent
+-- of the label; identities are fixed for the instance's
+-- lifetime, so no serving re-sync is consulted. Unseated slots
+-- refuse with @SLOT_ID_INVALID@ and a null buffer with
+-- @ARGUMENTS_BAD@, both before any byte is written.
+haskokiStdTokenSerial :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO CULong
+haskokiStdTokenSerial ctx slot pOut =
+  withLiveStdCtx ctx $ \inst -> do
+    slots <- snapshotSlots (siSlots inst)
+    case tokenSlot slots slot of
+      Left rv -> pure rv
+      Right sid
+        | pOut == nullPtr -> pure ckrArgsBad
+        | otherwise -> do
+            pokeArray pOut (map (fromIntegral . ord) (tokenSerial (slotTokenId inst sid)))
+            pure ckrOk
 
 -- | Blank-pad a catalog label to exactly 32 bytes (truncate past
 -- 32; validation caps labels at 32 chars, ASCII in practice).
@@ -3184,12 +3223,13 @@ foreign export ccall "haskoki_std_set_pin" haskokiStdSetPin
   -> CULong -> IO CULong
 
 -- | Resolve a serving slot to its durable token identity: the
--- reconciled layout where the store has one, else the legacy
--- positional reading (the auth-projection precedent).
+-- instance's seated layout ('siTokenIds': the reconciled store
+-- layout for SQLite, the pinned identity catalog for memory),
+-- else the legacy positional reading (manually seated instances,
+-- the auth-projection precedent).
 slotTokenId :: StdInstance -> SlotId -> TokenId
-slotTokenId inst slot = case siStore inst of
-  Nothing -> tokenIdForSlot slot
-  Just ss -> Map.findWithDefault (tokenIdForSlot slot) slot (stdTokenIds ss)
+slotTokenId inst slot =
+  Map.findWithDefault (tokenIdForSlot slot) slot (siTokenIds inst)
 
 -- | Rewrite one slot's serving credential after its commit
 -- lands (the cursor-clearing precedent: the serving view

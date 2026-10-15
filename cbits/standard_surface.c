@@ -23,7 +23,6 @@
 
 #include <stdatomic.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -92,6 +91,8 @@ extern uint64_t haskoki_std_token_policy(void *instance, uint64_t slot,
                                          uint64_t *p_attempts);
 extern uint64_t haskoki_std_token_label(void *instance, uint64_t slot,
                                         uint8_t *p_label32);
+extern uint64_t haskoki_std_token_serial(void *instance, uint64_t slot,
+                                         uint8_t *p_serial16);
 extern uint64_t haskoki_std_slot_present(void *instance, uint64_t slot);
 extern unsigned long haskoki_std_get_slot_flags(void *instance, unsigned long slot,
                                               unsigned long *flags);
@@ -559,8 +560,10 @@ CK_RV std_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo) {
  * PIN bounds come from the ONE effective policy
  * (Haskoki.Session.effectivePolicy via haskoki_std_token_policy),
  * the same policy session admission reads — never a second
- * hand-maintained table here. Serials are per-slot (1-based,
- * slot 0 keeps ...0001). */
+ * hand-maintained table here. The serial is the slot's durable
+ * token identity in canonical 16-char lowercase hex
+ * (haskoki_std_token_serial): independent of slot and label, so it
+ * follows a moved token (the home token keeps ...0001). */
 CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   if (haskoki_in_notify()) return CKR_FUNCTION_FAILED;
   static const char kManu[] = "haskoki contributors";
@@ -579,7 +582,7 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   uint64_t provMax = 0, tokMax = 0, rwMax = 0, pinMin = 0, pinMax = 0,
            attempts = 0, uInit = 1;
   uint8_t label32[32];
-  char serial16[17];
+  uint8_t serial16[16];
   lr = haskoki_state_lock();
   if (lr != CKR_OK) {
     return lr;
@@ -613,6 +616,11 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
     (void)haskoki_state_unlock();
     return rv;
   }
+  rv = (CK_RV)haskoki_std_token_serial(inst, (uint64_t)slotID, serial16);
+  if (rv != CKR_OK) {
+    (void)haskoki_state_unlock();
+    return rv;
+  }
   if (pInfo == NULL_PTR) {
     (void)haskoki_state_unlock();
     return CKR_ARGUMENTS_BAD;
@@ -622,9 +630,8 @@ CK_RV std_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo) {
   memcpy(tmp.manufacturerID, kManu, sizeof(kManu) - 1);
   memset(tmp.model, ' ', sizeof(tmp.model));
   memcpy(tmp.model, kModel, sizeof(kModel) - 1);
-  /* Seated slots are catalog indices (< 16), so the narrowing is
-   * exact; %016u can never truncate into serial16. */
-  snprintf(serial16, sizeof(serial16), "%016u", (unsigned)slotID + 1u);
+  /* Exactly 16 identity bytes, no terminator (the field is
+   * fixed-width, not a C string). */
   memcpy(tmp.serialNumber, serial16, sizeof(tmp.serialNumber));
   tmp.flags = (CK_FLAGS)(CKF_RNG | CKF_LOGIN_REQUIRED |
                          CKF_USER_PIN_INITIALIZED | CKF_TOKEN_INITIALIZED |

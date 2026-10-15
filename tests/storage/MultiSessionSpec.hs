@@ -16,9 +16,12 @@ import qualified Data.Map.Strict as Map
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
+import Data.Char (chr)
+import Data.Word (Word8)
 import Data.List (isInfixOf, sort, sortOn)
 import Foreign.C.Types (CULong (..))
-import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
 import Foreign.Storable (peek, poke)
@@ -51,6 +54,7 @@ import Haskoki.FFI.Standard
   , haskokiStdLogout
   , haskokiStdOpenSession
   , haskokiStdSetPin
+  , haskokiStdTokenSerial
   , openStdInstanceWith
   , openStdStoreWith
   , stdAcquisition
@@ -187,6 +191,7 @@ spec = testGroup "Multi-session store"
   , testCase "unknown-but-landed login reconciles and serves on" caseLoginUnknownLanded
   , testCase "landed login publishes despite reload failure" caseLoginReloadFailsLanded
   , testCase "per-token lockout is independent and durable" caseLoginTokenIndependent
+  , testCase "token serial is the durable identity, not the slot" caseSerialFromIdentity
   , testCase "changed PIN persists across close and reopen" caseSetPinDurable
   , testCase "SO InitPIN recovers a locked-out user" caseInitPinRecovery
   , testCase "InitToken resets the token and unsets the user PIN" caseInitTokenResets
@@ -1138,6 +1143,53 @@ caseLoginTokenIndependent =
       s1 <- openAuthSessionOn ctx 1
       loginAs ctx s0 1 "1234" >>= assertEqual "slot-0 lockout durable" (stdRvOf CKR_PIN_LOCKED)
       loginAs ctx s1 1 "2345" >>= assertEqual "slot-1 serves" (CULong 0)
+
+-- | AC-04: the serial is the seated slot's durable identity in the
+-- canonical 16-hex form, independent of slot and label. Slot 1
+-- pins TokenId 26, so it reports @000000000000001a@ (the retired
+-- slot-derived form reported @0000000000000002@); the serial
+-- survives a close/reopen; bad slots and a null buffer refuse
+-- before any byte is written.
+caseSerialFromIdentity :: IO ()
+caseSerialFromIdentity =
+  bracket (makeTempDir "haskoki-serial-identity") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "serial.db"
+    cfg <- pinnedTwoTokenConfig path ["1", "26"]
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      tokenSerialOf ctx 0 >>= assertEqual "home serial" (CULong 0, "0000000000000001")
+      tokenSerialOf ctx 1 >>= assertEqual "pinned id 26 serial" (CULong 0, "000000000000001a")
+      -- CKR_SLOT_ID_INVALID (0x03): no such configured slot, and
+      -- the sentinel buffer is untouched.
+      tokenSerialOf ctx 7 >>= assertEqual "unknown slot refused first" (CULong 0x03, sentinel16)
+      haskokiStdTokenSerial ctx 1 nullPtr
+        >>= assertEqual "null buffer refused" (stdRvOf CKR_ARGUMENTS_BAD)
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx ->
+      tokenSerialOf ctx 1 >>= assertEqual "serial survives reopen" (CULong 0, "000000000000001a")
+  where
+    sentinel16 = replicate 16 'Z'
+
+-- | Read one slot's 16-byte serial through the export into a
+-- buffer pre-filled with @Z@, returning the code and the bytes.
+tokenSerialOf :: StablePtr StdInstance -> CULong -> IO (CULong, String)
+tokenSerialOf ctx slot =
+  allocaBytes 16 $ \(p :: Ptr Word8) -> do
+    pokeArray p (replicate 16 (fromIntegral (fromEnum 'Z')))
+    rv <- haskokiStdTokenSerial ctx slot p
+    bytes <- peekArray 16 p
+    pure (rv, map (chr . fromIntegral) bytes)
+
+-- | 'twoTokenConfig' with pinned @token_ids@.
+pinnedTwoTokenConfig :: FilePath -> [String] -> IO Config
+pinnedTwoTokenConfig path ids = case parseConfig (unlines
+  [ "schema_version = 1"
+  , "[tokens]"
+  , "labels = [\"haskoki-demo\", \"haskoki-ops\"]"
+  , "so_pins = [\"5678\", \"6789\"]"
+  , "user_pins = [\"1234\", \"2345\"]"
+  , "token_ids = " ++ show ids
+  ]) of
+    Left err -> assertFailure ("pinned two-token config must parse: " ++ show err)
+    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })
 
 -- | Call InitPIN on a session with a Haskell-string PIN.
 callInitPin :: StablePtr StdInstance -> CULong -> String -> IO CULong

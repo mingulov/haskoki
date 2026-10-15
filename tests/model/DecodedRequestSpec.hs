@@ -1402,7 +1402,7 @@ openManualInstance slots = do
     >>= either (fail . show) pure
   serving <- newIORef Map.empty
   dirty <- newIORef []
-  newStablePtr (StdInstance env be cursors Nothing Map.empty
+  newStablePtr (StdInstance env be cursors Nothing Map.empty Map.empty
     serving dirty hub (pure ()) (closeBackend be) table Nothing views bindings
     notify invokeNativeNotify Nothing)
   where
