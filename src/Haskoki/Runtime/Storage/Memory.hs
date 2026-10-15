@@ -16,8 +16,9 @@ releases the token; later uses of the closed handle fail closed.
 This backend runs the shared commit protocol: quarantine refusal,
 pre-commit fault rollback, a masked durable section with
 ambiguous-commit verification and post-commit quarantine, plus
-per-handle stats. Quarantine and stats are live-handle properties
-(fresh handles start clean); the world carries only the records.
+per-handle stats. Quarantine, stats, and the detached-job claim
+authority are live-handle properties (fresh handles start clean);
+the world carries only the records.
 -}
 module Haskoki.Runtime.Storage.Memory
   ( MemoryWorld
@@ -46,6 +47,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 
+import Haskoki.Runtime.Attach (ClaimAuthority, newClaimAuthority)
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
@@ -146,7 +148,8 @@ openMemoryStoreWith world limits inj = mask_ $ do
           sVar <- newIORef zeroStats
           cVar <- newMVar ()
           closedVar <- newMVar HandleOpen
-          pure (Right (mkStore world limits inj qVar sVar cVar tok closedVar)))
+          claims <- newClaimAuthority
+          pure (Right (mkStore world limits inj qVar sVar cVar tok closedVar claims)))
         `onException` restoreUnowned
   where
     alreadyOpen = StoreSecondWriter "memory store is already open (single writer)"
@@ -160,8 +163,8 @@ openMemoryStoreWith world limits inj = mask_ $ do
 -- | Build the 'Store' record over an owned world: the owner token
 -- plus the per-handle lifecycle state scope every operation and
 -- the close to this handle.
-mkStore :: MemoryWorld -> StoreLimits -> FaultInjector -> MVar [(TokenId, String)] -> IORef StoreStats -> MVar () -> Unique -> MVar HandleState -> Store
-mkStore world limits inj qVar sVar cVar tok closedVar = Store
+mkStore :: MemoryWorld -> StoreLimits -> FaultInjector -> MVar [(TokenId, String)] -> IORef StoreStats -> MVar () -> Unique -> MVar HandleState -> ClaimAuthority -> Store
+mkStore world limits inj qVar sVar cVar tok closedVar claims = Store
   { storeLoadTokens = withUse cVar closedVar (loadTokens world)
   , storeLoadJobs = withUse cVar closedVar (loadJobs world)
   , storeLoadCredentials = withUse cVar closedVar (loadCredentials world)
@@ -174,6 +177,7 @@ mkStore world limits inj qVar sVar cVar tok closedVar = Store
   , storeReload = withUse cVar closedVar (reloadWorld world qVar)
   , storeStats = readIORef sVar
   , storeLoadMeta = withUse cVar closedVar (loadMeta world)
+  , storeClaims = claims
   }
 
 -- | Run one world read under the handle's commit lock, failing

@@ -171,6 +171,7 @@ import Haskoki.Runtime.Async
   , startSeededJob
   , withDetachLease
   )
+import Haskoki.Runtime.Attach (Attachment (..), ClaimPrior (..))
 import Haskoki.Runtime.Lifecycle (Env, envRules, snapshotModel)
 import Haskoki.Rules (Rules)
 import Haskoki.Session (SessionLogin (..), TokenAuth (..))
@@ -813,24 +814,6 @@ data AttachmentView
   | AvTerminal !JobExecState
   deriving (Eq, Show)
 
--- | Internal attachment state: the public view plus the owning
--- table for actives and the in-progress join claim carrying the
--- claiming table and session identity plus a fresh per-attempt
--- token. Actives and claims name their table so two tables
--- sharing this context never resolve each other's local job
--- ids; the attempt token makes commit and rollback exact — a
--- retry's later claim is never mistaken for the older one it
--- follows. Claims also record what they replaced (idle or
--- absent) so a racing retirement rolls exactly them back.
--- (No 'Show': 'Unique' has none, and this state is never
--- rendered.)
-data Attachment
-  = AttActive !AsyncTableId !JobId
-  | AttIdle
-  | AttTerminal !JobExecState
-  | AttClaim !AsyncTableId !SessionId !Unique !ClaimPrior
-  deriving (Eq)
-
 -- | Project internal attachment state onto the public view.
 attView :: Attachment -> AttachmentView
 attView (AttActive _ jid) = AvActive jid
@@ -869,15 +852,6 @@ setIdle :: DetachCtx -> Word64 -> IO ()
 setIdle dc pid = atomically $ do
   attach <- readTVar (dcAttach dc)
   writeTVar (dcAttach dc) (Map.insert pid AttIdle attach)
-
--- | What a join claim replaced: the rollback target. Claims only
--- ever replace an idle entry or an absent one. Recorded in the
--- claim itself, so both the claimant and a racing retirement
--- roll exactly it back.
-data ClaimPrior
-  = ClaimHadIdle
-  | ClaimHadNone
-  deriving (Eq, Show)
 
 -- | Take the in-progress join claim for a persistent id in one
 -- STM step, stamping it with the attempt token the caller

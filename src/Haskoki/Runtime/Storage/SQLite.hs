@@ -86,6 +86,7 @@ import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileF
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (Fd, ProcessID)
 
+import Haskoki.Runtime.Attach (ClaimAuthority, newClaimAuthority)
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
@@ -151,7 +152,8 @@ sqliteSchemaVersion = 2
 -- lock path cannot fork a live owner), and the live-handle
 -- protocol state (injector, quarantine, the connection-wide
 -- quarantine left by a write transaction that could not be
--- rolled back, stats).
+-- rolled back, stats, and the handle-owned detached-job claim
+-- authority).
 data SQLiteConn = SQLiteConn
   { sqDb :: !S.Database
   , sqLock :: !(MVar ())
@@ -166,6 +168,7 @@ data SQLiteConn = SQLiteConn
   , sqStats :: !(IORef StoreStats)
   , sqLimits :: !StoreLimits
   , sqHooks :: !SQLiteTestHooks
+  , sqClaims :: !ClaimAuthority
   }
 
 -- | Test-only hooks run on the store's OWN connection (a second
@@ -277,6 +280,7 @@ openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
               qVar <- newMVar []
               openTxn <- newIORef Nothing
               sVar <- newIORef zeroStats
+              claims <- newClaimAuthority
               let conn = SQLiteConn
                     { sqDb = db
                     , sqLock = lock
@@ -291,6 +295,7 @@ openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
                     , sqStats = sVar
                     , sqLimits = limits
                     , sqHooks = hooks
+                    , sqClaims = claims
                     }
               pure (Right (mkStore conn)))
             `onException` closeQuiet db
@@ -890,6 +895,7 @@ mkStore conn = Store
   , storeReload = reloadConn conn
   , storeStats = readIORef (sqStats conn)
   , storeLoadMeta = withLive conn Left loadMeta
+  , storeClaims = sqClaims conn
   }
 
 -- | Run one connection use under the guard lock (async-safe

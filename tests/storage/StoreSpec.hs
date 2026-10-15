@@ -103,6 +103,7 @@ import Haskoki.Runtime.Storage
   , StoreError (..)
   , StoredDoc (..)
   , TokenRecord (..)
+  , claimCensus
   , docTopKeys
   , emptyDelta
   , encodeHexWord64
@@ -416,6 +417,8 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener testReserveSurvivesReset
   , testCase "id space refuses before wrap" $
       withOpener mkOpener testReserveExhaustion
+  , testCase "claim authority is handle-scoped" $
+      withOpener mkOpener testClaimAuthorityHandleScoped
   , testCase "corrupt counter fails closed" $
       withOpener mkOpener testReserveCorrupt
   , testCase "legacy reset before first reservation never reuses" $
@@ -1122,6 +1125,26 @@ testReserveIncreasing o = withStore o $ \s -> do
   assertEqual "durable across reopen" 3 r3
   mark <- loadCounter s2
   assertEqual "mark persisted" (Just (encodeHexWord64 4)) mark
+  storeClose s2
+
+-- | The detached-job claim authority is a live-handle property:
+-- a record-update wrapper of a handle (the fault-injection idiom)
+-- shares the handle's authority, while a close and reopen of the
+-- same identity mints a fresh, empty one — the authority is never
+-- world- or file-scoped and never durable.
+testClaimAuthorityHandleScoped :: Opener -> IO ()
+testClaimAuthorityHandleScoped o = withStore o $ \s -> do
+  let wrapped = s { storeCommit = storeCommit s, storeReload = storeReload s }
+  assertBool "record-update wrapper shares the authority"
+    (storeClaims wrapped == storeClaims s)
+  census0 <- claimCensus (storeClaims wrapped) (TokenId 1)
+  assertEqual "a fresh handle's authority is empty" (0, 0, 0) census0
+  storeClose s
+  s2 <- openCurrent o >>= either (\e -> assertFailure ("reopen: " ++ show e)) pure
+  assertBool "reopen mints a fresh authority"
+    (storeClaims s2 /= storeClaims s)
+  census1 <- claimCensus (storeClaims s2) (TokenId 1)
+  assertEqual "the reopened authority is empty" (0, 0, 0) census1
   storeClose s2
 
 -- | A store with hand-seated jobs reconciles the mark with the

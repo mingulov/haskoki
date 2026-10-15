@@ -82,6 +82,8 @@ module Haskoki.Runtime.Storage
   , renderSlotMoveRefusal
     -- * Store contract
   , Store (..)
+  , ClaimAuthority
+  , claimCensus
   , StoredDoc (..)
   , HandleState (..)
   , storeClosed
@@ -131,6 +133,7 @@ import qualified Data.Text.Encoding as TE
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), ObjectState (..))
+import Haskoki.Runtime.Attach (ClaimAuthority, JobExecState (..), claimCensus)
 import Haskoki.Session
   ( TokenAuth (..)
   , clearTransientAuth
@@ -251,17 +254,6 @@ data ObjectPut = ObjectPut
   { opExpected :: !(Maybe Revision)
   , opRecord :: !ObjectRecord
   } deriving (Eq, Show)
-
--- | Durable detached-job execution states (matching the schema's
--- @CHECK@ constraint). The store owns the record side; the
--- detach\/rejoin lifecycle moves jobs between these.
-data JobExecState
-  = JobQueued
-  | JobReady
-  | JobFailed
-  | JobCanceled
-  | JobDelivered
-  deriving (Eq, Show)
 
 -- | The durable job body: either a deterministic pending recipe
 -- (a named recipe plus owned parameter bytes, replayable after
@@ -1140,6 +1132,16 @@ renderSlotMoveRefusal r = case r of
 -- throwing it, and a later close retries for real. A failed close
 -- never half-releases, and the next owner can never enter around
 -- the surviving connection.
+--
+-- The detached-job claim authority is handle-scoped too
+-- ('storeClaims'): each open mints one fresh, empty authority;
+-- every detach context over the handle (and every record-update
+-- wrapper of it, which copies the field) shares it, so two
+-- contexts over one handle cannot both hold a live binding for
+-- one persistent job id. It is process-local and never durable:
+-- a reopened handle starts with no attachments, exactly like
+-- quarantine, so live attachments must be retired before the
+-- close (close does not drain them).
 data Store = Store
   { storeLoadTokens :: IO (Either StoreError [(TokenRecord, [ObjectRecord])])
   , storeLoadJobs :: IO (Either StoreError [JobRecord])
@@ -1169,6 +1171,8 @@ data Store = Store
   , storeReload :: IO (Either StoreError ())
   , storeStats :: IO StoreStats
   , storeLoadMeta :: IO (Either StoreError [(String, String)])
+  -- | The handle-owned detached-job claim authority (see above).
+  , storeClaims :: !ClaimAuthority
   }
 
 -- | One raw stored document: the table, the stable key, and the
