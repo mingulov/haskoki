@@ -103,6 +103,17 @@ label, matrix cells, execution line, upload layout, fallback
 classification, static guards), and one must-fail mutation per
 matrix leg (scenario filter, width passthrough, pinning modes,
 and every probe-side selector).
+
+Receipt verifier (judges a real run, build-free):
+  python3 scripts/check-qualification-wiring.py --verify-matrix DIR --expect-sha SHA
+* QW-RCPT-MISSING/SHAPE: matrix.json, classification.json and the raw
+  cell-results.txt exist and carry sha, requested_revision, runner.
+* QW-RCPT-DUPLICATE/CELLS: exact MATRIX_CELLS set; duplicates rejected
+  on the raw list before any dict; no absent or unknown cell.
+* QW-RCPT-MODE/RESULT/SHA: behavioral in both receipts, 25/25 pass,
+  sha equals --expect-sha.
+* QW-LANE-VERIFY: qualify ends with the verifier, report runs it
+  without swallowing failure, and the builder emits the identity fields.
 """
 import json
 import re
@@ -556,6 +567,27 @@ def check_lane(root, failures):
         if needs is None or QUALIFY_JOB not in needs:
             _add(failures, "QW-LANE-GATE",
                  f"{REPORT_JOB} must need {QUALIFY_JOB} (matrix renders qualify evidence)")
+    for job in (QUALIFY_JOB, REPORT_JOB):
+        if job not in blocks:
+            continue
+        steps = re.split(r"(?m)^      - name:", blocks[job])
+        last = steps[-1] if len(steps) > 1 else ""
+        if job == QUALIFY_JOB and "--verify-matrix" not in last:
+            _add(failures, "QW-LANE-VERIFY",
+                 f"{job}: the last step must run check-qualification-wiring.py --verify-matrix")
+        verify = [ln for ln in blocks[job].splitlines()
+                  if "--verify-matrix" in ln or ("--expect-sha" in ln and "git rev-parse" in ln)]
+        if not any("--verify-matrix" in ln for ln in verify) or \
+                "--expect-sha" not in blocks[job].split("--verify-matrix", 1)[-1]:
+            _add(failures, "QW-LANE-VERIFY",
+                 f"{job}: no --verify-matrix ... --expect-sha invocation")
+        elif any("|| true" in ln or "|| :" in ln for ln in verify):
+            _add(failures, "QW-LANE-VERIFY", f"{job}: verifier failure is swallowed")
+    if QUALIFY_JOB in blocks:
+        for token in ("requested_revision", "image_id", "nproc", "duration_s", "RECEIPT_SHA"):
+            if token not in blocks[QUALIFY_JOB]:
+                _add(failures, "QW-LANE-VERIFY",
+                     f"{QUALIFY_JOB}: matrix.json builder does not emit {token}")
     if "static-gates" in blocks:
         static = blocks["static-gates"]
         if "check-qualification-wiring.py --self-test" not in static:
@@ -650,6 +682,110 @@ def run_all(root):
 
 
 # ------------------------------------------------------------------
+# QW-RCPT-*: matrix receipt verifier (--verify-matrix DIR --expect-sha SHA).
+# ------------------------------------------------------------------
+
+def _dups(names):
+    seen, dup = set(), []
+    for name in names:
+        if name in seen and name not in dup:
+            dup.append(name)
+        seen.add(name)
+    return dup
+
+
+def _check_names(source, names, expected, failures):
+    """Duplicates are rejected on the raw list before any dict/set is built."""
+    for name in _dups(names):
+        _add(failures, "QW-RCPT-DUPLICATE", f"{source}: cell {name!r} appears more than once")
+    got = set(names)
+    for name in sorted(expected - got):
+        _add(failures, "QW-RCPT-CELLS", f"{source}: expected cell {name!r} absent")
+    for name in sorted(got - expected):
+        _add(failures, "QW-RCPT-CELLS", f"{source}: unknown cell {name!r}")
+
+
+def _load_json(path, failures):
+    try:
+        return json.loads(path.read_text())
+    except OSError:
+        _add(failures, "QW-RCPT-MISSING", f"missing or unreadable {path.name}")
+    except ValueError as exc:
+        _add(failures, "QW-RCPT-SHAPE", f"{path.name} is not valid JSON: {exc}")
+    return None
+
+
+def verify_matrix(receipt_dir, expect_sha):
+    """Return QW-RCPT failure strings for the receipt directory.
+
+    Judges a real run: exact expected cell set (MATRIX_CELLS), raw
+    cell-results.txt lines parsed as a list so duplicates are rejected
+    before any dict, behavioral mode in both matrix.json and
+    classification.json, every cell pass, and sha == expect_sha.
+    """
+    receipt_dir = Path(receipt_dir)
+    failures = _failures()
+    expected = {cell for cell, _driver, _env in MATRIX_CELLS}
+    if not re.fullmatch(r"[0-9a-f]{40}", expect_sha or ""):
+        _add(failures, "QW-RCPT-SHA", f"expected sha is not 40 lowercase hex: {expect_sha!r}")
+
+    classification = _load_json(receipt_dir / "classification.json", failures)
+    if classification is not None:
+        mode = classification.get("mode") if isinstance(classification, dict) else None
+        if mode != "behavioral":
+            _add(failures, "QW-RCPT-MODE", f"classification.json mode is {mode!r}, need 'behavioral'")
+
+    matrix = _load_json(receipt_dir / "matrix.json", failures)
+    if isinstance(matrix, dict):
+        if matrix.get("mode") != "behavioral":
+            _add(failures, "QW-RCPT-MODE", f"matrix.json mode is {matrix.get('mode')!r}, need 'behavioral'")
+        if matrix.get("sha") != expect_sha:
+            _add(failures, "QW-RCPT-SHA", f"matrix.json sha {matrix.get('sha')!r} != expected {expect_sha!r}")
+        for key in ("requested_revision",):
+            if not matrix.get(key):
+                _add(failures, "QW-RCPT-SHAPE", f"matrix.json lacks {key}")
+        runner = matrix.get("runner")
+        if not isinstance(runner, dict) or not all(runner.get(k) for k in ("os", "nproc", "image_id")):
+            _add(failures, "QW-RCPT-SHAPE", "matrix.json runner needs os, nproc and image_id")
+        cells = matrix.get("cells")
+        if not isinstance(cells, list) or not all(isinstance(c, dict) for c in cells):
+            _add(failures, "QW-RCPT-SHAPE", "matrix.json cells must be a list of objects")
+        else:
+            _check_names("matrix.json", [str(c.get("name")) for c in cells], expected, failures)
+            bad = [str(c.get("name")) for c in cells if c.get("result") != "pass"]
+            for name in bad:
+                _add(failures, "QW-RCPT-RESULT", f"matrix.json: cell {name!r} did not pass")
+            passed = len(cells) - len(bad)
+            if passed != len(expected):
+                _add(failures, "QW-RCPT-RESULT", f"matrix.json: {passed}/{len(expected)} cells pass")
+        if matrix.get("failures"):
+            _add(failures, "QW-RCPT-RESULT", f"matrix.json lists failures: {matrix.get('failures')}")
+    elif matrix is not None:
+        _add(failures, "QW-RCPT-SHAPE", "matrix.json must be an object")
+
+    try:
+        raw_text = (receipt_dir / "cell-results.txt").read_text()
+    except OSError:
+        _add(failures, "QW-RCPT-MISSING", "missing or unreadable cell-results.txt")
+    else:
+        names, results = [], []
+        for number, line in enumerate(raw_text.splitlines(), 1):
+            if not line.strip():
+                continue
+            parts = line.strip().rsplit(" ", 1)
+            if len(parts) != 2 or parts[1] not in ("pass", "FAIL"):
+                _add(failures, "QW-RCPT-SHAPE", f"cell-results.txt:{number}: unparseable line {line!r}")
+                continue
+            names.append(parts[0])
+            results.append(parts[1])
+        _check_names("cell-results.txt", names, expected, failures)
+        for name, result in zip(names, results):
+            if result != "pass":
+                _add(failures, "QW-RCPT-RESULT", f"cell-results.txt: cell {name!r} is {result}")
+    return failures
+
+
+# ------------------------------------------------------------------
 # Build-free self-tests: durable negative controls in a temp fixture.
 # ------------------------------------------------------------------
 
@@ -729,6 +865,102 @@ class _Controls:
             self.failed.append(f"{label}: expected {rule} failure, got {failures}")
 
 
+FIXTURE_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _write_receipt(directory, mutate=None):
+    """Write a passing 25/25 behavioral receipt; mutate(dict, lines) may edit it."""
+    directory.mkdir(parents=True, exist_ok=True)
+    names = [cell for cell, _driver, _env in MATRIX_CELLS]
+    matrix = {
+        "mode": "behavioral",
+        "sha": FIXTURE_SHA,
+        "requested_revision": FIXTURE_SHA,
+        "runner": {"os": "Linux 6.8.0 x86_64", "nproc": 4, "image_id": "sha256:" + "ab" * 32},
+        "cells": [{"name": n, "driver": d, "env": e, "result": "pass", "rc": 0,
+                   "duration_s": 1} for n, d, e in MATRIX_CELLS],
+        "failures": [],
+    }
+    raw = [f"{n} pass" for n in names]
+    classification = {"mode": "behavioral", "reason": "fixture"}
+    if mutate:
+        mutate(matrix, raw, classification)
+    (directory / "matrix.json").write_text(json.dumps(matrix, indent=2))
+    (directory / "cell-results.txt").write_text("".join(line + "\n" for line in raw))
+    if classification is not None:
+        (directory / "classification.json").write_text(json.dumps(classification))
+
+
+def _receipt_controls(controls, fresh_dir):
+    def case(label, rule, mutate=None, expect_sha=FIXTURE_SHA, drop=None):
+        directory = fresh_dir()
+        _write_receipt(directory, mutate)
+        if drop:
+            (directory / drop).unlink()
+        failures = verify_matrix(directory, expect_sha)
+        if rule is None:
+            if failures:
+                controls.failed.append(f"{label}: expected pass, got {failures}")
+            else:
+                controls.passed += 1
+                print(f"PASS (control): {label}")
+        elif any(f.startswith(rule + ":") for f in failures):
+            controls.passed += 1
+            print(f"PASS (negative): {label} -> {rule}")
+        else:
+            controls.failed.append(f"{label}: expected {rule} failure, got {failures}")
+
+    def absent(m, raw, c):
+        m["cells"] = [x for x in m["cells"] if x["name"] != "aging"]
+        raw[:] = [x for x in raw if not x.startswith("aging ")]
+
+    def dup_raw(m, raw, c):
+        raw.append(raw[0])
+
+    def dup_cell(m, raw, c):
+        m["cells"].append(dict(m["cells"][0]))
+
+    def failcell(m, raw, c):
+        m["cells"][3]["result"] = "FAIL"
+        raw[3] = raw[3].replace(" pass", " FAIL")
+        m["failures"] = [m["cells"][3]["name"]]
+
+    def buildonly(m, raw, c):
+        m["mode"] = "buildonly"
+
+    def class_buildonly(m, raw, c):
+        c["mode"] = "buildonly"
+
+    def extra(m, raw, c):
+        m["cells"].append({"name": "bogus-cell", "driver": "x", "env": "", "result": "pass"})
+        raw.append("bogus-cell pass")
+
+    def no_runner(m, raw, c):
+        del m["runner"]
+
+    def raw_only_fail(m, raw, c):
+        raw[5] = raw[5].replace(" pass", " FAIL")
+
+    def empty(m, raw, c):
+        m["cells"] = []
+        raw[:] = []
+
+    case("passing 25/25 behavioral receipt", None)
+    case("absent cell", "QW-RCPT-CELLS", absent)
+    case("duplicated raw result line", "QW-RCPT-DUPLICATE", dup_raw)
+    case("duplicated matrix cell", "QW-RCPT-DUPLICATE", dup_cell)
+    case("FAIL cell", "QW-RCPT-RESULT", failcell)
+    case("sha differs from expected", "QW-RCPT-SHA", expect_sha="f" * 40)
+    case("matrix mode buildonly", "QW-RCPT-MODE", buildonly)
+    case("classification mode buildonly", "QW-RCPT-MODE", class_buildonly)
+    case("unknown extra cell", "QW-RCPT-CELLS", extra)
+    case("missing classification.json", "QW-RCPT-MISSING", drop="classification.json")
+    case("missing cell-results.txt", "QW-RCPT-MISSING", drop="cell-results.txt")
+    case("missing runner record", "QW-RCPT-SHAPE", no_runner)
+    case("raw line FAIL while matrix says pass", "QW-RCPT-RESULT", raw_only_fail)
+    case("empty cells", "QW-RCPT-CELLS", empty)
+
+
 def self_test():
     controls = _Controls()
     try:
@@ -739,6 +971,16 @@ def self_test():
     allocated = []
     try:
         controls.expect_pass("real tree passes unmutated", template)
+
+        receipt_dirs = []
+
+        def fresh_dir():
+            tmp = Path(tempfile.mkdtemp(prefix="haskoki-qw-rcpt-"))
+            receipt_dirs.append(tmp)
+            allocated.append(tmp)
+            return tmp / "receipt"
+
+        _receipt_controls(controls, fresh_dir)
 
         def fresh():
             tmp = Path(tempfile.mkdtemp(prefix="haskoki-qw-mut-"))
@@ -892,6 +1134,18 @@ def self_test():
         _drop_lines(root / QUALIFICATION_YML, "release-evidence.sh")
         controls.expect_fail("drop the build-only fallback", root, "QW-LANE-FALLBACK")
         root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 'check-qualification-wiring.py --verify-matrix \\\n            "$RUNNER_TEMP/qualify-evidence"',
+                 'check-qualification-wiring.py --self-test \\\n            "$RUNNER_TEMP/qualify-evidence"')
+        controls.expect_fail("drop the qualify receipt verifier", root, "QW-LANE-VERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--expect-sha "$(git rev-parse HEAD)"\n\n  #',
+                 '--expect-sha "$(git rev-parse HEAD)" || true\n\n  #')
+        controls.expect_fail("swallow a verifier failure", root, "QW-LANE-VERIFY")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "duration_s")
+        controls.expect_fail("drop per-cell duration from the receipt", root, "QW-LANE-VERIFY")
+        root = fresh()
         _drop_lines(root / QUALIFICATION_YML, "HASKOKI_QUAL_ONLY=bogus")
         controls.expect_fail("drop the bogus-hint control", root, "QW-LANE-STATIC")
         # One must-fail control per matrix leg: the scenario
@@ -929,8 +1183,17 @@ def self_test():
 def main(argv):
     if len(argv) == 2 and argv[1] == "--self-test":
         return self_test()
+    if len(argv) == 5 and argv[1] == "--verify-matrix" and argv[3] == "--expect-sha":
+        failures = verify_matrix(argv[2], argv[4])
+        if failures:
+            print(f"FAIL: matrix receipt ({len(failures)} findings):")
+            for failure in failures:
+                print(f"  {failure}")
+            return 1
+        print(f"PASS: matrix receipt ({len(MATRIX_CELLS)}/{len(MATRIX_CELLS)} behavioral, sha {argv[4]})")
+        return 0
     if len(argv) != 1:
-        print("usage: check-qualification-wiring.py [--self-test]")
+        print("usage: check-qualification-wiring.py [--self-test | --verify-matrix DIR --expect-sha SHA]")
         return 2
     failures = run_all(ROOT)
     if failures:

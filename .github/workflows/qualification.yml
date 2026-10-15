@@ -445,6 +445,8 @@ jobs:
           sudo chmod -R a+rwX "$GITHUB_WORKSPACE"
       - name: Run behavioral matrix
         if: steps.select.outputs.mode == 'behavioral'
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
         run: |
           set -euo pipefail
           {
@@ -483,6 +485,7 @@ jobs:
           ossl4/default|test-ossl4-bounds.sh|
           EOF
           : > cell-results.txt
+          : > cell-meta.txt
           FAILURES=""
           # Read from the file (never a pipeline) so the failure
           # accumulator survives the loop; collect-all with a
@@ -500,42 +503,68 @@ jobs:
             for assign in $assignments; do
               ENV_ARGS="$ENV_ARGS --env $assign"
             done
+            started=$(date +%s)
+            rc=0
             # shellcheck disable=SC2086
-            if docker run --rm $ENV_ARGS -v "$PWD:/work" -w /work \
-                "$HASKOKI_IMAGE" "scripts/$driver" >"$log" 2>&1; then
+            docker run --rm $ENV_ARGS -v "$PWD:/work" -w /work \
+                "$HASKOKI_IMAGE" "scripts/$driver" >"$log" 2>&1 || rc=$?
+            echo "$cell|$rc|$(( $(date +%s) - started ))" >> cell-meta.txt
+            if [ "$rc" -eq 0 ]; then
               echo "$cell pass" >> cell-results.txt
               echo "cell $cell: pass"
             else
               echo "$cell FAIL" >> cell-results.txt
-              echo "cell $cell: FAIL (see cells/$safe.log)"
+              echo "cell $cell: FAIL rc=$rc (see cells/$safe.log)"
               FAILURES="$FAILURES $cell"
             fi
           done < cells.txt
-          python3 - cells.txt cell-results.txt \
+          # Receipt identity: the commit actually checked out, the
+          # revision that was requested, and the runner/image that
+          # executed the cells.
+          export RECEIPT_SHA="$(git rev-parse HEAD)"
+          export RECEIPT_REQUESTED="$REQUESTED_REVISION"
+          export RECEIPT_OS="$(uname -sr) $(uname -m) ${ImageOS:-unknown}/${ImageVersion:-unknown}"
+          export RECEIPT_NPROC="$(nproc)"
+          export RECEIPT_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$HASKOKI_IMAGE")"
+          python3 - cells.txt cell-results.txt cell-meta.txt \
             > "$HASKOKI_EVIDENCE_DIR/matrix.json" <<'PY' || { echo "matrix receipt failed"; exit 2; }
-          import json, sys
-          rows, results = {}, {}
+          import json, os, sys
+          # Lists, never dicts keyed by name: a duplicated row or
+          # result line must stay visible to the receipt verifier.
+          rows, results, meta = [], [], {}
           for line in open(sys.argv[1]):
               line = line.strip()
-              if not line:
-                  continue
-              name, driver, env = line.split("|")
-              rows[name] = {"name": name, "driver": driver, "env": env,
-                            "result": "missing"}
+              if line:
+                  name, driver, env = line.split("|")
+                  rows.append((name, driver, env))
           for line in open(sys.argv[2]):
               line = line.strip()
-              if not line:
-                  continue
-              name, result = line.rsplit(" ", 1)
-              results[name] = result
+              if line:
+                  name, result = line.rsplit(" ", 1)
+                  results.append((name, result))
+          for line in open(sys.argv[3]):
+              line = line.strip()
+              if line:
+                  name, rc, dur = line.split("|")
+                  meta.setdefault(name, []).append((int(rc), int(dur)))
           cells, failures = [], []
-          for name, row in rows.items():
-              row["result"] = results.get(name, "missing")
-              cells.append(row)
-              if row["result"] != "pass":
+          for name, driver, env in rows:
+              matched = [r for n, r in results if n == name]
+              result = matched[0] if len(matched) == 1 else (
+                  "missing" if not matched else "duplicate")
+              rc, dur = (meta.get(name) or [(None, None)])[0]
+              cells.append({"name": name, "driver": driver, "env": env,
+                            "result": result, "rc": rc, "duration_s": dur})
+              if result != "pass":
                   failures.append(name)
-          print(json.dumps({"mode": "behavioral", "cells": cells,
-                            "failures": failures}, indent=2))
+          print(json.dumps({
+              "mode": "behavioral",
+              "sha": os.environ["RECEIPT_SHA"],
+              "requested_revision": os.environ["RECEIPT_REQUESTED"],
+              "runner": {"os": os.environ["RECEIPT_OS"],
+                         "nproc": int(os.environ["RECEIPT_NPROC"]),
+                         "image_id": os.environ["RECEIPT_IMAGE_ID"]},
+              "cells": cells, "failures": failures}, indent=2))
           PY
           cat "$HASKOKI_EVIDENCE_DIR/matrix.json"
           [ -z "$FAILURES" ] || { echo "matrix failures:$FAILURES"; exit 1; }
@@ -593,7 +622,7 @@ jobs:
           done
           # Cell table and per-cell results exist only when the
           # matrix step ran; stage them when present.
-          for f in cells.txt cell-results.txt; do
+          for f in cells.txt cell-results.txt cell-meta.txt; do
             [ -f "$f" ] && cp "$f" "$RUNNER_TEMP/qualify-evidence/" 2>/dev/null
           done || true
           echo "mode=$MODE" >> "$RUNNER_TEMP/qualify-evidence-run.log" 2>/dev/null || true
@@ -617,6 +646,15 @@ jobs:
             ${{ runner.temp }}/qualify-evidence/
             ${{ runner.temp }}/qualify-evidence-run.log
           if-no-files-found: error
+      - name: Verify matrix receipt
+        if: always()
+        run: |
+          # Last qualify step: judge the receipt after it is uploaded.
+          # Exact 25-cell set, behavioral mode, 25/25 pass and the
+          # checked-out sha; a build-only fallback fails here.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-matrix \
+            "$RUNNER_TEMP/qualify-evidence" --expect-sha "$(git rev-parse HEAD)"
 
   # ------------------------------------------------------------------
   # Report: render the pass/fail matrix from the qualify evidence
@@ -631,6 +669,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision || github.sha }}
       - name: Download qualification evidence
         if: always()
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -678,6 +720,15 @@ jobs:
           PY
           cat MATRIX.md
           exit 0
+      - name: Verify matrix receipt
+        if: always()
+        run: |
+          # The report job exits nonzero when the receipt is missing,
+          # partial, duplicated, non-behavioral, failing or for a
+          # different sha than this job's own checkout.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-matrix \
+            evidence-in/qualify-evidence --expect-sha "$(git rev-parse HEAD)"
       - name: Upload matrix artifact
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
