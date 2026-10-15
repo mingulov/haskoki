@@ -8,7 +8,8 @@
  *     tables (4-table proof shape), count-query/size-query/short-buffer
  *     legs, token-present filtering, cross-table agreement
  *   - per-slot sessions (open/info/close), per-slot token/slot records
- *     (catalog labels blank-padded, per-slot serials, pinned strings),
+ *     (catalog labels blank-padded, identity-derived serials, pinned
+ *     strings),
  *     per-slot mechanism catalog
  *   - per-slot user/SO login/logout with catalog PINs, foreign-PIN
  *     refusal, bad-slot refusal on every slot-taking entry
@@ -16,7 +17,9 @@
  *     find/get/destroy from another fail typed)
  *
  * Config: hermetic self-written 3-token catalog (memory storage, trace
- * off) mirroring tests/ops/fixtures/multi-token.toml, unless
+ * off) mirroring tests/ops/fixtures/multi-token.toml plus pinned
+ * token_ids ["1", "26", "3"] (slot 1 holds a non-positional identity,
+ * so its serial tells the identity from the slot), unless
  * HASKOKI_MULTITOKEN_CONFIG points at an explicit file (sensitivity
  * runs and fixture-driven evidence; an override file is never
  * unlinked). In proxy topology the server side carries its own
@@ -107,7 +110,8 @@ static void write_config(void) {
                              "labels = [\"haskoki-demo\", \"haskoki-ops\", "
                              "\"haskoki-audit\"]\n"
                              "so_pins = [\"5678\", \"6789\", \"7890\"]\n"
-                             "user_pins = [\"1234\", \"2345\", \"3456\"]\n";
+                             "user_pins = [\"1234\", \"2345\", \"3456\"]\n"
+                             "token_ids = [\"1\", \"26\", \"3\"]\n";
   const char *ovr = getenv("HASKOKI_MULTITOKEN_CONFIG");
   if (ovr && ovr[0] != '\0') {
     snprintf(g_cfg_path, sizeof(g_cfg_path), "%s", ovr);
@@ -145,6 +149,11 @@ static void write_config(void) {
 static const char *kLabels[3] = {"haskoki-demo", "haskoki-ops", "haskoki-audit"};
 static const char *kUserPins[3] = {"1234", "2345", "3456"};
 static const char *kSoPins[3] = {"5678", "6789", "7890"};
+/* Serials are the canonical 16-hex token identities (lowercase,
+ * independent of slot and label): the pinned ids 1, 26, 3. The
+ * proxied backend serves only the home token (identity 1). */
+static const char *kSerials[3] = {"0000000000000001", "000000000000001a",
+                                  "0000000000000003"};
 
 /* Length of a blank-padded label field's non-pad prefix. */
 static CK_ULONG padded_len(const CK_UTF8CHAR *field, CK_ULONG width) {
@@ -373,7 +382,7 @@ int main(int argc, char **argv) {
   {
     /* One-line conjunctions over the discovered slots (evaluated in
      * both modes; proxy loops run once). */
-    int present = 1, labeled = 1, serial = 1;
+    int present = 1, labeled = 1, serial = 1, identity = 1;
     CK_ULONG a = 0, b = 0;
     for (i = 0; i < n; i++) {
       CK_ULONG llen = 0;
@@ -398,8 +407,14 @@ int main(int argc, char **argv) {
                   ((ti.flags & CKF_LOGIN_REQUIRED) != 0);
         for (j = 0; j < 16; j++) {
           serial = serial &&
-                   (ti.serialNumber[j] >= '0' && ti.serialNumber[j] <= '9');
+                   ((ti.serialNumber[j] >= '0' && ti.serialNumber[j] <= '9') ||
+                    (ti.serialNumber[j] >= 'a' && ti.serialNumber[j] <= 'f'));
         }
+        identity = identity && (isProxy || i < 3) &&
+                   (memcmp(ti.serialNumber, isProxy ? kSerials[0] : kSerials[i],
+                           16) == 0);
+      } else {
+        identity = 0;
       }
     }
     for (a = 0; a < n; a++) {
@@ -420,7 +435,8 @@ int main(int argc, char **argv) {
     }
     CHECK(present, "every slot token-present with pinned description");
     CHECK(labeled, "every token labeled from the serving catalog");
-    CHECK(serial, "token serials numeric and distinct per slot");
+    CHECK(serial, "token serials lowercase hex and distinct per slot");
+    CHECK(identity, "token serials are the pinned token identities");
   }
   rv = tbl32->C_GetSlotInfo(999991UL, &si);
   CHECK(rv == CKR_SLOT_ID_INVALID, "bad slot slot-info rejected");

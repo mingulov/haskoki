@@ -13,7 +13,7 @@ module MultiTokenSpec (spec) where
 import Control.Exception (bracket)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
-import Data.Char (ord)
+import Data.Char (chr, ord)
 import Data.IORef (newIORef)
 import Data.List (isInfixOf, nub)
 import qualified Data.Map.Strict as Map
@@ -58,6 +58,7 @@ import Haskoki.FFI.Standard
   , haskokiStdSlotPresent
   , haskokiStdTokenLabel
   , haskokiStdTokenLive
+  , haskokiStdTokenSerial
   , homeTokenId
   , homeTokenLabel
   , openStdInstance
@@ -75,6 +76,7 @@ import Haskoki.Runtime.Config
   , TokensCfg (..)
   , defaultConfig
   , loadConfigFile
+  , parseConfig
   )
 import Haskoki.Runtime.Lifecycle
   ( defaultInitArgs
@@ -105,6 +107,7 @@ spec = testGroup "Multi-token"
   , testCase "sqlite store round-trips three tokens" caseSqliteRoundTrip
   , testCase "store reload restores three tokens" caseRestoreThree
   , testCase "per-slot token ids unique" caseTokenIdsUnique
+  , testCase "memory serials follow pinned token ids" caseMemorySerialPinned
   , testCase "cross-slot login independence" caseLoginIndependent
   , testCase "cross-slot object invisibility" caseObjectsIsolated
   , testCase "user PINs route per slot" casePerSlotPins
@@ -145,7 +148,7 @@ openManualInstance slots = do
     >>= either (fail . show) pure
   serving <- newIORef Map.empty
   dirty <- newIORef []
-  newStablePtr (StdInstance env be cursors Nothing Map.empty
+  newStablePtr (StdInstance env be cursors Nothing Map.empty Map.empty
     serving dirty hub (pure ()) (closeBackend be) table Nothing views bindings
     notify invokeNativeNotify Nothing)
   where
@@ -587,6 +590,31 @@ caseTokenIdsUnique = do
   let ids = [tokenIdForSlot (SlotId n) | n <- [0 .. 15]]
   assertEqual "sixteen unique ids" 16 (length (nub ids))
   assertEqual "slot 0 keeps home id" homeTokenId (tokenIdForSlot (SlotId 0))
+
+-- | Memory instances read the serial from the pinned identity
+-- catalog too (WP04 ruling 1): the fixture with
+-- @token_ids = ["1", "26", "3"]@ reports TokenId 26 on slot 1 as
+-- @000000000000001a@ (a positional reading gives
+-- @0000000000000002@), and the other slots follow their pins.
+caseMemorySerialPinned :: IO ()
+caseMemorySerialPinned = do
+  body <- readFile fixturePath
+  cfg <- case parseConfig (body ++ "token_ids = [\"1\", \"26\", \"3\"]\n") of
+    Left err -> fail ("pinned memory fixture must parse: " ++ show err)
+    Right c -> pure c
+  assertEqual "fixture stays memory-backed" StorageMemory (scKind (cfgStorage cfg))
+  withConfigInstance cfg $ \inst -> do
+    readSerial inst (CULong 0) >>= assertEqual "slot-0 serial" "0000000000000001"
+    readSerial inst (CULong 1) >>= assertEqual "slot-1 serial" "000000000000001a"
+    readSerial inst (CULong 2) >>= assertEqual "slot-2 serial" "0000000000000003"
+
+-- | Read one slot's 16-byte serial (fails unless the call is OK).
+readSerial :: StablePtr StdInstance -> CULong -> IO String
+readSerial inst slot =
+  allocaArray 16 $ \(buf :: Ptr Word8) -> do
+    rv <- haskokiStdTokenSerial inst slot buf
+    assertEqual "serial rv" (CULong 0) rv
+    map (chr . fromIntegral) <$> peekArray 16 buf
 
 -- | Login state is per token (slot) — logging in on slot 1
 -- leaves slot 2 public and vice versa, and logout is likewise
