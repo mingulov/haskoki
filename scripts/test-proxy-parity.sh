@@ -82,8 +82,37 @@
 #   flows through the real normalize+diff path); the script MUST
 #   fail and report the divergent call plus both outputs.
 #
+# 2026-10-15 (#17, v0.5 WP11): consumer_policy_metadata is no longer
+# DIRECT_ONLY. Group P (after group R) runs it proxied: each policy
+# scenario gets its own daemon started on the config the consumer prints
+# via --print-config (the driver holds no TOML for it), the direct and
+# proxied transcripts are diffed, and a NEGATIVE-CONTROL leg proves the
+# comparison can fail (limit2-null against the unconfigured global
+# backend must exit 3 with policy:backend-mismatch). The three PIN
+# refusal scenarios have no proxied session shape; their proxied
+# equivalent is a STARTUP-REFUSAL (the daemon must exit nonzero without
+# ever accepting on the port). stop_daemon verifies each daemon is gone
+# and the port free before the next leg; a self-check at startup proves
+# the squatter guard refuses a pre-bound port.
+#
 # Usage:
 #   scripts/test-proxy-parity.sh             # full parity (must PASS)
+#   HASKOKI_PARITY_GROUPS="P" scripts/test-proxy-parity.sh
+#                                           # development filter: run only
+#                                           # the listed groups (R C P,
+#                                           # default all; an unknown name
+#                                           # fails). Prints PARTIAL and
+#                                           # exits 1 unless
+#                                           # HASKOKI_PARITY_ALLOW_PARTIAL=1;
+#                                           # never use it for evidence
+#   HASKOKI_PARITY_STORAGE=memory scripts/test-proxy-parity.sh
+#                                           # narrows the certificate
+#                                           # storage cells; any set other
+#                                           # than memory+sqlite is PARTIAL
+#                                           # (same exit rule as GROUPS)
+#   HASKOKI_PARITY_REPROBE=1 scripts/test-proxy-parity.sh
+#                                           # also re-probes excluded legs;
+#                                           # ends in REPROBE-RUN, not PASS
 #   HASKOKI_PARITY_SEED_MISMATCH=1 scripts/test-proxy-parity.sh
 #                                           # must FAIL (seeded)
 #
@@ -139,6 +168,16 @@ SCEN_LIST=$(
   || fail "recover consumer must occur exactly once"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx 'tests/c/consumer_notifications_poll.c')" -eq 1 ] \
   || fail "notifications polling consumer must occur exactly once"
+# Group P owns consumer_policy_metadata (per-scenario configs); the
+# generic group-R list excludes it, and the guard below fails if both
+# groups would run it.
+RUN_LIST=$(printf '%s\n' "$SCEN_LIST" | grep -vx 'tests/c/consumer_policy_metadata.c')
+POLICY_SCEN=tests/c/consumer_policy_metadata.c
+[ -f "$POLICY_SCEN" ] || fail "policy consumer missing"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "$POLICY_SCEN")" -eq 1 ] \
+  || fail "policy consumer must occur exactly once"
+[ "$(printf '%s\n' "$RUN_LIST" | grep -cx "$POLICY_SCEN")" -eq 0 ] \
+  || fail "consumer_policy_metadata must not run in both the generic list and group P"
 for scen in $SCEN_LIST; do
   if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
     fail "consumer independence violated: $scen"
@@ -188,14 +227,22 @@ done
 # the :3.1 legs under issue 28 — 2.40/3.0/3.2 hold since v0.2.0
 # forwards GAV instead of zeroing the caller canary buffer):
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/26; T-C09 R8.
-# consumer_certificates:visibility (R5: MOVED 26→27 — the canary
-# holds; the leg fails on cross-version census matches=2: fixed
-# "vis-private" TOKEN label + one shared memory-backend daemon for
-# the whole version matrix, while direct gets a fresh store per
-# leg; 2.40 passes only because it runs first, so per-version
-# eligibility would enshrine run-order dependence — whole leg).
-# consumer_certificates:restart: memory token objects survive client
-# Finalize/Initialize through the proxy (direct drops them);
+# consumer_certificates:visibility (R5: MOVED 26->27; fix round 1,
+# 2026-10-16: REMOVED -- the failure was a driver artifact: one shared
+# daemon served the whole version matrix with a fixed "vis-private"
+# TOKEN label, so objects left by 2.40 made the 3.0+ census find
+# matches=2. With a fresh daemon (and sqlite directory) per version and
+# storage the leg passes in all four versions x both storages and is
+# gated; the shared-daemon attribution to #27 was wrong).
+# consumer_certificates:restart:sqlite (fix round 1: NARROWED from the
+# whole leg -- the leg passes with memory storage in all four versions
+# and is gated there; with sqlite storage the proxied re-find of the
+# CKA_TOKEN object after client Finalize/Initialize fails, assertion
+# restart-token-refind, all four versions; a reverted debug print
+# showed 0 matches against 1 direct, no committed log keeps it).
+# Closest upstream reference, closed by design on 2026-10-05
+# (backend objects outlive client Finalize; per-client teardown
+# deferred to v0.3):
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/27; T-C09 R9.
 # consumer_certificates:create+find+lifecycle+atomicity:3.1 (R9:
 # REMOVED on v0.2.2 — all hold, 112/174/215/87 forwarded lines
@@ -208,9 +255,7 @@ done
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
 async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
 notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25
-consumer_policy_metadata:https://github.com/mingulov/haskoki/issues/17
-consumer_certificates:visibility:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
-consumer_certificates:restart:https://github.com/mingulov/pkcs11-proxy-ng/issues/27"
+consumer_certificates:restart:sqlite:https://github.com/mingulov/pkcs11-proxy-ng/issues/27"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \
@@ -231,11 +276,20 @@ for entry in $DIRECT_ONLY; do
       case "$durl" in
         https://?*)
           ;;
-        2.40:*|3.0:*|3.1:*|3.2:*)
+        2.40:*|3.0:*|3.1:*|3.2:*|memory:*|sqlite:*)
+          # version-qualified, or (certificate legs only) storage-
+          # qualified: leg:memory:URL / leg:sqlite:URL
+          dqual="${durl%%:*}"
           durl="${durl#*:}"
           case "$durl" in
             https://?*) ;;
             *) fail "malformed direct-only entry" ;;
+          esac
+          case "$dqual" in
+            memory|sqlite)
+              [ "$dname" = "consumer_certificates" ] \
+                || fail "malformed direct-only entry"
+              ;;
           esac
           ;;
         *) fail "malformed direct-only entry" ;;
@@ -325,9 +379,12 @@ EOF
 # Certificate-group backend: the base shape above plus the two-label
 # token catalog (equal-length PIN arrays) and kind/path for the mode.
 write_cert_backend() {
-  # $1 = storage mode, $2 = output path
+  # $1 = storage mode, $2 = output path, $3 = state tag. Every tag gets
+  # its OWN empty sqlite directory, so a daemon never inherits objects
+  # from another version or from a re-probe (fresh state per daemon).
   if [ "$1" = "sqlite" ]; then
-    mkdir -p "$TMPD/cert-$1" || fail "cannot create $TMPD/cert-$1"
+    rm -rf "$TMPD/cert-db-$1-$3" || fail "cannot clear $TMPD/cert-db-$1-$3"
+    mkdir -p "$TMPD/cert-db-$1-$3" || fail "cannot create $TMPD/cert-db-$1-$3"
   fi
   cat > "$2" <<EOF
 schema_version = 1
@@ -340,7 +397,7 @@ user_pins = ["1234", "1234"]
 kind = "$1"
 EOF
   if [ "$1" = "sqlite" ]; then
-    echo "path = \"$TMPD/cert-$1/tokens.db\"" >> "$2" \
+    echo "path = \"$TMPD/cert-db-$1-$3/tokens.db\"" >> "$2" \
       || fail "cannot write cert backend path"
   fi
   cat >> "$2" <<'EOF'
@@ -474,14 +531,71 @@ done
 # live daemon explicitly (kill + wait, log retained) before the next
 # group/mode starts, and still runs on EXIT.
 SRV=""
+port_open() {
+  bash -c "echo > /dev/tcp/127.0.0.1/$PROXY_PORT" 2>/dev/null
+}
+pid_alive() {
+  # live and not a zombie (an unreaped child still answers kill -0)
+  [ -r "/proc/$1/stat" ] || return 1
+  st=$(sed -e 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -c1)
+  [ -n "$st" ] && [ "$st" != "Z" ]
+}
+# EXIT-trap cleanup: best effort, never fails.
+# EXTRA_PIDS tracks daemons started outside start_daemon (refusal
+# checks, the squatter self-check) so an interrupt cannot leave one
+# behind to trip the next run's squatter guard.
+EXTRA_PIDS=""
 cleanup() {
   if [ -n "${SRV:-}" ]; then
     kill $SRV 2>/dev/null || true
     wait $SRV 2>/dev/null || true
     SRV=""
   fi
+  if [ -n "${EXTRA_PIDS:-}" ]; then
+    kill -KILL $EXTRA_PIDS 2>/dev/null || true
+    wait $EXTRA_PIDS 2>/dev/null || true
+    EXTRA_PIDS=""
+  fi
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM
+# Verified stop (#17): TERM, wait up to 10 s, then KILL; the pid must be
+# gone and the port must refuse connections before the next leg starts.
+# The log is kept.
+stop_daemon() {
+  [ -n "${SRV:-}" ] || fail "stop_daemon: no live daemon recorded"
+  _pid=$SRV
+  kill "$_pid" 2>/dev/null || true
+  _i=0
+  while pid_alive "$_pid" && [ "$_i" -lt 10 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  if pid_alive "$_pid"; then
+    kill -KILL "$_pid" 2>/dev/null || true
+    _i=0
+    while pid_alive "$_pid" && [ "$_i" -lt 10 ]; do
+      sleep 1
+      _i=$((_i + 1))
+    done
+  fi
+  wait "$_pid" 2>/dev/null || true
+  SRV=""
+  if kill -0 "$_pid" 2>/dev/null; then
+    fail "daemon pid $_pid still alive after stop"
+  fi
+  # The daemon may hand the port to a lingering child; give the kernel
+  # a moment to drop the listener, then require a refused connect.
+  _i=0
+  while port_open && [ "$_i" -lt 5 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  if port_open; then
+    fail "port $PROXY_PORT still bound after stop"
+  fi
+  echo "proxy daemon stopped (pid $_pid)"
+}
 start_daemon() {
   # $1 = backend.toml, $2 = server log
   # Squatter guard: a stale manual daemon on our port would answer the
@@ -507,7 +621,11 @@ start_daemon() {
       echo "--- daemon log:"; cat "$SERVER_LOG"
       fail "proxy daemon died during startup"
     fi
-    if bash -c "echo > /dev/tcp/127.0.0.1/$PROXY_PORT" 2>/dev/null; then
+    # The accepting socket must be OURS: the daemon logs "listening on
+    # tcp" only after its own bind succeeded, and it must still be alive
+    # (a squatter holding the port satisfies the TCP probe alone).
+    if port_open && grep -q 'listening on tcp' "$SERVER_LOG" 2>/dev/null \
+        && pid_alive "$SRV"; then
       READY=1
       break
     fi
@@ -519,6 +637,114 @@ start_daemon() {
     fail "proxy daemon not listening on $ENDPOINT after 30s"
   fi
   echo "proxy daemon ready: $ENDPOINT (pid $SRV)"
+}
+
+# Startup-refusal check (#17): the daemon, started on a config the
+# backend must refuse, has to exit nonzero within 30 s, without the port
+# ever accepting, and its log has to show the backend load failure.
+# $1 = backend.toml, $2 = server log, $3 = scenario label
+start_daemon_expect_refusal() {
+  if port_open; then
+    fail "port $PROXY_PORT already bound (stale daemon squatting?)"
+  fi
+  RUST_LOG=info HASKOKI_CONFIG="$1" "$SERVER_BIN" "$TMPD/proxy.toml" \
+    >"$2" 2>&1 &
+  _rpid=$!
+  EXTRA_PIDS="$EXTRA_PIDS $_rpid"
+  _i=0
+  _gone=0
+  while [ "$_i" -lt 30 ]; do
+    if port_open; then
+      kill -KILL "$_rpid" 2>/dev/null || true
+      wait "$_rpid" 2>/dev/null || true
+      echo "--- daemon log:"; cat "$2"
+      fail "STARTUP-REFUSAL: $3: daemon accepted on port $PROXY_PORT"
+    fi
+    if ! pid_alive "$_rpid"; then
+      _gone=1
+      break
+    fi
+    _i=$((_i + 1))
+    sleep 1
+  done
+  if [ "$_gone" -ne 1 ]; then
+    kill -KILL "$_rpid" 2>/dev/null || true
+    wait "$_rpid" 2>/dev/null || true
+    echo "--- daemon log:"; cat "$2"
+    fail "STARTUP-REFUSAL: $3: daemon neither exited nor accepted within 30s"
+  fi
+  _rc=0
+  wait "$_rpid" 2>/dev/null || _rc=$?
+  EXTRA_PIDS=""
+  if [ "$_rc" -eq 0 ]; then
+    echo "--- daemon log:"; cat "$2"
+    fail "STARTUP-REFUSAL: $3: daemon exited 0 (must refuse nonzero)"
+  fi
+  if port_open; then
+    fail "STARTUP-REFUSAL: $3: port $PROXY_PORT accepting after refusal"
+  fi
+  if grep -q 'listening on tcp' "$2"; then
+    echo "--- daemon log:"; cat "$2"
+    fail "STARTUP-REFUSAL: $3: log shows the listener came up"
+  fi
+  if ! grep -q "$REFUSAL_PATTERN" "$2"; then
+    echo "--- daemon log:"; cat "$2"
+    fail "STARTUP-REFUSAL: $3: log lacks the backend load error ($REFUSAL_PATTERN)"
+  fi
+  echo "STARTUP-REFUSAL: $3 (daemon exit $_rc, NOT_SERVING logged, never listened)"
+}
+
+# expect_fail <desc> <pattern> <cmd...>: run cmd in a subshell; it MUST
+# exit nonzero AND its output MUST match the grep pattern (a driver
+# fail() with the named cause is the expected outcome; any other failure
+# would make the check vacuous).
+expect_fail() {
+  _desc=$1; _pat=$2; shift 2
+  _out=$( ( "$@" ) 2>&1 ); _ec=$?
+  if [ "$_ec" -eq 0 ]; then
+    echo "$_out"
+    fail "expected failure did not occur: $_desc"
+  fi
+  if ! printf '%s\n' "$_out" | grep -q -- "$_pat"; then
+    echo "$_out"
+    fail "expected failure for the wrong reason (want /$_pat/): $_desc"
+  fi
+  echo "expected failure observed: $_desc"
+}
+
+# Self-check of the squatter guard (runs before any group): with a
+# throwaway listener on the port (the daemon itself on the global
+# backend, started outside start_daemon), start_daemon must refuse.
+selfcheck_squatter() {
+  RUST_LOG=info HASKOKI_CONFIG="$TMPD/backend.toml" "$SERVER_BIN" \
+    "$TMPD/proxy.toml" >"$TMPD/server-squatter.log" 2>&1 &
+  _sq=$!
+  EXTRA_PIDS="$EXTRA_PIDS $_sq"
+  _i=0
+  while ! port_open && [ "$_i" -lt 30 ]; do
+    pid_alive "$_sq" || break
+    sleep 1
+    _i=$((_i + 1))
+  done
+  port_open || { kill -KILL "$_sq" 2>/dev/null; cat "$TMPD/server-squatter.log"; fail "self-check listener did not bind"; }
+  expect_fail "start_daemon refuses a pre-bound port" "already bound" \
+    start_daemon "$TMPD/backend.toml" "$TMPD/server-selfcheck.log"
+  kill "$_sq" 2>/dev/null || true
+  _i=0
+  while pid_alive "$_sq" && [ "$_i" -lt 10 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  pid_alive "$_sq" && kill -KILL "$_sq" 2>/dev/null
+  wait "$_sq" 2>/dev/null || true
+  EXTRA_PIDS=""
+  _i=0
+  while port_open && [ "$_i" -lt 5 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  port_open && fail "self-check listener still bound"
+  echo "SELF-CHECK: squatter guard refuses a pre-bound port"
 }
 
 normalize() {
@@ -558,6 +784,74 @@ archive_logs() {
   done
 }
 
+# Opt-in re-probe (HASKOKI_PARITY_REPROBE=1, WP11): an excluded proxied
+# leg is queued instead of skipped, and flush_reprobes runs the queue on a
+# fresh daemon (same backend config) after the group's gate daemon has
+# stopped, so a re-probe never shares state with a gated leg (observed:
+# re-probing consumer_certificates:visibility on the live cert daemon
+# left objects that failed the next atomicity census). Each outcome goes
+# to $ARTIFACTS/reprobe.tsv: the entry with the version and storage it
+# ran under appended after '@' (when the entry leaves them open), the
+# see-URL, pass|diff|error:<rc>, the diff sha256 and the daemon sha256.
+# A re-probe never fails the run; without the variable the excluded leg
+# is skipped exactly as before.
+REPROBE_QUEUE="$TMPD/reprobe.queue"
+: > "$REPROBE_QUEUE"
+reprobe() {
+  # $1 = entry label, $2 = see-URL, $3 = direct log, $4 = proxied log,
+  # remaining = the proxied child argv (no argument contains whitespace)
+  [ "${HASKOKI_PARITY_REPROBE:-}" = "1" ] || return 0
+  # The queue flattens argv through a tab-separated file and unquoted
+  # word splitting: refuse any argument that would not survive that.
+  for _a in "$@"; do
+    case "$_a" in
+      *[!A-Za-z0-9_./:@=,+-]*|"") fail "reprobe: unsafe argument for queue: '$_a'" ;;
+    esac
+  done
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$(shift 4; echo "$*")" \
+    >> "$REPROBE_QUEUE"
+  echo "REPROBE: $1 queued"
+}
+run_reprobe() {
+  RL="$1"; RU="$2"; RD="$3"; RP="$4"; shift 4
+  rc=0; HASKOKI_CONSUMER_TOPOLOGY=proxy PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
+    PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
+    timeout -s KILL 300 "$@" >"$RP" 2>&1 || rc=$?
+  normalize "$RD" "$RP.reprobe-direct.norm"
+  normalize "$RP" "$RP.reprobe-proxied.norm"
+  if [ "$rc" -ne 0 ]; then
+    res="error:$rc"
+  elif diff -u "$RP.reprobe-direct.norm" "$RP.reprobe-proxied.norm" > "$RP.reprobe.diff"; then
+    res="pass"
+  else
+    res="diff"
+  fi
+  [ -f "$RP.reprobe.diff" ] || : > "$RP.reprobe.diff"
+  dsha=$(sha256sum < "$RP.reprobe.diff" | cut -c1-64)
+  printf '%s\t%s\t%s\t%s\t%s\n' "$RL" "$RU" "$res" "$dsha" \
+    "$(sha256sum < "$SERVER_BIN" | cut -c1-64)" >> "$ARTIFACTS/reprobe.tsv"
+  echo "REPROBE: $RL -> $res"
+  archive_logs "$RP" "$RP.reprobe.diff"
+}
+flush_reprobes() {
+  # $1 = backend.toml of the group's gate daemon, $2 = server log base,
+  # $3 = optional command (eval) that rewrites $1 with fresh state.
+  # Every queued leg gets its OWN fresh daemon: a re-probe must not see
+  # objects left by another version or leg (that run-order effect was
+  # once mistaken for an upstream defect).
+  [ -s "$REPROBE_QUEUE" ] || return 0
+  _n=0
+  while IFS="$(printf '\t')" read -r ql qu qd qp qargv; do
+    _n=$((_n + 1))
+    if [ -n "${3:-}" ]; then eval "$3"; fi
+    start_daemon "$1" "$2.$_n.log"
+    # shellcheck disable=SC2086
+    run_reprobe "$ql" "$qu" "$qd" "$qp" $qargv
+    stop_daemon
+  done < "$REPROBE_QUEUE"
+  : > "$REPROBE_QUEUE"
+}
+
 run_parity_cert_leg() {
   # $1 = version, $2 = leg; $CERT_MODE is the LIVE daemon's storage mode
   V="$1"; L="$2"; M="$CERT_MODE"
@@ -579,18 +873,27 @@ run_parity_cert_leg() {
   if [ "$ec" -ne 0 ]; then echo "--- direct log:"; cat "$DLOG"; fail "consumer_certificates:$L FAILED direct ($V/$M)"; fi
   for entry in $DIRECT_ONLY; do
     case "$entry" in
+      "consumer_certificates:$L:$M:"*)
+        echo "DIRECT-ONLY: consumer_certificates:$L:$M (proxied leg skipped, see ${entry#consumer_certificates:$L:$M:})"
+        reprobe "consumer_certificates:$L:$M@$V" "${entry#consumer_certificates:$L:$M:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D"
+        archive_logs "$DLOG"
+        return 0
+        ;;
       "consumer_certificates:$L:$V:"*)
         echo "DIRECT-ONLY: consumer_certificates:$L:$V (proxied leg skipped, see ${entry#consumer_certificates:$L:$V:})"
+        reprobe "consumer_certificates:$L:$V@$M" "${entry#consumer_certificates:$L:$V:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D"
         archive_logs "$DLOG"
         return 0
         ;;
       "consumer_certificates:$L:"*)
         case "${entry#consumer_certificates:$L:}" in
-          2.40:*|3.0:*|3.1:*|3.2:*)
-            # Version-qualified entry for another version: this run proceeds.
+          2.40:*|3.0:*|3.1:*|3.2:*|memory:*|sqlite:*)
+            # Version- or storage-qualified entry for another version
+            # or storage: this run proceeds.
             ;;
           https://?*)
             echo "DIRECT-ONLY: consumer_certificates:$L (proxied leg skipped, see ${entry#consumer_certificates:$L:})"
+            reprobe "consumer_certificates:$L@$V/$M" "${entry#consumer_certificates:$L:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D"
             archive_logs "$DLOG"
             return 0
             ;;
@@ -601,6 +904,7 @@ run_parity_cert_leg() {
         ;;
       "consumer_certificates:http"*)
         echo "DIRECT-ONLY: consumer_certificates (proxied leg skipped, see ${entry#consumer_certificates:})"
+        reprobe "consumer_certificates@$V/$M" "${entry#consumer_certificates:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --storage "$M" --leg "$L" --directory "$D"
         archive_logs "$DLOG"
         return 0
         ;;
@@ -644,6 +948,7 @@ run_parity_routed_leg() {
     case "$entry" in
       "$B:$L:$V:"*)
         echo "DIRECT-ONLY: $B:$L:$V (proxied leg skipped, see ${entry#$B:$L:$V:})"
+        reprobe "$B:$L:$V" "${entry#$B:$L:$V:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --legs "$L"
         archive_logs "$DLOG"
         return 0
         ;;
@@ -654,6 +959,7 @@ run_parity_routed_leg() {
             ;;
           https://?*)
             echo "DIRECT-ONLY: $B:$L (proxied leg skipped, see ${entry#$B:$L:})"
+            reprobe "$B:$L@$V" "${entry#$B:$L:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --legs "$L"
             archive_logs "$DLOG"
             return 0
             ;;
@@ -664,6 +970,7 @@ run_parity_routed_leg() {
         ;;
       "$B:http"*)
         echo "DIRECT-ONLY: $B (proxied leg skipped, see ${entry#$B:})"
+        reprobe "$B@$V" "${entry#$B:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO" --version "$V" --legs "$L"
         archive_logs "$DLOG"
         return 0
         ;;
@@ -711,8 +1018,8 @@ run_parity() {
   fi
   if [ "$base" = "consumer_certificates" ]; then
     echo "--- parity: $base (storage mode $CERT_MODE)"
-    for V in 2.40 3.0 3.1 3.2; do
-      for L in $CERT_LEGS; do
+    for V in $CERT_V; do
+      for L in $CERT_L; do
         run_parity_cert_leg "$V" "$L"
       done
     done
@@ -730,6 +1037,7 @@ run_parity() {
   for entry in $DIRECT_ONLY; do
     if [ "${entry%%:*}" = "$base" ]; then
       echo "DIRECT-ONLY: $base (proxied leg skipped, see ${entry#*:})"
+      reprobe "$base" "${entry#*:}" "$DLOG" "$PLOG" "$BIN" "$SHIM_SO"
       archive_logs "$DLOG"
       return 0
     fi
@@ -760,28 +1068,181 @@ if [ -n "${1:-}" ]; then
   fail "usage: scripts/test-proxy-parity.sh"
 fi
 
+# HASKOKI_PARITY_GROUPS (development only) selects a subset of the
+# groups R C P. Unknown tokens fail; any subset ends in a PARTIAL line
+# and a nonzero exit (unless HASKOKI_PARITY_ALLOW_PARTIAL=1), never the
+# full PASS line.
+GROUPS_RUN="${HASKOKI_PARITY_GROUPS:-R C P}"
+[ -n "$(echo $GROUPS_RUN)" ] || fail "HASKOKI_PARITY_GROUPS is empty (valid: R C P)"
+for _g in $GROUPS_RUN; do
+  case "$_g" in
+    R|C|P) ;;
+    *) fail "unknown parity group '$_g' in HASKOKI_PARITY_GROUPS (valid: R C P)" ;;
+  esac
+done
+GROUPS_NORM=$(for _g in R C P; do group_has=0; for _x in $GROUPS_RUN; do [ "$_x" = "$_g" ] && group_has=1; done; [ "$group_has" -eq 1 ] && printf '%s ' "$_g"; done)
+GROUPS_NORM="${GROUPS_NORM% }"
+group_on() {
+  case " $GROUPS_RUN " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+selfcheck_squatter
+
 # Group R: all retained scenarios on the default backend, each with a
 # FRESH daemon: token-auth/object state (e.g. roundtrip's deliberate
 # SO lockout) must not leak across scenarios. Direct legs each get a
 # fresh in-process backend, so proxied legs get a fresh daemon each.
-for scen in $SCEN_LIST; do
+# consumer_policy_metadata is excluded here (group P owns it).
+if group_on R; then
+for scen in $RUN_LIST; do
   base="$(basename "$scen" .c)"
   if [ "$base" = "consumer_certificates" ]; then
     continue
   fi
   start_daemon "$TMPD/backend.toml" "$TMPD/server-$base.log"
   run_parity "$base"
-  cleanup
+  stop_daemon
+  flush_reprobes "$TMPD/backend.toml" "$TMPD/server-$base-reprobe"
 done
+fi
 
 # Group C: the certificate scenario only, once per storage mode, each
 # with a fresh daemon on its own catalog backend.
 CERT_MODE=""
+if group_on C; then
+# One fresh daemon (own sqlite directory) per storage, version AND leg,
+# mirroring the direct side where every leg gets a fresh store: legs
+# leave objects behind (visibility, create), and the atomicity census
+# counts every object on the token.
 for CERT_MODE in $HASKOKI_PARITY_STORAGE; do
-  write_cert_backend "$CERT_MODE" "$TMPD/backend-cert-$CERT_MODE.toml"
-  start_daemon "$TMPD/backend-cert-$CERT_MODE.toml" "$TMPD/server-cert-$CERT_MODE.log"
-  run_parity consumer_certificates
-  cleanup
+  for CERT_V in 2.40 3.0 3.1 3.2; do
+    for CERT_L in $CERT_LEGS; do
+      write_cert_backend "$CERT_MODE" "$TMPD/backend-cert-$CERT_MODE.toml" "$CERT_V-$CERT_L"
+      start_daemon "$TMPD/backend-cert-$CERT_MODE.toml" "$TMPD/server-cert-$CERT_MODE-$CERT_V-$CERT_L.log"
+      run_parity consumer_certificates
+      stop_daemon
+    done
+  done
+  write_cert_backend "$CERT_MODE" "$TMPD/backend-cert-$CERT_MODE.toml" rp
+  flush_reprobes "$TMPD/backend-cert-$CERT_MODE.toml" "$TMPD/server-cert-$CERT_MODE-reprobe" \
+    'write_cert_backend "$CERT_MODE" "$TMPD/backend-cert-$CERT_MODE.toml" rp'
+done
+fi
+
+# Group P (#17): policy/metadata scenarios, one daemon per scenario on
+# the config the consumer itself prints.
+run_policy_child_direct() {
+  # $1 = scenario; sets PDLOG/PDNORM
+  ec=0; env -u HASKOKI_CONSUMER_TOPOLOGY -u HASKOKI_CONFIG \
+    "$PBIN" "$SO" "$1" >"$PDLOG" 2>&1 || ec=$?
+  echo "direct exit: consumer_policy_metadata:$1 $ec"
+  if [ "$ec" -ne 0 ]; then echo "--- direct log:"; cat "$PDLOG"; fail "consumer_policy_metadata:$1 FAILED direct"; fi
+}
+run_policy_child_proxied() {
+  # $1 = scenario, $2 = log; sets ec
+  ec=0; env -u HASKOKI_CONFIG HASKOKI_CONSUMER_TOPOLOGY=proxy \
+    PKCS11_PROXY_ENDPOINT="$ENDPOINT" \
+    PKCS11_PROXY_MECHANISMS="$TMPD/mechanisms-override.toml" \
+    "$PBIN" "$SHIM_SO" "$1" >"$2" 2>&1 || ec=$?
+  echo "proxied exit: consumer_policy_metadata:$1 $ec"
+}
+if group_on P; then
+PBIN="$TMPD/consumer_policy_metadata"
+# The pinned daemon prints no backend error text: a backend that fails
+# to load exits 70 after logging only this health line (observed on
+# the pinned pair); a healthy start logs "listening on tcp" instead.
+REFUSAL_PATTERN="Health status: NOT_SERVING"
+
+# 1. Negative controls: each proxied child, run against a daemon whose
+# config differs in exactly the property the scenario asserts, must be
+# refused with the named cause. They run before the configured legs and
+# bind every configured property to its config: session limit
+# (limit2-null), token count and labels (multitoken), token catalog (pin)
+# and the PIN (pin, right catalog but another demo user PIN).
+# policy_negctl <scenario> <daemon-config> <exit> <fixed-line-regex> <desc>
+policy_negctl() {
+  _nc="$TMPD/consumer_policy_metadata-negctl-$1-$5.proxied.log"
+  echo "--- parity: consumer_policy_metadata negative control: $1 vs $5"
+  start_daemon "$2" "$TMPD/server-policy-negctl-$1-$5.log"
+  run_policy_child_proxied "$1" "$_nc"
+  if [ "$ec" -ne "$3" ] || ! grep -q "$4" "$_nc"; then
+    echo "--- proxied log:"; cat "$_nc"
+    fail "negative control: $1 against $5 not refused as expected (exit $ec, want $3 /$4/)"
+  fi
+  stop_daemon
+  archive_logs "$_nc"
+  echo "NEGATIVE-CONTROL: policy $1 vs $5 refused"
+}
+policy_negctl limit2-null "$TMPD/backend.toml" 3 \
+  '^policy:backend-mismatch max want=2 got=1024$' unconfigured-daemon
+policy_negctl multitoken "$TMPD/backend.toml" 3 \
+  '^policy:backend-mismatch slots want=2 got=1$' unconfigured-daemon
+policy_negctl pin "$TMPD/backend.toml" 3 \
+  '^policy:backend-mismatch slots want=2 got=1$' unconfigured-daemon
+"$PBIN" "$SO" --print-config pin >"$TMPD/policy-pin-wrongpin.toml" \
+  || fail "cannot print config for pin"
+sed -e 's/^user_pins = .*/user_pins = ["1234", "3210"]/' "$TMPD/policy-pin-wrongpin.toml" \
+  >"$TMPD/policy-pin-wrongpin2.toml"
+cmp -s "$TMPD/policy-pin-wrongpin.toml" "$TMPD/policy-pin-wrongpin2.toml" \
+  && fail "wrong-PIN control config equals the pin config"
+policy_negctl pin "$TMPD/policy-pin-wrongpin2.toml" 1 \
+  '^FAIL .*pin correct user login ok' wrong-user-pin
+
+# 2. Configured parity legs.
+for pscen in limit2-null limit2-os limit2-app multitoken pin; do
+  PCFG="$TMPD/policy-$pscen.toml"
+  PDLOG="$TMPD/consumer_policy_metadata-$pscen.direct.log"
+  PPLOG="$TMPD/consumer_policy_metadata-$pscen.proxied.log"
+  PDNORM="$TMPD/consumer_policy_metadata-$pscen.direct.norm"
+  PPNORM="$TMPD/consumer_policy_metadata-$pscen.proxied.norm"
+  echo "--- parity: consumer_policy_metadata:$pscen"
+  "$PBIN" "$SO" --print-config "$pscen" >"$PCFG" || fail "cannot print config for $pscen"
+  [ -s "$PCFG" ] || fail "empty config for $pscen"
+  run_policy_child_direct "$pscen"
+  start_daemon "$PCFG" "$TMPD/server-policy-$pscen.log"
+  run_policy_child_proxied "$pscen" "$PPLOG"
+  if [ "$ec" -ne 0 ]; then echo "--- proxied log:"; cat "$PPLOG"; fail "consumer_policy_metadata:$pscen FAILED proxied"; fi
+  seed_mutate "$PPLOG"
+  normalize "$PDLOG" "$PDNORM"
+  normalize "$PPLOG" "$PPNORM"
+  if ! diff -u "$PDNORM" "$PPNORM" > "$TMPD/consumer_policy_metadata-$pscen.diff"; then
+    echo "PARITY DIVERGENCE in consumer_policy_metadata:$pscen:"
+    cat "$TMPD/consumer_policy_metadata-$pscen.diff"
+    echo "--- full direct log:"; cat "$PDLOG"
+    echo "--- full proxied log:"; cat "$PPLOG"
+    fail "consumer_policy_metadata:$pscen: forwarded-call transcripts differ direct-vs-proxied"
+  fi
+  echo "parity holds: consumer_policy_metadata:$pscen ($(wc -l < "$PDNORM") forwarded lines identical)"
+  stop_daemon
+  archive_logs "$PDLOG" "$PPLOG" "$PDNORM" "$PPNORM" "$TMPD/consumer_policy_metadata-$pscen.diff" "$TMPD/server-policy-$pscen.log"
 done
 
+# 3. PIN-refusal scenarios: direct refusal assertions, proxied
+# equivalent = daemon startup refusal.
+for pscen in pin-short pin-empty pin-long; do
+  PCFG="$TMPD/policy-$pscen.toml"
+  PDLOG="$TMPD/consumer_policy_metadata-$pscen.direct.log"
+  echo "--- parity: consumer_policy_metadata:$pscen (startup refusal)"
+  "$PBIN" "$SO" --print-config "$pscen" >"$PCFG" || fail "cannot print config for $pscen"
+  [ -s "$PCFG" ] || fail "empty config for $pscen"
+  run_policy_child_direct "$pscen"
+  start_daemon_expect_refusal "$PCFG" "$TMPD/server-policy-$pscen.log" "$pscen"
+  archive_logs "$PDLOG" "$TMPD/server-policy-$pscen.log"
+done
+fi
+
+# Final line: only a complete default run prints the PASS line that
+# evidence is quoted from. A narrowed storage set is partial too: it
+# drops the other storage's certificate cells and exclusion skips.
+STORAGE_NORM=$(printf '%s\n' $HASKOKI_PARITY_STORAGE | sort -u | tr '\n' ' ' | sed 's/ $//')
+if [ "$GROUPS_NORM" != "R C P" ] || [ "$STORAGE_NORM" != "memory sqlite" ]; then
+  echo "PARTIAL: test-proxy-parity.sh groups run: $GROUPS_NORM, storage: $STORAGE_NORM (not a gate result; full run needs R C P with memory sqlite)"
+  [ "${HASKOKI_PARITY_ALLOW_PARTIAL:-0}" = "1" ] || exit 1
+  exit 0
+fi
+if [ "${HASKOKI_PARITY_REPROBE:-}" = "1" ]; then
+  echo "REPROBE-RUN: test-proxy-parity.sh groups R C P passed with re-probes enabled (reprobe.tsv in $ARTIFACTS; not a gate record)"
+  exit 0
+fi
 echo "PASS: test-proxy-parity.sh (direct/proxy parity)"
