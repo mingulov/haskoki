@@ -25,7 +25,7 @@ import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (removeDirectoryRecursive)
+import System.Directory (doesFileExist, removeDirectoryRecursive)
 import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
 import System.Timeout (timeout)
@@ -193,6 +193,8 @@ spec = testGroup "Multi-session store"
   , testCase "login lockout persists across close, reopen, and a second process" caseLoginLockoutDurable
   , testCase "edited config PINs never replace seeded durable credentials" caseConfigPinEditIgnored
   , testCase "a stored token without a credential row refuses the open" caseRowlessTokenFailsClosed
+  , testCase "a rowless token admitted past the open serves no login" caseUnbackedSlotFailsClosed
+  , testCase "a credential row deleted while serving fails closed on re-sync" caseRowDeletedLaterFailsClosed
   , testCase "failed durable auth write fails the login closed" caseLoginFailClosed
   , testCase "unknown-but-landed login reconciles and serves on" caseLoginUnknownLanded
   , testCase "landed login publishes despite reload failure" caseLoginReloadFailsLanded
@@ -1235,15 +1237,23 @@ caseSameLabelDifferentId =
     assertEqual "store B ops serial" (CULong 0, "0000000000000005") serialB
     cfgCross <- pinnedTwoTokenConfig pathA ["1", "5"]
     env <- newEnv (rulesFromConfig cfgCross)
+    bytesBefore <- BS.readFile pathA
     eAcq <- openStdStore env cfgCross
     case eAcq of
+      -- "has no catalog entry" is rendered only for
+      -- 'RefuseStoredUnconfigured' ('renderIdentityRefusal').
       Left (StdStoreIdentityRefusal msg) ->
-        assertBool "refusal names the unconfigured stored token"
-          ("has no catalog entry" `isInfixOf` msg)
+        assertBool "refusal is RefuseStoredUnconfigured for the stored ops token"
+          ("has no catalog entry" `isInfixOf` msg && "\"haskoki-ops\"" `isInfixOf` msg)
       Left err -> assertFailure ("cross-id open refused for the wrong reason: " ++ show err)
       Right mAcq -> do
         mapM_ (storeClose . stdStore) mAcq
         assertFailure "store opened under a catalog naming another id"
+    bytesAfter <- BS.readFile pathA
+    assertBool "the refused cross-id open writes nothing (file bytes identical)"
+      (bytesBefore == bytesAfter)
+    journalLeft <- doesFileExist (pathA ++ "-journal")
+    assertBool "no rollback journal left behind" (not journalLeft)
     withAuthInstanceOnCfg stdAcquisition cfgA $ \ctx ->
       tokenSerialOf ctx 1 >>= assertEqual "store A unchanged after the refusal" serialA
 
@@ -1596,6 +1606,56 @@ caseRowlessTokenFailsClosed =
     when (castStablePtrToPtr ctx /= nullPtr) $ do
       haskokiStdClose ctx
       assertFailure "instance served a store with a rowless token"
+
+-- | Serving fail-closed at instance assembly (the defensive branch
+-- behind the open refusal): an acquisition that drops the ops
+-- credential row after the production open accepted the store
+-- hands the instance a stored token without a row. Its slot starts
+-- dirty and its re-sync finds no row, so login with the catalog
+-- PIN fails closed (@CKR_GENERAL_ERROR@) instead of falling back to
+-- the configured PINs; the backed home slot still logs in.
+caseUnbackedSlotFailsClosed :: IO ()
+caseUnbackedSlotFailsClosed =
+  bracket (makeTempDir "haskoki-unbacked") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "unbacked.db"
+    cfg <- twoTokenConfig path
+    let dropOps env c = do
+          eAcq <- openStdStore env c
+          case eAcq of
+            Right (Just ss) -> do
+              r <- storeCommit (stdStore ss) emptyDelta { sdDropCredentials = [TokenId 2] }
+              assertEqual "ops credential row dropped after the open" Committed r
+            _ -> assertFailure "production open must accept the seeded store"
+          pure eAcq
+    withAuthInstanceOnCfg stdAcquisition { saOpenStore = dropOps } cfg $ \ctx -> do
+      ops <- openAuthSessionOn ctx 1
+      loginAs ctx ops 1 "2345" >>= assertEqual "catalog user PIN on the rowless slot fails closed"
+        (stdRvOf CKR_GENERAL_ERROR)
+      loginAs ctx ops 0 "6789" >>= assertEqual "catalog SO PIN on the rowless slot fails closed"
+        (stdRvOf CKR_GENERAL_ERROR)
+      demo <- openAuthSessionOn ctx 0
+      loginAs ctx demo 1 "1234" >>= assertEqual "the backed home slot still logs in" (CULong 0)
+
+-- | Serving fail-closed on re-sync: a credential row deleted while
+-- the instance serves (through the instance's own store handle),
+-- then a dirty mark on its slot, makes the re-sync find no row, so
+-- login with the catalog PIN fails closed instead of falling back.
+caseRowDeletedLaterFailsClosed :: IO ()
+caseRowDeletedLaterFailsClosed =
+  bracket (makeTempDir "haskoki-row-deleted") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "deleted.db"
+    cfg <- twoTokenConfig path
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      ops <- openAuthSessionOn ctx 1
+      loginAs ctx ops 1 "2345" >>= assertEqual "seeded ops user PIN accepted" (CULong 0)
+      haskokiStdLogout ctx ops >>= assertEqual "ops logout" (CULong 0)
+      inst <- deRefStablePtr ctx
+      ss <- maybe (assertFailure "sqlite instance must hold a store") pure (siStore inst)
+      r <- storeCommit (stdStore ss) emptyDelta { sdDropCredentials = [TokenId 2] }
+      assertEqual "ops credential row dropped while serving" Committed r
+      atomicModifyIORef' (siDirty inst) (\d -> (SlotId 1 : d, ()))
+      loginAs ctx ops 1 "2345" >>= assertEqual "catalog user PIN fails closed after the row is gone"
+        (stdRvOf CKR_GENERAL_ERROR)
 
 -- | Seeded tokens keep their durable credentials when the config
 -- PINs are edited: after one open seeds both tokens, a reopen with

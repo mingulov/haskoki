@@ -277,6 +277,7 @@ spec = testGroup "store contract"
   , testGroup "standard open reconciliation"
       [ testCase "standard open seeds a fresh file positionally" caseOpenSeedsFresh
       , testCase "a failed seed commit leaves neither tokens nor credentials" caseOpenSeedFailsAtomically
+      , testCase "a credential insert failing inside the seed rolls the tokens back" caseOpenSeedCredentialFailureLeavesNoToken
       , testCase "an appended catalog token seeds one token and one credential" caseOpenAppendSeedsOne
       , testCase "standard open refuses a reorder with the actionable message" caseOpenReorderRefuses
       , testCase "standard open refuses a removal, preserving the file" caseOpenRemovalRefuses
@@ -3865,6 +3866,34 @@ caseOpenSeedFailsAtomically = withOpenFile $ \path -> do
   credsAgain <- fileCredentials path
   assertEqual "clean reopen seeds three credentials"
     [TokenId 1, TokenId 2, TokenId 3] [tid | (tid, _, _) <- credsAgain]
+
+-- | The seed is one transaction: a credential insert failing
+-- inside it (an injected TEMP trigger on the store's own
+-- connection, after the token rows are written in the same
+-- transaction) rolls the token rows back too, so no token without
+-- its credential persists. A seed split into a token commit and a
+-- credential commit would leave the tokens here.
+caseOpenSeedCredentialFailureLeavesNoToken :: IO ()
+caseOpenSeedCredentialFailureLeavesNoToken = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  env <- newEnv (rulesFromConfig cfg)
+  let failCredentialInsert db = S.exec db (T.pack (concat
+        [ "CREATE TEMP TRIGGER IF NOT EXISTS haskoki_test_fail_credential_insert"
+        , " BEFORE INSERT ON main.credentials"
+        , " BEGIN SELECT RAISE(ABORT, 'haskoki-test: injected credential insert failure'); END" ]))
+      hooks = noSQLiteTestHooks { sthBeforeBegin = failCredentialInsert }
+  eAcq <- openStdStoreWith (\p -> openSQLiteStoreWithHooks p defaultLimits noFaults hooks) env
+    cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+  case eAcq of
+    Left StdStoreCommit -> pure ()
+    Left err -> assertFailure ("faulted seed failed for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "seed with a failing credential insert accepted"
+  loaded <- fileLoaded path
+  assertEqual "no token rows after the failed credential insert" 0 (length loaded)
+  creds <- fileCredentials path
+  assertEqual "no credential rows after the failed credential insert" [] creds
 
 -- | Appending one catalog entry to a seeded store seeds exactly
 -- that token and its credential; the existing rows stay as they
