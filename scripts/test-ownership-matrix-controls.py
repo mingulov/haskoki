@@ -164,7 +164,7 @@ class DriverControls(unittest.TestCase):
         self.no_build()
 
     def test_retired_pending_id_rejected(self):
-        p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="wp09-pending")
+        p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="retired-pending-id")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("is not a case in the table", p.stdout + p.stderr)
         self.no_build()
@@ -341,7 +341,7 @@ class DriverControls(unittest.TestCase):
         p = self.run_driver(FAKE_COUNTER=1)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertNotIn("PENDING", p.stdout)
-        self.assertNotIn("wp09-pending", p.stdout)
+        self.assertNotIn("retired-pending-id", p.stdout)
         ids = {json.loads(r.read_text())["case"] for r in self.receipts()}
         self.assertIn("m7-checked-submission", ids)
         self.assertEqual(len(self.receipts()), 3 * len(ids))

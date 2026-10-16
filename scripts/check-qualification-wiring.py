@@ -1732,7 +1732,7 @@ def _ownership_controls(controls, fresh_dir):
         r[f"{plain}.N1.json"]["passed"] -= 1
 
     def pending_ran(r, idx):
-        r["wp09-pending.N1.json"] = dict(r[f"{plain}.N1.json"], case="wp09-pending")
+        r["retired-pending-id.N1.json"] = dict(r[f"{plain}.N1.json"], case="retired-pending-id")
 
     def no_counters(r, idx):
         r[f"{gated}.N1.json"]["counters"] = []
