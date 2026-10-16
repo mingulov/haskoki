@@ -28,7 +28,7 @@ import Haskoki.Registry (MechanismId (..), Operation (OpDigest))
 import Numeric (showFFloat, showHex)
 import System.Environment (getArgs, getExecutablePath)
 import System.Exit (ExitCode (..), exitWith)
-import System.Info (compilerVersion)
+import System.Info (fullCompilerVersion)
 import System.IO (hPutStrLn, stderr)
 import System.Process (readProcessWithExitCode)
 import System.Timeout (timeout)
@@ -231,7 +231,7 @@ allMain out = do
   results <- mapM (childCase exe) cells
   let doc = "{\"schema\":\"haskoki-buffered-updates/1\""
         ++ ",\"path\":\"Haskoki.Operation.appendBuffered\""
-        ++ ",\"ghc\":" ++ jsonStr (showVersion compilerVersion)
+        ++ ",\"ghc\":" ++ jsonStr (showVersion fullCompilerVersion)
         ++ ",\"rts\":\"-T -N1\",\"cap_s\":60,\"hard_cap_s\":90,\"cases\":["
         ++ joinWith "," (map crJson results) ++ "]}\n"
   writeFile out doc

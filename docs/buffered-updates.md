@@ -12,9 +12,12 @@ Every number below belongs to this one run and this one host.
 - host: 12 logical CPUs (`nproc` 12), AMD Ryzen AI 9 HX PRO 370 w/ Radeon 890M
 - load before the run: `17:13:29 up 7:20, load average: 3.36, 3.15, 3.84`
 - load after the run: `17:15:48 up 7:23, load average: 1.90, 2.63, 3.55`
-- GHC 9.10.3, runtime options `-T -N1` (single capability), one OS process per case
-- source commit 4cad819f17a483bde994e2c124a9a914ce256a9e (the benchmark was
-  built and run at this commit)
+- GHC 9.10.3, runtime options `-T -N1` (single capability), one OS process per
+  case. The JSON's `ghc` field says `9.10`: the benchmark then recorded only
+  the major version, and now records the full one.
+- benchmark source: `bench/BufferedUpdates.hs` as git blob
+  `e2904ef4d034d73814b13b9c0f9e9ffd3167cf14`. The commit the run was built
+  at was rebased afterwards, so its ID is not cited.
 - the run held the shared build lock, so no other lane holding that lock
   ran during it; other processes were not excluded, which the load
   averages above record
@@ -69,8 +72,8 @@ of that cell (below) stayed above the threshold, so the outcome does not
 rest on one sample; the figures are records of runs on this host, not an
 estimate of typical cost. The
 representation change is not part of this work package, because it touches
-the slot accessors, the snapshot codec and every final. The follow-up issue
-text is drafted in the work package notes; no issue exists yet.
+the slot accessors, the snapshot codec and every final. No follow-up issue
+has been filed yet.
 
 ### Repeat of the borderline cells
 
