@@ -5,6 +5,7 @@ and delta consistency.
 Deterministic: the sequence generator is an inline LCG (no new test
 dependencies), so the same seed always yields the same cases.
 -}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 module TransitionSpec (spec) where
 
@@ -117,6 +118,12 @@ import Haskoki.Registry
   , mkCapabilities
   )
 import Haskoki.Rules (defaultRules)
+-- Shared with haskoki-core-tests (core-only): the runtime imports
+-- and the two cases below exist only under HASKOKI_MODEL_SUITE.
+#ifdef HASKOKI_MODEL_SUITE
+import Haskoki.Runtime.Async (JobFunction (..))
+import Haskoki.Runtime.Detached (Recipe (..), decodeRecipe, encodeRecipe)
+#endif
 import Haskoki.Session (SessionLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition
   ( finishEffect
@@ -168,6 +175,10 @@ spec = testGroup "model transitions"
   , testCase "locked SO: refusal preserves the lock, grant clears it" caseInitTokenLockedSo
   , testCase "fixture constructor admits unstepped triples explicitly" caseFixtureConstructsUnstepped
   , testCase "outer family table is pinned" caseFamilyTablePinned
+#ifdef HASKOKI_MODEL_SUITE
+  , testCase "stale resource finish drains its release" caseStaleResourceReleases
+  , testCase "durable recipes roundtrip exactly" caseRecipeRoundtrips
+#endif
   ]
 
 caseUnbindHandle :: IO ()
@@ -1308,3 +1319,43 @@ caseInitTokenLockedSo = do
         Right m1 -> assertEqual "lock cleared"
           (Just tokenAuthNew) (lookupTokenAuth m1 (SlotId 0))
     other -> fail ("expected Immediate, got: " ++ show other)
+
+#ifdef HASKOKI_MODEL_SUITE
+-- | A stale reservation answered with a resource drains the orphan
+-- release on the rejection (never commits, never leaks the rid),
+-- while a stale bytes answer releases nothing.
+caseStaleResourceReleases :: IO ()
+caseStaleResourceReleases = do
+  let res = Reservation "digest"
+        [DepSession (SessionId 1) (Revision 1) (Generation 99)] Nothing Nothing
+      rid = EngineResourceId 7
+  case finishEffect defaultRules oneSessionModel res (EngineOkResource rid) of
+    Left rej -> do
+      assertEqual "code" CKR_GENERAL_ERROR (rejCode rej)
+      assertEqual "orphan drains" [ReleaseEngineResource rid] (rejReleases rej)
+    Right _ -> fail "stale reservation must not commit"
+  -- Contrast arm: a stale bytes answer releases nothing.
+  case finishEffect defaultRules oneSessionModel res (EngineOkBytes "x") of
+    Left rej -> assertEqual "bytes stale releases nothing" [] (rejReleases rej)
+    Right _ -> fail "stale reservation must not commit"
+
+-- | Every durable recipe shape roundtrips exactly through its
+-- versioned name, and an unknown name refuses.
+caseRecipeRoundtrips :: IO ()
+caseRecipeRoundtrips = do
+  mapM_ check [rCall, rKey, rPair]
+  assertEqual "unknown recipe name refuses" Nothing
+    (decodeRecipe "haskoki-call/v9" (snd (encodeRecipe rCall)))
+  where
+    tmpl = Map.fromList [(AttrClass, ValULong 4)]
+    rCall = RecipeCall JobDigest 3 64
+      (FxDigest (MechanismId 0x250) (BS.pack [0x61, 0x62, 0x63]))
+    rKey = RecipeGenKey 3 64
+      (FxGenerateKey (MechanismId 0x1082) (BS.pack [0x67]) (BS.pack [0x61]))
+      tmpl True
+    rPair = RecipeGenKeyPair 3 64
+      (FxGenerateKey (MechanismId 0x1082) (BS.pack [0x67]) (BS.pack [0x61]))
+      tmpl tmpl True False
+    check r = assertEqual ("roundtrip " ++ show r) (Just r)
+      (uncurry decodeRecipe (encodeRecipe r))
+#endif
