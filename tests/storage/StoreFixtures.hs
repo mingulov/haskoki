@@ -61,7 +61,7 @@ fixtureLabels = ["haskoki-demo", "haskoki-ops"]
 fixtureSo = ["58213946", "69324057"]
 fixtureUser = ["12873465", "23984576"]
 -- | Every PIN value any test uses (fixture, in-band, test-only).
-fixturePins = fixtureSo ++ fixtureUser ++ ["34095687", "45106798"]
+fixturePins = fixtureSo ++ fixtureUser ++ ["34095687", "45106798", "70435168", "81546279"]
 
 -- | Fail if any PIN value occurs in an output text.
 assertNoPins :: String -> String -> IO ()
