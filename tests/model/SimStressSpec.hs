@@ -20,9 +20,9 @@ the pinned defaults (4x25) keep @cabal test@ fast while the C proof
 {-# LANGUAGE OverloadedStrings #-}
 module SimStressSpec (spec) where
 
-import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException, bracket, try)
+import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar, tryReadMVar)
+import Control.Exception (SomeException, bracket, onException, try)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
@@ -132,6 +132,7 @@ spec = testGroup "Sim stress"
   , testCase "store/memory: N x M threaded commits conserve" caseStoreMemory
   , testCase "store/sqlite: N x M threaded commits conserve" caseStoreSQLite
   , testCase "sessions: close leaves no live alias" caseSessionsClose
+  , testCase "harness: a failed join kills its stragglers" caseStragglersDie
   ]
 
 -- ---------------------------------------------------------------------------
@@ -153,26 +154,108 @@ envInt name def lo hi = do
     Just n -> max lo (min hi n)
     Nothing -> def
 
--- | Fork N workers, await all: worker failures propagate fast with
--- the worker's message; a worker that never finishes fails LOUDLY
--- (deadlock\/stranding surfaces as an assertion, never a hang).
+-- | Shared storm-scale join deadline for every 'runWorkers'
+-- join: 300 seconds for all N workers together. Partial machine
+-- stalls (a swapped-out lock holder convoying every worker)
+-- legitimately exceed 60 seconds while every worker still
+-- progresses, so the deadline bounds hang detection, never the
+-- work itself.
+workerJoinBudget :: Int
+workerJoinBudget = 300000000
+
+-- | Join survey slice: 10 milliseconds between outcome surveys.
+-- Oversleep under load only extends patience, never causes a
+-- false timeout.
+workerJoinSlice :: Int
+workerJoinSlice = 10000
+
+-- | Fork N workers, await all: any worker failure propagates fast
+-- with the worker's message, and every failure path kills the
+-- stragglers (a timed-out or failed join must not leak live
+-- workers into teardown). Slow-but-progressing workers pass
+-- under one shared deadline; only a join that never completes
+-- fails, naming the stragglers (deadlock\/stranding surfaces as
+-- an assertion, never a hang).
 runWorkers :: Int -> (Int -> IO ()) -> IO ()
 runWorkers n action = do
-  dones <- mapM spawn [0 .. n - 1]
-  mapM_ await (zip [0 ..] dones)
+  workers <- mapM spawn [0 .. n - 1]
+  survey workers workerJoinBudget
   where
-    spawn :: Int -> IO (MVar (Either SomeException ()))
+    spawn :: Int -> IO (ThreadId, MVar (Either SomeException ()))
     spawn t = do
       v <- newEmptyMVar
-      _ <- forkIO (try (action t) >>= putMVar v)
-      pure v
-    await :: (Int, MVar (Either SomeException ())) -> IO ()
-    await (t, v) = do
-      mOut <- timeout (60 * 1000000) (takeMVar v)
-      case mOut of
-        Nothing -> assertFailure ("worker " ++ show t ++ " timed out: deadlock or stranding")
-        Just (Left e) -> assertFailure ("worker " ++ show t ++ " failed: " ++ show e)
-        Just (Right ()) -> pure ()
+      tid <- forkIO (try (action t) >>= putMVar v)
+      pure (tid, v)
+    survey :: [(ThreadId, MVar (Either SomeException ()))] -> Int -> IO ()
+    survey workers left
+      | left <= 0 = do
+          pending <- pendingWorkers workers
+          killWorkers workers
+          assertFailure ("workers timed out: " ++ show pending)
+      | otherwise = do
+          snaps <- mapM (tryReadMVar . snd) workers
+          case sequence snaps of
+            Just outs -> mapM_ (checkDone workers) (zip [0 ..] outs)
+            Nothing -> case firstFailure snaps of
+              Just (t, e) -> do
+                killWorkers workers
+                assertFailure ("worker " ++ show t ++ " failed: " ++ show e)
+              Nothing -> threadDelay workerJoinSlice >> survey workers (left - workerJoinSlice)
+    checkDone :: [(ThreadId, MVar (Either SomeException ()))] -> (Int, Either SomeException ()) -> IO ()
+    checkDone _ (_, Right ()) = pure ()
+    checkDone workers (t, Left e) = do
+      killWorkers workers
+      assertFailure ("worker " ++ show t ++ " failed: " ++ show e)
+
+-- | The indices of workers whose outcome cells are still empty
+-- (non-consuming survey).
+pendingWorkers :: [(ThreadId, MVar (Either SomeException ()))] -> IO [Int]
+pendingWorkers workers = do
+  snaps <- mapM (tryReadMVar . snd) workers
+  pure [t | (t, Nothing) <- zip [0 ..] snaps]
+
+-- | The first already-reported worker failure, if any.
+firstFailure :: [Maybe (Either SomeException ())] -> Maybe (Int, SomeException)
+firstFailure snaps = case [(t, e) | (t, Just (Left e)) <- zip [0 ..] snaps] of
+  (hit : _) -> Just hit
+  [] -> Nothing
+
+-- | Best-effort join bound per killed worker: 5 seconds. Only
+-- failure paths pay it, and only for workers still dying (a dead
+-- worker's cell is already full, so its join is instant).
+workerKillJoin :: Int
+workerKillJoin = 5000000
+
+-- | Kill every worker, then best-effort join their outcome cells:
+-- killing is async, and teardown must not race still-dying
+-- workers. A dead worker's kill is a no-op and its cell is
+-- already full, so the join only waits on the dying.
+killWorkers :: [(ThreadId, MVar (Either SomeException ()))] -> IO ()
+killWorkers workers = do
+  mapM_ (killThread . fst) workers
+  mapM_ (timeout workerKillJoin . takeMVar . snd) workers
+  pure ()
+
+-- | A failing worker must not strand its siblings: the join kills
+-- every worker on the failure path, so no live thread outlives the
+-- case into teardown (live sqlite workers once recreated journal
+-- files mid-cleanup). Worker 0 fails at once; worker 1 naps past
+-- any test bound and reports its own death. The nap is a delay,
+-- never an unreachable 'MVar' (the collector would reap that
+-- itself and fake the kill).
+caseStragglersDie :: IO ()
+caseStragglersDie = do
+  diedVar <- newEmptyMVar
+  r <- try (runWorkers 2 (worker diedVar)) :: IO (Either SomeException ())
+  case r of
+    Left _ -> pure ()
+    Right () -> assertFailure "the failing worker must fail the join"
+  mDied <- timeout 5000000 (takeMVar diedVar)
+  assertBool "the straggler was killed" (isJust mDied)
+  where
+    worker :: MVar () -> Int -> IO ()
+    worker _ 0 = assertFailure "sibling boom"
+    worker died _ = threadDelay 300000000 `onException` putMVar died ()
 
 -- | Canned effect answer (64 bytes, matching the attached capacity).
 cannedSig :: ByteString
@@ -355,14 +438,14 @@ drainEvents eq acc = do
 -- Store
 -- ---------------------------------------------------------------------------
 
--- | N x M threaded commits against one shared memory handle.
+-- | N x M threaded commits against one shared memory handle. The
+-- handle closes on every exit path: a worker failure mid-case
+-- must not skip the close and strand an open handle.
 caseStoreMemory :: IO ()
 caseStoreMemory = do
   world <- newMemoryWorld
   eStore <- openMemoryStoreWith world defaultLimits noFaults
-  store <- either (assertFailure . show) pure eStore
-  caseStoreCommits store
-  storeClose store
+  bracket (either (assertFailure . show) pure eStore) storeClose caseStoreCommits
 
 -- | N x M threaded commits against one shared SQLite handle.
 caseStoreSQLite :: IO ()
@@ -424,13 +507,17 @@ stressObject tok n = ObjectRecord
   }
 
 -- | Fresh SQLite file identity per case, cleaned up afterwards.
+-- The handle closes before the directory goes on every exit path:
+-- a worker failure mid-case must not skip the close and leave an
+-- open handle whose files vanish mid-commit.
 withStressSQLite :: (Store -> IO ()) -> IO ()
 withStressSQLite use =
-  bracket (makeStressTempDir "haskoki-sim-stress") removeDirectoryRecursive $ \dir -> do
-    eStore <- openSQLiteStoreWith (dir </> "store.db") defaultLimits noFaults
-    store <- either (assertFailure . show) pure eStore
-    use store
-    storeClose store
+  bracket (makeStressTempDir "haskoki-sim-stress") removeDirectoryRecursive $ \dir ->
+    bracket
+      (openSQLiteStoreWith (dir </> "store.db") defaultLimits noFaults
+        >>= either (assertFailure . show) pure)
+      storeClose
+      use
 
 -- | A fresh scratch directory (numeric suffix scan; single-process).
 makeStressTempDir :: String -> IO FilePath
