@@ -234,16 +234,27 @@ done
 # matches=2. With a fresh daemon (and sqlite directory) per version and
 # storage the leg passes in all four versions x both storages and is
 # gated; the shared-daemon attribution to #27 was wrong).
-# consumer_certificates:restart:sqlite (fix round 1: NARROWED from the
-# whole leg -- the leg passes with memory storage in all four versions
-# and is gated there; with sqlite storage the proxied re-find of the
-# CKA_TOKEN object after client Finalize/Initialize fails, assertion
-# restart-token-refind, all four versions; a reverted debug print
-# showed 0 matches against 1 direct, no committed log keeps it).
-# Closest upstream reference, closed by design on 2026-10-05
-# (backend objects outlive client Finalize; per-client teardown
-# deferred to v0.3):
-# https://github.com/mingulov/pkcs11-proxy-ng/issues/27; T-C09 R9.
+# consumer_certificates:restart:sqlite and :restart:memory (both
+# re-probed 2026-10-16, after the storage-attribute fix, error in all
+# four versions; see docs/proxy-exclusions.md). The old sqlite failure,
+# restart-token-refind (0 matches proxied, 1 direct), was a Haskoki
+# defect, now fixed: objects created without CKA_PRIVATE read
+# CKR_ATTRIBUTE_TYPE_INVALID for it, and the proxy hides objects of
+# unknown privacy from a logged-out context it did not mint them in.
+# They now read CKA_PRIVATE false and the re-find passes proxied. What
+# remains is proxy behavior:
+#   sqlite: restart-stale-fault rv=0x150 expected=0x82. The proxy's
+#     virtual object handles are per client context and restart at 1,
+#     so the pre-restart handle names the first object found after
+#     re-initialize instead of faulting.
+#   memory: restart-memory-volatile matches=1 expected=0. The daemon
+#     never finalizes the backend on a client C_Finalize, so the
+#     memory-store object outlives the client restart. The leg passed
+#     before only because the CKA_PRIVATE defect hid that object.
+# Upstream issue 27 is the reference for both: closed by design on
+# 2026-10-05 (backend objects outlive a client C_Finalize; per-client
+# teardown, which covers the per-context handles, deferred to v0.3):
+# https://github.com/mingulov/pkcs11-proxy-ng/issues/27.
 # consumer_certificates:create+find+lifecycle+atomicity:3.1 (R9:
 # REMOVED on v0.2.2 — all hold, 112/174/215/87 forwarded lines
 # identical per version x storage; upstream #28 closed):
@@ -255,7 +266,8 @@ done
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
 async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
 notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25
-consumer_certificates:restart:sqlite:https://github.com/mingulov/pkcs11-proxy-ng/issues/27"
+consumer_certificates:restart:sqlite:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
+consumer_certificates:restart:memory:https://github.com/mingulov/pkcs11-proxy-ng/issues/27"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \

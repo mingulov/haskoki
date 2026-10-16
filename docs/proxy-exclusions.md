@@ -55,28 +55,62 @@ development workspace, sha256 `ffc57ccded61426c3b8a8bc4479dbf74204aeba676219bfd3
   with an empty diff in all four versions with memory storage (gated);
   with sqlite storage it fails in all four versions.
 
+## Changes after the storage-attribute fix (2026-10-16)
+
+Haskoki now reports the common storage-object attributes an object was
+created without (see the changelog). Re-probe with that fix, one fresh
+daemon per version and storage (receipt:
+`ws/evidence/v050-attr-defaults/parity-run2/artifacts/reprobe.tsv` in
+the development workspace, sha256
+`916a842f4a70b7d2b462830bc119a782c8639399868b7552bf0f9d1c18594042`):
+
+- `consumer_certificates:restart:sqlite`: KEPT, with a new cause. The
+  assertion it was excluded for, `restart-token-refind`, now passes
+  proxied in all four versions. Its cause was a Haskoki defect, now
+  fixed: an object created without `CKA_PRIVATE` returned
+  `CKR_ATTRIBUTE_TYPE_INVALID` for it, and the proxy hides an object of
+  unknown privacy from a logged-out session unless that client context
+  created it. After the client's `C_Finalize` and `C_Initialize` the
+  context is new, so the object was hidden (0 matches proxied, 1
+  direct). It now reads `CKA_PRIVATE` false and is found. The leg now
+  fails one assertion later, on proxy behavior: `restart-stale-fault`
+  returns `0x150` where direct returns `CKR_OBJECT_HANDLE_INVALID`
+  (`0x82`), in all four versions. The proxy's object handles are per
+  client context and start again at 1, so the handle from before the
+  restart names the first object found after it.
+- `consumer_certificates:restart:memory`: NEW. With `CKA_PRIVATE`
+  reported, the proxied run finds the memory-store object after the
+  client restart: `restart-memory-volatile matches=1 expected=0`, in
+  all four versions (2.40 first failed gated, receipt
+  `ws/evidence/v050-attr-defaults/parity-run1/driver.log`). The daemon
+  does not finalize the backend when a client calls `C_Finalize`, so the
+  object survives; direct, `C_Finalize` drops the memory store. The
+  "passes with memory storage" result in fix round 1 held only because
+  the `CKA_PRIVATE` defect hid that object.
+
 ## Remaining entries (re-probed 2026-10-15 and 2026-10-16)
 
 Receipts (development workspace): `ws/evidence/v050-wp11/task3/`
 (`reprobe-artifacts/reprobe.tsv`, the first three rows below) and
-`ws/evidence/v050-wp11/fix1/probe-artifacts/` (the certificate row).
-Every row ran against the pinned pair above.
+`ws/evidence/v050-attr-defaults/parity-run2/artifacts/` (the two
+certificate rows). Every row ran against the pinned pair above.
 
 | Entry | Upstream | Re-probe result | Why it stays |
 | --- | --- | --- | --- |
 | `message_routed` | [#23](https://github.com/mingulov/pkcs11-proxy-ng/issues/23) | error (exit 1) | 10 failed checks: `C_EncryptMessageNext` IV repair, supply-at-end and replace-at-end; five GCM IV-placement shapes (supply-at-end and recover, sealed and opened); and the GCM KAT sweep (sealed, opened). |
 | `async_routed` | [#24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24) | error (exit 1) | 80 failed checks, and the table-proof child dies with signal 11 under 3.2. Async completion does not preserve the caller's output bindings. |
 | `notifications_routed` | [#25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25) | error (exit 2) | All 72 matrix legs report `setup-error reason=discovery-symbols`. Callback association and provider control are not transported. |
-| `consumer_certificates:restart:sqlite` | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) (closest reference) | error (exit 1) in 2.40, 3.0, 3.1 and 3.2 | Assertion `restart-token-refind` fails: after the client's `C_Finalize` and `C_Initialize`, finding the `CKA_TOKEN` object `restart-token` fails through the proxy and passes direct (committed evidence: the `restart-token-refind` result lines). A temporary debug print on 2026-10-16 showed 0 matches proxied against 1 direct; that print was reverted and no committed log retains it. |
+| `consumer_certificates:restart:sqlite` | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) | error (exit 1) in 2.40, 3.0, 3.1 and 3.2 | `restart-token-refind` passes. Assertion `restart-stale-fault` fails: the pre-restart handle returns `0x150` proxied and `CKR_OBJECT_HANDLE_INVALID` (`0x82`) direct, because the proxy's per-context handles start again at 1 after the client re-initializes. |
+| `consumer_certificates:restart:memory` | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) | error (exit 1) in 2.40, 3.0, 3.1 and 3.2 | Assertion `restart-memory-volatile` fails, `matches=1 expected=0`: the memory-store object outlives the client's `C_Finalize` because the daemon keeps the backend initialized. |
 
 #27 is closed upstream as by design (2026-10-05: backend objects outlive
-a client `C_Finalize`; per-client teardown is deferred to v0.3). Its
-report covers the opposite symptom, memory objects surviving the
-restart, which now passes. The sqlite symptom (object not found) is not
-described there, and its cause is not established. The entry is the
-narrowest the evidence supports, and #27 is the nearest upstream
-reference rather than a confirmed cause. A new upstream report is
-needed before the entry can name its own issue.
+a client `C_Finalize`; per-client teardown is deferred to v0.3). It is
+the reference for both restart entries: the memory object that
+survives the restart, and the per-context handles that make a
+pre-restart handle name another object. Neither has its own upstream
+issue yet. The earlier sqlite symptom, the object not found after the
+restart, was not a proxy issue: it was the Haskoki `CKA_PRIVATE` defect
+described above, now fixed.
 
 ## Policy and metadata scenarios (#17)
 
