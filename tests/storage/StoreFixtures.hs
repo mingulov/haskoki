@@ -20,7 +20,8 @@ import Control.Exception (bracket, bracket_)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
-import Data.List (isInfixOf, isPrefixOf, sort)
+import Data.Char (isDigit)
+import Data.List (isPrefixOf, sort)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive)
@@ -67,11 +68,28 @@ fixturePins = fixtureSo ++ fixtureUser ++ ["34095687", "45106798", "70435168", "
   ++ [asyncSo, asyncUser]
   where (_, asyncSo, asyncUser) = asyncHomeEntry
 
--- | Fail if any PIN value occurs in an output text.
+-- | Fail if any PIN value occurs in an output text as a whole
+-- number: an occurrence counts when the characters on either side
+-- are not digits. A plain substring scan would also hit a 4-digit
+-- PIN inside a longer number, such as a pid in a scratch path.
 assertNoPins :: String -> String -> IO ()
 assertNoPins ctx text =
-  mapM_ (\p -> assertBool (ctx ++ ": output carries a PIN value") (not (p `isInfixOf` text)))
+  mapM_ (\p -> assertBool (ctx ++ ": output carries a PIN value") (not (pinOccurs p text)))
     fixturePins
+
+-- | Whether the PIN occurs in the text with no digit directly
+-- before or after it.
+pinOccurs :: String -> String -> Bool
+pinOccurs pin = go False
+  where
+    n = length pin
+    go prevDigit s =
+      (not prevDigit && pin `isPrefixOf` s && not (startsWithDigit (drop n s)))
+        || case s of
+             [] -> False
+             (c : cs) -> go (isDigit c) cs
+    startsWithDigit (c : _) = isDigit c
+    startsWithDigit [] = False
 
 -- | Copy a committed released-binary store into a scratch directory
 -- (mode 0600) and write its config from the template, pointing at

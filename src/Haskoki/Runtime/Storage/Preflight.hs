@@ -15,26 +15,49 @@ module Haskoki.Runtime.Storage.Preflight
   , checkStoreOpen
   , renderPlan
   , renderStoreRefusal
+  , MigrateHooks (..)
+  , noMigrateHooks
+  , MigrationReceipt (..)
+  , MigrateOutcome (..)
+  , MigrateError (..)
+  , migrateStore
+  , migrateStoreWith
+  , backupCandidates
+  , renderReceipt
+  , renderMigrateError
   ) where
 
-import Control.Exception (finally)
+import Control.Exception (bracket, bracketOnError, finally)
+import Data.Bifunctor (first)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import Data.List (intercalate)
 import Data.Word (Word8)
-import System.IO.Error (tryIOError)
-import System.Posix.Files (deviceID, fileID, getFileStatus)
+import Foreign.Ptr (castPtr)
+import System.IO (hClose)
+import System.IO.Error (isAlreadyExistsError, tryIOError)
+import System.Posix.Files
+  ( deviceID, fileAccess, fileID, getFileStatus, getSymbolicLinkStatus, isDirectory
+  , isSymbolicLink, removeLink )
+import System.Posix.IO
+  ( OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWriteBuf, openFd )
+import System.Posix.Time (epochTime)
+import System.Posix.Types (Fd)
+import System.Posix.Unistd (fileSynchronise)
 
 import Haskoki.Engine.Backend (CryptoBackend (..), DigestAlg (D_SHA256), EngineResult (..))
 import Haskoki.Engine.OpenSSL4 (OpenSSL4)
-import Haskoki.Runtime.Catalog (desiredTokens, tokenSerial)
+import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, tokenSerial)
 import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..))
 import Haskoki.Runtime.Storage
-  ( IdentityRefusal, ReconcilePlan (..), StoreError (..), TokenRecord (..)
+  ( CredentialRecord (..), IdentityRefusal (..), ReconcilePlan (..), StoreError (..), TokenRecord (..)
   , reconcileIdentities, renderIdentityRefusal, tokensWithoutCredentials )
 import Haskoki.Runtime.Storage.SQLite
-  ( OwnerState (..), StoreSnapshot (..), probeOwner, readStoreSnapshot, sqliteSchemaVersion )
+  ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
+  , migrateOwned, noMigrationHooks, probeOwner, readStoreSnapshot, sqliteSchemaVersion
+  , withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
 -- | SHA-256 of a byte string as 64 lowercase hex digits, computed by
@@ -194,3 +217,269 @@ renderStoreRefusal e = case e of
   StoreFull m -> ("store-full", m)
   StoreIO m -> ("store-unreadable", m)
   other -> ("store-unreadable", show other)
+
+-- ---------------------------------------------------------------------------
+-- Explicit migration
+-- ---------------------------------------------------------------------------
+
+-- | Test seams of 'migrateStoreWith'. 'noMigrateHooks' is production.
+data MigrateHooks = MigrateHooks
+  { mhAfterPlan :: IO ()
+    -- ^ after the unowned plan, before taking ownership
+  , mhAfterBackup :: IO ()
+    -- ^ after the verified backup, before the transaction
+  , mhClock :: IO Integer
+    -- ^ epoch seconds, read once per migration (default: 'epochTime')
+  , mhDigest :: ByteString -> IO (Either String String)
+    -- ^ SHA-256 of the backup bytes (default: 'sha256Hex'); a 'Left'
+    -- refuses before any file is written
+  , mhSQLite :: MigrationHooks
+  }
+
+noMigrateHooks :: MigrateHooks
+noMigrateHooks = MigrateHooks
+  { mhAfterPlan = pure ()
+  , mhAfterBackup = pure ()
+  , mhClock = truncate . toRational <$> epochTime
+  , mhDigest = sha256Hex
+  , mhSQLite = noMigrationHooks
+  }
+
+-- | What a completed migration did. Ids, versions, paths and the
+-- backup digest only: no credential byte.
+data MigrationReceipt = MigrationReceipt
+  { mrStore :: !FilePath, mrFrom :: !Int, mrTo :: !Int
+  , mrFrozen :: ![TokenId], mrPreserved :: ![TokenId]
+  , mrBackup :: !FilePath, mrBackupBytes :: !Int, mrBackupSha256 :: !String
+  , mrReceipt :: !FilePath, mrEpoch :: !Integer
+  } deriving (Eq, Show)
+
+data MigrateOutcome = MigrateNotNeeded | Migrated !MigrationReceipt deriving (Eq, Show)
+
+-- | Why a migration did not complete. Every constructor before
+-- 'MigrateTxnFailed' is a refusal that wrote nothing to the store or
+-- the backup directory. A stored rowless token without a catalog
+-- credential is reported as the identity refusal it is
+-- ('RefuseStoredUnconfigured').
+data MigrateError
+  = MigrateConfig !PreflightRefusal
+  | MigrateUnsafeBackupDir !FilePath !String
+  | MigrateStore !StoreError
+  | MigrateIdentityRefused !IdentityRefusal
+  | MigrateStoreChanged
+  | MigrateBackupExists !FilePath
+  | MigrateBackupFailed !String
+  | MigrateTxnFailed !FilePath !StoreError       -- ^ backup path; store rolled back, unchanged
+  | MigrateVerifyFailed !FilePath !String        -- ^ committed; post-check failed
+  | MigrateReceiptFailed !FilePath !String       -- ^ committed; receipt not written
+  deriving (Eq, Show)
+
+migrateStore :: FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
+migrateStore = migrateStoreWith noMigrateHooks
+
+(>>?) :: IO (Either e a) -> (a -> IO (Either e b)) -> IO (Either e b)
+m >>? k = m >>= either (pure . Left) k
+infixl 1 >>?
+
+-- | The explicit migration (AC-05). Refusals before ownership write
+-- nothing: config selection, backup-dir safety, a live owner or hot
+-- journal (via the read-only check), identity drift. Under ownership:
+-- a fresh snapshot must equal the planned one, then a new verified
+-- backup, then ONE transaction, then a read-back check, then a
+-- non-overwriting receipt.
+migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
+migrateStoreWith hooks path cfg backupDir =
+  (first MigrateConfig <$> configSelectsStore path cfg) >>? \() ->
+  checkBackupDir path backupDir >>? \() ->
+  (first MigrateStore <$> checkStoreOpen path cfg) >>? \plan ->
+  case planVerdict plan of
+    VerdictIdentityRefused r -> pure (Left (MigrateIdentityRefused r))
+    VerdictOpenable -> pure (Right MigrateNotNeeded)
+    VerdictMigrationRequired ->
+      pure (traverse freezeOne (rowless plan)) >>? \freeze -> do
+        mhAfterPlan hooks
+        owned <- withOwnedStoreFile path (\o -> underOwnership o plan freeze)
+        pure (either (Left . MigrateStore) id owned)
+  where
+    rowless plan =
+      [t | t <- snapTokens (sopSnapshot plan), trId t `elem` sopAbsentCredentials plan]
+    -- Unreachable after an accepted reconciliation (every stored
+    -- token is configured exactly once); kept fail-closed.
+    freezeOne t = maybe
+      (Left (MigrateIdentityRefused (RefuseStoredUnconfigured (trId t) (trSlot t) (trLabel t))))
+      Right (catalogCredential cfg (trId t))
+    underOwnership :: OwnedStoreFile -> StoreOpenPlan -> [CredentialRecord]
+                   -> IO (Either MigrateError MigrateOutcome)
+    underOwnership o plan freeze =
+      (first MigrateStore <$> readStoreSnapshot path) >>? \snap ->
+      if snap /= sopSnapshot plan then pure (Left MigrateStoreChanged) else do
+      now <- mhClock hooks
+      writeVerifiedBackup hooks path backupDir (sopSchema plan) now snap >>? \(bak, nBytes, sha) -> do
+        mhAfterBackup hooks
+        eTx <- migrateOwned o (SQLiteMigration (sopSchema plan) freeze) (mhSQLite hooks)
+        case eTx of
+          Left err -> pure (Left (MigrateTxnFailed bak err))
+          Right () ->
+            verifyMigrated plan bak >>? \() -> do
+              let rc = MigrationReceipt
+                    { mrStore = path, mrFrom = sopSchema plan, mrTo = sqliteSchemaVersion
+                    , mrFrozen = map crToken freeze, mrPreserved = sopCredentialTokens plan
+                    , mrBackup = bak, mrBackupBytes = nBytes, mrBackupSha256 = sha
+                    , mrReceipt = bak ++ ".receipt", mrEpoch = now }
+              w <- writeExclusive (mrReceipt rc) (BC8.pack (renderReceipt rc)) backupDir
+              pure $ case w of
+                Written -> Right (Migrated rc)
+                NameTaken -> Left (MigrateReceiptFailed bak (mrReceipt rc ++ " appeared during the migration"))
+                WriteFailed why -> Left (MigrateReceiptFailed bak why)
+    verifyMigrated plan bak = do
+      e <- readStoreSnapshot path
+      pure $ case e of
+        Left err -> Left (MigrateVerifyFailed bak ("read-back failed: " ++ show err))
+        Right s
+          | snapSchema s /= sqliteSchemaVersion -> Left (MigrateVerifyFailed bak "schema marker not advanced")
+          | not (null (tokensWithoutCredentials (snapTokens s) (snapCredentialTokens s))) ->
+              Left (MigrateVerifyFailed bak "a token still has no credential row")
+          | map trId (snapTokens s) /= sopStoredTokens plan -> Left (MigrateVerifyFailed bak "token set changed")
+          | snapObjectCount s /= snapObjectCount (sopSnapshot plan)
+              || snapJobCount s /= snapJobCount (sopSnapshot plan) ->
+              Left (MigrateVerifyFailed bak "object or job count changed")
+          | otherwise -> Right ()
+
+baseName, dirName :: FilePath -> FilePath
+baseName = reverse . takeWhile (/= '/') . reverse
+dirName p = case dropWhile (/= '/') (reverse p) of
+  [] -> "."
+  [_] -> "/"
+  (_ : rest) -> reverse rest
+
+-- | The 100 backup names tried in order for a store, directory,
+-- source schema and epoch:
+-- @<dir>/<store-basename>.pre-migrate.schema<N>.<epoch>[-k].bak@.
+backupCandidates :: FilePath -> FilePath -> Int -> Integer -> [FilePath]
+backupCandidates store dir from epoch =
+  [ dir ++ "/" ++ stem ++ suffix ++ ".bak" | suffix <- "" : ["-" ++ show k | k <- [1 .. 99 :: Int]] ]
+  where stem = baseName store ++ ".pre-migrate.schema" ++ show from ++ "." ++ show epoch
+
+-- | The backup directory must exist, be a real directory (not a
+-- symlink), be writable, and not be the store's own directory.
+checkBackupDir :: FilePath -> FilePath -> IO (Either MigrateError ())
+checkBackupDir store dir = do
+  eL <- tryIOError (getSymbolicLinkStatus dir)
+  case eL of
+    Left _ -> unsafe "does not exist"
+    Right st
+      | isSymbolicLink st -> unsafe "is a symbolic link; pass the real directory"
+      | not (isDirectory st) -> unsafe "is not a directory"
+      | otherwise -> do
+          w <- tryIOError (fileAccess dir False True True)
+          if w /= Right True then unsafe "is not writable" else do
+            eS <- tryIOError (getFileStatus (dirName store))
+            case eS of
+              Right sd | deviceID sd == deviceID st && fileID sd == fileID st ->
+                unsafe "is the store's own directory; keep backups apart from the store"
+              _ -> pure (Right ())
+  where unsafe why = pure (Left (MigrateUnsafeBackupDir dir why))
+
+-- | All bytes of a file, read through a close-on-exec descriptor.
+readBytes :: FilePath -> IO ByteString
+readBytes p = bracket open hClose BS.hGetContents
+  where open = bracketOnError (openFd p ReadOnly defaultFileFlags { cloexec = True }) closeFd fdToHandle
+
+data ExclusiveWrite = Written | NameTaken | WriteFailed !String
+
+-- | Create a NEW file (O_EXCL, 0600, close-on-exec), write all bytes,
+-- fsync it and its directory. Never overwrites: an existing name is
+-- 'NameTaken'. A failure after the create removes the incomplete file.
+writeExclusive :: FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
+writeExclusive path bytes dir = do
+  eFd <- tryIOError (openFd path WriteOnly
+    defaultFileFlags { creat = Just 0o600, exclusive = True, cloexec = True })
+  case eFd of
+    Left e
+      | isAlreadyExistsError e -> pure NameTaken
+      | otherwise -> pure (WriteFailed ("cannot create " ++ path ++ ": " ++ show e))
+    Right fd -> do
+      eW <- tryIOError ((writeAll fd bytes >> fileSynchronise fd) `finally` closeFd fd)
+      eD <- either (pure . Left) (const (tryIOError syncDir)) eW
+      case eD of
+        Right () -> pure Written
+        Left e -> do
+          _ <- tryIOError (removeLink path)
+          pure (WriteFailed ("cannot write " ++ path ++ " (incomplete file removed): " ++ show e))
+  where
+    syncDir = bracket (openFd dir ReadOnly defaultFileFlags { cloexec = True }) closeFd fileSynchronise
+    writeAll :: Fd -> ByteString -> IO ()
+    writeAll fd bs
+      | BS.null bs = pure ()
+      | otherwise = do
+          n <- BS.useAsCStringLen bs (\(p, len) -> fdWriteBuf fd (castPtr p) (fromIntegral len))
+          writeAll fd (BS.drop (fromIntegral n) bs)
+
+-- | Hash, then copy the owned store into the first free candidate
+-- name, then verify by byte readback and by a read-only snapshot
+-- equal to the store's (file identity aside). A hashing failure
+-- refuses before any file exists.
+writeVerifiedBackup :: MigrateHooks -> FilePath -> FilePath -> Int -> Integer -> StoreSnapshot
+                    -> IO (Either MigrateError (FilePath, Int, String))
+writeVerifiedBackup hooks store dir from now snap =
+  readOrFail ("cannot read the store " ++ store) store >>? \bytes ->
+  (first MigrateBackupFailed <$> mhDigest hooks bytes) >>? \sha ->
+  pickAndWrite bytes candidates >>? \bak ->
+  readOrFail ("cannot read back the backup " ++ bak) bak >>? \back -> do
+    eSnap <- readStoreSnapshot bak
+    pure $ case eSnap of
+      _ | back /= bytes -> Left (MigrateBackupFailed ("backup readback differs: " ++ bak))
+      Right b | b { snapFile = snapFile snap } == snap -> Right (bak, BS.length bytes, sha)
+      Right _ -> Left (MigrateBackupFailed ("backup does not read as the same store: " ++ bak))
+      Left err -> Left (MigrateBackupFailed ("backup does not open read-only: " ++ bak ++ ": " ++ show err))
+  where
+    candidates = backupCandidates store dir from now
+    readOrFail what p = first (\e -> MigrateBackupFailed (what ++ ": " ++ show e)) <$> tryIOError (readBytes p)
+    pickAndWrite _ [] = pure (Left (MigrateBackupExists firstName))
+    pickAndWrite bytes (c : cs) = do
+      receiptTaken <- exists (c ++ ".receipt")
+      if receiptTaken then pickAndWrite bytes cs else do
+        r <- writeExclusive c bytes dir
+        case r of
+          Written -> pure (Right c)
+          NameTaken -> pickAndWrite bytes cs
+          WriteFailed why -> pure (Left (MigrateBackupFailed why))
+    firstName = case candidates of
+      (c : _) -> c
+      [] -> dir
+    exists p = either (const False) (const True) <$> tryIOError (getSymbolicLinkStatus p)
+
+renderReceipt :: MigrationReceipt -> String
+renderReceipt rc = unlines
+  [ "haskoki-store-migration-receipt: 1"
+  , "store: " ++ mrStore rc
+  , "schema-from: " ++ show (mrFrom rc)
+  , "schema-to: " ++ show (mrTo rc)
+  , "frozen-credentials: " ++ ids (mrFrozen rc)
+  , "preserved-credentials: " ++ ids (mrPreserved rc)
+  , "backup: " ++ mrBackup rc
+  , "backup-bytes: " ++ show (mrBackupBytes rc)
+  , "backup-sha256: " ++ mrBackupSha256 rc
+  , "completed-epoch-seconds: " ++ show (mrEpoch rc)
+  ]
+  where ids [] = "none"; ids ts = unwords (map tokenSerial ts)
+
+-- | Operator tag and detail. Paths, ids, versions and reasons only.
+renderMigrateError :: MigrateError -> (String, String)
+renderMigrateError e = case e of
+  MigrateConfig r -> ("config-mismatch", renderPreflightRefusal r)
+  MigrateUnsafeBackupDir d why -> ("migrate-unsafe-backup-dir", d ++ " " ++ why ++ "; nothing was written")
+  MigrateStore se -> renderStoreRefusal se
+  MigrateIdentityRefused r -> ("store-identity-refused", renderIdentityRefusal r)
+  MigrateStoreChanged -> ("migrate-store-changed", "the store changed between the check and "
+    ++ "taking ownership; nothing was written. Run store check again")
+  MigrateBackupExists p -> ("migrate-backup-exists", "every backup name is taken (first: " ++ p
+    ++ "); nothing was written")
+  MigrateBackupFailed why -> ("migrate-backup-failed", why ++ "; the store was not changed")
+  MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction rolled back ("
+    ++ snd (renderStoreRefusal se) ++ "); the store was not changed. Backup kept at " ++ bak)
+  MigrateVerifyFailed bak why -> ("migrate-verify-failed", "the migration committed but its "
+    ++ "read-back failed: " ++ why ++ ". Stop the rollout; restore from " ++ bak
+    ++ " (docs/operations-notes.md, Upgrade, backup and recovery)")
+  MigrateReceiptFailed bak why -> ("migrate-receipt-failed", "the migration committed; the "
+    ++ "receipt was not written (" ++ why ++ "). Backup at " ++ bak)
