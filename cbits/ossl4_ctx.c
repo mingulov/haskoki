@@ -3838,6 +3838,24 @@ end:
     return rc;
 }
 
+/* --- derive seams (test configuration only) --------------------------------
+ * The test configuration routes the BN export in the finite-field DH peer
+ * pack and the second (output) derive through seams, so the tests can force
+ * the faults that no provider produces on demand. The shipped module calls
+ * the OpenSSL functions directly. */
+#ifdef HSK_OSSL4_TEST_HOOKS
+static int hsk_seam_bn2nativepad(const BIGNUM *a, unsigned char *to, int n);
+static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l);
+static void hsk_seam_note(int which, void *p, size_t n);
+#define HSK_BN2NATIVEPAD(a, to, n) hsk_seam_bn2nativepad((a), (to), (n))
+#define HSK_PKEY_DERIVE_OUT(c, k, l) hsk_seam_pkey_derive((c), (k), (l))
+#define HSK_SEAM_NOTE(w, p, n) hsk_seam_note((w), (p), (n))
+#else
+#define HSK_BN2NATIVEPAD(a, to, n) BN_bn2nativepad((a), (to), (n))
+#define HSK_PKEY_DERIVE_OUT(c, k, l) EVP_PKEY_derive((c), (k), (l))
+#define HSK_SEAM_NOTE(w, p, n) ((void)0)
+#endif
+
 /* --- ECDH agreement ------------------------------------------- */
 
 long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
@@ -3898,11 +3916,22 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     /* The failed derive below may mutate secretlen: cleanse with the
      * allocation length, never the out-param. */
     secretalloc = secretlen;
-    if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_SECRET, secret, secretalloc);
+    if (HSK_PKEY_DERIVE_OUT(pctx, secret, &secretlen) <= 0) {
         OPENSSL_clear_free(secret, secretalloc);
         secret = NULL;
         goto end;
     }
+    if (secretlen > secretalloc) {
+        /* More than the size query allowed: fail closed and
+         * cleanse the whole allocation. */
+        OPENSSL_clear_free(secret, secretalloc);
+        secret = NULL;
+        rc = HSK_OSSL4_ERR_NATIVE;
+        goto end;
+    }
+    if (secretlen < secretalloc) /* the caller frees with secretlen */
+        OPENSSL_cleanse(secret + secretlen, secretalloc - secretlen);
     *out = secret;
     rc = (long)secretlen;
     secret = NULL;
@@ -3984,7 +4013,8 @@ long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     /* The failed derive below may mutate secretlen: cleanse with the
      * allocation length, never the out-param. */
     secretalloc = secretlen;
-    if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_SECRET, secret, secretalloc);
+    if (HSK_PKEY_DERIVE_OUT(pctx, secret, &secretlen) <= 0) {
         /* A low-order peer: the provider refuses zero-output
          * derives. The clamped scalar is always valid, so on
          * width-exact inputs no other failure mode exists —
@@ -3994,6 +4024,16 @@ long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
         rc = HSK_OSSL4_ERR_BADPEER;
         goto end;
     }
+    if (secretlen > secretalloc) {
+        /* More than the size query allowed: fail closed and
+         * cleanse the whole allocation. */
+        OPENSSL_clear_free(secret, secretalloc);
+        secret = NULL;
+        rc = HSK_OSSL4_ERR_NATIVE;
+        goto end;
+    }
+    if (secretlen < secretalloc) /* the caller frees with secretlen */
+        OPENSSL_cleanse(secret + secretlen, secretalloc - secretlen);
     *out = secret;
     rc = (long)secretlen;
     secret = NULL;
@@ -4142,8 +4182,9 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                 goto end;
             }
             total = (size_t)yn;
+            HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PACK, pbuf, total);
             ybuf = pbuf;
-            if (BN_bn2nativepad(y, ybuf, yn) <= 0) {
+            if (HSK_BN2NATIVEPAD(y, ybuf, yn) <= 0) {
                 OPENSSL_clear_free(pbuf, total);
                 goto end;
             }
@@ -4159,14 +4200,15 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                 rc = HSK_OSSL4_ERR_NOMEM;
                 goto end;
             }
+            HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PACK, pbuf, total);
             gbuf = pbuf + pn;
             ybuf = gbuf + gn;
             qbuf = ybuf + yn;
             /* Native order (see above): BE bytes would store
              * byte-reversed. */
-            if (BN_bn2nativepad(p, pbuf, pn) <= 0 ||
-                BN_bn2nativepad(g, gbuf, gn) <= 0 ||
-                BN_bn2nativepad(y, ybuf, yn) <= 0) {
+            if (HSK_BN2NATIVEPAD(p, pbuf, pn) <= 0 ||
+                HSK_BN2NATIVEPAD(g, gbuf, gn) <= 0 ||
+                HSK_BN2NATIVEPAD(y, ybuf, yn) <= 0) {
                 OPENSSL_clear_free(pbuf, total);
                 goto end;
             }
@@ -4174,7 +4216,7 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
             fromparams[1] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_FFC_G, gbuf, (size_t)gn);
             fromparams[2] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_PUB_KEY, ybuf, (size_t)yn);
             if (qn > 0) {
-                if (BN_bn2nativepad(q, qbuf, qn) <= 0) {
+                if (HSK_BN2NATIVEPAD(q, qbuf, qn) <= 0) {
                     OPENSSL_clear_free(pbuf, total);
                     goto end;
                 }
@@ -4221,11 +4263,22 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     /* The failed derive below may mutate secretlen: cleanse with the
      * allocation length, never the out-param. */
     secretalloc = secretlen;
-    if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_SECRET, secret, secretalloc);
+    if (HSK_PKEY_DERIVE_OUT(pctx, secret, &secretlen) <= 0) {
         OPENSSL_clear_free(secret, secretalloc);
         secret = NULL;
         goto end;
     }
+    if (secretlen > secretalloc) {
+        /* More than the size query allowed: fail closed and
+         * cleanse the whole allocation. */
+        OPENSSL_clear_free(secret, secretalloc);
+        secret = NULL;
+        rc = HSK_OSSL4_ERR_NATIVE;
+        goto end;
+    }
+    if (secretlen < secretalloc) /* the caller frees with secretlen */
+        OPENSSL_cleanse(secret + secretlen, secretalloc - secretlen);
     *out = secret;
     rc = (long)secretlen;
     secret = NULL;
@@ -5770,6 +5823,146 @@ __attribute__((destructor)) static void hsk_test_live_exit_gate(void)
                 n);
         _exit(70);
     }
+}
+
+/* --- derive seams -------------------------------------------------------- */
+
+typedef struct {
+    pthread_mutex_t mu;
+    long bn_calls;
+    int bn_fail_nth; /* 0 unarmed */
+    int derive_armed;
+    long derive_delta;
+    int derive_succeed;
+    long fired;
+    void *ptr[2];
+    size_t alloc[2];
+} hsk_seam_state_t;
+
+static hsk_seam_state_t hsk_seam = { PTHREAD_MUTEX_INITIALIZER, 0, 0, 0, 0,
+                                     0, 0, { NULL, NULL }, { 0, 0 } };
+
+void hsk_ossl4_test_seam_reset(void)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.bn_calls = 0;
+    hsk_seam.bn_fail_nth = 0;
+    hsk_seam.derive_armed = 0;
+    hsk_seam.derive_delta = 0;
+    hsk_seam.derive_succeed = 0;
+    hsk_seam.fired = 0;
+    hsk_seam.ptr[0] = hsk_seam.ptr[1] = NULL;
+    hsk_seam.alloc[0] = hsk_seam.alloc[1] = 0;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_bn_fail(int nth)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.bn_calls = 0;
+    hsk_seam.bn_fail_nth = nth;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_derive(long delta, int succeed)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.derive_armed = 1;
+    hsk_seam.derive_delta = delta;
+    hsk_seam.derive_succeed = succeed;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+long hsk_ossl4_test_seam_bn_calls(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_seam.mu);
+    r = hsk_seam.bn_calls;
+    pthread_mutex_unlock(&hsk_seam.mu);
+    return r;
+}
+
+long hsk_ossl4_test_seam_fired(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_seam.mu);
+    r = hsk_seam.fired;
+    pthread_mutex_unlock(&hsk_seam.mu);
+    return r;
+}
+
+int hsk_ossl4_test_seam_target(int which, void **ptr, size_t *alloc)
+{
+    int r = 0;
+    if (which < 0 || which > 1)
+        return 0;
+    pthread_mutex_lock(&hsk_seam.mu);
+    if (hsk_seam.ptr[which] != NULL) {
+        if (ptr != NULL)
+            *ptr = hsk_seam.ptr[which];
+        if (alloc != NULL)
+            *alloc = hsk_seam.alloc[which];
+        r = 1;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    return r;
+}
+
+static int hsk_seam_bn2nativepad(const BIGNUM *a, unsigned char *to, int n)
+{
+    int fail = 0;
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.bn_calls++;
+    if (hsk_seam.bn_fail_nth > 0 &&
+        hsk_seam.bn_calls == hsk_seam.bn_fail_nth) {
+        hsk_seam.bn_fail_nth = 0;
+        hsk_seam.fired++;
+        fail = 1;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (fail)
+        return -1;
+    return BN_bn2nativepad(a, to, n);
+}
+
+static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l)
+{
+    int armed, succeed;
+    long delta;
+    pthread_mutex_lock(&hsk_seam.mu);
+    armed = hsk_seam.derive_armed;
+    succeed = hsk_seam.derive_succeed;
+    delta = hsk_seam.derive_delta;
+    if (armed) {
+        hsk_seam.derive_armed = 0;
+        hsk_seam.fired++;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (!armed)
+        return EVP_PKEY_derive(c, k, l);
+    if (!succeed) {
+        /* A provider that wrote the secret, then reported failure
+         * with a changed length. */
+        memset(k, 0x5A, *l);
+        *l = (size_t)((long)*l + delta);
+        return 0;
+    }
+    {
+        int r = EVP_PKEY_derive(c, k, l);
+        if (r > 0)
+            *l = (size_t)((long)*l + delta);
+        return r;
+    }
+}
+
+static void hsk_seam_note(int which, void *p, size_t n)
+{
+    if (which < 0 || which > 1)
+        return;
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.ptr[which] = p;
+    hsk_seam.alloc[which] = n;
+    pthread_mutex_unlock(&hsk_seam.mu);
 }
 
 #endif /* HSK_OSSL4_TEST_HOOKS */

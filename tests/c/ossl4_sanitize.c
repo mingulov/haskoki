@@ -15,6 +15,8 @@
  *
  * --no-arm runs a case without arming its fault seam; a case whose seam
  * never fires must fail, which proves the seam is what the case tests.
+ * The seam-* cases force the BN export and second-derive faults of the
+ * three key agreements and check the freed extents.
  *
  * One output line per run:
  *   CASE <name> PASS|FAIL variant=<hooks|prod> mem=<m> live_delta=<n>
@@ -33,6 +35,7 @@
 #include <openssl/dh.h>
 #include <openssl/encoder.h>
 #include <openssl/evp.h>
+#include <openssl/x509.h>
 
 #include <limits.h>
 #include <pthread.h>
@@ -69,6 +72,7 @@ static unsigned long long trk_serial;
 #define TRK_LOG 16384
 static trk_freed_t trk_log[TRK_LOG];
 static size_t trk_nlog; /* frees since trk_mark() */
+static int trk_quarantine; /* never hand a freed block back to libc */
 static const void *trk_reuse_target;
 static void *trk_stash; /* base of a block held back for reuse */
 static size_t trk_stash_size;
@@ -188,7 +192,8 @@ static void trk_free(void *ptr, const char *file, int line)
         trk_stash_size = n;
     } else {
         hd->magic = 0;
-        free(base);
+        if (!trk_quarantine)
+            free(base);
     }
     pthread_mutex_unlock(&trk_mu);
 }
@@ -603,6 +608,325 @@ static void case_final_fault(void)
     hsk_ossl4_test_gate_free(g);
 }
 
+/* --- native error seams ------------------------------------------------ */
+
+typedef struct {
+    unsigned char *priv;
+    size_t privlen;
+    unsigned char *peer;
+    size_t peerlen;
+} seam_keys_t;
+
+static void seam_keys_free(seam_keys_t *k)
+{
+    OPENSSL_free(k->priv);
+    OPENSSL_free(k->peer);
+    memset(k, 0, sizeof(*k));
+}
+
+/* PKCS#8 DER of a private key through the encoder. */
+static int priv_der(EVP_PKEY *pkey, unsigned char **der, size_t *len)
+{
+    OSSL_ENCODER_CTX *ec = OSSL_ENCODER_CTX_new_for_pkey(
+        pkey, EVP_PKEY_KEYPAIR, "DER", "PrivateKeyInfo", NULL);
+    int ok = 0;
+    *der = NULL;
+    *len = 0;
+    if (ec != NULL && OSSL_ENCODER_CTX_get_num_encoders(ec) > 0 &&
+        OSSL_ENCODER_to_data(ec, der, len))
+        ok = 1;
+    OSSL_ENCODER_CTX_free(ec);
+    return ok;
+}
+
+static EVP_PKEY *gen_from(const char *alg, const char *group)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(g_lib, alg, "");
+    EVP_PKEY *k = NULL;
+    if (c == NULL || EVP_PKEY_keygen_init(c) <= 0)
+        goto done;
+    if (group != NULL) {
+        OSSL_PARAM p[2];
+        p[0] = OSSL_PARAM_construct_utf8_string(
+            "group", (char *)group, 0);
+        p[1] = OSSL_PARAM_construct_end();
+        if (EVP_PKEY_CTX_set_params(c, p) <= 0)
+            goto done;
+    }
+    if (EVP_PKEY_generate(c, &k) <= 0)
+        k = NULL;
+done:
+    EVP_PKEY_CTX_free(c);
+    return k;
+}
+
+/* Big-endian public value of a DH key. */
+static int dh_pub_bytes(EVP_PKEY *k, unsigned char **out, size_t *len)
+{
+    BIGNUM *bn = NULL;
+    int n;
+    if (EVP_PKEY_get_bn_param(k, "pub", &bn) <= 0)
+        return 0;
+    n = BN_num_bytes(bn);
+    *out = OPENSSL_malloc((size_t)n);
+    if (*out == NULL) {
+        BN_free(bn);
+        return 0;
+    }
+    BN_bn2bin(bn, *out);
+    *len = (size_t)n;
+    BN_free(bn);
+    return 1;
+}
+
+enum { K_ECDH, K_XDH, K_DH_NAMED, K_DH_EXPLICIT };
+
+/* Fresh pair: the private DER of A and the peer value of B. */
+static int seam_keys(int kind, seam_keys_t *k)
+{
+    EVP_PKEY *a = NULL, *b = NULL, *params = NULL;
+    int ok = 0;
+    memset(k, 0, sizeof(*k));
+    if (kind == K_DH_EXPLICIT) {
+        EVP_PKEY_CTX *pc = EVP_PKEY_CTX_new_from_name(g_lib, "DHX", "");
+        EVP_PKEY_CTX *kc;
+        unsigned int pbits = 2048, qbits = 224;
+        OSSL_PARAM gp[4];
+        gp[0] = OSSL_PARAM_construct_utf8_string("type", (char *)"fips186_4",
+                                                 0);
+        gp[1] = OSSL_PARAM_construct_uint("pbits", &pbits);
+        gp[2] = OSSL_PARAM_construct_uint("qbits", &qbits);
+        gp[3] = OSSL_PARAM_construct_end();
+        /* FIPS 186-4 explicit parameters with a 224-bit subgroup. */
+        if (pc == NULL || EVP_PKEY_paramgen_init(pc) <= 0 ||
+            EVP_PKEY_CTX_set_params(pc, gp) <= 0 ||
+            EVP_PKEY_paramgen(pc, &params) <= 0) {
+            EVP_PKEY_CTX_free(pc);
+            return 0;
+        }
+        EVP_PKEY_CTX_free(pc);
+        kc = EVP_PKEY_CTX_new_from_pkey(g_lib, params, "");
+        if (kc != NULL && EVP_PKEY_keygen_init(kc) > 0 &&
+            EVP_PKEY_generate(kc, &a) > 0 && EVP_PKEY_generate(kc, &b) > 0)
+            ok = 1;
+        EVP_PKEY_CTX_free(kc);
+        if (!ok)
+            goto done;
+        ok = 0;
+    } else if (kind == K_ECDH) {
+        a = gen_from("EC", "P-256");
+        b = gen_from("EC", "P-256");
+    } else if (kind == K_XDH) {
+        a = gen_from("X25519", NULL);
+        b = gen_from("X25519", NULL);
+    } else {
+        a = gen_from("DH", "ffdhe2048");
+        b = gen_from("DH", "ffdhe2048");
+    }
+    if (a == NULL || b == NULL || !priv_der(a, &k->priv, &k->privlen))
+        goto done;
+    if (kind == K_ECDH) {
+        unsigned char *p = NULL;
+        int n = i2d_PUBKEY(b, &p);
+        if (n <= 0)
+            goto done;
+        k->peer = p;
+        k->peerlen = (size_t)n;
+    } else if (kind == K_XDH) {
+        size_t n = 32;
+        k->peer = OPENSSL_malloc(n);
+        if (k->peer == NULL ||
+            EVP_PKEY_get_raw_public_key(b, k->peer, &n) <= 0 || n != 32)
+            goto done;
+        k->peerlen = n;
+    } else if (!dh_pub_bytes(b, &k->peer, &k->peerlen)) {
+        goto done;
+    }
+    ok = 1;
+done:
+    if (!ok)
+        seam_keys_free(k);
+    EVP_PKEY_free(a);
+    EVP_PKEY_free(b);
+    EVP_PKEY_free(params);
+    return ok;
+}
+
+static long seam_derive(int kind, const seam_keys_t *k, unsigned char **out)
+{
+    *out = NULL;
+    if (kind == K_ECDH)
+        return hsk_ossl4_ecdh_derive(g_lib, "", k->priv, k->privlen, k->peer,
+                                     k->peerlen, 0, out);
+    if (kind == K_XDH)
+        return hsk_ossl4_xdh_derive(g_lib, "", k->priv, k->privlen, k->peer,
+                                    k->peerlen, out);
+    return hsk_ossl4_dh_derive(g_lib, "", k->priv, k->privlen, k->peer,
+                               k->peerlen, out);
+}
+
+/* One unarmed derive to warm provider caches, then reset the seam. */
+static int seam_warm(int kind, const seam_keys_t *k)
+{
+    unsigned char *out = NULL;
+    long rc = seam_derive(kind, k, &out);
+    if (rc <= 0 || out == NULL)
+        return 0;
+    hsk_ossl4_free(out, (size_t)rc);
+    hsk_ossl4_test_seam_reset();
+    return 1;
+}
+
+/* The noted allocation of `which` was freed exactly once, cleansed over
+ * its whole extent, canary intact. */
+static void check_target(int which)
+{
+    void *p = NULL;
+    size_t alloc = 0, nz = 0;
+    int ok = 0;
+    long n;
+    REQ(hsk_ossl4_test_seam_target(which, &p, &alloc) == 1, "no-target");
+    n = trk_freed(p, alloc, &nz, &ok);
+    g_target_frees = n;
+    g_nonzero = (long)nz;
+    REQ(n == 1, "target-not-freed-once");
+    REQ(nz == 0, "target-not-cleansed");
+    REQ(ok, "canary-damaged");
+}
+
+static void seam_fired_check(void)
+{
+    g_seam = hsk_ossl4_test_seam_fired();
+    REQ(g_seam == 1, "seam-not-reached");
+}
+
+static void bn_case(int kind, int nth, long expect_calls)
+{
+    trk_quarantine = 1; /* unique addresses: one free per allocation */
+    seam_keys_t k;
+    unsigned char *out = NULL;
+    long before, rc;
+    REQ(seam_keys(kind, &k), "keys");
+    REQ(seam_warm(kind, &k), "warmup");
+    rc = seam_derive(kind, &k, &out);
+    REQ(rc > 0, "unarmed-derive");
+    hsk_ossl4_free(out, (size_t)rc);
+    REQ(hsk_ossl4_test_seam_bn_calls() == expect_calls, "bn-call-count");
+    hsk_ossl4_test_seam_reset();
+    before = mark_live();
+    if (!g_noarm)
+        hsk_ossl4_test_seam_arm_bn_fail(nth);
+    rc = seam_derive(kind, &k, &out);
+    seam_fired_check();
+    REQ(*g_reason == 0, g_reason);
+    REQ(rc == -1, "rc-not-native");
+    REQ(out == NULL, "out-set");
+    check_target(HSK_OSSL4_SEAM_PACK);
+    REQ_LIVE(before);
+    seam_keys_free(&k);
+}
+
+static void case_seam_bn_named(void)
+{
+    bn_case(K_DH_NAMED, 1, 1);
+}
+
+static void case_seam_bn_explicit(void)
+{
+    int nth;
+    for (nth = 1; nth <= 4; nth++) {
+        bn_case(K_DH_EXPLICIT, nth, 4);
+        if (*g_reason != 0)
+            return;
+        if (g_noarm)
+            return;
+    }
+}
+
+enum { M_FAIL, M_OK };
+
+static void derive_case(int kind, int grow, int mode)
+{
+    seam_keys_t k;
+    unsigned char *out = NULL;
+    long before, rc;
+    long delta = grow ? 1 : -1;
+    trk_quarantine = 1; /* unique addresses: one free per allocation */
+    void *tp = NULL;
+    size_t alloc = 0;
+    REQ(seam_keys(kind, &k), "keys");
+    REQ(seam_warm(kind, &k), "warmup");
+    before = mark_live();
+    if (!g_noarm)
+        hsk_ossl4_test_seam_arm_derive(delta, mode == M_OK);
+    rc = seam_derive(kind, &k, &out);
+    seam_fired_check();
+    REQ(*g_reason == 0, g_reason);
+    REQ(hsk_ossl4_test_seam_target(HSK_OSSL4_SEAM_SECRET, &tp, &alloc) == 1,
+        "no-target");
+    if (mode == M_FAIL) {
+        REQ(rc == (kind == K_XDH ? -6 : -1), "rc-code");
+        REQ(out == NULL, "out-set");
+    } else if (grow) {
+        REQ(rc == -1, "grow-rc");
+        REQ(out == NULL, "out-set");
+    } else {
+        REQ(rc == (long)alloc - 1, "shrink-rc");
+        REQ(out != NULL, "out-null");
+        hsk_ossl4_free(out, (size_t)rc);
+        out = NULL;
+    }
+    check_target(HSK_OSSL4_SEAM_SECRET);
+    REQ_LIVE(before);
+    seam_keys_free(&k);
+}
+
+#define DERIVE_CASES(kindname, kind)                                        \
+    static void case_seam_fail_shrink_##kindname(void)                      \
+    {                                                                       \
+        derive_case(kind, 0, M_FAIL);                                       \
+    }                                                                       \
+    static void case_seam_fail_grow_##kindname(void)                        \
+    {                                                                       \
+        derive_case(kind, 1, M_FAIL);                                       \
+    }                                                                       \
+    static void case_seam_ok_shrink_##kindname(void)                        \
+    {                                                                       \
+        derive_case(kind, 0, M_OK);                                         \
+    }                                                                       \
+    static void case_seam_ok_grow_##kindname(void)                          \
+    {                                                                       \
+        derive_case(kind, 1, M_OK);                                         \
+    }
+
+DERIVE_CASES(ecdh, K_ECDH)
+DERIVE_CASES(xdh, K_XDH)
+DERIVE_CASES(dh, K_DH_NAMED)
+
+/* The detector itself: a partly cleansed block and a one-byte overrun
+ * must both be reported. */
+static void case_canary_selftest(void)
+{
+    unsigned char *p = OPENSSL_malloc(48), *q = OPENSSL_malloc(16);
+    size_t nz = 0;
+    int ok = 1;
+    long ret = 0;
+    REQ(p != NULL && q != NULL, "alloc");
+    memset(p, 0xAB, 48);
+    trk_mark();
+    hsk_ossl4_free(p, 47);
+    REQ(trk_freed(p, 48, &nz, &ok) == 1, "p-not-logged");
+    REQ(nz == 1, "p-nonzero-not-seen");
+    g_nonzero = (long)nz;
+    ((volatile unsigned char *)q)[16] = 0; /* one byte past the allocation, on purpose */
+    OPENSSL_free(q);
+    REQ(trk_freed(q, 16, &nz, &ok) == 1, "q-not-logged");
+    REQ(!ok, "overrun-not-seen");
+    ret = trk_canary_bad;
+    REQ(ret == 1, "canary-count");
+    trk_canary_bad = 0; /* the damage was the point of the case */
+}
+
 static void case_exit_gate(void)
 {
     hsk_ossl4_md_t *h = hsk_ossl4_digest_init(g_lib, "SHA256", "");
@@ -626,6 +950,21 @@ static const case_t cases[] = {
     { "adoption-load", case_adoption_load, 1, 0 },
     { "final-fault", case_final_fault, 1, 0 },
     { "exit-gate", case_exit_gate, 1, 0 },
+    { "seam-bn-named", case_seam_bn_named, 1, 1 },
+    { "seam-bn-explicit", case_seam_bn_explicit, 1, 1 },
+    { "seam-derive-fail-shrink-ecdh", case_seam_fail_shrink_ecdh, 1, 1 },
+    { "seam-derive-fail-grow-ecdh", case_seam_fail_grow_ecdh, 1, 1 },
+    { "seam-derive-ok-shrink-ecdh", case_seam_ok_shrink_ecdh, 1, 1 },
+    { "seam-derive-ok-grow-ecdh", case_seam_ok_grow_ecdh, 1, 1 },
+    { "seam-derive-fail-shrink-xdh", case_seam_fail_shrink_xdh, 1, 1 },
+    { "seam-derive-fail-grow-xdh", case_seam_fail_grow_xdh, 1, 1 },
+    { "seam-derive-ok-shrink-xdh", case_seam_ok_shrink_xdh, 1, 1 },
+    { "seam-derive-ok-grow-xdh", case_seam_ok_grow_xdh, 1, 1 },
+    { "seam-derive-fail-shrink-dh", case_seam_fail_shrink_dh, 1, 1 },
+    { "seam-derive-fail-grow-dh", case_seam_fail_grow_dh, 1, 1 },
+    { "seam-derive-ok-shrink-dh", case_seam_ok_shrink_dh, 1, 1 },
+    { "seam-derive-ok-grow-dh", case_seam_ok_grow_dh, 1, 1 },
+    { "canary-selftest", case_canary_selftest, 1, 1 },
 #endif
 };
 
