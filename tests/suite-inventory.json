@@ -101,6 +101,7 @@
         "EnvLock",
         "OwnershipCounters",
         "FfiAcquireSpec",
+        "LazyWalk",
         "LeaseWedgeDenseSpec",
         "LeaseWedgeSpec",
         "NativeParamsSpec",
@@ -146,6 +147,7 @@
         "FfiAcquireSpec": [
           "Acquisition hooks"
         ],
+        "LazyWalk": [],
         "LeaseWedgeDenseSpec": [
           "Dense-rain detach wedge"
         ],

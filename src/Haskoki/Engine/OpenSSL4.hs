@@ -55,7 +55,8 @@ implemented here):
 -- name lists, note tables) out of 'ossl4Caps' and 'probeCaps' into
 -- shared top-level thunks that concurrent opens then dup-evaluate,
 -- which GHC's RTS can turn into a whole-process deadlock (see
--- 'normalCaps'). Shared tables here are explicit, normalized CAFs.
+-- 'forceCaps', GHC #27272). Shared tables here are explicit, normalized
+-- CAFs.
 {-# OPTIONS_GHC -fno-full-laziness #-}
 module Haskoki.Engine.OpenSSL4
   ( OpenSSL4 (..)
@@ -72,6 +73,7 @@ module Haskoki.Engine.OpenSSL4
   , generateKeyECGated
     -- * TEST-ONLY capability tables
   , ossl4StaticCaps
+  , ossl4StaticCapsBuild
   ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, putMVar, readMVar, takeMVar, withMVar)
@@ -1087,7 +1089,7 @@ generateKeyECGated gate be ec =
 -- fixed-length set ('t16DigestAlgs'); every other family keeps its
 -- original shape.
 ossl4Caps :: String -> String -> BackendCaps
-ossl4Caps version propq = normalCaps ossl4StaticCaps
+ossl4Caps version propq = forceCaps ossl4StaticCaps
   { bcVersion = version
   , bcParamNotes = Map.insert "provider" ("default only; propquery " ++ propq)
       (bcParamNotes ossl4StaticCaps)
@@ -1096,10 +1098,17 @@ ossl4Caps version propq = normalCaps ossl4StaticCaps
 -- | The open-independent part of 'ossl4Caps': every set and note
 -- that does not depend on the provider version or property query.
 -- A CAF, so exactly one thread evaluates it while any other waits
--- on its black hole; 'normalCaps' makes that evaluation complete, so
+-- on its black hole; 'forceCaps' makes that evaluation complete, so
 -- no thunk of the shared table ever reaches a second thread.
 ossl4StaticCaps :: BackendCaps
-ossl4StaticCaps = normalCaps BackendCaps
+ossl4StaticCaps = ossl4StaticCapsBuild ()
+{-# NOINLINE ossl4StaticCaps #-}
+
+-- | The builder behind 'ossl4StaticCaps'. Exported only so a test
+-- can build a fresh copy and walk it, independent of whichever
+-- open already forced the shared table.
+ossl4StaticCapsBuild :: () -> BackendCaps
+ossl4StaticCapsBuild () = forceCaps BackendCaps
   { bcName = "openssl4"
   , bcVersion = ""
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = True }
@@ -1120,36 +1129,7 @@ ossl4StaticCaps = normalCaps BackendCaps
          ++ osslMldsaNotes t16MldsaLevels ++ osslSlhdsaNotes t16SlhdsaSets ++ osslMlkemNotes t16MlkemSets
       )
   }
-{-# NOINLINE ossl4StaticCaps #-}
-
--- | Fully evaluate a capability record (every name, set element and
--- note) and return it.
---
--- Why: GHC's RTS (seen on 9.10.3, 9.12.4 and 9.14.1) can orphan the
--- black hole of a string literal CAF when two threads dup-evaluate
--- the same lazily black-holed thunk and that thunk's evaluation enters
--- the literal: the literal's owner loses the continuation that
--- would update it, and every thread needing it deadlocks
--- (a variant of GHC #26324 that its released fixes do not cover).
--- Capability records are shared by every concurrent open and every
--- capability reader, so a record that leaves here holds no thunk
--- for two threads to race on.
-normalCaps :: BackendCaps -> BackendCaps
-normalCaps c =
-  strs [bcName c, bcVersion c]
-    `seq` Set.foldr (\spec r -> maybe () (`seq` ()) (rc2BitsOf spec) `seq` r) () (ccCiphers (bcCiphers c))
-    `seq` strs (Set.toList (ccAead (bcCiphers c)))
-    `seq` strs (Set.toList (mcSpecs (bcMacs c)))
-    `seq` strs (Set.toList (scSpecs (bcSigs c)))
-    `seq` strs (Set.toList (scCurves (bcSigs c)))
-    `seq` strs (Set.toList (kcKdfs (bcKdfs c)))
-    `seq` Map.foldrWithKey (\k v r -> str k `seq` str v `seq` r) () (bcParamNotes c)
-    `seq` c
-  where
-    -- Digest, PQC and KEM sets hold nullary constructors: a set
-    -- element is already in normal form.
-    str = foldr seq ()
-    strs = foldr (\x r -> str x `seq` r) ()
+{-# NOINLINE ossl4StaticCapsBuild #-}
 
 -- | The ECDSA curve set: the NIST prime curves.
 -- | The ECDSA curve set: every covered curve (deliberately
@@ -1454,7 +1434,7 @@ probeCaps env = do
   let base = osslCaps env
       rsaAlgs = filter (`elem` mdAlgs) t16RsaAlgs
       dsaAlgs = filter (`elem` mdAlgs) t16DsaAlgs
-  pure $! normalCaps base
+  pure $! forceCaps base
     { bcDigests = (bcDigests base)
         { dcAlgs = Set.fromList mdAlgs
         , dcXof = shake128Ok && shake256Ok

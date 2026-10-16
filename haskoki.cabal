@@ -521,6 +521,7 @@ test-suite haskoki-engine-tests
     EnvLock
     FfiAcquireSpec
     LeaseWedgeDenseSpec
+    LazyWalk
     LeaseWedgeSpec
     NativeParamsSpec
     NotificationsEngineSpec

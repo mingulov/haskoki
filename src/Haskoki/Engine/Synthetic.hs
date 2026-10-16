@@ -46,6 +46,8 @@ module Haskoki.Engine.Synthetic
   , synthEcdhWidth
   , synthDhWidth
   , synthKeyContextVersion
+    -- * TEST-ONLY capability builder
+  , synthCapsBuild
   ) where
 
 import Control.Applicative ((<|>))
@@ -66,6 +68,7 @@ import Data.Word (Word8, Word32, Word64)
 import Haskoki.Engine.Backend
   ( AeadSpec (..)
   , BackendCaps (..)
+  , forceCaps
   , BackendError (..)
   , CipherCaps (..)
   , CipherSpec (..)
@@ -810,7 +813,15 @@ parseSeed s = case reads s of
 -- whole from slice 1; slices 2-5 fill the implementation behind
 -- it.
 synthCaps :: BackendCaps
-synthCaps = BackendCaps
+synthCaps = synthCapsBuild ()
+{-# NOINLINE synthCaps #-}
+
+-- | The builder behind 'synthCaps', normalized by 'forceCaps' so the
+-- shared table holds no thunk for two threads to race on (GHC
+-- #27272). Exported only so a test can build a fresh copy and walk
+-- it.
+synthCapsBuild :: () -> BackendCaps
+synthCapsBuild () = forceCaps BackendCaps
   { bcName = "synthetic"
   , bcVersion = "synthetic/1"
   , bcDigests = DigestCaps
@@ -847,6 +858,7 @@ synthCaps = BackendCaps
        , ("KEM", "deterministic test construction; standard ct lengths, 32-byte secrets")
        ])
   }
+{-# NOINLINE synthCapsBuild #-}
 
 digestSupported :: BackendEnv Synthetic -> DigestAlg -> Maybe String
 digestSupported (SynthBackend env) alg

@@ -22,14 +22,15 @@ import Data.Bits ((.&.), shiftL, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
-import Data.List (isInfixOf, stripPrefix, tails)
+import Data.List (isInfixOf, isPrefixOf, stripPrefix, tails)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import System.Directory (doesFileExist)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Data.Word (Word32)
-import GHC.Exts.Heap (Box, GenClosure (..), asBox, getBoxedClosureData)
+import LazyWalk (lazyClosures)
 import Haskoki.Engine.Backend
   ( AeadSpec (..)
   , BackendCaps (..)
@@ -65,7 +66,7 @@ import Haskoki.Engine.Backend
   )
 import Haskoki.Der (dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, integerToBE, mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomerySpkiFields, rsaSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
 import Haskoki.Engine.Driver (cipherSpecFor, runEffect)
-import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..), ossl4StaticCaps)
+import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..), ossl4StaticCapsBuild)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Recipe.Cipher (encodeCtrParams)
 import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
@@ -141,6 +142,7 @@ spec = testGroup "openssl4 engine"
   , testCase "capability report is exactly the supported set" caseCaps
   , testCase "capability report is published fully evaluated" caseCapsEvaluated
   , testCase "static capability table is a normal-form CAF" caseStaticCapsEvaluated
+  , testCase "capability notes keep provider and cipher content" caseCapsNotes
   , testCase "private contexts are isolated" caseIsolation
   , testCase "shim has no pkcs11 provider or global cleanup" caseShimHygiene
   , testCase "invalid inputs fail typed, never crash" caseInvalidInputs
@@ -5190,34 +5192,29 @@ caseCapsEvaluated = withBackend $ \env -> do
   assertBool ("published capability report holds " ++ show (length lz)
               ++ " lazy closures, e.g. " ++ show (take 5 lz)) (null lz)
 
--- | The open-independent capability table is a CAF (evaluated once,
--- by one thread, while others wait on its black hole) that publishes
--- only normal form: no thunk of it is ever shared between threads.
+-- | The open-independent capability table publishes only normal
+-- form: no thunk of it is ever shared between threads (GHC #27272).
+-- The test builds a fresh copy through the builder, so it does not
+-- depend on whichever open already forced the shared table.
 caseStaticCapsEvaluated :: IO ()
 caseStaticCapsEvaluated = do
-  caps <- evaluate ossl4StaticCaps
+  caps <- evaluate (ossl4StaticCapsBuild ())
   lz <- lazyClosures caps
   assertBool ("static capability table holds " ++ show (length lz)
               ++ " lazy closures after WHNF, e.g. " ++ show (take 5 lz)) (null lz)
 
--- | Lazy heap objects reachable from a value (unevaluated thunks,
--- partial applications of thunks, black holes under evaluation),
--- named by closure constructor. Follows constructor fields and
--- evaluated indirections; functions and byte arrays are values.
-lazyClosures :: a -> IO [String]
-lazyClosures x = go (asBox x)
-  where
-    go :: Box -> IO [String]
-    go b = do
-      c <- getBoxedClosureData b
-      case c of
-        ConstrClosure {ptrArgs = ps} -> concat <$> mapM go ps
-        IndClosure {indirectee = i} -> go i
-        BlackholeClosure {indirectee = i} -> go i
-        FunClosure {} -> pure []
-        PAPClosure {} -> pure []
-        ArrWordsClosure {} -> pure []
-        other -> pure [takeWhile (/= ' ') (show other)]
+-- | The published notes keep their content: the provider note
+-- carries the open's property query, and a cipher note is present.
+caseCapsNotes :: IO ()
+caseCapsNotes = withBackend $ \env -> do
+  caps <- queryCapabilities env
+  case Map.lookup "provider" (bcParamNotes caps) of
+    Just note -> assertBool ("provider note: " ++ note)
+      ("default only; propquery " `isPrefixOf` note)
+    Nothing -> assertFailure "no provider note"
+  assertEqual "cipher note"
+    (Just "no padding; key 32 bytes, iv 16 bytes, input block-aligned")
+    (Map.lookup "AES-256-CBC" (bcParamNotes caps))
 
 caseCaps :: IO ()
 caseCaps = withBackend $ \env -> do
