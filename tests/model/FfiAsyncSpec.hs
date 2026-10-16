@@ -945,6 +945,10 @@ caseSubmitKeyFunctionRefuses = do
       (castStablePtrToPtr hAfter == nullPtr)
   after <- tableStats (acTable ctx)
   assertEqual "refusal consumes nothing" before after
+  nLive <- asyncLiveHandles ctx
+  assertZero "live_handles" "no handle admitted" nLive
+  let (liveAfter, _, _) = after
+  assertZero "live_jobs" "no live orphan" liveAfter
 
 -- | A kill landing in the join handoff window cancels the fresh
 -- join through the detach wrapper: the committed attachment

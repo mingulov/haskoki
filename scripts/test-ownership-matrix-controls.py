@@ -163,10 +163,10 @@ class DriverControls(unittest.TestCase):
         self.assertIn("HASKOKI_OWN_CASE", p.stdout + p.stderr)
         self.no_build()
 
-    def test_pending_case_cannot_be_selected(self):
+    def test_retired_pending_id_rejected(self):
         p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="wp09-pending")
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("pending", p.stdout + p.stderr)
+        self.assertIn("is not a case in the table", p.stdout + p.stderr)
         self.no_build()
 
     def test_bad_sha_rejected_before_build(self):
@@ -337,12 +337,13 @@ class DriverControls(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual([r.name for r in self.receipts()], ["m2-lifetime-gate.N2.json"])
 
-    def test_full_table_runs_every_nonpending_case_and_lists_pending(self):
+    def test_full_table_runs_every_case_and_lists_no_pending(self):
         p = self.run_driver(FAKE_COUNTER=1)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("PENDING wp09-pending", p.stdout)
+        self.assertNotIn("PENDING", p.stdout)
+        self.assertNotIn("wp09-pending", p.stdout)
         ids = {json.loads(r.read_text())["case"] for r in self.receipts()}
-        self.assertNotIn("wp09-pending", ids)
+        self.assertIn("m7-checked-submission", ids)
         self.assertEqual(len(self.receipts()), 3 * len(ids))
         self.assertTrue((self.out / "index.tsv").is_file())
 

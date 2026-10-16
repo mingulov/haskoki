@@ -555,6 +555,8 @@ caseSubmitUnsteppedRefused = do
     "unstepped digest effect"
   after <- tableStats table
   assertEqual "refusals consume nothing" before after
+  let (liveAfter, _, _) = after
+  assertZero "live_jobs" "refusals table no live jobs" liveAfter
   let (_, _, next0) = before
   assertRefusalsUnknown table env [JobSign] next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
@@ -605,6 +607,8 @@ caseFixtureAdmitsUnstepped = do
   assertEqual "one driven, one live" (1, 1, 2) (live, term, next)
   _ <- cancelJob table j1
   assertEqual "entrypoint ran once" 1 =<< readIORef runs
+  (liveEnd, _, _) <- tableStats table
+  assertZero "live_jobs" "admission case leaves no live jobs" liveEnd
 
 caseOuterSignUnderDigestRefused :: IO ()
 caseOuterSignUnderDigestRefused = do
@@ -628,6 +632,8 @@ caseOuterSignUnderDigestRefused = do
   assertEqual "sign under digest refused" (Left StartIncompatibleWork) r
   after <- tableStats table
   assertEqual "refusal consumes nothing" before after
+  let (liveAfter, _, _) = after
+  assertZero "live_jobs" "refusals table no live jobs" liveAfter
   let (_, _, next0) = before
   assertRefusalsUnknown table env [JobDigest] next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
@@ -670,6 +676,8 @@ caseOuterDigestUnderSignRefused = do
   assertEqual "digest under sign refused" (Left StartIncompatibleWork) r
   after <- tableStats table
   assertEqual "refusal consumes nothing" before after
+  let (liveAfter, _, _) = after
+  assertZero "live_jobs" "refusals table no live jobs" liveAfter
   let (_, _, next0) = before
   assertRefusalsUnknown table env [JobSign] next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
@@ -720,6 +728,8 @@ caseOuterCallUnderKeyRefused = do
   mapM_ checkOuter [JobGenKey, JobGenKeyPair]
   after <- tableStats table
   assertEqual "refusals consume nothing" before after
+  let (liveAfter, _, _) = after
+  assertZero "live_jobs" "refusals table no live jobs" liveAfter
   let (_, _, next0) = before
   assertRefusalsUnknown table env [JobGenKey, JobGenKeyPair] next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
@@ -775,6 +785,8 @@ caseOuterKeyUnderCallRefused = do
   bad JobGenKeyPair key1 "single key under pair function"
   after <- tableStats table
   assertEqual "refusals consume nothing" before after
+  let (liveAfter, _, _) = after
+  assertZero "live_jobs" "refusals table no live jobs" liveAfter
   let (_, _, next0) = before
   assertRefusalsUnknown table env [JobSign, JobDigest, JobGenKey, JobGenKeyPair]
     next0 runs del
@@ -844,6 +856,13 @@ caseRealPlansSubmitFirstTry = do
     , jrCapacity = 17
     }
   assertEqual "key pairs take the first ids" [JobId 0, JobId 1] [jK, jKP]
+  _ <- cancelJob table jS
+  _ <- cancelJob table jD
+  _ <- cancelJob ktable jK
+  _ <- cancelJob ktable jKP
+  (liveC, _, _) <- tableStats table
+  (liveK, _, _) <- tableStats ktable
+  assertZero "live_jobs" "first-try case leaves no live jobs" (liveC + liveK)
   _ <- pure (env, table, ktable)
   pure ()
 

@@ -1093,7 +1093,7 @@ OWNERSHIP_CASES = [
     ("m2-lease-protocol", 6, False),
     ("m2-lifetime-gate", 12, True),
     ("m3-handle-registry", 11, True),
-    ("m3-ffi-acquisition", 23, True),
+    ("m3-ffi-acquisition", 24, True),
     ("m3-async-engine", 25, True),
     ("m4-store-contract", 123, False),
     ("m4-multi-session", 34, False),
@@ -1105,9 +1105,10 @@ OWNERSHIP_CASES = [
     ("m7-attached-async", 37, True),
     ("m7-retirement", 5, False),
     ("m3-standalone-ownership", 33, True),
+    ("m7-checked-submission", 7, True),
 ]
 # Appended by their own WPs; the driver lists them but never counts them.
-OWNERSHIP_PENDING = ["wp09-pending"]
+OWNERSHIP_PENDING = []
 OWNERSHIP_RECEIPT_RE = re.compile(r"^(?P<case>.+)\.N(?P<n>[0-9]+)\.json$")
 
 
