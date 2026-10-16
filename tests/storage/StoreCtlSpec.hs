@@ -41,6 +41,8 @@ spec = testGroup "Store commands"
   , testCase "check: a newer schema is refused" caseCheckUnsupported
   , testCase "check: usage errors exit 2" caseCheckUsage
   , testCase "check: no output carries a PIN" caseCheckNoPins
+  , testCase "check: broken config output carries no PIN" (caseCheckConfigNoPins "broken.toml" "[tokens]\nso_pins = [\"58213946\"\nlabels = 7\n")
+  , testCase "check: mistyped value output carries no PIN" (caseCheckConfigNoPins "badval.toml" "[tokens]\nso_pins = 58213946\nuser_pins = [\"12873465\"]\n")
   , testCase "check: --async-home plans an async-created store" caseCheckAsyncHome
   , testCase "check: --async-home plans the v0.4 async shape" caseCheckAsyncHomeV04
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
@@ -200,6 +202,19 @@ caseCheckUsage = mapM_ one
     one args = do
       r <- runCtl args
       assertEqual (unwords args) 2 (ceCode r)
+      assertBool (unwords args ++ ": store-check usage on stderr")
+        ("store check: " `isPrefixOf` ceErr r || "usage: haskoki-ctl store check " `isPrefixOf` ceErr r)
+      assertBool (unwords args ++ ": usage text names the command")
+        ("usage: haskoki-ctl store check --path FILE --config FILE [--async-home]" `isInfixOf` ceErr r)
+      assertEqual (unwords args ++ ": nothing on stdout") "" (ceOut r)
+
+caseCheckConfigNoPins :: FilePath -> String -> IO ()
+caseCheckConfigNoPins name body = withScratch "ctl-check" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  writeFile (dir </> name) body
+  r <- check store (dir </> name)
+  assertEqual "exit 1" 1 (ceCode r)
+  assertNoPins name (ceOut r ++ ceErr r)
 
 caseCheckNoPins :: IO ()
 caseCheckNoPins = withScratch "ctl-check" $ \dir -> do
@@ -211,6 +226,8 @@ caseCheckNoPins = withScratch "ctl-check" $ \dir -> do
   mapM_ (\r -> assertNoPins "check output" (ceOut r ++ ceErr r)) rs
   assertBool "config error is a kind and line"
     ("config-invalid: line " `isPrefixOf` ceErr (rs !! 2))
+  assertEqual "mistyped PIN key is named, its value is not"
+    "config-invalid: invalid value for tokens.so_pins\n" (ceErr (rs !! 3))
 
 -- A store created through the async open carries the async home label
 -- and plans under --async-home; the standard catalog refuses it.
@@ -231,6 +248,7 @@ caseCheckAsyncHome = withScratch "ctl-check" $ \dir -> do
   r <- runCtl ["store", "check", "--path", store, "--config", cfgPath, "--async-home"]
   assertEqual "flag: exit 0" 0 (ceCode r)
   assertBool "flag: verdict ok" ("verdict: ok" `isInfixOf` ceOut r)
+  assertNoPins "async check" (ceOut plain ++ ceErr plain ++ ceOut r ++ ceErr r)
   assertUnchanged "check" before store
 
 caseCheckAsyncHomeV04 :: IO ()
@@ -245,6 +263,7 @@ caseCheckAsyncHomeV04 = withScratch "ctl-check" $ \dir -> do
   assertEqual "flag: exit 1" 1 (ceCode r)
   assertBool "plan" ("actions: freeze-credentials 0000000000000001; set-schema-version 2->3" `isInfixOf` ceOut r)
   assertBool "tag" ("store-migration-required:" `isPrefixOf` ceErr r)
+  assertNoPins "async v0.4 check" (ceOut plain ++ ceErr plain ++ ceOut r ++ ceErr r)
 
 caseHelpListsStoreCommands :: IO ()
 caseHelpListsStoreCommands = do

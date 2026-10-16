@@ -65,14 +65,20 @@ renderConfigError e = ("config-invalid", case e of
     Nothing -> "invalid value"
   _ -> "unreadable")
   where
+    -- The key is the shown (section,key) tuple that follows "at " or
+    -- "out of range: "; the value after it is never read.
     quotedKey m
-      | "out of range: " `isPrefixOf` m || " at \"" `isInfixOf` m =
-          case break (== '"') m of
-            (_, '"' : r) -> case break (== '"') r of
-              (k@(_ : _), '"' : _) -> Just k
-              _ -> Nothing
+      | "out of range: " `isPrefixOf` m || "expected " `isPrefixOf` m =
+          case breakOn "(\"" m of
+            Just r | (sec, '"' : ',' : '"' : r2) <- break (== '"') r
+                   , (k@(_ : _), '"' : ')' : _) <- break (== '"') r2
+                   , not (null sec) -> Just (sec ++ "." ++ k)
             _ -> Nothing
       | otherwise = Nothing
+    breakOn pat str = case str of
+      [] -> Nothing
+      _ | pat `isPrefixOf` str -> Just (drop (length pat) str)
+      (_ : t) -> breakOn pat t
 
 storeCheckCommand :: [String] -> IO (Int, String, String)
 storeCheckCommand args0 = case takeSwitch "--async-home" args0 of

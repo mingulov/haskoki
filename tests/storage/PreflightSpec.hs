@@ -564,11 +564,16 @@ caseOwnedMigratesV2KeepsRow = withScratch "owned" $ \dir -> do
 caseOwnedMigratesAsync :: IO ()
 caseOwnedMigratesAsync = withScratch "owned" $ \dir -> do
   let store = dir </> "store.db"
-      row = CredentialRecord (TokenId 1) "58213946" (Just "12873465")
-  makeSchemaStore 2 store [fixtureToken 1 0 "haskoki-async"] []
+      (label, so, user) = asyncHomeEntry
+      row = CredentialRecord (TokenId 1) (BC8.pack so) (Just (BC8.pack user))
+  makeSchemaStore 2 store [fixtureToken 1 0 label] []
   runOwned store (SQLiteMigration 2 [row]) noMigrationHooks >>= assertEqual "migrated" (Right ())
   roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "marker" ["3"]
-  roTexts store "SELECT token_id FROM credentials" >>= assertEqual "row frozen" ["0000000000000001"]
+  e <- openSQLiteStore store
+  s <- either (assertFailure . show) pure e
+  creds <- storeLoadCredentials s
+  storeClose s
+  assertEqual "async home credentials read back" (Right [row]) creds
 
 caseOwnedFreezesAtV3 :: IO ()
 caseOwnedFreezesAtV3 = withScratch "owned" $ \dir -> do
@@ -625,7 +630,7 @@ caseOwnedFullDisk = withScratch "owned" $ \dir -> do
   before <- captureState store
   let full = noMigrationHooks { mgAfterBegin = \db -> do
         n <- pragmaInt db "PRAGMA page_count"
-        S.exec db (T.pack ("PRAGMA max_page_count = " ++ show n)) }
+        S.exec db (T.pack ("PRAGMA max_page_count = " ++ show (n + 1))) }
   r <- runOwned store (SQLiteMigration 1 frozen) full
   case r of
     Left (StoreFull _) -> pure ()

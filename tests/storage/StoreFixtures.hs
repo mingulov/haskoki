@@ -36,6 +36,7 @@ import System.Process (ProcessHandle, createProcess, getPid, getProcessExitCode,
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure)
 
 import Haskoki.FFI.Standard (StdStore (..), StdStoreError (..), openStdStore)
+import Haskoki.Runtime.Catalog (asyncHomeEntry)
 import Haskoki.Runtime.Config
 import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage
@@ -63,6 +64,8 @@ fixtureSo = ["58213946", "69324057"]
 fixtureUser = ["12873465", "23984576"]
 -- | Every PIN value any test uses (fixture, in-band, test-only).
 fixturePins = fixtureSo ++ fixtureUser ++ ["34095687", "45106798", "70435168", "81546279"]
+  ++ [asyncSo, asyncUser]
+  where (_, asyncSo, asyncUser) = asyncHomeEntry
 
 -- | Fail if any PIN value occurs in an output text.
 assertNoPins :: String -> String -> IO ()
