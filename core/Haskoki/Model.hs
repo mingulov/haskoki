@@ -51,7 +51,10 @@ data SessionState = SessionState
 -- attributes, lifetime owner ('Nothing' = token object, 'Just'
 -- creator = session object), and home slot. Token/private-ness
 -- derives from the stored 'AttrToken'/'AttrPrivate' flags (absent or
--- wrongly shaped = false); see 'Haskoki.Object.objectToken'.
+-- wrongly shaped = the enforced default, false); see
+-- 'Haskoki.Object.objectToken'. The attributes hold only what was
+-- stored: the common storage defaults a storage object reports are
+-- added at read and find time ('Haskoki.Object.effectiveAttrs').
 data ObjectState = ObjectState
   { osId :: !ObjectId
   , osRevision :: !Revision

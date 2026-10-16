@@ -26,8 +26,12 @@ module Haskoki.Object
   , encodeHandle
   , decodeHandle
   , resolveHandle
+  , isStorageObject
+  , effectiveAttrs
   , objectToken
   , objectPrivate
+  , mergedIsToken
+  , mergedIsPrivate
   , objectCopyable
   , objectDestroyable
   , objectVisible
@@ -315,33 +319,109 @@ resolveHandle m h = case Map.lookup h (mHandles m) of
       | hbGeneration b == osGeneration ost -> Just ost
       | otherwise -> Nothing
 
+-- ---------------------------------------------------------------------------
+-- Common storage-object attributes
+-- ---------------------------------------------------------------------------
+
+-- | The value the provider enforces for each common storage flag an
+-- object's stored attributes lack: an absent TOKEN is a session
+-- object, an absent PRIVATE is public, and an absent MODIFIABLE,
+-- COPYABLE or DESTROYABLE prohibits nothing. This is the one source
+-- for both sides: the enforcement predicates below read these
+-- values through 'flagOr', and so does the read/find view
+-- ('effectiveAttrs'), so a reported default cannot drift from the
+-- enforced one.
+tokenDefault, privateDefault, modifiableDefault, copyableDefault, destroyableDefault :: Bool
+tokenDefault = False
+privateDefault = False
+modifiableDefault = True
+copyableDefault = True
+destroyableDefault = True
+
+-- | The common storage flags paired with their enforced defaults.
+storageFlagDefaults :: [(AttributeType, Bool)]
+storageFlagDefaults =
+  [ (AttrToken, tokenDefault)
+  , (AttrPrivate, privateDefault)
+  , (AttrModifiable, modifiableDefault)
+  , (AttrCopyable, copyableDefault)
+  , (AttrDestroyable, destroyableDefault)
+  ]
+
+-- | A flag's effective value: the stored boolean, else the given
+-- enforced default (absent or wrongly shaped = default).
+flagOr :: Bool -> AttributeType -> Map AttributeType AttributeValue -> Bool
+flagOr dflt t m = case Map.lookup t m of
+  Just (ValBool b) -> b
+  _ -> dflt
+
+-- | The same over a raw template list (first match wins; duplicates
+-- are rejected downstream by template validation).
+tmplFlagOr :: Bool -> AttributeType -> [(AttributeType, AttributeValue)] -> Bool
+tmplFlagOr dflt t tmpl = case lookup t tmpl of
+  Just (ValBool b) -> b
+  _ -> dflt
+
+-- | Classes outside the PKCS#11 storage-object hierarchy: hardware
+-- feature, mechanism, profile and validation objects own none of the
+-- common storage attributes.
+nonStorageClasses :: [Word64]
+nonStorageClasses =
+  map mustClassId ["CKO_HW_FEATURE", "CKO_MECHANISM", "CKO_PROFILE", "CKO_VALIDATION"]
+
+-- | Whether stored attributes describe a storage object: any class
+-- the provider admits except 'nonStorageClasses' (data,
+-- certificates, the key classes, domain parameters, trust and
+-- vendor-defined objects). A map without a class is not one.
+isStorageObject :: Map AttributeType AttributeValue -> Bool
+isStorageObject attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c) -> c `notElem` nonStorageClasses
+  _ -> False
+
+-- | The attribute view that reads and finds see. A storage object
+-- owns every common storage attribute, so each one its stored map
+-- lacks is filled in: the flags with the enforced defaults above,
+-- @CKA_LABEL@ with the PKCS#11 empty default. Stored values always
+-- win. The view is computed per call and never stored, so stored
+-- records and their durable bytes are unchanged. @CKA_UNIQUE_ID@ is
+-- not modeled and stays unreported. Non-storage objects pass through
+-- unchanged.
+effectiveAttrs :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+effectiveAttrs attrs
+  | isStorageObject attrs = Map.union attrs storageDefaults
+  | otherwise = attrs
+  where
+    storageDefaults = Map.fromList
+      ((AttrLabel, ValBytes BS.empty)
+        : [(t, ValBool d) | (t, d) <- storageFlagDefaults])
+
 -- | The object's token flag (absent or wrongly shaped = session object).
 objectToken :: ObjectState -> Bool
-objectToken ost = Map.lookup AttrToken (osAttrs ost) == Just (ValBool True)
+objectToken = mergedIsToken . osAttrs
 
 -- | The object's private flag (absent or wrongly shaped = public).
 objectPrivate :: ObjectState -> Bool
-objectPrivate ost = Map.lookup AttrPrivate (osAttrs ost) == Just (ValBool True)
+objectPrivate = mergedIsPrivate . osAttrs
 
 -- | Token-owner test over merged/stored attributes (absent or
 -- wrongly shaped = session object). Single predicate behind the
 -- owner derivation and the read-only writability checks.
 mergedIsToken :: Map AttributeType AttributeValue -> Bool
-mergedIsToken m = Map.lookup AttrToken m == Just (ValBool True)
+mergedIsToken = flagOr tokenDefault AttrToken
 
 -- | Token-owner test over a raw template list (first match wins;
 -- duplicates are rejected downstream by template validation).
 tmplWantsToken :: [(AttributeType, AttributeValue)] -> Bool
-tmplWantsToken tmpl = lookup AttrToken tmpl == Just (ValBool True)
+tmplWantsToken = tmplFlagOr tokenDefault AttrToken
 
 -- | Privacy test over merged/stored attributes (absent or wrongly
 -- shaped = public).
 mergedIsPrivate :: Map AttributeType AttributeValue -> Bool
-mergedIsPrivate m = Map.lookup AttrPrivate m == Just (ValBool True)
+mergedIsPrivate = flagOr privateDefault AttrPrivate
 
 -- | Privacy test over a raw template list (first match wins).
 tmplWantsPrivate :: [(AttributeType, AttributeValue)] -> Bool
-tmplWantsPrivate tmpl = lookup AttrPrivate tmpl == Just (ValBool True)
+tmplWantsPrivate = tmplFlagOr privateDefault AttrPrivate
 
 -- | Secret-key CKA_VALUE_LEN must match the value length. A huge
 -- LEN over a short value is inconsistent (and must never become an
@@ -357,12 +437,12 @@ valueLenConflict m =
 -- | Whether the object may be copied (absent = copyable, per the
 -- PKCS#11 default; only an explicit false prohibits).
 objectCopyable :: ObjectState -> Bool
-objectCopyable ost = Map.lookup AttrCopyable (osAttrs ost) /= Just (ValBool False)
+objectCopyable = flagOr copyableDefault AttrCopyable . osAttrs
 
 -- | Whether the object may be destroyed (absent = destroyable;
 -- only an explicit false prohibits).
 objectDestroyable :: ObjectState -> Bool
-objectDestroyable ost = Map.lookup AttrDestroyable (osAttrs ost) /= Just (ValBool False)
+objectDestroyable = flagOr destroyableDefault AttrDestroyable . osAttrs
 
 -- | Visibility per calling session: the object must live on the
 -- session's slot, and private objects are additionally visible
@@ -1050,13 +1130,15 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
     firstRefusal cur ((t, v) : rest) = case mutableAs cur t v of
       Just refusal -> Just refusal
       Nothing -> firstRefusal cur rest
-    -- Nothing = mutable, Just = refusal. Absent flags read as
-    -- false (the PKCS#11 defaults), so a no-op write to an absent
-    -- flag succeeds while a ratchet flip refuses.
+    -- Nothing = mutable, Just = refusal. An absent flag reads as
+    -- its enforced default (the common storage flags through
+    -- 'flagOr' and the shared defaults; EXTRACTABLE and SENSITIVE as
+    -- false), so a no-op write to an absent flag succeeds while a
+    -- ratchet flip refuses.
     mutableAs :: Map AttributeType AttributeValue
       -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
     mutableAs cur t v
-      | Map.lookup AttrModifiable cur == Just (ValBool False)
+      | not (flagOr modifiableDefault AttrModifiable cur)
       , Map.lookup t cur /= Just v = Just (CKR_ATTRIBUTE_READ_ONLY,
           "object is not modifiable (CKA_MODIFIABLE=false)")
       | t `elem` [AttrLabel, AttrApplication, AttrId] = Nothing
@@ -1064,31 +1146,31 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
                  , AttrSignRecover, AttrVerifyRecover
                  , AttrWrap, AttrUnwrap, AttrDerive
                  , AttrEncapsulate, AttrDecapsulate ] = Nothing
-      | t == AttrToken = ratchet cur AttrToken True
+      | t == AttrToken = ratchet (flagOr tokenDefault AttrToken cur) True
           "CKA_TOKEN can only change false->true"
-      | t == AttrExtractable = ratchet cur AttrExtractable False
+      | t == AttrExtractable = ratchet (flagOr False AttrExtractable cur) False
           "CKA_EXTRACTABLE can only change true->false"
-      | t == AttrSensitive = ratchet cur AttrSensitive True
+      | t == AttrSensitive = ratchet (flagOr False AttrSensitive cur) True
           "CKA_SENSITIVE can only change false->true"
-      | t == AttrCopyable = ratchet cur AttrCopyable False
+      | t == AttrCopyable = ratchet (flagOr copyableDefault AttrCopyable cur) False
           "CKA_COPYABLE can only change true->false"
-      | t == AttrDestroyable = ratchet cur AttrDestroyable False
+      | t == AttrDestroyable = ratchet (flagOr destroyableDefault AttrDestroyable cur) False
           "CKA_DESTROYABLE can only change true->false"
       | t == AttrTrusted = Nothing
       | otherwise = Just (CKR_ATTRIBUTE_READ_ONLY,
           "attribute is not modifiable: " ++ show t)
       where
-        ratchet curMap flag allowTrue msg = case (curVal, v) of
-          (ValBool c, ValBool n)
+        ratchet c allowTrue msg = case v of
+          ValBool n
             | c == n -> Nothing
             | n == allowTrue -> Nothing
-            | otherwise -> Just (CKR_ATTRIBUTE_READ_ONLY, msg)
           _ -> Just (CKR_ATTRIBUTE_READ_ONLY, msg)
-          where curVal = Map.findWithDefault (ValBool False) flag curMap
 
--- | Plan a one-shot find: matches carry equality over the stored
--- attributes in ascending object-id order, restricted to objects
--- visible to the calling session. An empty template matches every
+-- | Plan a one-shot find: matches carry equality over the effective
+-- attributes ('effectiveAttrs': stored values, plus the common
+-- storage defaults a storage object reports) in ascending object-id
+-- order, restricted to objects visible to the calling session. An
+-- empty template matches every
 -- visible object; a contradictory template is rejected, never
 -- silently emptied. Matches without a current binding gain fresh
 -- ones in the same combined delta (discovery mints bindings; it
@@ -1122,9 +1204,10 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
     matchAll :: Map AttributeType AttributeValue -> ObjectState -> Bool
     matchAll q ost = all hit (Map.toList q)
       where
+        view = effectiveAttrs (osAttrs ost)
         hit (AttrValue, _)
           | payloadSealed (osAttrs ost) = False
-        hit (t, v) = Map.lookup t (osAttrs ost) == Just v
+        hit (t, v) = Map.lookup t view == Just v
     currentHandle :: ObjectId -> ObjectState -> Maybe ExternalHandle
     currentHandle oid ost = listToMaybe
       [ h
@@ -1187,7 +1270,8 @@ planGetAttributes model st h wanted = case resolveHandle model h of
     | not (objectVisible st ost) ->
         invalidHandle "object not visible to session"
     | otherwise ->
-    let PartialReads code results = getAttributes (projectPublicValue (osAttrs ost)) wanted
+    let PartialReads code results =
+          getAttributes (effectiveAttrs (projectPublicValue (osAttrs ost))) wanted
         outs =
           [ NativeOutput (RegionBytes (show t) IntentNull) (encodeValue v)
           | (t, ResOk v) <- results

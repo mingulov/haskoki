@@ -101,10 +101,38 @@ static void find_contains(CK_SESSION_HANDLE, CK_ATTRIBUTE *, CK_ULONG,
 static void find_count(CK_SESSION_HANDLE, CK_ATTRIBUTE *, CK_ULONG,
   unsigned, const char *);
 static void destroy(CK_SESSION_HANDLE, CK_OBJECT_HANDLE, const char *);
+static void storage_defaults(CK_SESSION_HANDLE, CK_ATTRIBUTE *);
 static void cleanup(void);
 #define REQUIRE(c, s) do { if (!check((c), (s))) return; } while (0)
 #define RV(c, w, s) do { if (!expect((c), (w), (s))) return; } while (0)
 #define STEP(c) do { c; if (failed) return; } while (0)
+
+/* Common storage-object attributes the template omits read as the
+ * values the provider enforces (PRIVATE and TOKEN false; MODIFIABLE,
+ * COPYABLE and DESTROYABLE true; LABEL empty), and find matches exactly
+ * those values. full[0..3] are CLASS, CERTIFICATE_TYPE, VALUE, SUBJECT. */
+static void storage_defaults(CK_SESSION_HANDLE h, CK_ATTRIBUTE *full) {
+  CK_BBOOL no = CK_FALSE, yes = CK_TRUE;
+  CK_ATTRIBUTE id = {CKA_ID, (CK_VOID_PTR)"create-defaults", 15};
+  CK_ATTRIBUTE bare[] = {full[0], full[1], full[2], full[3], id};
+  CK_OBJECT_HANDLE o = create_ok(h, bare, N(bare), "defaults-create");
+  if (failed) return;
+  STEP(read_bool(h, o, CKA_PRIVATE, CK_FALSE, "defaults-private-false"));
+  STEP(read_bool(h, o, CKA_TOKEN, CK_FALSE, "defaults-token-false"));
+  STEP(read_bool(h, o, CKA_MODIFIABLE, CK_TRUE, "defaults-modifiable-true"));
+  STEP(read_bool(h, o, CKA_COPYABLE, CK_TRUE, "defaults-copyable-true"));
+  STEP(read_bool(h, o, CKA_DESTROYABLE, CK_TRUE, "defaults-destroyable-true"));
+  STEP(read_exact(h, o, CKA_LABEL, (const CK_BYTE *)"", 0, "defaults-label-empty"));
+  CK_ATTRIBUTE pub[] = {id, {CKA_PRIVATE, &no, sizeof no}};
+  STEP(find_count(h, pub, N(pub), 1, "defaults-find-private-false"));
+  CK_ATTRIBUTE priv[] = {id, {CKA_PRIVATE, &yes, sizeof yes}};
+  STEP(find_count(h, priv, N(priv), 0, "defaults-find-private-true"));
+  CK_BYTE anchor = 0;
+  CK_ATTRIBUTE flags[] = {id, {CKA_TOKEN, &no, sizeof no},
+    {CKA_MODIFIABLE, &yes, sizeof yes}, {CKA_COPYABLE, &yes, sizeof yes},
+    {CKA_DESTROYABLE, &yes, sizeof yes}, {CKA_LABEL, &anchor, 0}};
+  STEP(find_count(h, flags, N(flags), 1, "defaults-find-all"));
+}
 
 /* T-C01 caseCertRequiresTypeValueSubject/caseCertEmptySubjectAccepted;
  * T-C03 caseTrustedBoundary/caseCategoryRoundtrip/caseDateRoundtrip/
@@ -131,6 +159,7 @@ static void leg_create(void) {
   STEP(create_rv(h, no_value, N(no_value), CKR_TEMPLATE_INCOMPLETE, "missing-value"));
   CK_ATTRIBUTE no_subject[] = {full[0], full[1], full[2], full[4]};
   STEP(create_rv(h, no_subject, N(no_subject), CKR_TEMPLATE_INCOMPLETE, "missing-subject"));
+  STEP(storage_defaults(h, full));
   CK_BYTE anchor = 0;
   CK_ATTRIBUTE empty_subj[] = {full[0], full[1], full[2], full[4],
     {CKA_SUBJECT, &anchor, 0}};
@@ -550,6 +579,10 @@ static void leg_restart(void) {
       "restart-value-readback"));
     STEP(read_exact(h, fresh[0], CKA_SUBJECT, subj, (CK_ULONG)subj_len,
       "restart-subject-readback"));
+    STEP(read_bool(h, fresh[0], CKA_PRIVATE, CK_FALSE, "restart-private-default"));
+    CK_BBOOL no = CK_FALSE;
+    CK_ATTRIBUTE qp[] = {qt[0], {CKA_PRIVATE, &no, sizeof no}};
+    STEP(find_count(h, qp, N(qp), 1, "restart-private-find"));
     STEP(find_count(h, qs, N(qs), 0, "restart-session-gone"));
     CK_BYTE buf[64]; memset(buf, 0xa5, sizeof buf);
     CK_ATTRIBUTE get[] = {{CKA_VALUE, buf, sizeof buf}};

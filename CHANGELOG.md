@@ -98,6 +98,28 @@ record: symbol separation, sanitizer runs, evidence limits) and
   that id (through any context) landed between the durable insert and
   the idle record; a third join used to be able to start a second live
   job.
+- Storage objects (data, certificates, keys, domain parameters, trust
+  and vendor-defined objects) report the common storage attributes
+  they were created without. `C_GetAttributeValue` returned
+  `CKR_ATTRIBUTE_TYPE_INVALID` for an omitted `CKA_TOKEN`,
+  `CKA_PRIVATE`, `CKA_MODIFIABLE`, `CKA_COPYABLE`, `CKA_DESTROYABLE`
+  or `CKA_LABEL`. It now returns the value the provider enforces:
+  `CKA_TOKEN` and `CKA_PRIVATE` false, `CKA_MODIFIABLE`,
+  `CKA_COPYABLE` and `CKA_DESTROYABLE` true, and an empty `CKA_LABEL`.
+  `C_FindObjects` matches the same values, so a template with
+  `CKA_PRIVATE` false finds an object created without `CKA_PRIVATE`,
+  and one with `CKA_PRIVATE` true does not. The values are worked out
+  when read, never stored, so stored objects and SQLite databases are
+  unchanged. Hardware feature, mechanism, profile and validation
+  objects are not storage objects and still report these attributes
+  as unavailable. `CKA_UNIQUE_ID` is not implemented and stays
+  unavailable. A proxy that hides objects of unknown privacy from a
+  logged-out session could not find such objects again after a client
+  restart.
+- `C_SetAttributeValue` accepts `CKA_COPYABLE` or `CKA_DESTROYABLE`
+  true on an object created without that attribute. The object is
+  copyable and destroyable, and writing that same value back is a
+  no-op, but it was refused with `CKR_ATTRIBUTE_READ_ONLY`.
 
 ## [0.4.0.0] - Unreleased
 

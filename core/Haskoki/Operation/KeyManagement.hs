@@ -255,6 +255,8 @@ import Haskoki.Object
   , TemplateRule (..)
   , checkRules
   , findRule
+  , mergedIsPrivate
+  , mergedIsToken
   , objectVisible
   , resolveHandle
   , validateTemplate
@@ -1124,8 +1126,7 @@ admitPending st pw =
       Nothing -> True
       Just _ -> False
     wantsPrivate = any isPrivate pos
-    isPrivate po =
-      Map.lookup AttrPrivate (poAttrs po) == Just (ValBool True)
+    isPrivate po = mergedIsPrivate (poAttrs po)
     wantsTrusted = pendingWantsTrusted pw
 
 -- | Objects a pending work item will create (queries and pure
@@ -2024,7 +2025,7 @@ pendingFromAttrs :: SessionState -> Map AttributeType AttributeValue -> PendingO
 pendingFromAttrs st attrs = PendingObject
   { poAttrs = Map.delete AttrSubprimeBits (Map.delete AttrPrimeBits (Map.delete AttrModulusBits attrs))
   , poOwner =
-      if Map.lookup AttrToken attrs == Just (ValBool True)
+      if mergedIsToken attrs
         then Nothing
         else Just (ssId st)
   , poSlot = ssSlot st
