@@ -12,6 +12,11 @@ Regenerate the norm from a forced build (run from the repo root):
     | sed -E 's/:[0-9]+:[0-9]+: warning:/  warning:/' | sort \\
     > spec/warnings-norm.txt
 
+CI enforces the zero norm from its clean build: the `haskell` job
+builds from a fresh checkout (only the cabal store is cached, never
+dist-newstyle), tees the `cabal build all --enable-tests` output and
+fails the job when it contains `warning: [GHC-`.
+
 The 32 pre-existing test warnings were paid down to zero at
 root cause; subsequent tasks gate on this empty norm. Any new
 warning fails this gate until it is fixed (no -Wno-*, no OPTIONS

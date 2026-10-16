@@ -219,7 +219,23 @@ jobs:
         run: |
           set -euo pipefail
           cabal update
-          cabal build all --enable-tests
+          # Zero-warning norm (spec/warnings-norm.txt): this is a
+          # fresh checkout and only .cabal (the package store) is
+          # cached, never dist-newstyle, so every package of the
+          # workspace is compiled here and no warning can be hidden
+          # by a skipped rebuild. pipefail fails the step on a build
+          # error; grep exit 1 (no match) is the pass case, any
+          # other grep exit (2 = error) fails the step too.
+          cabal build all --enable-tests 2>&1 | tee haskell-build.log
+          rc=0
+          grep -F 'warning: [GHC-' haskell-build.log || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::GHC warnings in the clean build (norm is zero)"
+            exit 1
+          elif [ "$rc" -ne 1 ]; then
+            echo "::error::warning scan failed (grep exit $rc)"
+            exit "$rc"
+          fi
           cabal test all 2>&1 | tee haskell-test.log
       - name: Collect executed test trees
         run: |
