@@ -368,7 +368,7 @@ data StartDeny
 -- ('FxVerify', 'FxMessageVerify') never can. Recovery effects
 -- hold by their natural bytes shape (a driver that cannot run
 -- them refuses loudly at drive time — defense in depth,
--- unchanged). 'startJobWith' refuses unholdable work at submit.
+-- unchanged). 'startJobChecked' refuses unholdable work at submit.
 effectHoldable :: CryptoEffect -> Bool
 -- Exhaustive, not fail-open — every constructor has an
 -- explicit arm (no wildcard). A new effect fails validation via
@@ -968,7 +968,7 @@ inspectTableClose table = snd <$> readTVarIO (atGate table)
 -- live capacity. Terminal tombstones never count toward live
 -- capacity (reap them with 'reapJob').
 startJob :: AsyncTable -> JobRequest -> IO (Either StartDeny JobId)
-startJob table req = startJobWith table req (JobPending (jrTicks req))
+startJob table req = startJobChecked table req (JobPending (jrTicks req)) True
 
 -- | Submit a job that is already ready: rejoin of a detached
 -- ready result seeds the held bytes so completion delivers without
@@ -976,17 +976,7 @@ startJob table req = startJobWith table req (JobPending (jrTicks req))
 -- (same order, same no-allocation-on-refusal); only the initial
 -- state differs.
 startSeededJob :: AsyncTable -> JobRequest -> ByteString -> IO (Either StartDeny JobId)
-startSeededJob table req bs = startJobWith table req (JobReady (GotBytes bs))
-
--- | Shared submit: validate, allocate the id, and insert the job in
--- the given initial state, all in one transaction. The static
--- work/result compatibility check runs first (a misconstructed
--- job is refused however healthy the table is); then call-work
--- coherence ('callWorkAdmissible'); then outer-function coherence
--- ('jobFunctionCoherent'); then session, attached capacity, live
--- capacity, as before.
-startJobWith :: AsyncTable -> JobRequest -> JobState -> IO (Either StartDeny JobId)
-startJobWith table req initial = startJobChecked table req initial True
+startSeededJob table req bs = startJobChecked table req (JobReady (GotBytes bs)) True
 
 -- | TEST-ONLY fixture admission: the coherence gates are skipped so
 -- hand-built fixtures submit; holdability, session, capacity and
@@ -995,6 +985,14 @@ startFixtureJob :: AsyncTable -> JobRequest -> IO (Either StartDeny JobId)
 startFixtureJob table req =
   startJobChecked table req (JobPending (jrTicks req)) False
 
+-- | Shared submit: validate, allocate the id, and insert the job in
+-- the given initial state, all in one transaction. The static
+-- work/result compatibility check runs first (a misconstructed
+-- job is refused however healthy the table is); then call-work
+-- coherence ('callWorkAdmissible'); then outer-function coherence
+-- ('jobFunctionCoherent'); then session, attached capacity, live
+-- capacity, as before. The flag enables the coherence gates:
+-- normal submission passes 'True', the fixture entrypoint 'False'.
 startJobChecked :: AsyncTable -> JobRequest -> JobState -> Bool -> IO (Either StartDeny JobId)
 startJobChecked table req initial checkCoherence
   | not (effectHoldable (workEffect (jrWork req))) =
@@ -1701,7 +1699,7 @@ workBytes (WorkKey res pw fx) =
 
 -- | Exact payload bytes of an effect: the summed length of every
 -- 'ByteString' field of every constructor. Arms marked [H] are
--- holdable — the only effects a table can hold ('startJobWith'
+-- holdable — the only effects a table can hold ('startJobChecked'
 -- refuses the rest); arms marked [U] are unholdable and priced
 -- defensively for totality. Exhaustive (no wildcard): a new
 -- effect fails the build via @-Werror=incomplete-patterns@

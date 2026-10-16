@@ -119,7 +119,9 @@ import Haskoki.Registry
   )
 import Haskoki.Rules (defaultRules)
 -- Shared with haskoki-core-tests (core-only): the runtime imports
--- and the two cases below exist only under HASKOKI_MODEL_SUITE.
+-- and the durable-recipe case below exist only under
+-- HASKOKI_MODEL_SUITE. The stale-resource case is core-only and
+-- runs in both suites.
 #ifdef HASKOKI_MODEL_SUITE
 import Haskoki.Runtime.Async (JobFunction (..))
 import Haskoki.Runtime.Detached (Recipe (..), decodeRecipe, encodeRecipe)
@@ -175,8 +177,8 @@ spec = testGroup "model transitions"
   , testCase "locked SO: refusal preserves the lock, grant clears it" caseInitTokenLockedSo
   , testCase "fixture constructor admits unstepped triples explicitly" caseFixtureConstructsUnstepped
   , testCase "outer family table is pinned" caseFamilyTablePinned
-#ifdef HASKOKI_MODEL_SUITE
   , testCase "stale resource finish drains its release" caseStaleResourceReleases
+#ifdef HASKOKI_MODEL_SUITE
   , testCase "durable recipes roundtrip exactly" caseRecipeRoundtrips
 #endif
   ]
@@ -762,8 +764,9 @@ caseCallEffectMatrix = do
           assertEqual ("legless effect refuses" ++ ctx fid fx)
             False (callFunctionEffect fid fx)
 
--- Twin pin with 'caseFixtureConstructsUnstepped' below: both assert
--- the same fixture-constructor read-backs; keep them in sync.
+-- Split pin: normal construction refuses unstepped triples. The
+-- fixture-constructor read-backs live only in
+-- 'caseFixtureConstructsUnstepped' below.
 caseCallLegacySplit :: IO ()
 caseCallLegacySplit = mapM_ check allReps
   where
@@ -773,16 +776,10 @@ caseCallLegacySplit = mapM_ check allReps
           ctx = " (" ++ show fx ++ ")"
       assertEqual ("checked refuses unstepped" ++ ctx)
         (Left WorkUnstepped) (checkedCallWork h1Sid res eff)
-      let cw = mkFixtureCallWork h1Sid res eff
-      assertEqual ("fixture session reads back" ++ ctx)
-        h1Sid (callWorkSession cw)
-      assertEqual ("fixture reservation reads back" ++ ctx)
-        res (callWorkReservation cw)
-      assertEqual ("fixture effect reads back" ++ ctx)
-        eff (callWorkEffect cw)
 
--- Twin pin with 'caseCallLegacySplit' above: both assert the same
--- fixture-constructor read-backs; keep them in sync.
+-- Fixture-constructor read-backs (each paired with the
+-- checked-construction refusal, which 'caseCallLegacySplit' above
+-- also pins on its own).
 caseFixtureConstructsUnstepped :: IO ()
 caseFixtureConstructsUnstepped = mapM_ check allReps
   where
@@ -1320,7 +1317,6 @@ caseInitTokenLockedSo = do
           (Just tokenAuthNew) (lookupTokenAuth m1 (SlotId 0))
     other -> fail ("expected Immediate, got: " ++ show other)
 
-#ifdef HASKOKI_MODEL_SUITE
 -- | A stale reservation answered with a resource drains the orphan
 -- release on the rejection (never commits, never leaks the rid),
 -- while a stale bytes answer releases nothing.
@@ -1339,13 +1335,19 @@ caseStaleResourceReleases = do
     Left rej -> assertEqual "bytes stale releases nothing" [] (rejReleases rej)
     Right _ -> fail "stale reservation must not commit"
 
+#ifdef HASKOKI_MODEL_SUITE
 -- | Every durable recipe shape roundtrips exactly through its
--- versioned name, and an unknown name refuses.
+-- versioned name, and an unknown name refuses. The goldens pin
+-- the exact durable bytes: a roundtrip alone cannot catch a
+-- symmetric drift that moves the encoder and decoder together.
 caseRecipeRoundtrips :: IO ()
 caseRecipeRoundtrips = do
   mapM_ check [rCall, rKey, rPair]
   assertEqual "unknown recipe name refuses" Nothing
     (decodeRecipe "haskoki-call/v9" (snd (encodeRecipe rCall)))
+  checkGolden "call" goldenCall rCall
+  checkGolden "genkey" goldenKey rKey
+  checkGolden "genkeypair" goldenPair rPair
   where
     tmpl = Map.fromList [(AttrClass, ValULong 4)]
     rCall = RecipeCall JobDigest 3 64
@@ -1358,4 +1360,13 @@ caseRecipeRoundtrips = do
       tmpl tmpl True False
     check r = assertEqual ("roundtrip " ++ show r) (Just r)
       (uncurry decodeRecipe (encodeRecipe r))
+    checkGolden tag want r =
+      let (name, body) = encodeRecipe r
+      in assertEqual ("golden " ++ tag) want (name, BS.unpack body)
+    goldenCall = ("haskoki-call/v1",
+      [ 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0xd1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x50, 0x00, 0x00, 0x00, 0x03, 0x61, 0x62, 0x63 ])
+    goldenKey = ("haskoki-genkey/v1",
+      [ 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x6b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x82, 0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0x01, 0x61, 0x01, 0x00, 0x00, 0x00, 0x1c, 0x7b, 0x22, 0x63, 0x6c, 0x61, 0x73, 0x73, 0x22, 0x3a, 0x22, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x34, 0x22, 0x7d ])
+    goldenPair = ("haskoki-genkeypair/v1",
+      [ 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x6b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x82, 0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0x01, 0x61, 0x01, 0x00, 0x00, 0x00, 0x00, 0x1c, 0x7b, 0x22, 0x63, 0x6c, 0x61, 0x73, 0x73, 0x22, 0x3a, 0x22, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x34, 0x22, 0x7d, 0x00, 0x00, 0x00, 0x1c, 0x7b, 0x22, 0x63, 0x6c, 0x61, 0x73, 0x73, 0x22, 0x3a, 0x22, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x34, 0x22, 0x7d ])
 #endif

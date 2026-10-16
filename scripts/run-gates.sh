@@ -2,13 +2,13 @@
 # Gate runner: static gates + full cabal test + release evidence,
 # the ONE entry point whose pass means a passing release story.
 #
-# Gate count: 22 static gates —
+# Gate count: 23 static gates —
 # core-boundary, mechanisms, denominators, attributes, ossl4-surface,
 # version, ckr, seed-honesty, plus warnings-zero, docs,
 # fork-stance, test-wiring, test-evidence, test-execution,
 # coverage-boundary,
 # coverage-fresh, release-pivots, loader-norm,
-# history-codes, actions-pinned, release-evidence-fixtures
+# history-codes, sealed-callwork, actions-pinned, release-evidence-fixtures
 # and funnel-cwd (wired here) — then a forced `cabal build all`
 # plus `cabal test all` in the pinned toolchain container, then the
 # release-evidence manifest (15 container + 2 host drivers + release
@@ -42,7 +42,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 IMAGE="${HASKOKI_IMAGE:-haskoki-dev:ghc-9.10.3}"
 export HASKOKI_IMAGE="$IMAGE"
-echo "=== static gates (1-21, build-free) ==="
+echo "=== static gates (1-22, build-free) ==="
 python3 scripts/check-core-boundary.py
 python3 scripts/check-mechanisms.py
 python3 scripts/check-denominators.py
@@ -68,6 +68,8 @@ python3 scripts/check-findings-ledger.py
 python3 scripts/check-findings-ledger.py --self-test
 python3 scripts/check-loader-norm.py
 python3 scripts/check-history-codes.py
+python3 scripts/check-sealed-callwork.py
+python3 scripts/check-sealed-callwork.py --self-test
 python3 scripts/check-ossl4-laziness.py
 python3 scripts/check-ossl4-laziness.py --self-test
 python3 scripts/check-actions-pinned.py
@@ -98,8 +100,8 @@ echo "=== executed test-tree join (builder context, needs the built suites) ==="
 # directly, and no host runtime/library compatibility is assumed.
 # The join itself stays host-side (pure text over the captures).
 timeout -s KILL 2400 python3 scripts/check-test-execution.py --collect --build-root dist-newstyle --dir test-trees --result pass --docker-image "$IMAGE"
-echo "=== static gate 22 (needs the built tests) ==="
+echo "=== static gate 23 (needs the built tests) ==="
 bash scripts/check-funnel-cwd.sh
 echo "=== release evidence (drivers + install) ==="
 bash scripts/release-evidence.sh
-echo "GATES: all passing (22 gates + cabal test + executed join + release evidence)"
+echo "GATES: all passing (23 gates + cabal test + executed join + release evidence)"

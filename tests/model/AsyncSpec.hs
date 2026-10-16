@@ -478,6 +478,24 @@ caseLegacyUnsteppedAdmitted = do
 -- Checked submission: sealed executable call work
 -- ---------------------------------------------------------------------------
 
+-- | Refusal probe: the would-be first id is unknown to both poll
+-- and complete under every refused function, and the probes move
+-- neither the runner nor the sink. An admission would table a job
+-- at exactly this id, so 'PollUnknown'/'CompleteUnknown' prove the
+-- refusal consumed nothing; the zero reads after them confirm the
+-- probes themselves are side-effect free.
+assertRefusalsUnknown :: AsyncTable -> Env -> [JobFunction] -> Int
+  -> IORef Int -> Delivery -> IO ()
+assertRefusalsUnknown table env funcs next0 runs del =
+  mapM_ probe funcs
+  where
+    probe func = do
+      p <- pollJob (countingRunner runs) env table func (JobId next0)
+      assertEqual ("refused id polls unknown: " ++ show func) PollUnknown p
+      c <- completeJob env table func (JobId next0) del (\_ -> pure ())
+      assertEqual ("refused id completes unknown: " ++ show func)
+        CompleteUnknown c
+
 controlFixtureDrives :: AsyncTable -> Env -> SessionId -> IORef Int -> Capture -> IO ()
 controlFixtureDrives table env sid runs cap = do
   let del = captureDelivery 64 cap
@@ -515,6 +533,7 @@ caseSubmitUnsteppedRefused = do
   assertEqual "plan session is the table session" sid1 sid
   runs <- newIORef (0 :: Int)
   cap <- newCapture
+  let del = captureDelivery 64 cap
   before <- tableStats table
   let bad resBad effBad tag = do
         r <- startJob table JobRequest
@@ -536,13 +555,14 @@ caseSubmitUnsteppedRefused = do
     "unstepped digest effect"
   after <- tableStats table
   assertEqual "refusals consume nothing" before after
+  let (_, _, next0) = before
+  assertRefusalsUnknown table env [JobSign] next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
   assertEqual "sink never written" [] =<< writesOf cap
   assertEqual "sink never sized" [] =<< readIORef (capNeeded cap)
   cwGood <- case checkedCallWork sid res (EffectCrypto fxSign) of
     Right c -> pure c
     Left mm -> assertFailure ("real pair must check: " ++ show mm)
-  let (_, _, next0) = before
   Right jid <- startJob table JobRequest
     { jrSession = sid
     , jrFunction = JobSign
@@ -593,6 +613,7 @@ caseOuterSignUnderDigestRefused = do
   assertEqual "plan session is the table session" sid1 sid
   runs <- newIORef (0 :: Int)
   cap <- newCapture
+  let del = captureDelivery 64 cap
   before <- tableStats table
   cwGood <- case checkedCallWork sid res (EffectCrypto fxSign) of
     Right c -> pure c
@@ -607,6 +628,8 @@ caseOuterSignUnderDigestRefused = do
   assertEqual "sign under digest refused" (Left StartIncompatibleWork) r
   after <- tableStats table
   assertEqual "refusal consumes nothing" before after
+  let (_, _, next0) = before
+  assertRefusalsUnknown table env [JobDigest] next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
   assertEqual "sink never written" [] =<< writesOf cap
   (dsid, dres, dfx) <- realDigestPlan
@@ -614,7 +637,6 @@ caseOuterSignUnderDigestRefused = do
   cwD <- case checkedCallWork dsid dres (EffectCrypto dfx) of
     Right c -> pure c
     Left mm -> assertFailure ("digest pair must check: " ++ show mm)
-  let (_, _, next0) = before
   Right jid <- startJob table JobRequest
     { jrSession = dsid
     , jrFunction = JobDigest
@@ -633,6 +655,7 @@ caseOuterDigestUnderSignRefused = do
   assertEqual "plan session is the table session" sid1 sid
   runs <- newIORef (0 :: Int)
   cap <- newCapture
+  let del = captureDelivery 64 cap
   before <- tableStats table
   cwGood <- case checkedCallWork sid res (EffectCrypto fx) of
     Right c -> pure c
@@ -647,6 +670,8 @@ caseOuterDigestUnderSignRefused = do
   assertEqual "digest under sign refused" (Left StartIncompatibleWork) r
   after <- tableStats table
   assertEqual "refusal consumes nothing" before after
+  let (_, _, next0) = before
+  assertRefusalsUnknown table env [JobSign] next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
   assertEqual "sink never written" [] =<< writesOf cap
   (ssid, sres, sfx) <- realSignPlan
@@ -654,7 +679,6 @@ caseOuterDigestUnderSignRefused = do
   cwS <- case checkedCallWork ssid sres (EffectCrypto sfx) of
     Right c -> pure c
     Left mm -> assertFailure ("sign pair must check: " ++ show mm)
-  let (_, _, next0) = before
   Right jid <- startJob table JobRequest
     { jrSession = ssid
     , jrFunction = JobSign
@@ -678,6 +702,7 @@ caseOuterCallUnderKeyRefused = do
   enableAsyncSession table psid
   runs <- newIORef (0 :: Int)
   cap <- newCapture
+  let del = captureDelivery 64 cap
   before <- tableStats table
   cwGood <- case checkedCallWork psid res (EffectCrypto fxSign) of
     Right c -> pure c
@@ -695,13 +720,14 @@ caseOuterCallUnderKeyRefused = do
   mapM_ checkOuter [JobGenKey, JobGenKeyPair]
   after <- tableStats table
   assertEqual "refusals consume nothing" before after
+  let (_, _, next0) = before
+  assertRefusalsUnknown table env [JobGenKey, JobGenKeyPair] next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
   assertEqual "sink never written" [] =<< writesOf cap
   (pw, fx) <- case planGenerateKey defaultRules m0 st aesKeyGenMech
       BS.empty (aesTmpl 32) of
     KeyEffect pw0 fx0 -> pure (pw0, fx0)
     other -> assertFailure ("genkey is not an effect: " ++ show other)
-  let (_, _, next0) = before
   Right jid <- startJob table JobRequest
     { jrSession = sid
     , jrFunction = JobGenKey
@@ -721,6 +747,7 @@ caseOuterKeyUnderCallRefused = do
   enableAsyncSession table sid
   runs <- newIORef (0 :: Int)
   cap <- newCapture
+  let del = captureDelivery 64 cap
   (pw1, fx1) <- case planGenerateKey defaultRules m0 st aesKeyGenMech
       BS.empty (aesTmpl 32) of
     KeyEffect pw0 fx0 -> pure (pw0, fx0)
@@ -748,9 +775,11 @@ caseOuterKeyUnderCallRefused = do
   bad JobGenKeyPair key1 "single key under pair function"
   after <- tableStats table
   assertEqual "refusals consume nothing" before after
+  let (_, _, next0) = before
+  assertRefusalsUnknown table env [JobSign, JobDigest, JobGenKey, JobGenKeyPair]
+    next0 runs del
   assertEqual "runner never fired" 0 =<< readIORef runs
   assertEqual "sink never written" [] =<< writesOf cap
-  let (_, _, next0) = before
   Right jid <- startJob table JobRequest
     { jrSession = sid
     , jrFunction = JobGenKey
@@ -872,7 +901,18 @@ caseCancelWins = do
   let del = captureDelivery 64 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startFixtureJob table (signRequest sid1 5)
+  (sid, res, fxSign) <- realSignPlan
+  assertEqual "plan session is the table session" sid1 sid
+  cwGood <- case checkedCallWork sid res (EffectCrypto fxSign) of
+    Right c -> pure c
+    Left mm -> assertFailure ("real pair must check: " ++ show mm)
+  Right j0 <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobSign
+    , jrWork = WorkCall cwGood
+    , jrTicks = 5
+    , jrCapacity = 64
+    }
   k <- cancelJob table j0
   assertEqual "cancel wins" CancelOk k
   p <- pollJob run env table JobSign j0
@@ -1518,17 +1558,54 @@ caseDriveStale = do
   let del = captureDelivery 69 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startFixtureJob table (pinnedSignRequest st 1 69)
+      sid = ssId st
+      rid = EngineResourceId 21
+  -- Checked-path setup: a live digest stream, planned and seated
+  -- through the real legs, so the final below submits checked.
+  m2 <- snapshotModel env
+  let initReq = Request Pkcs11_3_2 F_DigestInit (Just sid) Nothing
+        (encodeInitInput sha256Mech [] False BS.empty) []
+  case planCall defaultRules m2 initReq of
+    Execute resI (EffectCrypto _) -> do
+      m3 <- snapshotModel env
+      case finishEffect defaultRules m3 resI (EngineOkResource rid) of
+        Left rej -> assertFailure ("init finish rejected: " ++ show rej)
+        Right pc -> do
+          pr <- publish env (pcDelta pc)
+          case pr of
+            Right () -> pure ()
+            Left f -> assertFailure ("init publish failed: " ++ show f)
+    other -> assertFailure ("init did not plan execute: " ++ show other)
+  m4 <- snapshotModel env
+  let finReq = Request Pkcs11_3_2 F_DigestFinal (Just sid) Nothing BS.empty
+        [RegionBytes "digest" (IntentBuffer 64)]
+  j0 <- case planCall defaultRules m4 finReq of
+    Execute resF eff -> do
+      cwF <- case checkedCallWork sid resF eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("final pair must check: " ++ show mm)
+      let jr = JobRequest
+            { jrSession = sid
+            , jrFunction = JobDigest
+            , jrWork = WorkCall cwF
+            , jrTicks = 1
+            , jrCapacity = 69
+            }
+      started <- startJob table jr
+      case started of
+        Right jid -> pure jid
+        Left deny -> assertFailure ("final start denied: " ++ show deny)
+    other -> assertFailure ("final did not plan execute: " ++ show other)
   -- Invalidate the pinned revision before the drive.
   invalidateSession env (ssId st)
-  p <- pollJob run env table JobSign j0
+  p <- pollJob run env table JobDigest j0
   case p of
     PollTerminal (TermFailed code _) ->
       assertEqual "stale code" CKR_GENERAL_ERROR code
     other -> assertFailure ("expected stale failure, got " ++ show other)
   nRuns <- readIORef runs
   assertEqual "stale drive runs no effect" 0 nRuns
-  c <- completeJob env table JobSign j0 del (\_ -> pure ())
+  c <- completeJob env table JobDigest j0 del (\_ -> pure ())
   case c of
     CompleteAlready (TermFailed code _) ->
       assertEqual "loser observes stale" CKR_GENERAL_ERROR code
@@ -1538,6 +1615,8 @@ caseDriveStale = do
   assertEqual "epoch: stale fail" (Just 1) (fmap jvEpoch stFinal)
   _ <- pure m0
   pure ()
+  where
+    sha256Mech = MechanismId 0x250
 
 caseCompleteStale :: IO ()
 caseCompleteStale = do

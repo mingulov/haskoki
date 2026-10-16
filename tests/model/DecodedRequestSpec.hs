@@ -1084,7 +1084,7 @@ caseSubmitAcceptsCoherent = do
   rSign <- startFixtureJob table signJr
   case rSign of
     Right _ -> pure ()
-    Left deny -> assertFailure ("coherent sign submit refused: " ++ show deny)
+    Left deny -> assertFailure ("fixture sign submit refused: " ++ show deny)
   st <- sessionOf m0 sid
   (pw, fx) <- case planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyEffect pw0 fx0 -> pure (pw0, fx0)

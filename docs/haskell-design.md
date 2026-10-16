@@ -68,6 +68,14 @@ start-time validity for in-flight effects, observed destruction for
 later calls — is recorded in the
 [async construction contract](async-config-design.md#construction-and-linearization).
 
+The seal is pinned by [`scripts/check-sealed-callwork.py`](../scripts/check-sealed-callwork.py):
+shipped code reaches the fixture names only at their definitions
+and quoted Haddock references, and no production match inspects
+the raw pair. The scan permits exactly one `WorkCall` wildcard
+shape, the closed 1-ary `WorkCall _)`, which binds nothing: the
+two outer-function refusal arms over key functions use that form
+(see `src/Haskoki/Runtime/Async.hs`).
+
 ## Public Haskell surface
 
 External callers have two supported paths into this package, and
