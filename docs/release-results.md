@@ -35,7 +35,7 @@ findings that left are listed first.
 
 | Family | Count | Cause |
 | --- | ---: | --- |
-| GMAC message shape | 0 (was 2) | Resolved: AES-GMAC no longer advertises `CKF_MESSAGE_SIGN`/`CKF_MESSAGE_VERIFY`, because the specification defines no message-API parameter shape for it; the checker skips unadvertised operations. Single-part `CK_GCM_PARAMS` sign/verify is unchanged |
+| GMAC message shape | 0 (was 2) | Resolved: AES-GMAC no longer advertises `CKF_MESSAGE_SIGN`/`CKF_MESSAGE_VERIFY`, because the specification defines no message-API parameter shape for it; the checker no longer collects its ten message test ids. Single-part `CK_GCM_PARAMS` sign/verify is unchanged |
 | HOTP parameters | 0 (was 2) | Resolved: HOTP takes the standard `CK_OTP_PARAMS` and has no message API, so no message flags are advertised |
 | BLAKE2B key type | 16 | Checker defect: its "wrong" key is a generic secret, which PKCS#11 allows for BLAKE2B HMAC |
 | Async child results | 2 | Checker ctypes binding problem before the module call |

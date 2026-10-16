@@ -86,7 +86,7 @@ PKCS#11 calls on Linux. It is optional and runs separately; an
 
 Haskoki exposes PKCS#11 2.40-3.2 interfaces, with 316 behavior-tested
 mechanisms out of 464 catalog entries. The full checker profile retains
-22 documented findings; the short smoke profile expects zero. Neither
+18 documented findings; the short smoke profile expects zero. Neither
 number establishes conformance or certification. See the [results and
 limits](docs/release-results.md) before choosing it for an integration.
 

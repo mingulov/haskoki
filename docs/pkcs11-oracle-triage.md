@@ -58,8 +58,11 @@ have no normative message-parameter shape. HOTP also advertises no message
 flags (no per-message parameter shape is defined; message init refuses
 `CKR_MECHANISM_INVALID`, and classic init takes the standard `CK_OTP_PARAMS`
 with its `CK_OTP_COUNTER` entry required because Haskoki keeps no token
-counter). The framework skips operations whose flags are not advertised, so
-the oracle no longer reports those four message-init lines. Basic classic-shaped message tests do not establish
+counter). The four message-init lines left the finding set differently per
+mechanism. AES-GMAC's ten message test ids are no longer collected (the
+framework gates them on the advertised flags). HOTP's message tests are still
+collected and are now expected failures in both lanes, because HOTP has no
+message routes and message init refuses `CKR_MECHANISM_INVALID`. Basic classic-shaped message tests do not establish
 general v3 message conformance. CBC/recover recipe findings from earlier
 runs are not current baseline findings.
 

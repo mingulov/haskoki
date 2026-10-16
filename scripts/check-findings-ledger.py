@@ -285,7 +285,9 @@ def validate_retired(ledger, src, seen, repo):
 
 
 def _commit_exists(sha, repo):
-    """True when git knows the commit; accepted if git is unavailable."""
+    """True when git knows the commit. Accepted without history (git absent,
+    or an exported/shallow tree where `git rev-parse HEAD` fails): the
+    unknown-commit check only bites inside a git checkout."""
     if not sha:
         return False
     try:

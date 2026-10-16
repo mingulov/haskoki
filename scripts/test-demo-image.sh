@@ -317,9 +317,13 @@ if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 # CKF_MESSAGE_* from the GCM row; the framework skips message ops
 # whose flags are not advertised — verified in framework source
 # test_mech_message.py — so the oracle no longer reports them).
-# v0.5 delta vs F-9: -4 lines (AES_GMAC and HOTP sign/verify message-init:
-# both mechanisms now advertise no CKF_MESSAGE_*, so the framework skips
-# them; spec/findings-ledger.json retired rows carry the receipts).
+# v0.5 delta vs F-9: -4 lines (AES_GMAC and HOTP sign/verify message-init).
+# GMAC withdrew CKF_MESSAGE_*, so its 10 message test ids are no longer
+# collected (full-lane total 10993 -> 10983; the 10993 baseline is inferred
+# from the October-era sample, no id list exists). HOTP's message tests are
+# still collected and now xfail in both lanes (no message routes; message
+# init refuses CKR_MECHANISM_INVALID). spec/findings-ledger.json retired
+# rows carry the receipts.
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'

@@ -4162,7 +4162,7 @@
     "2ae2cd7",
     "d5b6889"
    ],
-   "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
+   "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it; GMAC withdrew its message flags, so its 10 message test ids are no longer collected (full-lane total 10,993 -> 10,983; the 10,993 baseline is inferred from the October-era sample, no id list exists)"
   },
   {
    "id": "finding:test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]",
@@ -4182,7 +4182,7 @@
     "a1d065b",
     "a763044"
    ],
-   "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
+   "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it; HOTP's message tests are still collected and now xfail in both lanes (expected: no message routes, message init refuses CKR_MECHANISM_INVALID)"
   },
   {
    "id": "finding:test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]",
@@ -4202,7 +4202,7 @@
     "2ae2cd7",
     "d5b6889"
    ],
-   "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
+   "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it; GMAC withdrew its message flags, so its 10 message test ids are no longer collected (full-lane total 10,993 -> 10,983; the 10,993 baseline is inferred from the October-era sample, no id list exists)"
   },
   {
    "id": "finding:test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[HOTP]",
@@ -4222,7 +4222,7 @@
     "a1d065b",
     "a763044"
    ],
-   "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
+   "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it; HOTP's message tests are still collected and now xfail in both lanes (expected: no message routes, message init refuses CKR_MECHANISM_INVALID)"
   },
   {
    "id": "exclusion:ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_key_handle_invalid",
