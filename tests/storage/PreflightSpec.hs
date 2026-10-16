@@ -23,11 +23,12 @@ import System.Directory (createDirectory, doesFileExist, listDirectory, removeFi
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath ((</>))
-import System.Posix.Files (createSymbolicLink, fileMode, fileSize, getFileStatus, modificationTime)
+import System.Posix.Files (createNamedPipe, createSymbolicLink, fileMode, fileSize, getFileStatus, modificationTime)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
 import System.Posix.Signals (sigKILL, signalProcess)
 import System.IO.Error (fullErrorType, mkIOError)
 import System.Posix.User (getEffectiveUserID)
+import System.Timeout (timeout)
 import System.Process (CreateProcess (..), createProcess, getPid, proc, waitForProcess)
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (HUnitFailure, assertBool, assertEqual, assertFailure, testCase)
@@ -76,6 +77,7 @@ spec = testGroup "Store preflight"
       , testCase "snapshot never creates a missing store" caseSnapshotNeverCreates
       , testCase "snapshot reads a store in a read-only directory" caseSnapshotReadOnlyDir
       , testCase "snapshot refuses a hot journal, touching nothing" caseSnapshotRefusesJournal
+      , testCase "snapshot refuses a symlinked, FIFO or device journal without hanging" caseSnapshotRefusesNonRegularJournal
       , testCase "snapshot diagnoses garbage and corrupt records" caseSnapshotDiagnoses
       , testCase "owner probe: absent and in-process live" caseProbeAbsentAndLive
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
@@ -126,6 +128,8 @@ spec = testGroup "Store preflight"
       , testCase "a hot journal refuses before ownership, both files untouched" caseMigrateHotJournal
       , testCase "a zero-byte journal is ignored" caseMigrateZeroByteJournal
       , testCase "a cold journal is cleared under exclusive locks, then the migration runs" caseMigrateClearsColdJournal
+      , testCase "a cold journal plus a foreign -wal refuses with everything untouched" caseMigrateColdJournalWithWalRefuses
+      , testCase "a schema-3 store plus a cold journal needs nothing, journal untouched" caseMigrateSchema3ColdNotNeeded
       , testCase "a migration with no cold journal records cold-journal-removed: no" caseMigrateReceiptColdJournalNo
       , testCase "a cold journal while another connection holds RESERVED refuses" caseColdJournalReservedRefuses
       , testCase "a store changed after the plan refuses" caseMigrateStoreChanged
@@ -332,6 +336,39 @@ caseSnapshotRefusesJournal = withScratch "snapshot" $ \dir -> do
   assertEqual "refused" (Left (StoreJournalPresent (store ++ "-journal"))) (snapSchema <$> r)
   BS.readFile store >>= assertEqual "db untouched" dbBefore
   BS.readFile (store ++ "-journal") >>= assertEqual "journal untouched" jBefore
+
+-- A journal that is not a regular file is refused without opening
+-- it: a symlink to a FIFO would block forever, a symlink to a
+-- device misclassifies. Each probe runs under a timeout.
+caseSnapshotRefusesNonRegularJournal :: IO ()
+caseSnapshotRefusesNonRegularJournal = withScratch "snapshot" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  let journal = store ++ "-journal"
+  let fifo = dir </> "fifo"
+  createNamedPipe fifo 0o600
+  createSymbolicLink fifo journal
+  mr1 <- timeout 5000000 (readStoreSnapshot store)
+  case mr1 of
+    Nothing -> assertFailure "snapshot hung on a symlinked FIFO journal"
+    Just r1 -> case r1 of
+      Left (StoreJournalPresent _) -> pure ()
+      other -> assertFailure ("symlink FIFO: " ++ show (fmap snapSchema other))
+  removeFile journal
+  createNamedPipe journal 0o600
+  mr2 <- timeout 5000000 (readStoreSnapshot store)
+  case mr2 of
+    Nothing -> assertFailure "snapshot hung on a FIFO journal"
+    Just r2 -> case r2 of
+      Left (StoreJournalPresent _) -> pure ()
+      other -> assertFailure ("FIFO: " ++ show (fmap snapSchema other))
+  removeFile journal
+  createSymbolicLink "/dev/zero" journal
+  mr3 <- timeout 5000000 (readStoreSnapshot store)
+  case mr3 of
+    Nothing -> assertFailure "snapshot hung on a symlinked device journal"
+    Just r3 -> case r3 of
+      Left (StoreJournalPresent _) -> pure ()
+      other -> assertFailure ("device symlink: " ++ show (fmap snapSchema other))
 
 caseSnapshotDiagnoses :: IO ()
 caseSnapshotDiagnoses = withScratch "snapshot" $ \dir -> do
@@ -1061,6 +1098,49 @@ caseMigrateClearsColdJournal = withScratch "migrate" $ \dir -> do
   roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "migrated" ["3"]
   r2 <- migrateStoreWith fixedClock store cfg backups
   assertEqual "second run needs nothing" (Right MigrateNotNeeded) r2
+
+-- A cold journal plus a foreign -wal refuses with everything
+-- untouched: the -wal is checked before the cold classification,
+-- and no SQLite connection opens.
+caseMigrateColdJournalWithWalRefuses :: IO ()
+caseMigrateColdJournalWithWalRefuses = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"; wal = store ++ "-wal"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  dbBefore <- BS.readFile store
+  BS.writeFile journal (BS.replicate 512 0)
+  BS.writeFile wal "foreign write-ahead log"
+  jBefore <- BS.readFile journal
+  wBefore <- BS.readFile wal
+  r <- migrateStoreWith fixedClock store cfg backups
+  case r of
+    Left (MigrateStore (StoreJournalPresent p)) ->
+      assertBool "names the wal" (p == wal)
+    other -> assertFailure ("wrong result: " ++ show other)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
+  BS.readFile wal >>= \b -> assertBool "wal untouched" (b == wBefore)
+  listBackups backups >>= assertEqual "no backup" []
+
+-- A schema-3 store plus a cold journal needs nothing and the
+-- journal is left untouched: clearing runs only when the plan says
+-- the migration proceeds.
+caseMigrateSchema3ColdNotNeeded :: IO ()
+caseMigrateSchema3ColdNotNeeded = withScratch "migrate" $ \dir -> do
+  let store = dir </> "store.sqlite"; backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  openReconciled store cfg >>= either (assertFailure . show) closeAcquired
+  dbBefore <- BS.readFile store
+  BS.writeFile journal (BS.replicate 512 0)
+  jBefore <- BS.readFile journal
+  r <- migrateStoreWith fixedClock store cfg backups
+  assertEqual "not needed" (Right MigrateNotNeeded) r
+  BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  listBackups backups >>= assertEqual "no backup" []
 
 -- Without a cold journal the receipt says so.
 caseMigrateReceiptColdJournalNo :: IO ()

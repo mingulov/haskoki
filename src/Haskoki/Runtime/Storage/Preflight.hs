@@ -58,7 +58,7 @@ import Haskoki.Runtime.Storage
 import Haskoki.Runtime.Storage.SQLite
   ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
   , clearColdJournal, guardFlags, migrateOwned, noMigrationHooks, probeOwner, readFileCloexec
-  , readStoreSnapshot, sqliteSchemaVersion, withOwnedStoreFile )
+  , readStoreSnapshot, readStoreSnapshotAllowCold, sqliteSchemaVersion, withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
 -- | SHA-256 of a byte string as 64 lowercase hex digits, computed by
@@ -171,6 +171,17 @@ checkStoreOpen path cfg = do
   case owner of
     OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
     _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshot path
+
+-- | Like 'checkStoreOpen' but a cold journal does not refuse: used
+-- only by the migration to learn its verdict before deciding
+-- whether the cold journal may be cleared. Never exported from this
+-- module's public surface beyond the migration's use.
+checkStoreOpenAllowCold :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
+checkStoreOpenAllowCold path cfg = do
+  owner <- probeOwner path
+  case owner of
+    OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
+    _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshotAllowCold path
 
 renderPlan :: StoreOpenPlan -> String
 renderPlan p = unlines
@@ -300,40 +311,59 @@ m >>? k = m >>= either (pure . Left) k
 infixl 1 >>?
 
 -- | The explicit migration (AC-05). Refusals before ownership write
--- nothing: config selection, backup-dir safety, a live owner or hot
--- journal (via the read-only check), identity drift. A cold journal
--- is cleared once under exclusive locks and the plan is taken afresh.
--- Under ownership: a fresh snapshot must equal the planned one, then
--- a new verified backup, then ONE transaction, then a read-back
--- check, then a non-overwriting receipt.
+-- nothing: config selection, backup-dir safety, a live owner, a hot
+-- or unknown journal, a foreign -wal/-shm sibling (via the
+-- read-only check), identity drift, or a current store. A cold
+-- journal is cleared only after the plan says the migration
+-- proceeds: the verdict is taken first through a read-only snapshot
+-- that tolerates the cold journal, and any other outcome leaves the
+-- journal untouched. Under ownership: a fresh snapshot must equal
+-- the planned one, then a new verified backup, then ONE
+-- transaction, then a read-back check, then a non-overwriting
+-- receipt.
 migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
 migrateStoreWith hooks path cfg backupDir =
   (first MigrateConfig <$> configSelectsStore path cfg) >>? \() ->
   checkBackupDir path backupDir >>? \() ->
   attempt False
   where
-    -- A cold journal is cleared at most once; a journal that is still
-    -- cold afterwards, or any other refusal, is reported, never
-    -- retried.
+    -- A cold journal is cleared at most once, and only when the
+    -- cold-tolerant plan says the migration proceeds; any other
+    -- verdict or refusal leaves the journal untouched. A journal
+    -- that is still cold afterwards, or any other refusal, is
+    -- reported, never retried.
     attempt :: Bool -> IO (Either MigrateError MigrateOutcome)
     attempt cleared = do
       ePlan <- first MigrateStore <$> checkStoreOpen path cfg
       case ePlan of
         Left (MigrateStore (StoreJournalCold _))
-          | not cleared -> do
-              eClear <- first MigrateStore <$> clearColdJournal path
-              case eClear of
-                Left err -> pure (Left err)
-                Right () -> attempt True
+          | not cleared -> handleCold
+        Left err -> pure (Left err)
+        Right plan -> runPlan cleared plan
+    -- Plan despite the cold journal, without touching it, to learn
+    -- the verdict. Only a migration-required verdict clears.
+    handleCold :: IO (Either MigrateError MigrateOutcome)
+    handleCold = do
+      eSnap <- first MigrateStore <$> checkStoreOpenAllowCold path cfg
+      case eSnap of
         Left err -> pure (Left err)
         Right plan -> case planVerdict plan of
+          VerdictMigrationRequired -> do
+            eClear <- first MigrateStore <$> clearColdJournal path
+            case eClear of
+              Left err -> pure (Left err)
+              Right () -> attempt True
           VerdictIdentityRefused r -> pure (Left (MigrateIdentityRefused r))
           VerdictOpenable -> pure (Right MigrateNotNeeded)
-          VerdictMigrationRequired ->
-            pure (traverse freezeOne (rowless plan)) >>? \freeze -> do
-              mhAfterPlan hooks
-              owned <- withOwnedStoreFile path (\o -> underOwnership cleared o plan freeze)
-              pure (either (Left . MigrateStore) id owned)
+    runPlan :: Bool -> StoreOpenPlan -> IO (Either MigrateError MigrateOutcome)
+    runPlan cleared plan = case planVerdict plan of
+      VerdictIdentityRefused r -> pure (Left (MigrateIdentityRefused r))
+      VerdictOpenable -> pure (Right MigrateNotNeeded)
+      VerdictMigrationRequired ->
+        pure (traverse freezeOne (rowless plan)) >>? \freeze -> do
+          mhAfterPlan hooks
+          owned <- withOwnedStoreFile path (\o -> underOwnership cleared o plan freeze)
+          pure (either (Left . MigrateStore) id owned)
     rowless plan =
       [t | t <- snapTokens (sopSnapshot plan), trId t `elem` sopAbsentCredentials plan]
     -- Unreachable after an accepted reconciliation (every stored

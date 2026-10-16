@@ -64,6 +64,7 @@ module Haskoki.Runtime.Storage.SQLite
   , FileIdentity (..)
   , StoreSnapshot (..)
   , readStoreSnapshot
+  , readStoreSnapshotAllowCold
   , OwnerState (..)
   , probeOwner
   , guardFlags
@@ -2215,13 +2216,16 @@ journalMagic = BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]
 -- first 8 bytes: hot carries the journal magic, cold is all zero,
 -- anything else -- including a short file or an unreadable one -- is
 -- unknown and fails closed. An empty journal reads as absent, as
--- SQLite ignores it.
+-- SQLite ignores it. Only a regular file is ever opened: a symlink,
+-- FIFO or device is unknown, so classification never hangs and never
+-- follows a link.
 classifyJournal :: FilePath -> IO JournalClass
 classifyJournal path = do
   e <- tryIOError (getSymbolicLinkStatus journal)
   case e of
     Left _ -> pure JournalAbsent
     Right st
+      | not (isRegularFile st) -> pure JournalUnknown
       | fileSize st <= 0 -> pure JournalAbsent
       | otherwise -> do
           eHead <- tryIOError (readFirst8 journal)
@@ -2257,36 +2261,91 @@ foreignSidecar path = do
         Right st | fileSize st > 0 -> Just p
         _ -> Nothing)
 
--- | A journal or foreign sibling that refuses the snapshot: a hot or
--- unknown journal, a cold journal (refused distinctly), else a
--- non-empty @-wal@ or @-shm@ file.
+-- | A journal or foreign sibling that refuses the snapshot: a
+-- non-empty @-wal@ or @-shm@ file first (a cold journal must never
+-- bypass it), else a hot or unknown journal, else a cold journal
+-- (refused distinctly).
 journalBlocked :: FilePath -> IO (Maybe StoreError)
 journalBlocked path = do
-  cls <- classifyJournal path
-  case cls of
-    JournalHot -> pure (Just (StoreJournalPresent journal))
-    JournalUnknown -> pure (Just (StoreJournalPresent journal))
-    JournalCold -> pure (Just (StoreJournalCold journal))
-    JournalAbsent -> maybe Nothing (Just . StoreJournalPresent) <$> foreignSidecar path
+  side <- foreignSidecar path
+  case side of
+    Just p -> pure (Just (StoreJournalPresent p))
+    Nothing -> do
+      cls <- classifyJournal path
+      pure (case cls of
+        JournalHot -> Just (StoreJournalPresent journal)
+        JournalUnknown -> Just (StoreJournalPresent journal)
+        JournalCold -> Just (StoreJournalCold journal)
+        JournalAbsent -> Nothing)
   where
     journal = path ++ "-journal"
+
+-- | Like 'journalBlocked' but a cold journal does not block: used
+-- only to plan a migration's verdict before deciding whether the
+-- cold journal may be cleared. Hot, unknown and foreign siblings
+-- still refuse.
+journalBlockedAllowCold :: FilePath -> IO (Maybe StoreError)
+journalBlockedAllowCold path = do
+  side <- foreignSidecar path
+  case side of
+    Just p -> pure (Just (StoreJournalPresent p))
+    Nothing -> do
+      cls <- classifyJournal path
+      pure (case cls of
+        JournalHot -> Just (StoreJournalPresent journal)
+        JournalUnknown -> Just (StoreJournalPresent journal)
+        _ -> Nothing)
+  where
+    journal = path ++ "-journal"
+
+-- | Any @-wal@ or @-shm@ sibling, even zero-byte: a read-write
+-- SQLite connection would act on it (switching journal modes,
+-- checkpointing frames, creating and deleting the peer file), so
+-- the cold-journal clear refuses before opening whenever either
+-- exists, whatever its size or kind.
+anySidecarExists :: FilePath -> IO (Maybe FilePath)
+anySidecarExists path = do
+  w <- exists (path ++ "-wal")
+  s <- exists (path ++ "-shm")
+  pure (case (w, s) of
+    (Just p, _) -> Just p
+    (_, Just p) -> Just p
+    _ -> Nothing)
+  where
+    exists p = do
+      e <- tryIOError (getSymbolicLinkStatus p)
+      pure (case e of
+        Right _ -> Just p
+        _ -> Nothing)
 
 -- | Read a store WITHOUT writing it: no ownership, no sidecar, a
 -- read-only connection (never creates the file, never recovers a
 -- journal, never migrates). Decodes every record the serving open
 -- decodes, so a corrupt file fails here too; keeps only ids and
--- counts. Refuses a hot or unknown journal, a cold journal
--- (distinctly), a foreign -wal/-shm sibling, and a file that changed
+-- counts. Refuses a foreign -wal/-shm sibling, a hot or unknown
+-- journal, a cold journal (distinctly), and a file that changed
 -- while read.
 readStoreSnapshot :: FilePath -> IO (Either StoreError StoreSnapshot)
-readStoreSnapshot path = do
+readStoreSnapshot = readStoreSnapshotWith journalBlocked
+
+-- | Like 'readStoreSnapshot' but a cold journal does not refuse:
+-- used only to plan a migration's verdict before deciding whether
+-- the cold journal may be cleared. The read-only connection treats
+-- a cold journal as not hot (committed state), never recovers it
+-- and never writes.
+readStoreSnapshotAllowCold :: FilePath -> IO (Either StoreError StoreSnapshot)
+readStoreSnapshotAllowCold = readStoreSnapshotWith journalBlockedAllowCold
+
+readStoreSnapshotWith
+  :: (FilePath -> IO (Maybe StoreError)) -> FilePath -> IO (Either StoreError StoreSnapshot)
+readStoreSnapshotWith blockedBy path = do
   eSt0 <- tryIOError (getFileStatus path)
   case eSt0 of
     Left _ -> pure (Left (StoreIO ("no store file at " ++ path)))
     Right st0
       | not (isRegularFile st0) -> pure (Left (StoreIO (path ++ ": not a regular file")))
       | otherwise -> do
-          blocked <- journalBlocked path
+          blocked <- blockedBy path
           case blocked of
             Just err -> pure (Left err)
             Nothing -> do
@@ -2296,7 +2355,7 @@ readStoreSnapshot path = do
                 Right db -> do
                   r <- snapshotDb db `finally` closeQuiet db
                   eSt1 <- tryIOError (getFileStatus path)
-                  blocked1 <- journalBlocked path
+                  blocked1 <- blockedBy path
                   pure $ case (r, eSt1, blocked1) of
                     (Left err, _, _) -> Left err
                     (_, Left _, _) -> Left (StoreIO (path ++ ": vanished while read"))
@@ -2459,13 +2518,15 @@ withOwnedStoreFile path act = mask $ \restore -> do
 
 -- | Remove a cold rollback journal, only when every guard holds: the
 -- owner probe passes, this call holds single-writer ownership (the
--- sidecar plus the database kernel guard), a plain connection takes a
--- SQLite RESERVED lock (@BEGIN IMMEDIATE@ fails while any other
--- connection writes), and the re-read journal is still cold. Removing
--- it cannot change what SQLite reads: the zeroed magic already makes
--- SQLite treat the journal as not hot. Anything else refuses, fail
--- closed: a live owner reports live, a busy database or a changed
--- journal reports the cold journal again.
+-- sidecar plus the database kernel guard), no @-wal@ or @-shm@
+-- sibling exists (even zero-byte: the read-write connection below
+-- would act on it), a plain connection takes a SQLite RESERVED lock
+-- (@BEGIN IMMEDIATE@ fails while any other connection writes), and
+-- the re-read journal is still cold. Removing it cannot change what
+-- SQLite reads: the zeroed magic already makes SQLite treat the
+-- journal as not hot. Anything else refuses, fail closed: a live
+-- owner reports live, a sibling reports it, a busy database or a
+-- changed journal reports the cold journal again.
 clearColdJournal :: FilePath -> IO (Either StoreError ())
 clearColdJournal path = do
   owner <- probeOwner path
@@ -2477,13 +2538,17 @@ clearColdJournal path = do
   where
     journal = path ++ "-journal"
     clearOwned _owned = do
-      eDb <- trySQLite (S.open (T.pack path))
-      case eDb of
-        Left err -> pure (Left err)
-        Right db -> do
-          r <- clearWith db `onException` (rollbackQuiet db >> closeQuiet db)
-          closeQuiet db
-          pure r
+      side <- anySidecarExists path
+      case side of
+        Just p -> pure (Left (StoreJournalPresent p))
+        Nothing -> do
+          eDb <- trySQLite (S.open (T.pack path))
+          case eDb of
+            Left err -> pure (Left err)
+            Right db -> do
+              r <- clearWith db `onException` (rollbackQuiet db >> closeQuiet db)
+              closeQuiet db
+              pure r
     clearWith db = do
       eBegin <- tryBegin db
       case eBegin of

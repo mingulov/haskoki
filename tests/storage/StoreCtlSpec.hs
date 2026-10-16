@@ -16,9 +16,11 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.StablePtr (castStablePtrToPtr)
 import Foreign.Storable (poke)
-import System.Directory (createDirectory, doesFileExist, listDirectory)
+import System.Directory (createDirectory, doesFileExist, listDirectory, removeFile)
 import System.FilePath ((</>))
+import System.Posix.Files (createNamedPipe, createSymbolicLink)
 import System.Posix.User (getEffectiveUserID)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -63,6 +65,9 @@ spec = testGroup "Store commands"
   , testCase "migrate: a hot journal header refuses (exit 1), both files untouched" caseMigrateCliJournalHot
   , testCase "migrate: a -wal file refuses (exit 1), everything untouched" caseMigrateCliWal
   , testCase "migrate: a -shm file refuses (exit 1), everything untouched" caseMigrateCliShm
+  , testCase "migrate: a cold journal plus a -wal refuses (exit 1), everything untouched" caseMigrateCliColdWal
+  , testCase "migrate: a current store with a cold journal needs nothing, journal untouched" caseMigrateCliSchema3Cold
+  , testCase "check: a symlinked, FIFO or device journal is refused without hanging" caseCheckNonRegularJournal
   , testCase "migrate: --async-home as a flag value is a usage error" caseMigrateCliAsyncHomeValue
   , testCase "migrate: a missing backup dir refuses (exit 1), nothing written" caseMigrateCliMissingBackupDir
   , testCase "migrate: an unwritable backup dir refuses (exit 1), nothing written" caseMigrateCliUnwritableBackupDir
@@ -478,6 +483,95 @@ caseMigrateCliShm = withScratch "ctl-migrate" $ \dir -> do
   BS.readFile (store ++ "-shm") >>= \b -> assertBool "shm untouched" (b == sBytes)
   BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
   listDirectory backups >>= assertEqual "no backup" []
+
+-- A cold journal must not bypass the -wal refusal: check names the
+-- -wal (not the cold journal) and migrate refuses with every byte
+-- untouched, before any SQLite connection opens.
+caseMigrateCliColdWal :: IO ()
+caseMigrateCliColdWal = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"; wal = store ++ "-wal"
+  createDirectory backups
+  dbBefore <- BS.readFile store
+  BS.writeFile journal (BS.replicate 512 0)
+  BS.writeFile wal "foreign write-ahead log"
+  jBefore <- BS.readFile journal
+  wBefore <- BS.readFile wal
+  c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  assertEqual "check refuses" 1 (ceCode c)
+  assertBool "check names the wal" ("store-journal-present:" `isPrefixOf` ceErr c)
+  assertBool "check does not report cold" (not ("store-journal-cold:" `isPrefixOf` ceErr c))
+  m <- migrateCli store cfgPath backups
+  assertEqual "migrate refuses" 1 (ceCode m)
+  assertBool "migrate names the wal" ("store-journal-present:" `isPrefixOf` ceErr m)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
+  BS.readFile wal >>= \b -> assertBool "wal untouched" (b == wBefore)
+  listDirectory backups >>= assertEqual "no backup" []
+  shmLeft <- doesFileExist (store ++ "-shm")
+  assertBool "no -shm created" (not shmLeft)
+
+-- A current store with a cold journal needs no migration and the
+-- journal is left untouched: clearing runs only when the plan says
+-- the migration proceeds.
+caseMigrateCliSchema3Cold :: IO ()
+caseMigrateCliSchema3Cold = withScratch "ctl-migrate" $ \dir -> do
+  let store = dir </> "store.sqlite"; backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  openReconciled store cfg >>= either (assertFailure . show) closeAcquired
+  dbBefore <- BS.readFile store
+  BS.writeFile journal (BS.replicate 512 0)
+  jBefore <- BS.readFile journal
+  c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  assertEqual "check refuses the cold journal" 1 (ceCode c)
+  assertBool "check names cold" ("store-journal-cold:" `isPrefixOf` ceErr c)
+  m <- migrateCli store cfgPath backups
+  assertEqual "migrate needs nothing" 0 (ceCode m)
+  assertBool "not needed" ("migrate-not-needed:" `isPrefixOf` ceOut m)
+  BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- A journal that is not a regular file (a symlink, FIFO or device)
+-- is refused without opening it: opening would hang on a FIFO or
+-- misclassify a device. Each probe runs under a timeout so a hang
+-- fails the test instead of the suite.
+caseCheckNonRegularJournal :: IO ()
+caseCheckNonRegularJournal = withScratch "ctl-check" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let journal = store ++ "-journal"
+      runCheck = runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  let fifo = dir </> "fifo"
+  createNamedPipe fifo 0o600
+  createSymbolicLink fifo journal
+  mc <- timeout 5000000 runCheck
+  case mc of
+    Nothing -> assertFailure "check hung on a symlinked FIFO journal"
+    Just c -> do
+      assertEqual "symlink FIFO: exit 1" 1 (ceCode c)
+      assertBool "symlink FIFO: refused as present, not cold"
+        ("store-journal-present:" `isPrefixOf` ceErr c)
+  removeFile journal
+  createNamedPipe journal 0o600
+  mf <- timeout 5000000 runCheck
+  case mf of
+    Nothing -> assertFailure "check hung on a FIFO journal"
+    Just f -> do
+      assertEqual "FIFO: exit 1" 1 (ceCode f)
+      assertBool "FIFO: refused" ("store-journal-present:" `isPrefixOf` ceErr f)
+  removeFile journal
+  createSymbolicLink "/dev/zero" journal
+  mz <- timeout 5000000 runCheck
+  case mz of
+    Nothing -> assertFailure "check hung on a symlinked device journal"
+    Just z -> do
+      assertEqual "device symlink: exit 1" 1 (ceCode z)
+      assertBool "device symlink: refused as present, not cold"
+        ("store-journal-present:" `isPrefixOf` ceErr z)
+  stillThere <- doesFileExist journal
+  assertBool "the symlink was not unlinked" stillThere
 
 -- --async-home is only a standalone switch: where a flag value is
 -- expected it is a usage error, never silently the switch and never
