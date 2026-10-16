@@ -14,52 +14,52 @@ Invalid values return `CfgInvalid`; configuration errors stop the open.
 `E` = ENFORCED, `R` = REFUSED (non-default/misleading values),
 `D` = CONFIG-NOT-POLICY (reserved, disclosed).
 
-| Setting | Behavior | Rule | Test |
-|---|---|---|---|
-| `schema_version` | E | must be 1 (`Config.hs` build) | `ConfigHonestySpec` schema refusal |
-| `profile` | E | 3 names validated + reported | `ConfigHonestySpec` + `CtlSpec` capabilities |
-| `interfaces` | E | subset validated + reported (declarative; no native path gates on it — scope note below) | `ConfigHonestySpec` bad/empty/reported |
-| `seed` | R | reserved placeholder: only 1234; does not seed native crypto | `ConfigHonestySpec` seed refusal |
-| `storage.kind` | E | routes the store (`openStdStore`) | `FfiAsyncSpec` success/bad-sqlite |
-| `storage.path` | E/R | sqlite opens it; memory+path refused (ignored otherwise) | `FfiAsyncSpec` + `ConfigHonestySpec` memory-path refusal |
-| `storage.busy_timeout_ms` | R | pinned 5000 at open; only 5000 accepted | `ConfigHonestySpec` busy refusal |
-| `storage.exclusive_provider_ownership` | R | always single-writer O_EXCL; `false` refused | `ConfigHonestySpec` exclusive refusal |
-| `engine.kind` | E | validated + selects the reported active catalog; native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `CtlSpec` capabilities + native-scope |
-| `engine.allow_synthetic_fallback` | R | no fallback exists; `true` refused | `ConfigHonestySpec` fallback refusal |
-| `engine.private_library_context` | R | native OpenSSL4 always opens a private libctx; `false` refused, default `true` | `ConfigHonestySpec` privctx refusal + default |
-| `async.executor` | E | must be `"logical"` | `ConfigHonestySpec` executor refusal |
-| `async.enabled` | E | scenario runner pending gate (native paths do not consult it — scope note below) | `ConfigHonestySpec` enabled on/off scenarios |
-| `async.pending_polls` | E | scenario runner pending count (same scope note) | `ConfigHonestySpec` polls scenario |
-| `async.persist_detached` | D | reserved: detached records always commit; durability follows `storage.kind` | `ConfigHonestySpec` parses + `reserved-async` line |
-| `trace.enabled` | E | `fileSink` no-op arm | `ConfigHonestySpec` disabled-writes-nothing |
-| `trace.path` | E | `fileSink` append target (`{pid}` expands) | `ConfigHonestySpec` path writes file |
-| `trace.redact_secrets` | R | always redacted; `false` refused | `ConfigHonestySpec` redact refusal |
-| `trace.queue_limit` | E | tracer queue bound (`max 8`) | `ConfigHonestySpec` queue bound |
-| `control.enabled` | R | control plane always on; `false` refused | `ConfigHonestySpec` enabled refusal |
-| `control.max_request_bytes` | E | oversize refuses `request_too_large` | `ConfigHonestySpec` max-request |
-| `control.response_budget_bytes` | E | fixed 65536-byte response budget | `ConfigHonestySpec` budget refusal |
-| `control.test_enabled` | E | gates mutations; serving slots fixed when false, permanently removable within the interval when true | `ControlSpec` + `SimBridgeSpec` private gates; `NotificationsEngineSpec` serving configuration |
-| `fixtures.set` | R | reserved placeholder: only `"minimal-demo"` | `ConfigHonestySpec` set refusal |
-| `fixtures.apply` | R | reserved placeholder: only `"new-store-only"` | `ConfigHonestySpec` apply refusal |
-| `limits.slots` | E | `rulesFromConfig` → token admission | `AdmissionSpec` tracking |
-| `limits.sessions` | E | `rulesFromConfig` → session admission | `ConfigHonestySpec` sessions tracking |
-| `limits.objects` | E | `rulesFromConfig` → object admission | `AdmissionSpec` tracking |
-| `limits.buffer_bytes` | D | RESERVED: effective attribute-value bound pinned 4194304 (4 MiB; see `template-bounds`) | `ConfigSpec` template disclosure |
-| `limits.transcript_bytes` | D | reserved: no transcript bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line |
-| `limits.aggregate_payload_bytes` | D | reserved: no aggregate bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line |
-| `limits.attribute_entries` | D | RESERVED: effective bound pinned 64 (see `template-bounds`) | `ConfigSpec` template disclosure |
-| `limits.attribute_depth` | D | reserved: no attribute-depth bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line |
-| `limits.jobs` | E | async-table bound (`max 8`) | `ConfigHonestySpec` jobs bound |
-| `limits.events` | E | public open requires positive bound at least catalog size; private FIFO retains `max 8` | `NotificationsSpec` + `NotificationsEngineSpec` serving limits; `ConfigHonestySpec` private events bound |
-| `sim.enabled` | E | gates schedule/script/fault-window | `SimBridgeSpec` boost gating + fault windows |
-| `sim.delay_schedule` | E | per-job tick boost | `SimBridgeSpec` schedule boost |
-| `sim.token_script` | E | runs in the private local scenario owner at scenario start | `SimBridgeSpec` script-ran |
-| `sim.fault_window_start` | E | seeds the fault window | `SimBridgeSpec` fault windows |
-| `sim.fault_window_ticks` | E | fault window length | `SimBridgeSpec` fault windows |
-| `tokens.labels` | E | catalog seating + served labels | `MultiTokenSpec` labels + `ConfigSpec` catalog validation |
-| `tokens.so_pins` | E | per-slot SO auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` SO per-slot |
-| `tokens.user_pins` | E | per-slot user auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` per-slot PINs |
-| `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity, and the public token serial is that identity in 16 lowercase hex digits | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) |
+| Setting | Behavior | Rule | Test | Effective |
+|---|---|---|---|---|
+| `schema_version` | E | must be 1 (`Config.hs` build) | `ConfigHonestySpec` schema refusal | 1 only, load gate (config loader; both) |
+| `profile` | E | 3 names validated + reported | `ConfigHonestySpec` + `CtlSpec` capabilities | one of 3 names, validated plus reported (report-only; no behavior selects on it) |
+| `interfaces` | E | subset validated + reported (declarative; no native path gates on it — scope note below) | `ConfigHonestySpec` bad/empty/reported | declared set, gates nothing (report-only; native serves 2.40 3.0 3.2 regardless) |
+| `seed` | R | reserved placeholder: only 1234; does not seed native crypto | `ConfigHonestySpec` seed refusal | 1234 only, read by nothing (config loader; both) |
+| `storage.kind` | E | routes the store (`openStdStore`) | `FfiAsyncSpec` success/bad-sqlite | memory or sqlite, routes the store (native open) |
+| `storage.path` | E/R | sqlite opens it; memory+path refused (ignored otherwise) | `FfiAsyncSpec` + `ConfigHonestySpec` memory-path refusal | sqlite opens it; memory plus path refuses (native open) |
+| `storage.busy_timeout_ms` | R | pinned 5000 at open; only 5000 accepted | `ConfigHonestySpec` busy refusal | 5000 only (native sqlite open; pinned busy timeout) |
+| `storage.exclusive_provider_ownership` | R | always single-writer O_EXCL; `false` refused | `ConfigHonestySpec` exclusive refusal | true only (native store create; always single-writer O_EXCL) |
+| `engine.kind` | E | validated + selects the reported active catalog; native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `CtlSpec` capabilities + native-scope | synthetic or openssl, reported catalog only (report-only; native always binds OpenSSL4) |
+| `engine.allow_synthetic_fallback` | R | no fallback exists; `true` refused | `ConfigHonestySpec` fallback refusal | false only, read by nothing (config loader; both) |
+| `engine.private_library_context` | R | native OpenSSL4 always opens a private libctx; `false` refused, default `true` | `ConfigHonestySpec` privctx refusal + default | true only (native OpenSSL4 open; always private libctx) |
+| `async.executor` | E | must be `"logical"` | `ConfigHonestySpec` executor refusal | "logical" only, load gate (config loader; both) |
+| `async.enabled` | E | scenario runner pending gate (native paths do not consult it — scope note below) | `ConfigHonestySpec` enabled on/off scenarios | on/off pending gate (scenario; native async never reads it) |
+| `async.pending_polls` | E | scenario runner pending count (same scope note) | `ConfigHonestySpec` polls scenario | scenario runner pending count (scenario; native async never reads it) |
+| `async.persist_detached` | D | reserved: detached records always commit; durability follows `storage.kind` | `ConfigHonestySpec` parses + `reserved-async` line | reserved; detached records always commit (native store; durability follows storage.kind) |
+| `trace.enabled` | E | `fileSink` no-op arm | `ConfigHonestySpec` disabled-writes-nothing | on/off file sink arm (native; runner sink always discards) |
+| `trace.path` | E | `fileSink` append target (`{pid}` expands) | `ConfigHonestySpec` path writes file | append target, {pid} expands (native; runner sink always discards) |
+| `trace.redact_secrets` | R | always redacted; `false` refused | `ConfigHonestySpec` redact refusal | true only (both; Show instances and renderer always redact) |
+| `trace.queue_limit` | E | tracer queue bound (`max 8`) | `ConfigHonestySpec` queue bound | tracer queue bound, max 8 floor, no range check (both; native sink and runner tracer) |
+| `control.enabled` | R | control plane always on; `false` refused | `ConfigHonestySpec` enabled refusal | true only (native control plane; always on) |
+| `control.max_request_bytes` | E | oversize refuses `request_too_large` | `ConfigHonestySpec` max-request | oversize refuses request_too_large, no range check (native control plane; dispatch gate) |
+| `control.response_budget_bytes` | E | fixed 65536-byte response budget | `ConfigHonestySpec` budget refusal | 65536 only, enforced by constant (native control plane; config value pinned) |
+| `control.test_enabled` | E | gates mutations; serving slots fixed when false, permanently removable within the interval when true | `ControlSpec` + `SimBridgeSpec` private gates; `NotificationsEngineSpec` serving configuration | gates presence/scenario/scheduler mutations (both; control plane and sim verbs) |
+| `fixtures.set` | R | reserved placeholder: only `"minimal-demo"` | `ConfigHonestySpec` set refusal | "minimal-demo" only, read by nothing (config loader; both) |
+| `fixtures.apply` | R | reserved placeholder: only `"new-store-only"` | `ConfigHonestySpec` apply refusal | "new-store-only" only, read by nothing (config loader; both) |
+| `limits.slots` | E | `rulesFromConfig` → token admission | `AdmissionSpec` tracking | at least 1, serving catalog admission (native; runner models one slot) |
+| `limits.sessions` | E | `rulesFromConfig` → session admission | `ConfigHonestySpec` sessions tracking | at least 1, session admission (native; runner never reads it) |
+| `limits.objects` | E | `rulesFromConfig` → object admission | `AdmissionSpec` tracking | at least 1, object admission (native; runner never reads it) |
+| `limits.buffer_bytes` | D | RESERVED: effective attribute-value bound pinned 4194304 (4 MiB; see `template-bounds`) | `ConfigSpec` template disclosure | reserved; effective 4194304 per value (native template decoder; config value ignored) |
+| `limits.transcript_bytes` | D | reserved: no transcript bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line | reserved; no bound anywhere (report-only; no admission site reads it) |
+| `limits.aggregate_payload_bytes` | D | reserved: no aggregate bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line | reserved; no bound anywhere (report-only; no admission site reads it) |
+| `limits.attribute_entries` | D | RESERVED: effective bound pinned 64 (see `template-bounds`) | `ConfigSpec` template disclosure | reserved; effective 64 entries (native template decoder; config value ignored) |
+| `limits.attribute_depth` | D | reserved: no attribute-depth bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line | reserved; no bound anywhere (report-only; no admission site reads it) |
+| `limits.jobs` | E | async-table bound (`max 8`) | `ConfigHonestySpec` jobs bound | max 8 bound on the async table (both; runner floor and native table bound) |
+| `limits.events` | E | public open requires positive bound at least catalog size; private FIFO retains `max 8` | `NotificationsSpec` + `NotificationsEngineSpec` serving limits; `ConfigHonestySpec` private events bound | at least 1, slot-events bound plus max 8 floor (both; serving slots and private FIFO) |
+| `sim.enabled` | E | gates schedule/script/fault-window | `SimBridgeSpec` boost gating + fault windows | on/off sim gate (both; runner script/faults and control-plane schedule) |
+| `sim.delay_schedule` | E | per-job tick boost | `SimBridgeSpec` schedule boost | NAME:TICKS list, ticks 0..1000000 (native control plane; scheduler.advance boost) |
+| `sim.token_script` | E | runs in the private local scenario owner at scenario start | `SimBridgeSpec` script-ran | insert/remove slot list, slots 0..0xFFFFFFFF (scenario; runner seating script) |
+| `sim.fault_window_start` | E | seeds the fault window | `SimBridgeSpec` fault windows | seeds the runner fault window (scenario only) |
+| `sim.fault_window_ticks` | E | fault window length | `SimBridgeSpec` fault windows | sizes the runner fault window 0..1000000 (scenario only) |
+| `tokens.labels` | E | catalog seating + served labels | `MultiTokenSpec` labels + `ConfigSpec` catalog validation | label list, at most 16, headed haskoki-demo (native; catalog seating) |
+| `tokens.so_pins` | E | per-slot SO auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` SO per-slot | per-slot SO PIN, 4..32 bytes (native; login auth) |
+| `tokens.user_pins` | E | per-slot user auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` per-slot PINs | per-slot user PIN, 4..32 bytes (native; login auth) |
+| `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity, and the public token serial is that identity in 16 lowercase hex digits | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) | pins stable identity; serial still slot-derived at this head (native; refreshed for durable identity after the storage landing) |
 
 Sections (9): `storage`, `engine`, `async`, `trace`, `control`,
 `fixtures`, `limits`, `sim`, `tokens`. Any other section name is
@@ -169,6 +169,37 @@ v0.5 work. On a SQLite store the catalog PINs only seed a token when it is
 first created; after that the stored credential row is the PIN authority,
 and editing `tokens.so_pins` or `tokens.user_pins` does not change what an
 existing token accepts (see [operations notes](operations-notes.md)).
+
+## Resource bounds and aggregate costs
+
+| Bound | Value | Enforced at | Scope |
+|---|---|---|---|
+| one-shot input | 16 MiB | `maxInputBytes` (`FFI/Decode.hs`), checked before copy | native |
+| buffered accumulation | 16 MiB | `maxBuffered`/`validateOperationIn` (`Operation.hs`) | native |
+| template entries | 64 | `maxTemplateEntries` (`Object.hs`, `NativeParams.hs`) | native |
+| template value bytes | 4194304 | `maxAttributeBytes` (`Attribute.hs`) | native |
+| retained tombstones | 4096 records and 64 MiB | `maxRetainedTombstones`/`maxRetainedBytes` (`Async.hs`) | both |
+| seed bytes | 1048576 | `seedRandomMaxBytes` (`Backend.hs`) | native |
+| scenario steps | 1024 | `maxScenarioActions` (`Control.hs`) | both |
+| scenario JSON depth | 32 | `maxJsonDepth` (`Control.hs`) | both |
+| scenario slot | 0..0xFFFFFFFF | `argSpec` and presence gate (`Control.hs`) | both |
+| sim ranges | 0..1000000 | `argSpec` (`Control.hs`), sim verbs (`Ctl.hs`) | both |
+| scheduler ticks | 1..1000000 | control-plane `scheduler.advance` (`Control.hs`) | native |
+| event queue floor | max 8 of `limits.events` | runner and native instance setup (`Ctl.hs`, `Instance.hs`) | both |
+| async table floor | max 8 of `limits.jobs` | runner and native instance setup (`Ctl.hs`, `Instance.hs`) | both |
+| tracer queue floor | max 8 of `trace.queue_limit` | runner and native instance setup (`Ctl.hs`, `Instance.hs`) | both |
+| control response budget | 65536 bytes | `responseBudget` constant (`Control.hs`) | native |
+| control request size | `control.max_request_bytes` | `dispatchControl` (`Control.hs`) refuses oversize | native |
+
+The WP13 measurement of `appendBuffered` over nine payload/chunk cells is
+recorded in `docs/buffered-updates.md`: bounded chunks were judged a separate
+follow-up, the current representation was retained, and no follow-up has been
+filed.
+
+Coverage is explicitly partial: transcript, aggregate payload and attribute
+depth have no bound anywhere in the tree, because no admission site reads those
+three keys; R32/A44 stay open for exactly those dimensions, and the five
+reserved limits keys above are the complete list.
 
 ## Serving presence and private scenario scope
 

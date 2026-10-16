@@ -137,6 +137,9 @@ spec = testGroup "Config honesty"
     , testCase "key table: extra key is caught (negative control)" caseKeyTableExtra
     , testCase "every reserved key is on a reserved-*/template-bounds line" caseReservedOnLines
     , testCase "reserved disclosure: dropped line is caught (negative control)" caseReservedLineMissing
+    , testCase "every key carries an effective record" caseEffectiveComplete
+    , testCase "every reserved key is disclosed in capabilities" caseReservedDisclosedComplete
+    , testCase "resource inventory names the open dimensions" caseResourceInventory
     , testCase "catalog names every reserved knob" caseAuditReserved
     , testCase "catalog names every never-knob" caseAuditNeverKnobs
     , testCase "catalog names every refusal rule" caseAuditRefusals
@@ -1000,3 +1003,56 @@ caseReservedLineMissing = withTimeout "capabilities run" $ do
   let without = unlines (filter (not . ("reserved-async" `isPrefixOf`)) (lines (ceOut r)))
   assertEqual "capabilities without the reserved-async line"
     ["async.persist_detached"] (undisclosedReserved without)
+
+-- ---------------------------------------------------------------------------
+-- Effective inventory: every catalog key carries a non-empty Effective
+-- record, every reserved key is named by a capabilities disclosure line,
+-- and the resource section names the open dimensions.
+-- ---------------------------------------------------------------------------
+
+-- | Effective cells of the "Accepted settings" table: @| `key` | CLASS | ... | Effective |@.
+docEffectiveCells :: String -> [(String, String)]
+docEffectiveCells doc = concatMap row (lines section)
+  where
+    afterHead = drop 1 (dropWhile (not . ("## Accepted settings" `isPrefixOf`)) (lines doc))
+    section = unlines (takeWhile (not . ("## " `isPrefixOf`)) afterHead)
+    row ln = case splitCells ln of
+      (kc : cc : _ : _ : eff : _)
+        | ('`' : k) <- kc, not (null k), last k == '`'
+        , cc `elem` ["E", "R", "E/R", "D"] -> [(init k, eff)]
+      _ -> []
+    splitCells ln = case ln of
+      ('|' : rest) -> map trimSp (splitBar rest)
+      _ -> []
+    splitBar str = case break (== '|') str of
+      (c, []) -> [c]
+      (c, _ : more) -> c : splitBar more
+    trimSp = reverse . dropWhile (== ' ') . reverse . dropWhile (== ' ')
+
+caseEffectiveComplete :: IO ()
+caseEffectiveComplete = do
+  doc <- honestyCatalog
+  let cells = docEffectiveCells doc
+      catKeys = sort [dotted k | (k, _) <- configKeyCatalog]
+  assertEqual "every key carries a non-empty effective record" []
+    ([k | k <- catKeys, k `notElem` map fst cells]
+     ++ [k | (k, v) <- cells, null v])
+
+caseReservedDisclosedComplete :: IO ()
+caseReservedDisclosedComplete = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "real-crypto.toml"]
+  assertEqual "exit 0" 0 (ceCode r)
+  let leaves = [leaf | ((_, leaf), Reserved) <- configKeyCatalog]
+  assertEqual "every reserved key named by a disclosure line" []
+    [leaf | leaf <- leaves, not (leaf `isInfixOf` ceOut r)]
+
+caseResourceInventory :: IO ()
+caseResourceInventory = do
+  doc <- honestyCatalog
+  assertBool "resource section present"
+    ("## Resource bounds and aggregate costs" `isInfixOf` doc)
+  mapM_ (\dim -> assertBool ("open dimension named: " ++ dim) (dim `isInfixOf` doc))
+    ["limits.transcript_bytes", "limits.aggregate_payload_bytes"
+    , "limits.attribute_depth", "R32", "A44"]
+  mapM_ (\ref -> assertBool ("WP13 outcome named: " ++ ref) (ref `isInfixOf` doc))
+    ["buffered-updates", "appendBuffered"]
