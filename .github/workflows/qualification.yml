@@ -105,9 +105,12 @@ jobs:
             for d in scripts/test-sim-threaded.sh scripts/test-finalize-race.sh \
                 scripts/test-c-mutexes.sh scripts/test-consumers.sh \
                 scripts/test-async-attached.sh scripts/test-async-detached.sh \
-                scripts/test-ossl4-bounds.sh; do
+                scripts/test-ossl4-bounds.sh \
+                scripts/test-native-sanitizers.sh; do
               sh -n "$d"
             done
+            cc -std=c11 -Wall -Wextra -Werror -pthread -fsyntax-only \
+              -Icbits -I/opt/openssl-4.0.2/include tests/c/ossl4_sanitize.c
             for p in tests/c/sim_threaded.c tests/c/finalize_race.c \
                 tests/c/finalize_wait_race_probe.c tests/c/async_routed.c \
                 tests/c/notifications_routed.c tests/c/mutexes.c \
@@ -616,6 +619,29 @@ jobs:
             --env HASKOKI_OWN_RECEIPTS=/ownership \
             "$HASKOKI_IMAGE" scripts/test-ownership-matrix.sh 2>&1 \
             | tee "$RUNNER_TEMP/qualify-evidence/ownership.log"
+      - name: Run native sanitizer driver
+        # Separate obligation (scripts/driver-inventory.json role
+        # qualification): ASan/UBSan/LSan over the native shim in the
+        # toolchain image. The container has no git directory for the
+        # mounted checkout, so the host supplies the commit and the
+        # cleanliness measured here. Receipt and logs land in
+        # dist-newstyle/san-art and are uploaded below.
+        if: always() && steps.select.outputs.mode == 'behavioral'
+        run: |
+          set -euo pipefail
+          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
+          SAN_SHA="$(git rev-parse HEAD)"
+          SAN_DIRTY=false
+          [ -z "$(git status --porcelain)" ] || SAN_DIRTY=true
+          IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$HASKOKI_IMAGE")"
+          mkdir -p dist-newstyle/san-art
+          chmod a+rwx dist-newstyle dist-newstyle/san-art
+          docker run --rm -e HASKOKI_IMAGE_ID="$IMAGE_ID" \
+            -e HASKOKI_SAN_SHA="$SAN_SHA" -e HASKOKI_SAN_DIRTY="$SAN_DIRTY" \
+            -e HASKOKI_SAN_ART=/work/dist-newstyle/san-art \
+            -v "$PWD:/work" -w /work \
+            "$HASKOKI_IMAGE" scripts/test-native-sanitizers.sh 2>&1 \
+            | tee "$RUNNER_TEMP/qualify-evidence/native-sanitizers.log"
       - name: Run the build-only fallback manifest
         if: steps.select.outputs.mode == 'buildonly'
         run: |
@@ -699,6 +725,13 @@ jobs:
           path: |
             ${{ runner.temp }}/qualify-evidence/
             ${{ runner.temp }}/qualify-evidence-run.log
+          if-no-files-found: error
+      - name: Upload native sanitizer artifacts
+        if: always() && steps.select.outputs.mode == 'behavioral'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-sanitizer-artifacts
+          path: dist-newstyle/san-art
           if-no-files-found: error
       - name: Verify ownership receipts
         if: always()
