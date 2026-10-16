@@ -748,7 +748,10 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
 /* --- TEST-ONLY ownership hooks (inert unless used) ----------------------- */
 /*
  * Fault injection + ownership accounting for the native transfer
- * tests. Production paths pass no gate (NULL) and never consult
+ * tests. Everything below except the gate type is compiled only
+ * with HSK_OSSL4_TEST_HOOKS (the Haskell library's test
+ * configuration); the shipped foreign library defines none of
+ * it. Production paths pass no gate (NULL) and never consult
  * hook state, so a normal configuration behaves exactly as
  * before: the hooks are inert unless a test explicitly creates a
  * gate and routes gated operations through it. Gates are
@@ -760,19 +763,18 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
  * rather than echoing Haskell-side bookkeeping. A leaked object
  * strands a +1 exactly where the leak occurred.
  *
- * Digest handles and envs additionally ride process-wide
+ * Digest handles and envs additionally ride exact process-wide
  * live-sets: creation inserts (object, gate-or-NULL), and only
  * the matching destroy claims it (returning the creating gate
- * for the -1). A claim of an unknown handle with no pending
- * overflow credit records a double-free attempt and skips
- * destruction (safe no-op). An unknown handle WITH a pending
- * credit (an overflowed entry the set could not store) is
- * destroyed normally, preserving production behavior exactly:
- * overflow can never leak, and only per-gate attribution of
- * those entries is lost (counted separately; tests assert zero).
- * The attempt counters are identically zero under the fixed
- * ownership transfer, so tests assert them without needing
- * cross-test quiescence.
+ * for the -1). The sets hold every live object, however many.
+ * A claim of an unknown handle records a double-free attempt
+ * and skips destruction (safe no-op; the pointer is never
+ * dereferenced). Attempts stay counted until a test
+ * acknowledges them with hsk_ossl4_test_live_acknowledge; an
+ * attempt still counted at process exit makes the process exit
+ * 70. They are identically zero under the fixed ownership
+ * transfer, so tests assert them without needing cross-test
+ * quiescence.
  *
  * CHECKPOINT protocol (async-kill tests): a parked call is a
  * plain safe foreign call, so a parked waiter CANNOT be killed
@@ -784,6 +786,8 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
  * is undefined); the test bracket releases before freeing.
  */
 typedef struct hsk_ossl4_test_gate hsk_ossl4_test_gate_t;
+
+#ifdef HSK_OSSL4_TEST_HOOKS
 
 hsk_ossl4_test_gate_t *hsk_ossl4_test_gate_new(void);
 void hsk_ossl4_test_gate_free(hsk_ossl4_test_gate_t *g);
@@ -880,17 +884,33 @@ void hsk_ossl4_free_gated(hsk_ossl4_test_gate_t *g, void *ptr, size_t len);
  * Identically zero under the fixed transfer; tests assert it. */
 long hsk_ossl4_test_digest_doublefree(void);
 
-/* Digest live-set overflows since process start (entries created
- * past capacity). Tests assert zero (complete tracking). */
-long hsk_ossl4_test_digest_untracked(void);
-
 /* Env double-free attempts since process start (same convention
  * as the digest twin). Tests assert zero. */
 long hsk_ossl4_test_env_doublefree(void);
 
-/* Env live-set overflows since process start. Tests assert
- * zero (complete tracking). */
-long hsk_ossl4_test_env_untracked(void);
+/* Returns the summed digest and env double-free attempts and
+ * zeroes them. A test that provokes attempts on purpose must
+ * acknowledge them, or the process exits 70 at exit. */
+long hsk_ossl4_test_live_acknowledge(void);
+
+/* Derive seams: forced faults for the BN export in the finite-field DH peer
+ * pack and for the second (output) derive of the three key agreements.
+ * `which` selects the buffer a derive noted last. */
+#define HSK_OSSL4_SEAM_PACK 0   /* dh_derive peer pack buffer (pbuf, total) */
+#define HSK_OSSL4_SEAM_SECRET 1 /* derive secret buffer (secret, secretalloc) */
+void hsk_ossl4_test_seam_reset(void);
+/* The nth BN_bn2nativepad call since this arm fails (1-based). */
+void hsk_ossl4_test_seam_arm_bn_fail(int nth);
+/* The next second derive reports *len += delta; succeed 0 fails it after
+ * writing 0x5A over the whole buffer, succeed 1 lets it succeed. */
+void hsk_ossl4_test_seam_arm_derive(long delta, int succeed);
+long hsk_ossl4_test_seam_bn_calls(void);
+long hsk_ossl4_test_seam_fired(void);
+/* The last allocation noted for `which`: returns 1 and fills *ptr and
+ * *alloc, or 0 when nothing was noted since the reset. */
+int hsk_ossl4_test_seam_target(int which, void **ptr, size_t *alloc);
+
+#endif /* HSK_OSSL4_TEST_HOOKS */
 
 #ifdef __cplusplus
 }

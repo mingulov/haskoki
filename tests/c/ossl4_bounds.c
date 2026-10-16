@@ -12,9 +12,10 @@
  *       secret from tests/engine/OpenSSLSpec.hs); bad key/peer/param
  *       inputs refuse with the documented codes and *out untouched.
  * The findings-1+2 fault triggers (BN conversion failure, a second-derive
- * provider fault mutating secretlen) are not deterministically
- * inducible against the default provider, so this pins the
- * surrounding contracts instead of the faults themselves.
+ * provider fault mutating secretlen) are forced in the test-configuration
+ * seam harness (tests/c/ossl4_sanitize.c, driven by
+ * scripts/test-native-sanitizers.sh). This driver pins the surrounding
+ * contracts.
  *
  * Usage: ossl4_bounds <path-to-libhaskoki.so>
  * Exit status: 0 iff every check passes.

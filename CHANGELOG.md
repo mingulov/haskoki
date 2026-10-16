@@ -39,6 +39,20 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   `C_SignRecoverInit`/`C_VerifyRecoverInit` returns
   `CKR_KEY_HANDLE_INVALID` (0x60) instead of `CKR_OBJECT_HANDLE_INVALID`
   (0x82). Wrap, unwrap and KEM key resolution still return 0x82.
+- The shipped `libhaskoki.so` no longer exports the 27 test-only native
+  symbols (`hsk_ossl4_test_*` and the `hsk_ossl4_*_gated` entries). They
+  were never part of the ABI (`spec/abi-inventory.json` lists none), but
+  `nm -D` showed them. The test registry that could absorb a repeat free
+  is no longer compiled into the shipped module: production destruction
+  frees on every call.
+- The ECDH, X25519/X448 and DH derives cleanse the unused tail of the
+  secret buffer when OpenSSL reports a shorter secret than the size query,
+  and fail closed (a native error, with the whole buffer cleansed) when it
+  reports a longer one. The tail used to be left as the derive wrote it.
+
+New documents: `docs/native-qualification.md` (native shim qualification
+record: symbol separation, sanitizer runs, evidence limits) and
+`docs/buffered-updates.md` (measured cost of buffered multipart updates).
 
 ### Changed
 

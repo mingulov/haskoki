@@ -61,60 +61,69 @@ struct hsk_ossl4_env {
     size_t nprov;
 };
 
+#ifdef HSK_OSSL4_TEST_HOOKS
+#include <stdio.h>
+
 /* --- TEST-ONLY live-sets (actual-destroy attribution + hardening) --------- */
 /*
- * Every digest handle and env rides its process-wide set:
+ * Every digest handle and env rides an exact process-wide set:
  * creation inserts (object, gate-or-NULL), destruction claims.
- * The claim hands the creating gate back so the destroy path
- * itself can note the ACTUAL native destruction (ungated: none).
- * A claim of an unknown handle with no pending overflow credit
- * records a double-free attempt and skips destruction (safe
- * no-op); an unknown handle WITH a pending credit (an overflowed
- * entry the set could not store) is destroyed normally,
- * preserving production behavior exactly — overflow can never
- * leak. Comparison is by pointer value only (never
- * dereferenced). Caveat: an address reused by a LATER object
- * between a destroy and a stale repeat could misattribute; the
- * transfer proof (the attempt counter stays zero) is what rules
- * out repeats, not this set alone.
+ * The set grows without bound (libc realloc by doubling, never
+ * OPENSSL_*, so the instrument stays out of OpenSSL allocation
+ * counts; a failed growth aborts), so every live object is
+ * tracked and every claim finds its own entry. The claim hands
+ * the creating gate back so the destroy path itself can note the
+ * ACTUAL native destruction (ungated: none). A claim of an
+ * unknown handle records a double-free attempt and skips
+ * destruction: it never destroys and never dereferences the
+ * pointer. Comparison is by pointer value only. Caveat: an
+ * address reused by a LATER object between a destroy and a stale
+ * repeat misattributes the stale free to the new owner, whose own
+ * free is then the unknown one; either way the attempt is
+ * counted. Attempts must be acknowledged: an attempt still
+ * counted at process exit makes the process exit 70.
  */
-#define HSK_TEST_LIVE_CAP 256
 typedef struct hsk_test_live {
     pthread_mutex_t mu;
-    const void *ptrs[HSK_TEST_LIVE_CAP];
-    hsk_ossl4_test_gate_t *gates[HSK_TEST_LIVE_CAP];
-    size_t n;
-    long doublefree; /* unknown destroys with no pending credit */
-    long noverflow; /* overflow inserts, monotonic */
-    long npending; /* overflowed-but-undestroyed credits */
+    const void **ptrs;
+    hsk_ossl4_test_gate_t **gates;
+    size_t n, cap;
+    long doublefree; /* unknown destroys, until acknowledged */
 } hsk_test_live_t;
 
 static hsk_test_live_t hsk_test_digests = {
-    PTHREAD_MUTEX_INITIALIZER, { 0 }, { 0 }, 0, 0, 0, 0
+    PTHREAD_MUTEX_INITIALIZER, NULL, NULL, 0, 0, 0
 };
 static hsk_test_live_t hsk_test_envs = {
-    PTHREAD_MUTEX_INITIALIZER, { 0 }, { 0 }, 0, 0, 0, 0
+    PTHREAD_MUTEX_INITIALIZER, NULL, NULL, 0, 0, 0
 };
 
 static void hsk_test_live_insert(hsk_test_live_t *s, const void *h,
                                  hsk_ossl4_test_gate_t *g)
 {
     pthread_mutex_lock(&s->mu);
-    if (s->n < HSK_TEST_LIVE_CAP) {
-        s->ptrs[s->n] = h;
-        s->gates[s->n] = g;
-        s->n++;
-    } else {
-        s->noverflow++;
-        s->npending++;
+    if (s->n == s->cap) {
+        size_t ncap = s->cap ? s->cap * 2 : 64;
+        const void **np = realloc((void *)s->ptrs, ncap * sizeof(*np));
+        hsk_ossl4_test_gate_t **ng;
+        if (np == NULL)
+            abort();
+        s->ptrs = np;
+        ng = realloc((void *)s->gates, ncap * sizeof(*ng));
+        if (ng == NULL)
+            abort();
+        s->gates = ng;
+        s->cap = ncap;
     }
+    s->ptrs[s->n] = h;
+    s->gates[s->n] = g;
+    s->n++;
     pthread_mutex_unlock(&s->mu);
 }
 
-/* Claims h for destruction, returning its gate (NULL when ungated
- * or overflow-credited). Returns nonzero when the caller must
- * destroy; a repeat claim records a double-free attempt and
- * returns zero (safe no-op). */
+/* Claims h for destruction, returning its gate (NULL when ungated).
+ * Returns nonzero when the caller must destroy; an unknown handle
+ * records a double-free attempt and returns zero (safe no-op). */
 static int hsk_test_live_claim(hsk_test_live_t *s, const void *h,
                                hsk_ossl4_test_gate_t **gate)
 {
@@ -132,21 +141,17 @@ static int hsk_test_live_claim(hsk_test_live_t *s, const void *h,
             break;
         }
     }
-    if (!destroy) {
-        if (s->npending > 0) {
-            /* An overflowed entry: destroy normally (production
-             * behavior preserved); its gate is unknown, so no
-             * per-gate note fires (the monotonic overflow count
-             * records the tracking gap instead). */
-            s->npending--;
-            destroy = 1;
-        } else {
-            s->doublefree++;
-        }
-    }
+    if (!destroy)
+        s->doublefree++;
     pthread_mutex_unlock(&s->mu);
     return destroy;
 }
+
+#define HSK_LIVE_INSERT(set, h, g) hsk_test_live_insert((set), (h), (g))
+#else
+/* Production configuration: no live-sets; the gate is always NULL. */
+#define HSK_LIVE_INSERT(set, h, g) ((void)(g))
+#endif /* HSK_OSSL4_TEST_HOOKS */
 
 /* --- private context lifecycle -------------------------------------- */
 
@@ -249,7 +254,7 @@ static hsk_ossl4_env_t *hsk_ossl4_env_new_core(hsk_ossl4_test_gate_t *g)
         OPENSSL_free(env);
         return NULL;
     }
-    hsk_test_live_insert(&hsk_test_envs, env, g);
+    HSK_LIVE_INSERT(&hsk_test_envs, env, g);
     return env;
 }
 
@@ -279,15 +284,19 @@ OSSL_LIB_CTX *hsk_ossl4_env_ctx(const hsk_ossl4_env_t *env)
 
 void hsk_ossl4_env_free(hsk_ossl4_env_t *env)
 {
-    hsk_ossl4_test_gate_t *g = NULL;
     size_t i;
     if (env == NULL)
         return;
+#ifdef HSK_OSSL4_TEST_HOOKS
     /* Single-free: destroy exactly when claimed; the -1 notes the
      * ACTUAL native destruction to the creating gate (NULL: none). */
-    if (!hsk_test_live_claim(&hsk_test_envs, env, &g))
-        return;
-    hsk_ossl4_test_gate_note_env(g, -1);
+    {
+        hsk_ossl4_test_gate_t *g = NULL;
+        if (!hsk_test_live_claim(&hsk_test_envs, env, &g))
+            return;
+        hsk_ossl4_test_gate_note_env(g, -1);
+    }
+#endif
     for (i = 0; i < env->nprov; i++)
         hsk_ossl4_unload_provider(env->provs[i]);
     hsk_ossl4_free_ctx(env->ctx);
@@ -522,7 +531,7 @@ static hsk_ossl4_md_t *hsk_ossl4_digest_init_core(hsk_ossl4_test_gate_t *g,
         goto fail;
     if (!EVP_DigestInit_ex2(h->mctx, h->md, NULL))
         goto fail;
-    hsk_test_live_insert(&hsk_test_digests, h, g);
+    HSK_LIVE_INSERT(&hsk_test_digests, h, g);
     return h;
 fail:
     EVP_MD_CTX_free(h->mctx);
@@ -561,7 +570,7 @@ static hsk_ossl4_md_t *hsk_ossl4_digest_init_sized_core(
     params[1] = OSSL_PARAM_construct_end();
     if (!EVP_DigestInit_ex2(h->mctx, h->md, params))
         goto fail;
-    hsk_test_live_insert(&hsk_test_digests, h, g);
+    HSK_LIVE_INSERT(&hsk_test_digests, h, g);
     return h;
 fail:
     EVP_MD_CTX_free(h->mctx);
@@ -614,14 +623,18 @@ end:
 
 void hsk_ossl4_digest_free(hsk_ossl4_md_t *h)
 {
-    hsk_ossl4_test_gate_t *g = NULL;
     if (h == NULL)
         return;
+#ifdef HSK_OSSL4_TEST_HOOKS
     /* Single-free: destroy exactly when claimed; the -1 notes the
      * ACTUAL native destruction to the creating gate (NULL: none). */
-    if (!hsk_test_live_claim(&hsk_test_digests, h, &g))
-        return;
-    hsk_ossl4_test_gate_note_digest(g, -1);
+    {
+        hsk_ossl4_test_gate_t *g = NULL;
+        if (!hsk_test_live_claim(&hsk_test_digests, h, &g))
+            return;
+        hsk_ossl4_test_gate_note_digest(g, -1);
+    }
+#endif
     EVP_MD_CTX_free(h->mctx);
     EVP_MD_free(h->md);
     OPENSSL_clear_free(h, sizeof(*h));
@@ -3825,6 +3838,24 @@ end:
     return rc;
 }
 
+/* --- derive seams (test configuration only) --------------------------------
+ * The test configuration routes the BN export in the finite-field DH peer
+ * pack and the second (output) derive through seams, so the tests can force
+ * the faults that no provider produces on demand. The shipped module calls
+ * the OpenSSL functions directly. */
+#ifdef HSK_OSSL4_TEST_HOOKS
+static int hsk_seam_bn2nativepad(const BIGNUM *a, unsigned char *to, int n);
+static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l);
+static void hsk_seam_note(int which, void *p, size_t n);
+#define HSK_BN2NATIVEPAD(a, to, n) hsk_seam_bn2nativepad((a), (to), (n))
+#define HSK_PKEY_DERIVE_OUT(c, k, l) hsk_seam_pkey_derive((c), (k), (l))
+#define HSK_SEAM_NOTE(w, p, n) hsk_seam_note((w), (p), (n))
+#else
+#define HSK_BN2NATIVEPAD(a, to, n) BN_bn2nativepad((a), (to), (n))
+#define HSK_PKEY_DERIVE_OUT(c, k, l) EVP_PKEY_derive((c), (k), (l))
+#define HSK_SEAM_NOTE(w, p, n) ((void)0)
+#endif
+
 /* --- ECDH agreement ------------------------------------------- */
 
 long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
@@ -3885,11 +3916,22 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     /* The failed derive below may mutate secretlen: cleanse with the
      * allocation length, never the out-param. */
     secretalloc = secretlen;
-    if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_SECRET, secret, secretalloc);
+    if (HSK_PKEY_DERIVE_OUT(pctx, secret, &secretlen) <= 0) {
         OPENSSL_clear_free(secret, secretalloc);
         secret = NULL;
         goto end;
     }
+    if (secretlen > secretalloc) {
+        /* More than the size query allowed: fail closed and
+         * cleanse the whole allocation. */
+        OPENSSL_clear_free(secret, secretalloc);
+        secret = NULL;
+        rc = HSK_OSSL4_ERR_NATIVE;
+        goto end;
+    }
+    if (secretlen < secretalloc) /* the caller frees with secretlen */
+        OPENSSL_cleanse(secret + secretlen, secretalloc - secretlen);
     *out = secret;
     rc = (long)secretlen;
     secret = NULL;
@@ -3971,7 +4013,8 @@ long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     /* The failed derive below may mutate secretlen: cleanse with the
      * allocation length, never the out-param. */
     secretalloc = secretlen;
-    if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_SECRET, secret, secretalloc);
+    if (HSK_PKEY_DERIVE_OUT(pctx, secret, &secretlen) <= 0) {
         /* A low-order peer: the provider refuses zero-output
          * derives. The clamped scalar is always valid, so on
          * width-exact inputs no other failure mode exists —
@@ -3981,6 +4024,16 @@ long hsk_ossl4_xdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
         rc = HSK_OSSL4_ERR_BADPEER;
         goto end;
     }
+    if (secretlen > secretalloc) {
+        /* More than the size query allowed: fail closed and
+         * cleanse the whole allocation. */
+        OPENSSL_clear_free(secret, secretalloc);
+        secret = NULL;
+        rc = HSK_OSSL4_ERR_NATIVE;
+        goto end;
+    }
+    if (secretlen < secretalloc) /* the caller frees with secretlen */
+        OPENSSL_cleanse(secret + secretlen, secretalloc - secretlen);
     *out = secret;
     rc = (long)secretlen;
     secret = NULL;
@@ -4129,8 +4182,9 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                 goto end;
             }
             total = (size_t)yn;
+            HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PACK, pbuf, total);
             ybuf = pbuf;
-            if (BN_bn2nativepad(y, ybuf, yn) <= 0) {
+            if (HSK_BN2NATIVEPAD(y, ybuf, yn) <= 0) {
                 OPENSSL_clear_free(pbuf, total);
                 goto end;
             }
@@ -4146,14 +4200,15 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                 rc = HSK_OSSL4_ERR_NOMEM;
                 goto end;
             }
+            HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PACK, pbuf, total);
             gbuf = pbuf + pn;
             ybuf = gbuf + gn;
             qbuf = ybuf + yn;
             /* Native order (see above): BE bytes would store
              * byte-reversed. */
-            if (BN_bn2nativepad(p, pbuf, pn) <= 0 ||
-                BN_bn2nativepad(g, gbuf, gn) <= 0 ||
-                BN_bn2nativepad(y, ybuf, yn) <= 0) {
+            if (HSK_BN2NATIVEPAD(p, pbuf, pn) <= 0 ||
+                HSK_BN2NATIVEPAD(g, gbuf, gn) <= 0 ||
+                HSK_BN2NATIVEPAD(y, ybuf, yn) <= 0) {
                 OPENSSL_clear_free(pbuf, total);
                 goto end;
             }
@@ -4161,7 +4216,7 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
             fromparams[1] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_FFC_G, gbuf, (size_t)gn);
             fromparams[2] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_PUB_KEY, ybuf, (size_t)yn);
             if (qn > 0) {
-                if (BN_bn2nativepad(q, qbuf, qn) <= 0) {
+                if (HSK_BN2NATIVEPAD(q, qbuf, qn) <= 0) {
                     OPENSSL_clear_free(pbuf, total);
                     goto end;
                 }
@@ -4208,11 +4263,22 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     /* The failed derive below may mutate secretlen: cleanse with the
      * allocation length, never the out-param. */
     secretalloc = secretlen;
-    if (EVP_PKEY_derive(pctx, secret, &secretlen) <= 0) {
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_SECRET, secret, secretalloc);
+    if (HSK_PKEY_DERIVE_OUT(pctx, secret, &secretlen) <= 0) {
         OPENSSL_clear_free(secret, secretalloc);
         secret = NULL;
         goto end;
     }
+    if (secretlen > secretalloc) {
+        /* More than the size query allowed: fail closed and
+         * cleanse the whole allocation. */
+        OPENSSL_clear_free(secret, secretalloc);
+        secret = NULL;
+        rc = HSK_OSSL4_ERR_NATIVE;
+        goto end;
+    }
+    if (secretlen < secretalloc) /* the caller frees with secretlen */
+        OPENSSL_cleanse(secret + secretlen, secretalloc - secretlen);
     *out = secret;
     rc = (long)secretlen;
     secret = NULL;
@@ -5148,7 +5214,7 @@ long hsk_ossl4_rsa_x509_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
     ERR_clear_error(); /* fresh queue; failures keep it for last_error */
     EVP_PKEY *pkey = NULL;
     unsigned char *blk = NULL;
-    size_t k;
+    size_t k = 0;
     int ksize;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
@@ -5198,7 +5264,7 @@ long hsk_ossl4_rsa_x509_sign(OSSL_LIB_CTX *ctx, const char *propq,
     ERR_clear_error(); /* fresh queue; failures keep it for last_error */
     EVP_PKEY *pkey = NULL;
     unsigned char *padded = NULL;
-    size_t k;
+    size_t k = 0;
     int ksize;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
@@ -5245,7 +5311,7 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
     EVP_PKEY *pkey = NULL;
     unsigned char *padded = NULL;
     unsigned char *recovered = NULL;
-    size_t k;
+    size_t k = 0;
     int ksize;
     int ok = HSK_OSSL4_ERR_NATIVE;
 
@@ -5361,6 +5427,7 @@ end:
     return rc;
 }
 
+#ifdef HSK_OSSL4_TEST_HOOKS
 /* --- TEST-ONLY ownership hooks ------------------------------------------- */
 
 struct hsk_ossl4_test_gate {
@@ -5710,20 +5777,26 @@ void hsk_ossl4_free_gated(hsk_ossl4_test_gate_t *g, void *ptr, size_t len)
     hsk_ossl4_test_gate_note_buf(g, -1);
 }
 
+/* Sums the digest and env double-free attempts and zeroes them. */
+long hsk_ossl4_test_live_acknowledge(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_test_digests.mu);
+    r = hsk_test_digests.doublefree;
+    hsk_test_digests.doublefree = 0;
+    pthread_mutex_unlock(&hsk_test_digests.mu);
+    pthread_mutex_lock(&hsk_test_envs.mu);
+    r += hsk_test_envs.doublefree;
+    hsk_test_envs.doublefree = 0;
+    pthread_mutex_unlock(&hsk_test_envs.mu);
+    return r;
+}
+
 long hsk_ossl4_test_digest_doublefree(void)
 {
     long r;
     pthread_mutex_lock(&hsk_test_digests.mu);
     r = hsk_test_digests.doublefree;
-    pthread_mutex_unlock(&hsk_test_digests.mu);
-    return r;
-}
-
-long hsk_ossl4_test_digest_untracked(void)
-{
-    long r;
-    pthread_mutex_lock(&hsk_test_digests.mu);
-    r = hsk_test_digests.noverflow;
     pthread_mutex_unlock(&hsk_test_digests.mu);
     return r;
 }
@@ -5737,11 +5810,159 @@ long hsk_ossl4_test_env_doublefree(void)
     return r;
 }
 
-long hsk_ossl4_test_env_untracked(void)
+/* Exit-time gate: an attempt nobody acknowledged is a real double
+ * free; fail the process loudly instead of letting it pass. */
+__attribute__((destructor)) static void hsk_test_live_exit_gate(void)
+{
+    long n = hsk_ossl4_test_digest_doublefree() +
+             hsk_ossl4_test_env_doublefree();
+    if (n > 0) {
+        fprintf(stderr,
+                "hsk_ossl4 test live-set: %ld unacknowledged double-free "
+                "attempt(s)\n",
+                n);
+        _exit(70);
+    }
+}
+
+/* --- derive seams -------------------------------------------------------- */
+
+typedef struct {
+    pthread_mutex_t mu;
+    long bn_calls;
+    int bn_fail_nth; /* 0 unarmed */
+    int derive_armed;
+    long derive_delta;
+    int derive_succeed;
+    long fired;
+    void *ptr[2];
+    size_t alloc[2];
+} hsk_seam_state_t;
+
+static hsk_seam_state_t hsk_seam = { PTHREAD_MUTEX_INITIALIZER, 0, 0, 0, 0,
+                                     0, 0, { NULL, NULL }, { 0, 0 } };
+
+void hsk_ossl4_test_seam_reset(void)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.bn_calls = 0;
+    hsk_seam.bn_fail_nth = 0;
+    hsk_seam.derive_armed = 0;
+    hsk_seam.derive_delta = 0;
+    hsk_seam.derive_succeed = 0;
+    hsk_seam.fired = 0;
+    hsk_seam.ptr[0] = hsk_seam.ptr[1] = NULL;
+    hsk_seam.alloc[0] = hsk_seam.alloc[1] = 0;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_bn_fail(int nth)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.bn_calls = 0;
+    hsk_seam.bn_fail_nth = nth;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_derive(long delta, int succeed)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.derive_armed = 1;
+    hsk_seam.derive_delta = delta;
+    hsk_seam.derive_succeed = succeed;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+long hsk_ossl4_test_seam_bn_calls(void)
 {
     long r;
-    pthread_mutex_lock(&hsk_test_envs.mu);
-    r = hsk_test_envs.noverflow;
-    pthread_mutex_unlock(&hsk_test_envs.mu);
+    pthread_mutex_lock(&hsk_seam.mu);
+    r = hsk_seam.bn_calls;
+    pthread_mutex_unlock(&hsk_seam.mu);
     return r;
 }
+
+long hsk_ossl4_test_seam_fired(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_seam.mu);
+    r = hsk_seam.fired;
+    pthread_mutex_unlock(&hsk_seam.mu);
+    return r;
+}
+
+int hsk_ossl4_test_seam_target(int which, void **ptr, size_t *alloc)
+{
+    int r = 0;
+    if (which < 0 || which > 1)
+        return 0;
+    pthread_mutex_lock(&hsk_seam.mu);
+    if (hsk_seam.ptr[which] != NULL) {
+        if (ptr != NULL)
+            *ptr = hsk_seam.ptr[which];
+        if (alloc != NULL)
+            *alloc = hsk_seam.alloc[which];
+        r = 1;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    return r;
+}
+
+static int hsk_seam_bn2nativepad(const BIGNUM *a, unsigned char *to, int n)
+{
+    int fail = 0;
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.bn_calls++;
+    if (hsk_seam.bn_fail_nth > 0 &&
+        hsk_seam.bn_calls == hsk_seam.bn_fail_nth) {
+        hsk_seam.bn_fail_nth = 0;
+        hsk_seam.fired++;
+        fail = 1;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (fail)
+        return -1;
+    return BN_bn2nativepad(a, to, n);
+}
+
+static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l)
+{
+    int armed, succeed;
+    long delta;
+    pthread_mutex_lock(&hsk_seam.mu);
+    armed = hsk_seam.derive_armed;
+    succeed = hsk_seam.derive_succeed;
+    delta = hsk_seam.derive_delta;
+    if (armed) {
+        hsk_seam.derive_armed = 0;
+        hsk_seam.fired++;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (!armed)
+        return EVP_PKEY_derive(c, k, l);
+    if (!succeed) {
+        /* A provider that wrote the secret, then reported failure
+         * with a changed length. */
+        memset(k, 0x5A, *l);
+        *l = (size_t)((long)*l + delta);
+        return 0;
+    }
+    {
+        int r = EVP_PKEY_derive(c, k, l);
+        if (r > 0)
+            *l = (size_t)((long)*l + delta);
+        return r;
+    }
+}
+
+static void hsk_seam_note(int which, void *p, size_t n)
+{
+    if (which < 0 || which > 1)
+        return;
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.ptr[which] = p;
+    hsk_seam.alloc[which] = n;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+#endif /* HSK_OSSL4_TEST_HOOKS */

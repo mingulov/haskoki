@@ -235,6 +235,11 @@ library
     unix          >= 2.8   && < 2.9,
     haskoki:haskoki-core
   ghc-options:      -Wall
+  -- Test configuration of the native shim (live-sets, fault gates,
+  -- error seams). Defined here only: the foreign library (the shipped
+  -- libhaskoki.so) never defines it.
+  cc-options:       -Wall -Wextra -std=c11 -pthread -DHSK_OSSL4_TEST_HOOKS
+  cpp-options:      -DHSK_OSSL4_TEST_HOOKS
   default-language: GHC2024
 
 -- C-loadable provider module. Produces libhaskoki.so via the
@@ -652,4 +657,19 @@ test-suite haskoki-logout-oracle-tests
     tasty       >= 1.4  && < 1.6,
     tasty-hunit >= 0.10 && < 0.11
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  default-language: GHC2024
+
+-- Buffered multipart accumulation cost (measurement, not a gate):
+-- one OS process per payload/chunk case, 60 s in-process cap.
+benchmark buffered-updates
+  import:           fatal-omissions
+  type:             exitcode-stdio-1.0
+  main-is:          BufferedUpdates.hs
+  hs-source-dirs:   bench
+  build-depends:
+    base       >= 4.14 && < 5,
+    bytestring >= 0.10 && < 0.13,
+    process    >= 1.6  && < 1.7,
+    haskoki:haskoki-core
+  ghc-options:      -Wall -threaded -rtsopts "-with-rtsopts=-T -N1"
   default-language: GHC2024
