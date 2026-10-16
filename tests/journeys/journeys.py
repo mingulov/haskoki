@@ -3510,13 +3510,37 @@ def mut_mismatch_verified_signature(root):
         "timeout_seconds": 60,
         "expect": {"exit": 0, "markers": []},
         "expect_refusal": {
-            "markers": ["JOURNEY-NO-VERIFIED-SIGNATURE"]},
+            "markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=verify"]},
         "depends_on": [],
     }
     log = ("JOURNEY-MISMATCH sign exit=0 stage=sign\n"
            "jar verified.\n"
            "JOURNEY-MISMATCH-VERIFIED-UNEXPECTED stage=verify\n")
     append_named_leg(root, row, log, 1, "fail")
+
+
+def mut_mismatch_sign_stage_passes(root):
+    row = {
+        "name": "java-keystore-refuse-mismatched",
+        "profiles": ["portfolio"],
+        "phase": "module",
+        "client": "java",
+        "store": "keystore-store",
+        "argv": ["python3", "@SRC@/tests/journeys/journeys.py",
+                 "mismatch-refusal"],
+        "env": {},
+        "timeout_seconds": 60,
+        "expect": {"exit": 0, "markers": []},
+        "expect_refusal": {
+            "markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=verify"]},
+        "depends_on": [],
+    }
+    log = ("jarsigner error: java.security.ProviderException: "
+           "sun.security.pkcs11.wrapper.PKCS11Exception: "
+           "CKR_ATTRIBUTE_TYPE_INVALID 0x162\n"
+           "JOURNEY-MISMATCH sign exit=1 stage=sign\n"
+           "JOURNEY-NO-VERIFIED-SIGNATURE stage=sign\n")
+    append_named_leg(root, row, log, 0, "pass")
 
 
 def mut_wrong_alias_changed_jar(root):
@@ -3661,6 +3685,9 @@ SELF_TEST_CASES = [
     ("mismatched alias produced a verified signature",
      {JR_EXIT, JR_REFUSAL_UNREACHED},
      mut_mismatch_verified_signature, None),
+    ("mismatched alias refused at sign, not verify",
+     {JR_REFUSAL_UNREACHED, JR_SELF_REPORT},
+     mut_mismatch_sign_stage_passes, None),
     ("wrong alias changed the jar",
      {JR_UNCHANGED}, mut_wrong_alias_changed_jar, None),
 ]
@@ -3826,8 +3853,9 @@ def committed_application_rows_problems(table):
     two test-sign legs and the probe sign leg verify in-leg; the
     application sign leg names its independent verifier; the wrong
     alias leg guards the jar bytes and the alias output; the mismatch
-    control refuses with its marker; the three setup legs are
-    module-phase setup rows. Subset assertions: later rows never
+    control refuses only at its verify stage; the keytool refusal legs
+    run verbose and pin their cause-chain CKR; the three setup legs
+    are module-phase setup rows. Subset assertions: later rows never
     disturb them.
     """
     rows = table.get("legs")
@@ -3894,6 +3922,46 @@ def committed_application_rows_problems(table):
         return [(RUN_LEG,
                  "committed java-keystore-verify-independent "
                  "is not a verifier leg")]
+    row = by_name["java-keystore-refuse-mismatched"]
+    refusal = row.get("expect_refusal")
+    if not isinstance(refusal, dict) \
+            or refusal.get("markers") != \
+            ["JOURNEY-NO-VERIFIED-SIGNATURE stage=verify"]:
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-mismatched lacks "
+                 "its verify-stage refusal marker")]
+    row = by_name["java-keystore-refuse-pin"]
+    if "-v" not in (row.get("argv") or []):
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-pin lacks -v")]
+    refusal = row.get("expect_refusal")
+    if not isinstance(refusal, dict) \
+            or refusal.get("rv") != "CKR_PIN_INCORRECT":
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-pin lacks "
+                 "its CKR_PIN_INCORRECT refusal")]
+    markers = refusal.get("markers") or []
+    if "Caused by: sun.security.pkcs11.wrapper.PKCS11Exception: " \
+            "CKR_PIN_INCORRECT" not in markers:
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-pin lacks "
+                 "its cause-chain marker")]
+    row = by_name["java-keystore-refuse-token"]
+    if "-v" not in (row.get("argv") or []):
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-token lacks -v")]
+    refusal = row.get("expect_refusal")
+    if not isinstance(refusal, dict) \
+            or refusal.get("rv") != "CKR_SLOT_ID_INVALID":
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-token lacks "
+                 "its CKR_SLOT_ID_INVALID refusal")]
+    markers = refusal.get("markers") or []
+    if "Caused by: sun.security.pkcs11.wrapper.PKCS11Exception: " \
+            "CKR_SLOT_ID_INVALID" not in markers:
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-token lacks "
+                 "its cause-chain marker")]
     return []
 
 

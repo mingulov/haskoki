@@ -708,7 +708,8 @@ jobs:
             set -eu
             export DEBIAN_FRONTEND=noninteractive
             SETUP_START=$(date +%s)
-            apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends \
               opensc=0.27.0~rc1-1 gnutls-bin=3.8.12-2ubuntu1.1 default-jdk-headless=2:1.25-77 \
               openssl=3.5.5-1ubuntu3.7 python3 libgmp10 libffi8 libnuma1 >/dev/null
             SETUP_END=$(date +%s)

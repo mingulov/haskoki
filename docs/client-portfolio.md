@@ -79,9 +79,9 @@ OpenSC junction for every leg; each leg is its own process.
 | `opensc-refuse-wrong-pin` | `--login --pin 0000 --list-objects` | nonzero exit; incorrect PIN surfaces | TO-QUALIFY |
 | `opensc-refuse-init-token-busy` | `--init-token` while sessions are open | nonzero exit; `CKR_SESSION_EXISTS` surfaces | TO-QUALIFY (contract: [walkthrough](demo-walkthrough.md#token-provisioning-and-state)) |
 
-RSA note: the token does not offer `CKM_RSA_PKCS` for encrypt or
-decrypt (PKCS#1 v1.5 decryption is excluded); the RSA legs above use
-`CKM_RSA_PKCS_OAEP` with SHA-256 throughout.
+RSA note: the token does not offer `CKM_RSA_PKCS` for
+`C_Encrypt`/`C_Decrypt` (OAEP is; v1.5 stays sign/wrap); the RSA legs
+above use `CKM_RSA_PKCS_OAEP` with SHA-256 throughout.
 
 Attribute warnings are known and stay explicit: OpenSC may report
 `CKR_ATTRIBUTE_TYPE_INVALID` while inspecting `DERIVE`,
