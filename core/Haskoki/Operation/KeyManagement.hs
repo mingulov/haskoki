@@ -257,8 +257,9 @@ import Haskoki.Object
   , TemplateRule (..)
   , checkRules
   , effectiveAttrs
+  , effectiveExtractable
+  , effectiveSensitive
   , findRule
-  , flagOr
   , mergedIsPrivate
   , mergedIsToken
   , objectVisible
@@ -2008,16 +2009,20 @@ checkDerivedTarget attrs n = do
     admits (DomainRange lo hi) = n >= lo && n <= hi
 
 -- | Check one data-object template for data-output derivations
--- (@CKM_HKDF_DATA@): contradictions and wrong shapes reject, a
--- missing class defaults to the mechanism-implied @CKO_DATA@, a
--- class that is present but wrong is a key-type contradiction
--- (the operation derives data objects, never keys), and a
--- @CKA_KEY_TYPE@ attribute is inconsistent (data objects carry
--- no key type).
+-- (@CKM_HKDF_DATA@): a history attribute refuses before any other
+-- check, contradictions and wrong shapes reject, a missing class
+-- defaults to the mechanism-implied @CKO_DATA@, a class that is
+-- present but wrong is a key-type contradiction (the operation
+-- derives data objects, never keys), and a @CKA_KEY_TYPE@
+-- attribute is inconsistent (data objects carry no key type).
 checkDataTemplate
   :: Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
-checkDataTemplate wantData tmpl =
+checkDataTemplate wantData tmpl
+  | Just (t, _) <- find ((`elem` historyAttrs) . fst) tmpl =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("history attribute not allowed in data template: " ++ show t))
+  | otherwise =
   case validateTemplate (ensureTemplateClass wantData tmpl) of
   Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     ("contradictory attribute: " ++ show t))
@@ -2055,9 +2060,9 @@ pendingFromAttrs st attrs = PendingObject
 -- | Required byte-operation child protection (OASIS PKCS#11 3.2
 -- §6.43.3–§6.43.7): sensitivity is required when any input key is
 -- sensitive; nonextractability is required when any input key is
--- unextractable. Source values decide through the effective view:
--- a flag-less input counts as non-sensitive and unextractable,
--- matching the readback seal and the copy guard.
+-- unextractable. Source values decide through the effective view
+-- (per-class defaults), matching the readback seal and the copy
+-- guard.
 data ByteOpsProtection = ByteOpsProtection
   { bopSensitive :: !Bool
   , bopUnextractable :: !Bool
@@ -2073,13 +2078,10 @@ byteOpsProtectionOf
   -> Maybe (Map AttributeType AttributeValue)
   -> ByteOpsProtection
 byteOpsProtectionOf base mAux = ByteOpsProtection
-  { bopSensitive = isTrue AttrSensitive base || maybe False (isTrue AttrSensitive) mAux
-  , bopUnextractable = isFalse AttrExtractable base
-      || maybe False (isFalse AttrExtractable) mAux
+  { bopSensitive = effectiveSensitive base || maybe False effectiveSensitive mAux
+  , bopUnextractable = not (effectiveExtractable base)
+      || maybe False (not . effectiveExtractable) mAux
   }
-  where
-    isTrue t attrs = flagOr False t attrs
-    isFalse t attrs = not (flagOr False t attrs)
 
 -- | Resolve one validated byte-operation caller template against
 -- the required source protection: a template that explicitly
@@ -2092,10 +2094,9 @@ byteOpsProtectionOf base mAux = ByteOpsProtection
 -- §6.43). Scoped to the five byte-operation mechanisms only: no
 -- other derivation family consults this helper.
 --
--- History attributes (@CKA_ALWAYS_SENSITIVE@/@CKA_NEVER_EXTRACTABLE@)
--- are not in the attribute inventory, so they cannot stamp here:
--- native templates carrying them refuse at the FFI chase and reads
--- report @CKR_ATTRIBUTE_TYPE_INVALID@ (existing boundary behavior).
+-- History attributes never stamp here: only the protection pair
+-- inherits. Templates carrying history refuse inconsistent at the
+-- template check, and reads report the effective view.
 resolveByteOpsProtection
   :: ByteOpsProtection -> Map AttributeType AttributeValue
   -> Either KeyDeny (Map AttributeType AttributeValue)

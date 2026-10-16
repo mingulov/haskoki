@@ -13,8 +13,9 @@ all — fromdata rc=-2 in 4.0.2).
 
 This module owns the row table, the codec, the base type gate,
 and the attribute map. The map covers modeled attributes only:
-CKA_LOCAL, CKA_TRUSTED, the dates, CKA_GEN_MECHANISM and
-CKA_WRAP_TEMPLATE have no 'AttributeType' here, so reflections
+CKA_TRUSTED, the dates and CKA_WRAP_TEMPLATE are outside the map,
+as are CKA_LOCAL and CKA_GEN_MECHANISM (inventoried, but this row
+stamps no history), so reflections
 (ENCRYPT<-DECRYPT, VERIFY<-SIGN, VERIFY_RECOVER<-SIGN_RECOVER,
 WRAP<-UNWRAP, ENCAPSULATE<-DECAPSULATE), copies (DERIVE\/ID\/
 SUBJECT\/PUBLIC_KEY_INFO\/ALLOWED_MECHANISMS), forced-false
@@ -129,7 +130,7 @@ copies =
 -- | The attribute map: reflections and copies follow the base
 -- (missing stays missing), TOKEN\/PRIVATE force false,
 -- MODIFIABLE\/COPYABLE\/DESTROYABLE force true, LABEL forces
--- empty. Unmodeled table cells (LOCAL, TRUSTED, dates,
+-- empty. Cells outside the map (LOCAL, TRUSTED, dates,
 -- GEN_MECHANISM, WRAP_TEMPLATE) are out of scope by
 -- construction — see the module header.
 pubPrivMapAttrs

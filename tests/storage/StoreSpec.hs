@@ -411,7 +411,7 @@ spec = testGroup "store contract"
 
 -- | The history attributes survive the attribute-document codec in
 -- both directions: the three flags as booleans, the mechanism id as
--- an unsigned long.
+-- an unsigned long, including the unavailable-information sentinel.
 testHistoryAttrsRoundTrip :: IO ()
 testHistoryAttrsRoundTrip = do
   let m = Map.fromList
@@ -421,6 +421,14 @@ testHistoryAttrsRoundTrip = do
         , (AttrKeyGenMechanism, ValULong 0x1082)
         ]
   assertEqual "history codec round-trip" (Just m) (decodeAttrsDoc (encodeAttrsDoc m))
+  let mMax = Map.fromList
+        [ (AttrAlwaysSensitive, ValBool False)
+        , (AttrNeverExtractable, ValBool False)
+        , (AttrLocal, ValBool False)
+        , (AttrKeyGenMechanism, ValULong maxBound)
+        ]
+  assertEqual "history codec sentinel round-trip"
+    (Just mMax) (decodeAttrsDoc (encodeAttrsDoc mMax))
 
 -- | The shared backend contract. Every backend runs every case here.
 contractSpec :: String -> IO Opener -> TestTree

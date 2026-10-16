@@ -30,6 +30,8 @@ module Haskoki.Object
   , isKeyClass
   , keyDefaults
   , effectiveAttrs
+  , effectiveSensitive
+  , effectiveExtractable
   , flagOr
   , objectToken
   , objectPrivate
@@ -67,6 +69,7 @@ import Haskoki.Attribute
   , getAttributes
   , historyAttrs
   , payloadSealed
+  , sealedAttrs
   , shapeMatches
   )
 import Haskoki.Attribute.Generated
@@ -416,16 +419,16 @@ keyDefaults =
   ]
 
 -- | The reported key attributes a public key object lacks:
--- non-sensitive and extractable. Public material is always
--- readable (the seal never applies to public keys), so the
--- default tells the truth. Caller-supplied values are stored and
--- reported, but never seal.
+-- non-sensitive and extractable, plus the origin pair. Public keys
+-- own no ALWAYS_SENSITIVE\/NEVER_EXTRACTABLE (Table 27), so reads
+-- of those report unknown. Public material is always readable
+-- (the seal never applies to public keys), so the default tells
+-- the truth. Caller-supplied values are stored and reported, but
+-- never seal.
 publicKeyDefaults :: [(AttributeType, AttributeValue)]
 publicKeyDefaults =
   [ (AttrSensitive, ValBool False)
   , (AttrExtractable, ValBool True)
-  , (AttrAlwaysSensitive, ValBool False)
-  , (AttrNeverExtractable, ValBool False)
   , (AttrLocal, ValBool False)
   -- maxBound is CK_UNAVAILABLE_INFORMATION: KGM is valid only when
   -- LOCAL is TRUE (PKCS#11 Table 26).
@@ -455,6 +458,20 @@ effectiveAttrs attrs
         : [(t, ValBool d) | (t, d) <- storageFlagDefaults])
     keyDefaultMap = Map.fromList keyDefaults
     publicKeyDefaultMap = Map.fromList publicKeyDefaults
+
+-- | Effective protection flags for enforcement: the stored value,
+-- else the class default from 'effectiveAttrs' (public keys report
+-- EXTRACTABLE=TRUE, all other keys FALSE). Non-key classes own no
+-- flags and read FALSE (fail-closed). Every enforcement predicate
+-- reads these, never a literal default, so a reported default
+-- cannot drift from the enforced one.
+effectiveSensitive, effectiveExtractable :: Map AttributeType AttributeValue -> Bool
+effectiveSensitive attrs = case Map.lookup AttrSensitive (effectiveAttrs attrs) of
+  Just (ValBool b) -> b
+  _ -> False
+effectiveExtractable attrs = case Map.lookup AttrExtractable (effectiveAttrs attrs) of
+  Just (ValBool b) -> b
+  _ -> False
 
 -- | The object's token flag (absent or wrongly shaped = session object).
 objectToken :: ObjectState -> Bool
@@ -1074,9 +1091,8 @@ planDestroyObject model st h = case resolveHandle model h of
 -- contradiction-free, and the merged attributes must still carry a
 -- class. The copy gets a fresh id and handle; the source is
 -- untouched. Seal ratchet: overrides that flip sensitive true->false,
--- or set extractable true on a source that is not explicitly
--- extractable (false or absent), are rejected
--- ('CKR_TEMPLATE_INCONSISTENT');
+-- or set extractable true on a source whose effective flag is not
+-- extractable, are rejected ('CKR_TEMPLATE_INCONSISTENT');
 -- sealed flags otherwise inherit, so a copy of a sealed object is
 -- sealed too. Wrongly shaped overrides refuse before any rule;
 -- TRUSTED=true overrides need the SO login; certificate sources
@@ -1102,16 +1118,16 @@ planCopyObject model st h tmpl = case resolveHandle model h of
           Just t -> templateReject CKR_TEMPLATE_INCONSISTENT
             ("wrong shape for attribute: " ++ show t)
           Nothing
-            | Map.lookup AttrSensitive (osAttrs src) == Just (ValBool True)
+            | effectiveSensitive (osAttrs src)
             , Map.lookup AttrSensitive over == Just (ValBool False) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT
                   "copy cannot clear the sensitive flag"
             -- A copy may set EXTRACTABLE=true only when the source is
-            -- explicitly extractable. An absent flag counts as
-            -- unextractable here, as on the set path and at wrap, so a
-            -- key that cannot be wrapped cannot become wrappable
-            -- through a copy.
-            | not (flagOr False AttrExtractable (osAttrs src))
+            -- effectively extractable. The effective flag decides
+            -- here, as on the set path and at wrap, so a key that
+            -- cannot be wrapped cannot become wrappable through a
+            -- copy.
+            | not (effectiveExtractable (osAttrs src))
             , Map.lookup AttrExtractable over == Just (ValBool True) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT
                   "copy cannot set extractable on an unextractable source"
@@ -1220,11 +1236,10 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
       Just refusal -> Just refusal
       Nothing -> firstRefusal cur rest
     -- Nothing = mutable, Just = refusal. Each ratchet compares
-    -- against the enforced value ('flagOr' with the shared
-    -- defaults): on keys that equals the reported value, so
-    -- writing what a read reports succeeds and only a flip
-    -- against the ratchet refuses. Non-key classes own no key
-    -- flags, so their enforcement is unchanged by construction.
+    -- against the effective value (the reported view): writing
+    -- what a read reports succeeds and only a flip against the
+    -- ratchet refuses. Non-key classes own no key flags and read
+    -- FALSE, so their enforcement is unchanged by construction.
     mutableAs :: Map AttributeType AttributeValue
       -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
     mutableAs cur t v
@@ -1238,9 +1253,9 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
                  , AttrEncapsulate, AttrDecapsulate ] = Nothing
       | t == AttrToken = ratchet (flagOr tokenDefault AttrToken cur) True
           "CKA_TOKEN can only change false->true"
-      | t == AttrExtractable = ratchet (flagOr False AttrExtractable cur) False
+      | t == AttrExtractable = ratchet (effectiveExtractable cur) False
           "CKA_EXTRACTABLE can only change true->false"
-      | t == AttrSensitive = ratchet (flagOr False AttrSensitive cur) True
+      | t == AttrSensitive = ratchet (effectiveSensitive cur) True
           "CKA_SENSITIVE can only change false->true"
       | t == AttrCopyable = ratchet (flagOr copyableDefault AttrCopyable cur) False
           "CKA_COPYABLE can only change true->false"
@@ -1264,10 +1279,10 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
 -- visible object; a contradictory template is rejected, never
 -- silently emptied. Matches without a current binding gain fresh
 -- ones in the same combined delta (discovery mints bindings; it
--- never reuses a dead handle). Sealed payloads never match on
--- 'AttrValue': a template naming the value only matches unsealed
--- objects, so find cannot serve as a guess-oracle against a sealed
--- payload (sealed objects stay discoverable by their other
+-- never reuses a dead handle). Sealed components never match: a
+-- template naming the value or any private component only matches
+-- unsealed objects, so find cannot serve as a guess-oracle against
+-- sealed material (sealed objects stay discoverable by their other
 -- attributes).
 planFindObjects
   :: Model -> SessionState -> [(AttributeType, AttributeValue)] -> PlanResult
@@ -1295,8 +1310,8 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
     matchAll q ost = all hit (Map.toList q)
       where
         view = effectiveAttrs (osAttrs ost)
-        hit (AttrValue, _)
-          | payloadSealed view = False
+        hit (t, _)
+          | t `elem` sealedAttrs, payloadSealed view = False
         hit (t, v) = Map.lookup t view == Just v
     currentHandle :: ObjectId -> ObjectState -> Maybe ExternalHandle
     currentHandle oid ost = listToMaybe

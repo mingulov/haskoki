@@ -104,6 +104,9 @@ spec = testGroup "objects and attributes"
   , testCase "key defaults: protection ratchets on legacy keys" caseKeyEffectiveRatchets
   , testCase "key defaults: data objects unchanged" caseDataUnchanged
   , testCase "key defaults: public keys stay readable" casePublicKeysStayReadable
+  , testCase "key defaults: sealed private components never match" caseRsaPrivateFindWithholds
+  , testCase "key defaults: public enforcement follows reported" casePublicEnforcementFollowsReported
+  , testCase "key defaults: sealed value find stands alone" caseSealedValueFindStandsAlone
   , testCase "find: template match returns handles" caseFindFlow
   , testCase "find: sealed payloads never match a value guess" caseFindSealedNoOracle
   , testCase "find: contradictory template rejected, nothing bound" caseFindContradiction
@@ -691,6 +694,12 @@ caseKeyEffectiveRatchets = do
   assertEqual "extractable cannot flip up" CKR_ATTRIBUTE_READ_ONLY codeE
   (pcS, _) <- runCommit m1 (setReq sid h [(AttrSensitive, ValBool False)])
   assertEqual "reported no-op writes" CKR_OK (pcCode pcS)
+  -- Direction pin: false->true succeeds, then true->false refuses.
+  -- A swapped ratchet would refuse the first and allow the second.
+  (pcT, mT) <- runCommit m1 (setReq sid h [(AttrSensitive, ValBool True)])
+  assertEqual "sensitive flips up" CKR_OK (pcCode pcT)
+  (codeD, _) <- runReject mT (setReq sid h [(AttrSensitive, ValBool False)])
+  assertEqual "sensitive cannot flip down" CKR_ATTRIBUTE_READ_ONLY codeD
   mapM_ (\(t, v) -> do
     (code, _) <- runReject m1 (setReq sid h [(t, v)])
     assertEqual ("stamped attribute is immutable: " ++ show t)
@@ -749,6 +758,72 @@ casePublicKeysStayReadable = do
   assertEqual "flagged public reports stored marks"
     [encodeValue (ValBool True), encodeValue (ValBool False)]
     [outBytes o | o <- pcOutputs pcSE]
+  -- History attributes are private/secret-only: a public read of
+  -- either one is an unknown type, and a public key never matches
+  -- a history default in find.
+  (codeA, _) <- runReject m1 (getReq sid h [AttrAlwaysSensitive])
+  assertEqual "public always-sensitive unknown" CKR_ATTRIBUTE_TYPE_INVALID codeA
+  (codeN, _) <- runReject m1 (getReq sid h [AttrNeverExtractable])
+  assertEqual "public never-extractable unknown" CKR_ATTRIBUTE_TYPE_INVALID codeN
+  (pcHA, _) <- runCommit m1 (findReq sid [(AttrAlwaysSensitive, ValBool False)])
+  histA <- findHandles pcHA
+  assertEqual "public misses always-sensitive default" [] histA
+  (pcHN, _) <- runCommit m1 (findReq sid [(AttrNeverExtractable, ValBool False)])
+  histN <- findHandles pcHN
+  assertEqual "public misses never-extractable default" [] histN
+
+-- | A sealed RSA private key withholds every private component in
+-- find, not only the value: a guessed private exponent, prime or
+-- coefficient never matches, while the public modulus still does.
+-- The read path already seals these; find must agree with it.
+caseRsaPrivateFindWithholds :: IO ()
+caseRsaPrivateFindWithholds = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid privateRsaLegacy)
+  h <- commitHandle pc
+  (rej, _) <- runRejectFull m1 (getReq sid h [AttrPrivateExponent])
+  assertEqual "legacy private exponent seals" CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
+  (pcG, _) <- runCommit m1
+    (findReq sid [(AttrPrivateExponent, ValBytes "legacy-privexp-guess")])
+  oracle <- findHandles pcG
+  assertEqual "sealed private exponent never matches" [] oracle
+  (pcP, _) <- runCommit m1 (findReq sid [(AttrPrime1, ValBytes "legacy-prime1")])
+  oracleP <- findHandles pcP
+  assertEqual "sealed prime never matches" [] oracleP
+  (pcC, _) <- runCommit m1
+    (findReq sid [(AttrCoefficient, ValBytes "legacy-coeff")])
+  oracleC <- findHandles pcC
+  assertEqual "sealed coefficient never matches" [] oracleC
+  (pcM, _) <- runCommit m1 (findReq sid [(AttrModulus, ValBytes "legacy-modulus")])
+  modHits <- findHandles pcM
+  assertEqual "public modulus still matches" [h] modHits
+
+-- | Public enforcement follows the reported extractable-true: on a
+-- flag-less public key, writing the reported value is a no-op and
+-- copying to it is allowed. A literal absent-means-false default
+-- would refuse both.
+casePublicEnforcementFollowsReported :: IO ()
+casePublicEnforcementFollowsReported = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid publicRsa)
+  h <- commitHandle pc
+  (pcS, m2) <- runCommit m1 (setReq sid h [(AttrExtractable, ValBool True)])
+  assertEqual "public set of reported true" CKR_OK (pcCode pcS)
+  (pcC, _) <- runCommit m2 (copyReq sid h [(AttrExtractable, ValBool True)])
+  assertEqual "public copy to reported true" CKR_OK (pcCode pcC)
+
+-- | The sealed-value find guard as a standalone pin: a legacy key
+-- never matches a value guess. Kept separate so the assertion runs
+-- even when earlier legs in the grouped case change.
+caseSealedValueFindStandsAlone :: IO ()
+caseSealedValueFindStandsAlone = do
+  (sid, m0) <- openSession seeded
+  let keyBytes = BS.replicate 16 7
+  (pc, m1) <- runCommit m0 (createReq sid (secretAes keyBytes))
+  _ <- commitHandle pc
+  (pcV, _) <- runCommit m1 (findReq sid [(AttrValue, ValBytes keyBytes)])
+  oracle <- findHandles pcV
+  assertEqual "sealed value never matches" [] oracle
 
 caseFindFlow :: IO ()
 caseFindFlow = do
@@ -1917,6 +1992,24 @@ publicRsa =
   , (AttrKeyType, ValULong (mustKeyTypeId "CKK_RSA"))
   , (AttrModulus, ValBytes (BS.pack [0xDE, 0xAD, 0xBE, 0xEF]))
   , (AttrPublicExponent, ValBytes (BS.pack [1, 0, 1]))
+  , (AttrToken, ValBool False)
+  ]
+
+-- | A minimal RSA private-key template without protection flags:
+-- class, key type, the eight import components and the session
+-- mark. The import assembles the value; the absent flags seal it.
+privateRsaLegacy :: [(AttributeType, AttributeValue)]
+privateRsaLegacy =
+  [ (AttrClass, ValULong (mustClassId "CKO_PRIVATE_KEY"))
+  , (AttrKeyType, ValULong (mustKeyTypeId "CKK_RSA"))
+  , (AttrModulus, ValBytes "legacy-modulus")
+  , (AttrPublicExponent, ValBytes "legacy-pubexp")
+  , (AttrPrivateExponent, ValBytes "legacy-privexp-guess")
+  , (AttrPrime1, ValBytes "legacy-prime1")
+  , (AttrPrime2, ValBytes "legacy-prime2")
+  , (AttrExponent1, ValBytes "legacy-exp1")
+  , (AttrExponent2, ValBytes "legacy-exp2")
+  , (AttrCoefficient, ValBytes "legacy-coeff")
   , (AttrToken, ValBool False)
   ]
 

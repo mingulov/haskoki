@@ -51,7 +51,7 @@ import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), ObjectState (..), SessionState)
-import Haskoki.Object (encodeTemplate, flagOr, objectVisible, parseTemplate, resolveHandle)
+import Haskoki.Object (effectiveExtractable, effectiveSensitive, encodeTemplate, objectVisible, parseTemplate, resolveHandle)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
@@ -1016,7 +1016,9 @@ planDerive rules model st mech baseH blob
             | t /= baseBool at b -> Just
                 ("template " ++ label ++ " differs from the base key")
           _ -> Nothing
-        baseBool at b = flagOr False at b
+        baseBool AttrSensitive b = effectiveSensitive b
+        baseBool AttrExtractable b = effectiveExtractable b
+        baseBool _ _ = False
     checkAllMerged
       :: LenDefault
       -> (Map.Map AttributeType AttributeValue

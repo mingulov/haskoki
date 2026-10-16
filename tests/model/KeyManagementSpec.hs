@@ -460,6 +460,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Byte-op derives preserve source protection" caseByteOpsProtection
   , testCase "Generate refuses history attributes in the caller template" caseKeyTemplatesRefuseHistory
   , testCase "Key-material plans rows, refuses bad shapes" caseKeyMatPlans
+  , testCase "Key-material absent base reads the defaults" caseKeyMatAbsentBase
   , testCase "Real key-material derives match the KATs" caseRealKeyMatVector
   , testCase "SSL3 plans rows, refuses bad shapes" caseSsl3DerivePlans
   , testCase "Real SSL3 derives match the KATs" caseRealSsl3Vector
@@ -5820,6 +5821,13 @@ caseHkdfDataPlans = do
     KeyDenied (KeyDeny code _) ->
       assertEqual "extract-only code" CKR_MECHANISM_PARAM_INVALID code
     other -> assertFailure ("extract-only must deny, got: " ++ show other)
+  -- A history attribute in a data-output template refuses
+  -- inconsistent, like every other creation entry.
+  case planDerive defaultRules m2 st hkdfDataMech baseH
+      (encodeDeriveParams frame [dat ++ [(AttrLocal, ValBool True)]]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "history data code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("history data must deny, got: " ++ show other)
 
 caseRealHkdfDataVector :: IO ()
 caseRealHkdfDataVector = withRealEnv $ \env -> do
@@ -6597,13 +6605,15 @@ caseByteOpsProtection = withSynth $ \answer -> do
     KeyDenied (KeyDeny code _) ->
       assertEqual "overrun code" CKR_ARGUMENTS_BAD code
     other -> assertFailure ("overrun must deny, got: " ++ show other)
-  -- A refused derivation allocates nothing.
+  -- A refused derivation allocates nothing: the denial carries no
+  -- delta, so publishing leaves the pre-snapshot unchanged.
   let before = Map.size (mObjects m5)
   case planDerive defaultRules m5 st extractMech protBaseH
       (encodeDeriveParams fExt [kidDown 16]) of
     KeyDenied _ -> pure ()
     other -> assertFailure ("downgrade must deny, got: " ++ show other)
-  assertEqual "denied derive allocates nothing" before (Map.size (mObjects m5))
+  mAfterDeny <- expectRight (publishDelta m5 (StateDelta []))
+  assertEqual "denied derive allocates nothing" before (Map.size (mObjects mAfterDeny))
   -- The sealed flags retain through finish/publication with exact
   -- output bytes; readback and wrap then refuse typed.
   (m6, childH) <- case planDerive defaultRules m5 st extractMech protBaseH
@@ -6699,14 +6709,16 @@ caseByteOpsProtection = withSynth $ \answer -> do
         (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
     other -> assertFailure ("absent-base derive must plan, got: " ++ show other)
   -- A history attribute in the derive template refuses
-  -- inconsistent and allocates nothing.
+  -- inconsistent and allocates nothing: publishing the denial
+  -- leaves the pre-snapshot unchanged.
   let histBefore = Map.size (mObjects m5)
   case planDerive defaultRules m5 st concatKeyMech plainBaseH
       (encodeDeriveParams fKeyPlainAux [kidOmit 64 ++ [(AttrLocal, ValBool True)]]) of
     KeyDenied (KeyDeny code _) ->
       assertEqual "history derive code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("history derive must deny, got: " ++ show other)
-  assertEqual "refused history derive allocates nothing" histBefore (Map.size (mObjects m5))
+  mAfterHist <- expectRight (publishDelta m5 (StateDelta []))
+  assertEqual "refused history derive allocates nothing" histBefore (Map.size (mObjects mAfterHist))
   -- Unaffected family: HKDF carries no §6.43 inheritance rule, so
   -- a readable template over a protected base still plans with the
   -- caller's flags (scoping control against a global rule).
@@ -6721,7 +6733,8 @@ caseByteOpsProtection = withSynth $ \answer -> do
     other -> assertFailure ("HKDF control must plan, got: " ++ show other)
 
 -- | A history attribute in a generation template refuses
--- inconsistent at the strict choke point and allocates nothing.
+-- inconsistent at the strict choke point and allocates nothing:
+-- publishing the denial leaves the pre-snapshot unchanged.
 caseKeyTemplatesRefuseHistory :: IO ()
 caseKeyTemplatesRefuseHistory = do
   m0 <- seedModel
@@ -6738,7 +6751,8 @@ caseKeyTemplatesRefuseHistory = do
     KeyDenied (KeyDeny code _) ->
       assertEqual "history generate code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("history generate must deny, got: " ++ show other)
-  assertEqual "refused history generate allocates nothing" before (Map.size (mObjects m0))
+  mAfterGen <- expectRight (publishDelta m0 (StateDelta []))
+  assertEqual "refused history generate allocates nothing" before (Map.size (mObjects mAfterGen))
 
 keyMat10Mech, keyMat12Mech, keyMatSafeMech :: MechanismId
 keyMat10Mech = MechanismId ckm_TLS_KEY_AND_MAC_DERIVE
@@ -6987,6 +7001,49 @@ caseKeyMatPlans = do
     KeyDenied (KeyDeny code _) ->
       assertEqual "wrong-row code" CKR_ARGUMENTS_BAD code
     other -> assertFailure ("wrong row must deny, got: " ++ show other)
+
+-- | Key-material protection over a base with no stored flags: the
+-- absent base reads as non-sensitive and unextractable, so a
+-- matching false/false template and an omitted template plan,
+-- while either flag set true refuses as a conflict.
+caseKeyMatAbsentBase :: IO ()
+caseKeyMatAbsentBase = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 47])
+  let f12 = encodeTlsKeyMatParams 4 0 16 16 keyMatCr keyMatSr
+      kid prot =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        ] ++ prot
+      matchFalse = kid [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)]
+      omitted = kid []
+      conflictSens = kid [(AttrSensitive, ValBool True), (AttrExtractable, ValBool False)]
+      conflictExtr = kid [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)]
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [matchFalse]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("absent-base match must plan, got: " ++ show other)
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [omitted]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("absent-base omitted must plan, got: " ++ show other)
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [conflictSens]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "absent-base sens code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("absent-base sens must deny, got: " ++ show other)
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [conflictExtr]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "absent-base extr code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("absent-base extr must deny, got: " ++ show other)
 
 caseRealKeyMatVector :: IO ()
 caseRealKeyMatVector = withRealEnv $ \env -> do
