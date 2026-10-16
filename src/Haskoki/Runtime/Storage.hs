@@ -455,11 +455,18 @@ data StoreError
   | StoreJournalPresent !FilePath
     -- ^ An interrupted write left this rollback journal; read-only
     -- tools refuse rather than recover it (see the recovery guide).
+    -- Never a @-wal@ or @-shm@ file: those are 'StoreForeignSidecar'.
   | StoreJournalCold !FilePath
     -- ^ An interrupted migration left this rollback journal cold
     -- (SQLite itself treats it as not hot, so the database already
     -- reads as committed state). The check refuses it distinctly;
     -- only the explicit migration clears it, under exclusive locks.
+  | StoreForeignSidecar !FilePath
+    -- ^ A non-empty @-wal@ or @-shm@ sibling: haskoki never writes
+    -- one, so it can only come from foreign tooling. Refused
+    -- before any SQLite connection opens, by check, migrate and
+    -- the serving open alike; the remedy moves both files aside
+    -- (keeping them) and never starts the service.
   deriving (Eq, Show)
 
 -- | Store failures throw as exceptions on the paths with no

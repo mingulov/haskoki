@@ -425,7 +425,8 @@ writes its own config for the copy (see `caseConfigSelects` in
 | 2 | usage error |
 
 Tags: `store-migration-required`, `store-identity-refused`, `store-live`,
-`store-journal-present`, `store-journal-cold`, `store-unsupported-version`,
+`store-journal-present`, `store-journal-cold`, `store-foreign-sidecar`,
+`store-unsupported-version`,
 `store-corrupt`, `store-full`, `store-missing`, `store-unreadable`,
 `config-invalid`, `config-mismatch`, `migrate-unsafe-backup-dir`,
 `migrate-store-changed`, `migrate-backup-exists`, `migrate-backup-failed`,
@@ -456,8 +457,9 @@ in `tests/storage/PreflightSpec.hs`).
    store; the backup directory is missing, not a real directory (a
    symlink is refused), not writable, or the store's own directory; a
    process holds the store; a non-empty `-wal` or `-shm` sibling from
-   foreign tooling exists (checked before the journal classification,
-   so a cold journal never bypasses it; see `caseMigrateCliColdWal` in
+   foreign tooling exists, reported as `store-foreign-sidecar`
+   (checked before the journal classification, so a cold journal
+   never bypasses it; see `caseMigrateCliColdWal` in
    `tests/storage/StoreCtlSpec.hs`); an interrupted write left
    `<store>-journal` (hot, unknown, or not a regular file, which is
    refused without opening; see `caseCheckNonRegularJournal` in
@@ -525,19 +527,28 @@ zero, anything else (including a short or unreadable file) is unknown
 and fails closed (`classifyJournal` in
 `src/Haskoki/Runtime/Storage/SQLite.hs`). A non-empty `-wal` or `-shm`
 sibling is checked before the cold classification, so a cold journal
-plus a foreign `-wal` reports `store-journal-present`, never cold, and
+plus a foreign `-wal` reports `store-foreign-sidecar`, never cold, and
 every byte stays untouched (`caseMigrateCliColdWal` in
 `tests/storage/StoreCtlSpec.hs`).
 
-A hot journal (or a non-empty `-wal`/`-shm` sibling, or an unknown
-header) stays refused: `store check` and `store migrate` report
-`store-journal-present` and touch neither file. Either start the
-serving haskoki once: its open rolls the interrupted transaction back
-(the store returns to its pre-migration bytes) and refuses as
-migration-required; then run check and migrate again. Or restore the
-backup the interrupted run wrote, moving the store and its journal
-aside together first (`caseKilledMigrationRecovers`,
+A hot journal (or an unknown header) stays refused: `store check` and
+`store migrate` report `store-journal-present` and touch neither file.
+Either start the serving haskoki once: its open rolls the interrupted
+transaction back (the store returns to its pre-migration bytes) and
+refuses as migration-required; then run check and migrate again. Or
+restore the backup the interrupted run wrote, moving the store and its
+journal aside together first (`caseKilledMigrationRecovers`,
 `caseKilledRestoreMovesJournal`).
+
+A non-empty `-wal` or `-shm` sibling is a different refusal:
+`store check`, `store migrate` and the serving open all report it
+(`store-foreign-sidecar` on the CLI; the serving open fails closed
+the same way any store-open refusal does) and touch nothing, because
+opening would checkpoint foreign frames into the store. Never start
+the service to clear it. Move `<store>-wal` and `<store>-shm` aside
+(keep both files) and run `store check` again
+(`caseForeignSidecarRemedy` in `tests/storage/PreflightSpec.hs`,
+`caseServingRefusesForeignWal` there).
 
 A cold journal is refused distinctly: `store check` reports
 `store-journal-cold` and names `store migrate` as the remedy, touching
@@ -563,9 +574,10 @@ records `cold-journal-removed: no`
 
 ### Restore from a backup
 
-Stop the owner. Move the current store aside (with its `-journal`, if
-present; keep both), copy the backup to the store path, and run
-`store check`. A pre-migration backup is a schema 1 or 2 store again:
+Stop the owner. Move the current store aside (with its `-journal`,
+`-wal` and `-shm`, if present; keep them all), copy the backup to the
+store path, and run `store check`. A pre-migration backup is a schema
+1 or 2 store again:
 old binaries open it, and v0.5 needs `store migrate` again. Restoring
 brings back the credentials as they were when the backup was taken:
 PINs changed since then revert, and nothing prevents rolling back to an

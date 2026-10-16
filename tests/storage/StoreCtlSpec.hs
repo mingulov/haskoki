@@ -341,13 +341,13 @@ caseCheckWalShm = do
     BS.writeFile (store ++ "-wal") "foreign write-ahead log"
     r <- check store cfgPath
     assertEqual "wal: exit 1" 1 (ceCode r)
-    assertBool "wal: tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+    assertBool "wal: tag" ("store-foreign-sidecar:" `isPrefixOf` ceErr r)
   withScratch "ctl-check" $ \dir -> do
     (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
     BS.writeFile (store ++ "-shm") "foreign shared memory"
     r <- check store cfgPath
     assertEqual "shm: exit 1" 1 (ceCode r)
-    assertBool "shm: tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+    assertBool "shm: tag" ("store-foreign-sidecar:" `isPrefixOf` ceErr r)
   withScratch "ctl-check" $ \dir -> do
     (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
     BS.writeFile (store ++ "-wal") ""
@@ -367,6 +367,7 @@ caseCheckSymlinkWal = withScratch "ctl-check" $ \dir -> do
   r <- check link cfgPath
   assertEqual "exit 1" 1 (ceCode r)
   assertEqual "no plan printed" "" (ceOut r)
+  assertBool "tag" ("store-foreign-sidecar:" `isPrefixOf` ceErr r)
   BS.readFile real >>= \b -> assertBool "store untouched" (b == dbBefore)
   BS.readFile (real ++ "-wal") >>= \b -> assertBool "wal untouched" (b == wBefore)
   shmReal <- doesFileExist (real ++ "-shm")
@@ -502,7 +503,7 @@ caseMigrateCliWal = withScratch "ctl-migrate" $ \dir -> do
   wBytes <- BS.readFile (store ++ "-wal")
   r <- migrateCli store cfgPath backups
   assertEqual "exit 1" 1 (ceCode r)
-  assertBool "tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+  assertBool "tag" ("store-foreign-sidecar:" `isPrefixOf` ceErr r)
   BS.readFile (store ++ "-wal") >>= \b -> assertBool "wal untouched" (b == wBytes)
   BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
   listDirectory backups >>= assertEqual "no backup" []
@@ -518,7 +519,7 @@ caseMigrateCliShm = withScratch "ctl-migrate" $ \dir -> do
   sBytes <- BS.readFile (store ++ "-shm")
   r <- migrateCli store cfgPath backups
   assertEqual "exit 1" 1 (ceCode r)
-  assertBool "tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+  assertBool "tag" ("store-foreign-sidecar:" `isPrefixOf` ceErr r)
   BS.readFile (store ++ "-shm") >>= \b -> assertBool "shm untouched" (b == sBytes)
   BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
   listDirectory backups >>= assertEqual "no backup" []
@@ -543,6 +544,7 @@ caseMigrateSymlinkWal = withScratch "ctl-migrate" $ \dir -> do
   assertBool "the file starts without it" (not (foreignSo `BS.isInfixOf` dbBefore))
   r <- migrateCli link cfgPath backups
   assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-foreign-sidecar:" `isPrefixOf` ceErr r)
   dbAfter <- BS.readFile real
   assertBool "store untouched" (dbAfter == dbBefore)
   assertBool "original credential still filed" (originalSo `BS.isInfixOf` dbAfter)
@@ -587,11 +589,11 @@ caseMigrateCliColdWal = withScratch "ctl-migrate" $ \dir -> do
   wBefore <- BS.readFile wal
   c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
   assertEqual "check refuses" 1 (ceCode c)
-  assertBool "check names the wal" ("store-journal-present:" `isPrefixOf` ceErr c)
+  assertBool "check names the wal" ("store-foreign-sidecar:" `isPrefixOf` ceErr c)
   assertBool "check does not report cold" (not ("store-journal-cold:" `isPrefixOf` ceErr c))
   m <- migrateCli store cfgPath backups
   assertEqual "migrate refuses" 1 (ceCode m)
-  assertBool "migrate names the wal" ("store-journal-present:" `isPrefixOf` ceErr m)
+  assertBool "migrate names the wal" ("store-foreign-sidecar:" `isPrefixOf` ceErr m)
   BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
   BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
   BS.readFile wal >>= \b -> assertBool "wal untouched" (b == wBefore)

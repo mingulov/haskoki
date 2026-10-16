@@ -301,37 +301,49 @@ openSQLiteStoreResolved path limits inj hooks = mask $ \restore -> do
     -- cleanup is still retained across the construction below, so
     -- every acquisition prefix owns cleanup for every resource.
     dbPart restore lockPath lockFd dbFd created = do
-      eDb <- openAndInit restore dbFd path created
-      case eDb of
-        Left err -> do
+      -- A non-empty -wal or -shm sibling refuses before any SQLite
+      -- connection opens: the journal-mode switch below would
+      -- otherwise checkpoint foreign frames into the store.
+      -- Ownership and the database guard are already held, and both
+      -- are released on this path, exactly as on an init failure.
+      refused <- foreignSidecar path
+      case refused of
+        Just p -> do
           closeQuietFd dbFd
           releaseQuiet lockFd lockPath
-          pure (Left err)
-        Right db ->
-          (do lock <- newMVar ()
-              closed <- newMVar HandleOpen
-              qVar <- newMVar []
-              openTxn <- newIORef Nothing
-              sVar <- newIORef zeroStats
-              claims <- newClaimAuthority
-              let conn = SQLiteConn
-                    { sqDb = db
-                    , sqLock = lock
-                    , sqClosed = closed
-                    , sqPath = path
-                    , sqLockPath = lockPath
-                    , sqLockFd = lockFd
-                    , sqDbFd = dbFd
-                    , sqInjector = inj
-                    , sqQuarantine = qVar
-                    , sqOpenTxn = openTxn
-                    , sqStats = sVar
-                    , sqLimits = limits
-                    , sqHooks = hooks
-                    , sqClaims = claims
-                    }
-              pure (Right (mkStore conn)))
-            `onException` closeQuiet db
+          pure (Left (StoreForeignSidecar p))
+        Nothing -> do
+          eDb <- openAndInit restore dbFd path created
+          case eDb of
+            Left err -> do
+              closeQuietFd dbFd
+              releaseQuiet lockFd lockPath
+              pure (Left err)
+            Right db ->
+              (do lock <- newMVar ()
+                  closed <- newMVar HandleOpen
+                  qVar <- newMVar []
+                  openTxn <- newIORef Nothing
+                  sVar <- newIORef zeroStats
+                  claims <- newClaimAuthority
+                  let conn = SQLiteConn
+                        { sqDb = db
+                        , sqLock = lock
+                        , sqClosed = closed
+                        , sqPath = path
+                        , sqLockPath = lockPath
+                        , sqLockFd = lockFd
+                        , sqDbFd = dbFd
+                        , sqInjector = inj
+                        , sqQuarantine = qVar
+                        , sqOpenTxn = openTxn
+                        , sqStats = sVar
+                        , sqLimits = limits
+                        , sqHooks = hooks
+                        , sqClaims = claims
+                        }
+                  pure (Right (mkStore conn)))
+                `onException` closeQuiet db
 
 -- | The @\/proc@ root for owner-liveness checks: @HASKOKI_PROC_ROOT@
 -- overrides (tests mask liveness deterministically); empty or unset
@@ -2266,8 +2278,8 @@ readFirst8 p = bracket open hClose (`BS.hGet` 8)
 
 -- | A sibling the rollback-journal store never writes itself: a
 -- non-empty @-wal@ or @-shm@ file can only come from foreign tooling
--- and refuses the snapshot like a hot journal. Zero-byte files are
--- ignored, as zero-byte journals are.
+-- and refuses distinctly. Zero-byte files are ignored, as
+-- zero-byte journals are.
 foreignSidecar :: FilePath -> IO (Maybe FilePath)
 foreignSidecar path = do
   w <- nonEmpty (path ++ "-wal")
@@ -2291,7 +2303,7 @@ journalBlocked :: FilePath -> IO (Maybe StoreError)
 journalBlocked path = do
   side <- foreignSidecar path
   case side of
-    Just p -> pure (Just (StoreJournalPresent p))
+    Just p -> pure (Just (StoreForeignSidecar p))
     Nothing -> do
       cls <- classifyJournal path
       pure (case cls of
@@ -2310,7 +2322,7 @@ journalBlockedAllowCold :: FilePath -> IO (Maybe StoreError)
 journalBlockedAllowCold path = do
   side <- foreignSidecar path
   case side of
-    Just p -> pure (Just (StoreJournalPresent p))
+    Just p -> pure (Just (StoreForeignSidecar p))
     Nothing -> do
       cls <- classifyJournal path
       pure (case cls of
@@ -2612,7 +2624,7 @@ clearColdJournal path = do
     clearOwned _owned = do
       side <- anySidecarExists path
       case side of
-        Just p -> pure (Left (StoreJournalPresent p))
+        Just p -> pure (Left (StoreForeignSidecar p))
         Nothing -> do
           eDb <- trySQLite (S.open (T.pack path))
           case eDb of

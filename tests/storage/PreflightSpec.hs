@@ -73,6 +73,7 @@ spec = testGroup "Store preflight"
       , testCase "schema 1 with a credentials table is corrupt, unchanged" caseV1WithCredentialsCorrupt
       , testCase "unknown schema versions refuse unchanged" caseUnknownVersionsRefuse
       , testCase "schema-3 rowless tokens still name their ids" caseV3RowlessNamesIds
+      , testCase "a foreign WAL refuses the serving open, merging nothing" caseServingRefusesForeignWal
       ]
   , testGroup "snapshot"
       [ testCase "snapshot reads a released store without writing" caseSnapshotReadsFixture
@@ -154,6 +155,7 @@ spec = testGroup "Store preflight"
       , testCase "appended catalog tokens are left to the next open" caseMigrateLeavesSeedsToOpen
       , testCase "naming: candidate backup names" caseBackupCandidates
       , testCase "migrate errors render tags and paths, never PINs" caseMigrateErrorRender
+      , testCase "a foreign sidecar refusal names moving both files aside" caseForeignSidecarRemedy
       ]
   , testGroup "recovery"
       [ after AllFinish "/death after reservation leaves a gap, never reuse/" $
@@ -275,6 +277,30 @@ caseV3RowlessNamesIds = withScratch "refused-open" $ \dir -> do
     Left other -> assertFailure ("wrong refusal: " ++ show other)
     Right acq -> closeAcquired acq >> assertFailure "rowless store opened"
   assertUnchanged "schema-3 rowless store" before store
+
+-- A valid foreign WAL beside a current store refuses the serving
+-- open before any SQLite connection opens: the store bytes are
+-- unchanged, the WAL stays in place, and no lock or -shm remains.
+caseServingRefusesForeignWal :: IO ()
+caseServingRefusesForeignWal = withScratch "refused-open" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 3 store [fixtureToken 1 0 "haskoki-demo", fixtureToken 2 1 "haskoki-ops"]
+    [ CredentialRecord (TokenId 1) "58213946" (Just "12873465")
+    , CredentialRecord (TokenId 2) "69324057" (Just "34095687") ]
+  plantForeignWal store "meta"
+  dbBefore <- BS.readFile store
+  wBefore <- BS.readFile (store ++ "-wal")
+  r <- openSQLiteStore store
+  case r of
+    Left (StoreForeignSidecar p) -> assertEqual "names the wal" (store ++ "-wal") p
+    Left other -> assertFailure ("wrong refusal: " ++ show other)
+    Right s -> storeClose s >> assertFailure "the serving open took a store with a foreign WAL"
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  BS.readFile (store ++ "-wal") >>= \b -> assertBool "wal untouched" (b == wBefore)
+  shmLeft <- doesFileExist (store ++ "-shm")
+  assertBool "no -shm created" (not shmLeft)
+  lockLeft <- doesFileExist (store ++ ".lock")
+  assertBool "no lock left" (not lockLeft)
 
 -- | The manifest's generator and template digests name the files in
 -- the tree, so an edit to either cannot leave a stale record.
@@ -1125,7 +1151,7 @@ caseMigrateColdJournalWithWalRefuses = withScratch "migrate" $ \dir -> do
   wBefore <- BS.readFile wal
   r <- migrateStoreWith fixedClock store cfg backups
   case r of
-    Left (MigrateStore (StoreJournalPresent p)) ->
+    Left (MigrateStore (StoreForeignSidecar p)) ->
       assertBool "names the wal" (p == wal)
     other -> assertFailure ("wrong result: " ++ show other)
   BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
@@ -1663,6 +1689,27 @@ caseMigrateErrorRender = do
           assertNoPins "show" (show err)) cases
   mapM_ (\err -> assertBool ("names the backup: " ++ show err) (bak `isInfixOf` snd (renderMigrateError err)))
     [MigrateTxnFailed bak (StoreFull "disk full"), MigrateVerifyFailed bak "x", MigrateReceiptFailed bak "x"]
+
+-- The foreign-sidecar refusal never sends the operator to the
+-- serving open (whose checkpoint would merge the WAL): it names
+-- moving both files aside, keeping them, and checking again.
+caseForeignSidecarRemedy :: IO ()
+caseForeignSidecarRemedy = do
+  let (tag, detail) = renderStoreRefusal (StoreForeignSidecar "/srv/t/token.sqlite-wal")
+  assertEqual "tag" "store-foreign-sidecar" tag
+  assertBool "names the wal" ("/srv/t/token.sqlite-wal" `isInfixOf` detail)
+  assertBool "names the shm" ("/srv/t/token.sqlite-shm" `isInfixOf` detail)
+  assertBool "never start the service" ("do not start the service" `isInfixOf` detail)
+  assertBool "keep both" ("keep both" `isInfixOf` detail)
+  assertBool "check again" ("run store check again" `isInfixOf` detail)
+  assertBool "no start-the-service route" (not ("Start the serving" `isInfixOf` detail))
+  assertBool "single line" (not ('\n' `elem` detail))
+  assertNoPins "remedy" (tag ++ ": " ++ detail)
+  let (tag2, detail2) = renderStoreRefusal (StoreForeignSidecar "/srv/t/token.sqlite-shm")
+  assertEqual "shm tag" "store-foreign-sidecar" tag2
+  assertBool "shm names the wal" ("/srv/t/token.sqlite-wal" `isInfixOf` detail2)
+  assertEqual "migrate tag" "store-foreign-sidecar"
+    (fst (renderMigrateError (MigrateStore (StoreForeignSidecar "/b/store.sqlite-wal"))))
 
 -- | Child process for the kill test: a real migration that pauses
 -- forever after its transaction body, just before COMMIT.

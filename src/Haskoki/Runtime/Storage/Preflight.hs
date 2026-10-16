@@ -34,7 +34,7 @@ import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
-import Data.List (intercalate, isInfixOf, isPrefixOf)
+import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf)
 import Data.Word (Word8)
 import Foreign.C.Error (Errno (..), eNOTSUP, eOPNOTSUPP, ePERM, eXDEV)
 import Foreign.Ptr (castPtr)
@@ -231,6 +231,12 @@ renderStoreRefusal e = case e of
     ++ " run haskoki-ctl store migrate to clear it under exclusive locks,"
     ++ " or restore a backup with the store and journal moved aside together;"
     ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
+  StoreForeignSidecar p -> ("store-foreign-sidecar",
+    "haskoki never writes a WAL, so " ++ p ++ " can only come from foreign tooling;"
+    ++ " do not start the service. Move " ++ wal ++ " and " ++ shm
+    ++ " aside (keep both files) and run store check again;"
+    ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
+    where (wal, shm) = walShmPair p
   StoreNeedsMigration f t -> ("store-migration-required", "schema " ++ show f
     ++ " needs haskoki-ctl store migrate to reach schema " ++ show t)
   StoreSchemaVersion want found -> ("store-unsupported-version", "store schema " ++ found
@@ -240,6 +246,14 @@ renderStoreRefusal e = case e of
   StoreFull m -> ("store-full", m)
   StoreIO m -> ("store-unreadable", m)
   other -> ("store-unreadable", show other)
+
+-- | The @(-wal, -shm)@ pair for a foreign sidecar path: whichever of
+-- the two was found, the remedy moves both aside.
+walShmPair :: FilePath -> (FilePath, FilePath)
+walShmPair p
+  | "-wal" `isSuffixOf` p = (p, take (length p - 4) p ++ "-shm")
+  | "-shm" `isSuffixOf` p = (take (length p - 4) p ++ "-wal", p)
+  | otherwise = (p, p)  -- unreachable: finders only return the two suffixes
 
 -- ---------------------------------------------------------------------------
 -- Explicit migration
