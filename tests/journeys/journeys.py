@@ -2660,7 +2660,10 @@ FIXED_EC_SPKI_HEX = (
 # from a fresh openssl P-256 self-signed certificate, so openssl still
 # parses it as Version 1. The SPKI below came from that DER via the
 # openssl CLI (`x509 -pubkey` then `pkey -outform DER`), never from the
-# walker. Both are frozen; the input bytes must not churn.
+# walker. Both are frozen; the input bytes must not churn. The
+# signature is intentionally invalid: it was computed over the
+# original bytes before the version and extensions were stripped, so
+# this DER is a parsing fixture only and must never verify.
 V1_CERT_HEX = (
     "308201263081cd021471d23441c44dc7e10fdd72230736afdc2ae3d7ea30"
     "0a06082a8648ce3d04030230163114301206035504030c0b7434612d7631"

@@ -75,9 +75,13 @@ OpenSC junction for every leg; each leg is its own process.
 | `opensc-sign` | `pkcs11-tool --module $MODULE --login --pin 1234 --sign --mechanism ECDSA-SHA256 --label review-ec --type privkey --input-file message.txt --output-file signature.bin` | exit 0; signature bytes written | TO-QUALIFY (prior-artifact: published hands-on passed) |
 | `opensc-verify` | `... --verify --mechanism ECDSA-SHA256 --label review-ec --type pubkey --input-file message.txt --signature-file signature.bin` | exit 0; `Signature is valid` | TO-QUALIFY (prior-artifact: published hands-on passed) |
 | `opensc-tamper` | repeat verify over a changed message | nonzero exit; verification fails | TO-QUALIFY (prior-artifact: published hands-on passed) |
-| `opensc-decrypt` | RSA `2048` `--keypairgen --usage-decrypt`, then `--encrypt/--decrypt --mechanism RSA-PKCS` round trip | exit 0; decrypted bytes match | TO-QUALIFY (grounded: RSA-2048 pairgen plus `CKM_RSA_PKCS` real-tested rows) |
+| `opensc-decrypt` | RSA `2048` `--keypairgen --usage-decrypt`, then `--encrypt/--decrypt --mechanism RSA-PKCS-OAEP --hash-algorithm SHA256 --mgf MGF1-SHA256` round trip | exit 0; decrypted bytes match | TO-QUALIFY (grounded: RSA-2048 pairgen plus `CKM_RSA_PKCS_OAEP` real-tested rows) |
 | `opensc-refuse-wrong-pin` | `--login --pin 0000 --list-objects` | nonzero exit; incorrect PIN surfaces | TO-QUALIFY |
 | `opensc-refuse-init-token-busy` | `--init-token` while sessions are open | nonzero exit; `CKR_SESSION_EXISTS` surfaces | TO-QUALIFY (contract: [walkthrough](demo-walkthrough.md#token-provisioning-and-state)) |
+
+RSA note: the token does not offer `CKM_RSA_PKCS` for encrypt or
+decrypt (PKCS#1 v1.5 decryption is excluded); the RSA legs above use
+`CKM_RSA_PKCS_OAEP` with SHA-256 throughout.
 
 Attribute warnings are known and stay explicit: OpenSC may report
 `CKR_ATTRIBUTE_TYPE_INVALID` while inspecting `DERIVE`,

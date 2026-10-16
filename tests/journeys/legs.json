@@ -47,7 +47,7 @@
     },
     "image": {
       "description": "Candidate demo image: module phase in the image, verifier phase on the host.",
-      "clients": ["opensc", "native", "runner"],
+      "clients": ["opensc", "openssl", "native", "runner"],
       "phases": ["module", "verifier"]
     }
   },
