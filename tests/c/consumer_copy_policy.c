@@ -5,11 +5,11 @@
  * material, components, params, TRUSTED, ALWAYS_AUTHENTICATE,
  * ALLOWED_MECHANISMS, and any change on a MODIFIABLE=false source
  * (outside the copy exemptions) are refused with
- * CKR_ATTRIBUTE_READ_ONLY, with no handle and no new object. The
- * wrap-then-decrypt chain is shown impossible end to end: the
- * decrypt-capable copy is refused, the original cannot decrypt, and
- * no evil copy exists. Exemptions (TOKEN, PRIVATE, MODIFIABLE,
- * DESTROYABLE, COPYABLE-to-false), tightening (SENSITIVE up,
+ * CKR_ATTRIBUTE_READ_ONLY, with no handle and no new object.
+ * Widening ALLOWED_MECHANISMS by copy is refused, the original
+ * cannot decrypt, and no widened copy exists. Exemptions (TOKEN,
+ * PRIVATE, DESTROYABLE, COPYABLE-to-false), MODIFIABLE tightening
+ * only, TOKEN/DESTROYABLE free on copy, tightening (SENSITIVE up,
  * EXTRACTABLE down), and same-value overrides still work.
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
@@ -358,36 +358,36 @@ int main(int argc, char **argv) {
     check_refused(sess, nonmod, decOver, 1, "non-modifiable + DECRYPT");
     check_refused(sess, nonmod, lblOver, 1, "non-modifiable + LABEL");
 
-    /* The wrap-then-decrypt chain: the decrypt-capable widened copy
-     * is refused, so no evil copy exists. */
+    /* Widening ALLOWED_MECHANISMS by copy is refused, so no
+     * widened copy exists. */
     {
       CK_ATTRIBUTE evil[] = {
         { CKA_ALLOWED_MECHANISMS, allowDec, sizeof(allowDec) },
         { CKA_DECRYPT, &bTrue, sizeof(bTrue) },
-        { CKA_LABEL, (CK_VOID_PTR)"evil-copy", 9 }
+        { CKA_LABEL, (CK_VOID_PTR)"widened-copy", 12 }
       };
-      CK_ULONG before = count_all(sess, "evil-copy");
+      CK_ULONG before = count_all(sess, "widened-copy");
       CK_OBJECT_HANDLE h2 = 0;
       CK_OBJECT_HANDLE found[8];
       CK_ULONG n = 0;
-      CK_ATTRIBUTE q[] = { { CKA_LABEL, (CK_VOID_PTR)"evil-copy", 9 } };
+      CK_ATTRIBUTE q[] = { { CKA_LABEL, (CK_VOID_PTR)"widened-copy", 12 } };
       rv = f->C_CopyObject(sess, wrapKey, evil, 3, &h2);
       if (h2 != 0) {
         track(h2);
       }
       CHECK(rv == CKR_ATTRIBUTE_READ_ONLY && h2 == 0,
-            "evil copy refused read-only (rv=0x%lx h=%lu)",
+            "widened copy refused read-only (rv=0x%lx h=%lu)",
             (unsigned long)rv, (unsigned long)h2);
-      CHECK(count_all(sess, "evil-copy") == before,
-            "evil copy leaves the count unchanged");
+      CHECK(count_all(sess, "widened-copy") == before,
+            "widened copy leaves the count unchanged");
       rv = f->C_FindObjectsInit(sess, q, 1);
-      CHECK(rv == CKR_OK, "evil find init (rv=0x%lx)", (unsigned long)rv);
+      CHECK(rv == CKR_OK, "widened find init (rv=0x%lx)", (unsigned long)rv);
       rv = f->C_FindObjects(sess, found, 8, &n);
-      CHECK(rv == CKR_OK && n == 0, "no evil copy exists (n=%lu)",
+      CHECK(rv == CKR_OK && n == 0, "no widened copy exists (n=%lu)",
             (unsigned long)n);
       rv = f->C_FindObjectsFinal(sess);
-      CHECK(rv == CKR_OK, "evil find final (rv=0x%lx)", (unsigned long)rv);
-      /* The original cannot decrypt either: end-to-end impossible. */
+      CHECK(rv == CKR_OK, "widened find final (rv=0x%lx)", (unsigned long)rv);
+      /* The original cannot decrypt either. */
       {
         CK_MECHANISM mech;
         mech.mechanism = CKM_AES_ECB;
@@ -399,7 +399,8 @@ int main(int argc, char **argv) {
       }
     }
 
-    /* Positive: exemptions on a non-modifiable source still work. */
+    /* Positive: exemptions on a non-modifiable source still work;
+     * MODIFIABLE loosening is refused. */
     {
       CK_ATTRIBUTE tokOver[] = { { CKA_TOKEN, &bTrue, sizeof(bTrue) } };
       CK_ATTRIBUTE privOver[] = { { CKA_PRIVATE, &bTrue, sizeof(bTrue) } };
@@ -415,10 +416,17 @@ int main(int argc, char **argv) {
       CHECK(rv == CKR_OK && h2 != 0, "nonmod PRIVATE exemption works (rv=0x%lx)",
             (unsigned long)rv);
       if (h2 != 0) { track(h2); h2 = 0; }
-      rv = f->C_CopyObject(sess, nonmod, modOver2, 1, &h2);
-      CHECK(rv == CKR_OK && h2 != 0, "nonmod MODIFIABLE exemption works (rv=0x%lx)",
-            (unsigned long)rv);
-      if (h2 != 0) { track(h2); h2 = 0; }
+      {
+        CK_ULONG beforeMod = count_all(sess, "nonmod-modifiable");
+        rv = f->C_CopyObject(sess, nonmod, modOver2, 1, &h2);
+        if (h2 != 0) { track(h2); }
+        CHECK(rv == CKR_ATTRIBUTE_READ_ONLY && h2 == 0,
+              "nonmod MODIFIABLE loosen refused (rv=0x%lx h=%lu)",
+              (unsigned long)rv, (unsigned long)h2);
+        CHECK(count_all(sess, "nonmod-modifiable") == beforeMod,
+              "nonmod MODIFIABLE loosen leaves count unchanged");
+        h2 = 0;
+      }
       rv = f->C_CopyObject(sess, nonmod, desOver, 1, &h2);
       CHECK(rv == CKR_OK && h2 != 0, "nonmod DESTROYABLE exemption works (rv=0x%lx)",
             (unsigned long)rv);
@@ -427,6 +435,184 @@ int main(int argc, char **argv) {
       CHECK(rv == CKR_OK && h2 != 0, "nonmod COPYABLE exemption works (rv=0x%lx)",
             (unsigned long)rv);
       if (h2 != 0) { track(h2); h2 = 0; }
+    }
+
+    /* Two-step: MODIFIABLE loosen refused, so DECRYPT never set. */
+    {
+      CK_ATTRIBUTE looseOver[] = { { CKA_MODIFIABLE, &bTrue, sizeof(bTrue) } };
+      CK_ATTRIBUTE decSet[] = { { CKA_DECRYPT, &bTrue, sizeof(bTrue) } };
+      CK_OBJECT_HANDLE loose = 0;
+      CK_ULONG before = count_all(sess, "loose-twostep");
+      rv = f->C_CopyObject(sess, nonmod, looseOver, 1, &loose);
+      if (loose != 0) { track(loose); }
+      CHECK(rv == CKR_ATTRIBUTE_READ_ONLY && loose == 0,
+            "nonmod two-step loosen refused (rv=0x%lx h=%lu)",
+            (unsigned long)rv, (unsigned long)loose);
+      CHECK(count_all(sess, "loose-twostep") == before,
+            "nonmod two-step leaves count unchanged");
+      if (rv == CKR_OK && loose != 0) {
+        CK_RV rv2 = f->C_SetAttributeValue(sess, loose, decSet, 1);
+        CHECK(rv2 != CKR_OK,
+              "loosened copy must not accept DECRYPT (rv2=0x%lx)",
+              (unsigned long)rv2);
+      }
+      rv = f->C_SetAttributeValue(sess, nonmod, decSet, 1);
+      CHECK(rv == CKR_ATTRIBUTE_READ_ONLY,
+            "nonmod source DECRYPT still refused (rv=0x%lx)",
+            (unsigned long)rv);
+    }
+
+    /* Token to session: a token key copied with TOKEN=FALSE succeeds. */
+    {
+      CK_OBJECT_HANDLE tokSrc = 0, h2 = 0;
+      CK_ATTRIBUTE tTok[] = {
+        { CKA_CLASS, &seckls, sizeof(seckls) },
+        { CKA_KEY_TYPE, &aeskt, sizeof(aeskt) },
+        { CKA_TOKEN, &bTrue, sizeof(bTrue) },
+        { CKA_LABEL, (CK_VOID_PTR)"tok-src", 7 },
+        { CKA_VALUE, kval, sizeof(kval) }
+      };
+      CK_ATTRIBUTE demote[] = {
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_LABEL, (CK_VOID_PTR)"sess-copy", 9 }
+      };
+      CK_BBOOL got = 0;
+      CK_ATTRIBUTE qTok[] = { { CKA_TOKEN, &got, sizeof(got) } };
+      rv = f->C_CreateObject(sess, tTok, 5, &tokSrc);
+      CHECK(rv == CKR_OK && tokSrc != 0, "token AES imports (rv=0x%lx)",
+            (unsigned long)rv);
+      if (tokSrc != 0) {
+        track(tokSrc);
+        rv = f->C_CopyObject(sess, tokSrc, demote, 2, &h2);
+        CHECK(rv == CKR_OK && h2 != 0, "token to session works (rv=0x%lx)",
+              (unsigned long)rv);
+        if (h2 != 0) {
+          track(h2);
+          got = 0;
+          qTok[0].ulValueLen = sizeof(got);
+          rv = f->C_GetAttributeValue(sess, h2, qTok, 1);
+          CHECK(rv == CKR_OK && qTok[0].ulValueLen == sizeof(got) && got == CK_FALSE,
+                "copy is a session object (rv=0x%lx)", (unsigned long)rv);
+          got = 0;
+          qTok[0].ulValueLen = sizeof(got);
+          rv = f->C_GetAttributeValue(sess, tokSrc, qTok, 1);
+          CHECK(rv == CKR_OK && got == CK_TRUE,
+                "source stays a token object (rv=0x%lx)", (unsigned long)rv);
+          h2 = 0;
+        }
+      }
+    }
+
+    /* DESTROYABLE false to true on copy succeeds. */
+    {
+      CK_OBJECT_HANDLE nodesSrc = 0, h2 = 0;
+      CK_ATTRIBUTE tNodes[] = {
+        { CKA_CLASS, &datacls, sizeof(datacls) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_LABEL, (CK_VOID_PTR)"nodes-src", 9 },
+        { CKA_DESTROYABLE, &bFalse, sizeof(bFalse) }
+      };
+      CK_ATTRIBUTE looseDes[] = { { CKA_DESTROYABLE, &bTrue, sizeof(bTrue) } };
+      CK_BBOOL got = 0;
+      CK_ATTRIBUTE qDes[] = { { CKA_DESTROYABLE, &got, sizeof(got) } };
+      rv = f->C_CreateObject(sess, tNodes, 4, &nodesSrc);
+      CHECK(rv == CKR_OK && nodesSrc != 0, "nodes data imports (rv=0x%lx)",
+            (unsigned long)rv);
+      if (nodesSrc != 0) {
+        track(nodesSrc);
+        rv = f->C_CopyObject(sess, nodesSrc, looseDes, 1, &h2);
+        CHECK(rv == CKR_OK && h2 != 0, "destroyable loosen works (rv=0x%lx)",
+              (unsigned long)rv);
+        if (h2 != 0) {
+          track(h2);
+          got = 0;
+          qDes[0].ulValueLen = sizeof(got);
+          rv = f->C_GetAttributeValue(sess, h2, qDes, 1);
+          CHECK(rv == CKR_OK && got == CK_TRUE,
+                "copy is destroyable (rv=0x%lx)", (unsigned long)rv);
+          got = 1;
+          qDes[0].ulValueLen = sizeof(got);
+          rv = f->C_GetAttributeValue(sess, nodesSrc, qDes, 1);
+          CHECK(rv == CKR_OK && got == CK_FALSE,
+                "source stays not destroyable (rv=0x%lx)", (unsigned long)rv);
+          h2 = 0;
+        }
+      }
+    }
+
+    /* Data VALUE on a non-modifiable source is refused. */
+    {
+      CK_OBJECT_HANDLE dSrc = 0;
+      CK_ATTRIBUTE tData[] = {
+        { CKA_CLASS, &datacls, sizeof(datacls) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_LABEL, (CK_VOID_PTR)"d-nonmod", 8 },
+        { CKA_MODIFIABLE, &bFalse, sizeof(bFalse) },
+        { CKA_VALUE, (CK_VOID_PTR)"old", 3 }
+      };
+      CK_ATTRIBUTE vNew[] = { { CKA_VALUE, (CK_VOID_PTR)"new", 3 } };
+      rv = f->C_CreateObject(sess, tData, 5, &dSrc);
+      CHECK(rv == CKR_OK && dSrc != 0, "nonmod data imports (rv=0x%lx)",
+            (unsigned long)rv);
+      if (dSrc != 0) {
+        track(dSrc);
+        check_refused(sess, dSrc, vNew, 1, "nonmod data + VALUE");
+      }
+    }
+
+    /* Sealed PRIVATE true to false on copy is refused. */
+    {
+      CK_OBJECT_HANDLE sealedPriv = 0;
+      CK_ATTRIBUTE tSealed[] = {
+        { CKA_CLASS, &seckls, sizeof(seckls) },
+        { CKA_KEY_TYPE, &aeskt, sizeof(aeskt) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_PRIVATE, &bTrue, sizeof(bTrue) },
+        { CKA_SENSITIVE, &bTrue, sizeof(bTrue) },
+        { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) },
+        { CKA_LABEL, (CK_VOID_PTR)"sealed-priv", 11 },
+        { CKA_VALUE, kval, sizeof(kval) }
+      };
+      CK_ATTRIBUTE pubOver[] = { { CKA_PRIVATE, &bFalse, sizeof(bFalse) } };
+      rv = f->C_CreateObject(sess, tSealed, 8, &sealedPriv);
+      CHECK(rv == CKR_OK && sealedPriv != 0, "sealed private imports (rv=0x%lx)",
+            (unsigned long)rv);
+      if (sealedPriv != 0) {
+        track(sealedPriv);
+        check_refused(sess, sealedPriv, pubOver, 1, "sealed key + PRIVATE to public");
+      }
+    }
+
+    /* MODIFIABLE tightening on copy still works. */
+    {
+      CK_OBJECT_HANDLE modSrc = 0, h2 = 0;
+      CK_ATTRIBUTE tMod[] = {
+        { CKA_CLASS, &datacls, sizeof(datacls) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_LABEL, (CK_VOID_PTR)"mod-src", 7 },
+        { CKA_MODIFIABLE, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE tighten[] = { { CKA_MODIFIABLE, &bFalse, sizeof(bFalse) } };
+      CK_BBOOL got = 1;
+      CK_ATTRIBUTE qMod[] = { { CKA_MODIFIABLE, &got, sizeof(got) } };
+      rv = f->C_CreateObject(sess, tMod, 4, &modSrc);
+      CHECK(rv == CKR_OK && modSrc != 0, "modifiable data imports (rv=0x%lx)",
+            (unsigned long)rv);
+      if (modSrc != 0) {
+        track(modSrc);
+        rv = f->C_CopyObject(sess, modSrc, tighten, 1, &h2);
+        CHECK(rv == CKR_OK && h2 != 0, "modifiable tighten works (rv=0x%lx)",
+              (unsigned long)rv);
+        if (h2 != 0) {
+          track(h2);
+          got = 1;
+          qMod[0].ulValueLen = sizeof(got);
+          rv = f->C_GetAttributeValue(sess, h2, qMod, 1);
+          CHECK(rv == CKR_OK && got == CK_FALSE,
+                "tightened copy reads back (rv=0x%lx)", (unsigned long)rv);
+          h2 = 0;
+        }
+      }
     }
 
     /* Positive: tightening still works. */

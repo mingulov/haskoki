@@ -1182,9 +1182,10 @@ copyPriority t
   | otherwise = 5
 
 -- | Attributes a copy template may set even on a non-modifiable
--- source (PKCS#11 3.2 C_CopyObject): the storage flags. Ratchets
--- still apply to TOKEN/COPYABLE/DESTROYABLE; PRIVATE keeps its
--- sealed-object guard; MODIFIABLE is freely settable on the copy.
+-- source (PKCS#11 3.2 C_CopyObject): the storage flags. TOKEN and
+-- DESTROYABLE are freely settable on the copy in both directions;
+-- COPYABLE keeps its true->false ratchet; PRIVATE keeps its
+-- sealed-object guard; MODIFIABLE may only tighten (true->false).
 copyExempt :: AttributeType -> Bool
 copyExempt t = t `elem`
   [AttrToken, AttrPrivate, AttrModifiable, AttrDestroyable, AttrCopyable]
@@ -1198,8 +1199,10 @@ copyExempt t = t `elem`
 -- path: 'CKR_ATTRIBUTE_READ_ONLY'); a no-op same-value override
 -- still copies. Copy exemptions: TOKEN, PRIVATE, MODIFIABLE,
 -- DESTROYABLE and COPYABLE may be set even on a non-modifiable
--- source (ratchets still apply; PRIVATE true->false on a sealed
--- object refuses); data-object CKA_VALUE overrides still merge.
+-- source (TOKEN and DESTROYABLE freely in both directions;
+-- MODIFIABLE tightens only; COPYABLE to false only; PRIVATE
+-- true->false on a sealed object refuses); data-object CKA_VALUE
+-- overrides merge on modifiable sources only.
 -- TRUSTED=true overrides need the SO login, and a merged
 -- TRUSTED=true without the SO refuses (no silent inheritance).
 -- Stored key copies materialize absent protection from the
@@ -1277,9 +1280,10 @@ planCopyObject model st h tmpl = case resolveHandle model h of
               -- First copy-template refusal in priority order, if any.
               -- TRUSTED on a certificate source stays refused even
               -- same-value (no SO exception); same-value overrides are
-              -- otherwise no-ops; data VALUE merges; exemptions bypass
-              -- the modifiable gate; everything else goes through the
-              -- shared policy with copy wording.
+              -- otherwise no-ops; data VALUE merges on modifiable
+              -- sources only; exemptions bypass the modifiable gate;
+              -- everything else goes through the shared policy with
+              -- copy wording.
               copyRefusal srcAttrs overM = go ordered
                 where
                   ordered = sortOn (\(t, _) -> (copyPriority t, fromEnum t))
@@ -1290,7 +1294,8 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                         Just (CKR_ATTRIBUTE_READ_ONLY,
                           "copy cannot override certificate field: " ++ show t)
                     | Map.lookup t srcAttrs == Just v = go rest
-                    | t == AttrValue, isDataSource = go rest
+                    | t == AttrValue, isDataSource
+                    , flagOr modifiableDefault AttrModifiable srcAttrs = go rest
                     | copyExempt t = case exemptRefusal t v of
                         Just refusal -> Just refusal
                         Nothing -> go rest
@@ -1299,12 +1304,22 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                         Just (code, sharedMsg) ->
                           Just (code, copyMessage t v sharedMsg)
                   exemptRefusal t v
-                    | t == AttrModifiable = Nothing
+                    | t == AttrModifiable = modifiableCopyRefusal v
                     | t == AttrPrivate = privateRefusal v
+                    | t == AttrToken = Nothing
+                    | t == AttrDestroyable = Nothing
                     | otherwise =
                         setAttributePolicy modCur t v
                     where
                       modCur = Map.insert AttrModifiable (ValBool True) srcAttrs
+                  modifiableCopyRefusal v = case v of
+                    ValBool n
+                      | flagOr modifiableDefault AttrModifiable srcAttrs == n -> Nothing
+                      | n == False -> Nothing
+                      | otherwise -> Just (CKR_ATTRIBUTE_READ_ONLY,
+                          "copy cannot loosen MODIFIABLE false->true")
+                    _ -> Just (CKR_ATTRIBUTE_READ_ONLY,
+                      "copy cannot override immutable attribute: " ++ show AttrModifiable)
                   privateRefusal v = case v of
                     ValBool n
                       | flagOr privateDefault AttrPrivate srcAttrs == n -> Nothing

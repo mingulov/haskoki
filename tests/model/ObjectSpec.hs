@@ -122,8 +122,14 @@ spec = testGroup "objects and attributes"
   , testCase "copy: ALLOWED_MECHANISMS widening refused" caseCopyAllowedMechanismsWidenRefused
   , testCase "copy: DECRYPT added on non-modifiable refused" caseCopyDecryptAddedRefused
   , testCase "copy: non-exempt change on non-modifiable refused" caseCopyNonModifiableRefused
-  , testCase "copy: wrap-then-decrypt chain impossible" caseCopyWrapDecryptChainImpossible
+  , testCase "copy: widening ALLOWED_MECHANISMS refused" caseCopyAllowedWidenRefused
   , testCase "copy: exemptions still work on non-modifiable" caseCopyExemptionsStillWork
+  , testCase "copy: MODIFIABLE loosen refused, DECRYPT never set" caseCopyModifiableLoosenTwoStepBlocked
+  , testCase "copy: token to session succeeds" caseCopyTokenTrueToFalseWorks
+  , testCase "copy: DESTROYABLE false to true succeeds" caseCopyDestroyableFalseToTrueWorks
+  , testCase "copy: data VALUE on non-modifiable refused" caseCopyDataValueNonModRefused
+  , testCase "copy: sealed PRIVATE true to false refused" caseCopySealedPrivateToPublicRefused
+  , testCase "copy: MODIFIABLE tighten still works" caseCopyModifiableTightenStillWorks
   , testCase "copy: tightening still works" caseCopyTighteningStillWorks
   , testCase "copy: same-value overrides still work" caseCopySameValueStillWorks
   , testCase "copy: inconsistent NEVER forced false on tighten" caseCopyInconsistentNeverForcedFalse
@@ -1082,12 +1088,13 @@ caseCopyNonModifiableRefused = do
   (code, _) <- runReject m1 (setReq sid h [label "b"])
   assertEqual "set label on non-modifiable" CKR_ATTRIBUTE_READ_ONLY code
 
--- | The wrap-then-decrypt chain: a wrapping key (WRAP-only, DECRYPT
--- denied, mechanisms pinned to wrap) copied with a decrypt-capable
--- widened template is refused read-only, so no decrypt-capable copy
--- ever exists to recover a wrapped target.
-caseCopyWrapDecryptChainImpossible :: IO ()
-caseCopyWrapDecryptChainImpossible = do
+-- | Widening ALLOWED_MECHANISMS by copy is refused read-only: a
+-- wrapping key (WRAP-only, DECRYPT denied, mechanisms pinned to
+-- wrap) copied with a widened mechanism list plus DECRYPT is
+-- refused, so no widened copy exists. This pins the widening
+-- refusal only; other DECRYPT paths follow the shared policy.
+caseCopyAllowedWidenRefused :: IO ()
+caseCopyAllowedWidenRefused = do
   (sid, m0) <- openSession seeded
   let wrapKey = secretAes (BS.replicate 16 0xA1)
         ++ [ (AttrWrap, ValBool True)
@@ -1121,7 +1128,8 @@ caseCopyWrapDecryptChainImpossible = do
   assertEqual "no evil copy exists" [] evil
 
 -- | Copy exemptions on a non-modifiable source: TOKEN, PRIVATE,
--- MODIFIABLE, DESTROYABLE and COPYABLE-to-false still copy.
+-- DESTROYABLE and COPYABLE-to-false still copy. MODIFIABLE may
+-- only tighten on copy: false to true is refused read-only.
 caseCopyExemptionsStillWork :: IO ()
 caseCopyExemptionsStillWork = do
   (sid, m0) <- openSession seeded
@@ -1140,12 +1148,158 @@ caseCopyExemptionsStillWork = do
     assertEqual "token stored" (Just (ValBool True)) (Map.lookup AttrToken (osAttrs ost))
   okLeg "private" [(AttrPrivate, ValBool True)] $ \ost ->
     assertEqual "private stored" (Just (ValBool True)) (Map.lookup AttrPrivate (osAttrs ost))
-  okLeg "modifiable" [(AttrModifiable, ValBool True)] $ \ost ->
-    assertEqual "modifiable stored" (Just (ValBool True)) (Map.lookup AttrModifiable (osAttrs ost))
   okLeg "destroyable" [(AttrDestroyable, ValBool False)] $ \ost ->
     assertEqual "destroyable stored" (Just (ValBool False)) (Map.lookup AttrDestroyable (osAttrs ost))
   okLeg "copyable" [(AttrCopyable, ValBool False)] $ \ost ->
     assertEqual "copyable stored" (Just (ValBool False)) (Map.lookup AttrCopyable (osAttrs ost))
+  let nObjs = Map.size (mObjects m2)
+      nHandles = Map.size (mHandles m2)
+  (rej, m3) <- runRejectFull m2 (copyReq sid h [(AttrModifiable, ValBool True)])
+  assertEqual "modifiable loosen refused" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual "modifiable loosen no handle" [] (rejOutputs rej)
+  assertEqual "modifiable loosen empty delta" (StateDelta []) (rejDelta rej)
+  assertEqual "modifiable loosen objects" nObjs (Map.size (mObjects m3))
+  assertEqual "modifiable loosen handles" nHandles (Map.size (mHandles m3))
+
+-- | Two-step MODIFIABLE bypass blocked: a non-modifiable wrapping
+-- key copied with MODIFIABLE=TRUE is refused read-only, so no
+-- loosened copy exists on which DECRYPT could then be set. Before
+-- the fix the copy succeeded and DECRYPT set on the copy.
+caseCopyModifiableLoosenTwoStepBlocked :: IO ()
+caseCopyModifiableLoosenTwoStepBlocked = do
+  (sid, m0) <- openSession seeded
+  let src = secretAes (BS.replicate 16 0xA1)
+        ++ [ (AttrModifiable, ValBool False)
+           , (AttrWrap, ValBool True)
+           , (AttrDecrypt, ValBool False)
+           , label "wrap-nonmod"
+           ]
+  (pc, m1) <- runCommit m0 (createReq sid src)
+  h <- commitHandle pc
+  let nObjs = Map.size (mObjects m1)
+      nHandles = Map.size (mHandles m1)
+  case planCall defaultRules m1
+    (copyReq sid h [(AttrModifiable, ValBool True)]) of
+    Reject rej -> do
+      m2 <- case publishDelta m1 (rejDelta rej) of
+        Left fault -> assertFailure ("rejection delta fault: " ++ show fault)
+        Right m' -> pure m'
+      assertEqual "loosen copy refused" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+      assertEqual "loosen no handle" [] (rejOutputs rej)
+      assertEqual "loosen empty delta" (StateDelta []) (rejDelta rej)
+      assertEqual "loosen objects" nObjs (Map.size (mObjects m2))
+      assertEqual "loosen handles" nHandles (Map.size (mHandles m2))
+      (pcF, _) <- runCommit m2 (findReq sid [(AttrModifiable, ValBool True)])
+      evil <- findHandles pcF
+      assertEqual "no loosened copy exists" [] evil
+      (pcL, _) <- runCommit m2 (findReq sid [label "wrap-nonmod"])
+      only <- findHandles pcL
+      assertEqual "only the source remains" [h] only
+      (code, _) <- runReject m2 (setReq sid h [(AttrDecrypt, ValBool True)])
+      assertEqual "source DECRYPT still refused" CKR_ATTRIBUTE_READ_ONLY code
+    Immediate pcC -> do
+      mC <- case publishDelta m1 (pcDelta pcC) of
+        Left fault -> assertFailure ("copy delta fault: " ++ show fault)
+        Right m' -> pure m'
+      h2 <- commitHandle pcC
+      (pcS, _) <- runCommit mC (setReq sid h2 [(AttrDecrypt, ValBool True)])
+      assertEqual "exploit: DECRYPT sets on loosened copy" CKR_OK (pcCode pcS)
+      assertFailure "bypass: MODIFIABLE false->true copy allowed DECRYPT to be set"
+    Execute _ _ -> assertFailure "expected immediate or reject for copy"
+
+-- | A token key copied with TOKEN=FALSE succeeds as a session
+-- object; the source stays a token object.
+caseCopyTokenTrueToFalseWorks :: IO ()
+caseCopyTokenTrueToFalseWorks = do
+  (sid, m0) <- openSession seeded
+  m1 <- loginAs m0 sid
+  let src = filter ((/= AttrToken) . fst) (secretAes (BS.replicate 16 7))
+        ++ [(AttrToken, ValBool True), label "tok-src"]
+  (pc, m2) <- runCommit m1 (createReq sid src)
+  h <- commitHandle pc
+  (pcC, m3) <- runCommit m2
+    (copyReq sid h [(AttrToken, ValBool False), label "sess-copy"])
+  assertEqual "token to session copies" CKR_OK (pcCode pcC)
+  h2 <- commitHandle pcC
+  assertBool "fresh handle" (h2 /= h)
+  dst <- mustResolve m3 h2
+  assertEqual "copy is session"
+    (Just (ValBool False)) (Map.lookup AttrToken (osAttrs dst))
+  assertEqual "copy session-owned" (Just sid) (osOwner dst)
+  srcOst <- mustResolve m3 h
+  assertEqual "source still token"
+    (Just (ValBool True)) (Map.lookup AttrToken (osAttrs srcOst))
+  assertEqual "source token-owned" Nothing (osOwner srcOst)
+
+-- | DESTROYABLE false to true on copy succeeds; the source is
+-- unaffected.
+caseCopyDestroyableFalseToTrueWorks :: IO ()
+caseCopyDestroyableFalseToTrueWorks = do
+  (sid, m0) <- openSession seeded
+  let src = [classData, label "nodes-src", (AttrDestroyable, ValBool False)]
+  (pc, m1) <- runCommit m0 (createReq sid src)
+  h <- commitHandle pc
+  (pcC, m2) <- runCommit m1 (copyReq sid h [(AttrDestroyable, ValBool True)])
+  assertEqual "destroyable loosen copies" CKR_OK (pcCode pcC)
+  h2 <- commitHandle pcC
+  dst <- mustResolve m2 h2
+  assertEqual "copy destroyable"
+    (Just (ValBool True)) (Map.lookup AttrDestroyable (osAttrs dst))
+  srcOst <- mustResolve m2 h
+  assertEqual "source still not destroyable"
+    (Just (ValBool False)) (Map.lookup AttrDestroyable (osAttrs srcOst))
+
+-- | A MODIFIABLE=false data object copied with a new CKA_VALUE is
+-- refused read-only: the data VALUE merge does not bypass the gate.
+caseCopyDataValueNonModRefused :: IO ()
+caseCopyDataValueNonModRefused =
+  copyPolicyRefused "data-nonmod/value"
+    [classData, label "d", (AttrModifiable, ValBool False), (AttrValue, ValBytes "old")]
+    [(AttrValue, ValBytes "new")]
+
+-- | A sealed private key copied with PRIVATE=FALSE is refused
+-- read-only: a sealed object cannot be made public by copy.
+caseCopySealedPrivateToPublicRefused :: IO ()
+caseCopySealedPrivateToPublicRefused = do
+  (sid, m0) <- openSession seeded
+  m1 <- loginAs m0 sid
+  let src = secretAes (BS.replicate 16 7)
+        ++ [ (AttrSensitive, ValBool True)
+           , (AttrExtractable, ValBool True)
+           , (AttrPrivate, ValBool True)
+           , label "sealed-priv"
+           ]
+  (pc, m2) <- runCommit m1 (createReq sid src)
+  h <- commitHandle pc
+  let nObjs = Map.size (mObjects m2)
+      nHandles = Map.size (mHandles m2)
+  (rej, m3) <- runRejectFull m2 (copyReq sid h [(AttrPrivate, ValBool False)])
+  assertEqual "sealed private refused" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual "sealed private no handle" [] (rejOutputs rej)
+  assertEqual "sealed private empty delta" (StateDelta []) (rejDelta rej)
+  assertEqual "sealed private objects" nObjs (Map.size (mObjects m3))
+  assertEqual "sealed private handles" nHandles (Map.size (mHandles m3))
+
+-- | MODIFIABLE tightening on copy still works: true to false, and
+-- same-value false, both copy.
+caseCopyModifiableTightenStillWorks :: IO ()
+caseCopyModifiableTightenStillWorks = do
+  (sid, m0) <- openSession seeded
+  let src = [classData, label "mod-src", (AttrModifiable, ValBool True)]
+  (pc, m1) <- runCommit m0 (createReq sid src)
+  h <- commitHandle pc
+  (pcC, m2) <- runCommit m1 (copyReq sid h [(AttrModifiable, ValBool False)])
+  assertEqual "modifiable tighten copies" CKR_OK (pcCode pcC)
+  h2 <- commitHandle pcC
+  dst <- mustResolve m2 h2
+  assertEqual "tightened stored"
+    (Just (ValBool False)) (Map.lookup AttrModifiable (osAttrs dst))
+  (sidB, mB0) <- openSession seeded
+  let srcB = [classData, label "nonmod-same", (AttrModifiable, ValBool False)]
+  (pcB, mB1) <- runCommit mB0 (createReq sidB srcB)
+  hB <- commitHandle pcB
+  (pcBC, _) <- runCommit mB1 (copyReq sidB hB [(AttrModifiable, ValBool False)])
+  assertEqual "modifiable same-value copies" CKR_OK (pcCode pcBC)
 
 -- | One-way tightening by copy still works: SENSITIVE false-to-true
 -- and EXTRACTABLE true-to-false.

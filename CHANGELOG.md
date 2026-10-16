@@ -105,6 +105,37 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   key material always reads back, whatever protection flags the
   template stored. Explicit flags on a public template are stored
   and reported, with no sealing effect.
+- `C_CopyObject` validates its template through the same
+  per-attribute policy as `C_SetAttributeValue` on the source.
+  Copies can no longer replace key material, forge protection
+  labels, drop `CKA_ALWAYS_AUTHENTICATE`, widen
+  `CKA_ALLOWED_MECHANISMS`, or change anything on a
+  `CKA_MODIFIABLE=false` source beyond the copy exemptions.
+  Refusals use the set path's `CKR_ATTRIBUTE_READ_ONLY`.
+- `C_CopyObject` with `CKA_MODIFIABLE=true` over a
+  `CKA_MODIFIABLE=false` source fails with
+  `CKR_ATTRIBUTE_READ_ONLY`: the copy may only tighten
+  (`true` to `false`) or keep the value. Loosening by copy
+  would let a caller set usage flags the source forbids.
+- `C_CopyObject` may set `CKA_TOKEN` and `CKA_DESTROYABLE`
+  freely in both directions; the source is untouched. A token
+  object copies to a session object with `CKA_TOKEN=false`,
+  and back with `CKA_TOKEN=true`. `CKA_COPYABLE` still only
+  goes to `false`, and a sealed key still cannot be made
+  public (`CKA_PRIVATE` `true` to `false`).
+- `C_CopyObject` of a `CKA_MODIFIABLE=false` data object with
+  a new `CKA_VALUE` fails with `CKR_ATTRIBUTE_READ_ONLY`.
+  The data value merge applies on modifiable sources only.
+- `C_CopyObject` refuses `CKA_START_DATE`, `CKA_END_DATE`
+  and `CKA_SUBJECT` changes on keys, matching the set path,
+  with `CKR_ATTRIBUTE_READ_ONLY`. These stay copyable on
+  certificates only where the set path allows them.
+- `C_CopyObject` refuses any template naming `CKA_TRUSTED`
+  on a certificate source with `CKR_ATTRIBUTE_READ_ONLY`,
+  even for the same value and even for the Security Officer.
+  Copy a certificate by omitting `CKA_TRUSTED` from the
+  template; a `TRUSTED=true` source still needs the Security
+  Officer, and a normal user cannot copy it at all.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and

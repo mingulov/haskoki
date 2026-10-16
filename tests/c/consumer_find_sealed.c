@@ -60,6 +60,17 @@ static CK_ULONG count_matches(CK_SESSION_HANDLE s, CK_ATTRIBUTE *tmpl,
   return n;
 }
 
+/* True when every byte is still the 0xA5 canary. */
+static int filled_canary(const CK_BYTE *p, CK_ULONG n) {
+  CK_ULONG j;
+  for (j = 0; j < n; j++) {
+    if (p[j] != 0xA5) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 int main(int argc, char **argv) {
   CK_RV rv;
   CK_C_GetFunctionList getList = NULL;
@@ -263,41 +274,72 @@ int main(int argc, char **argv) {
       CHECK(count_matches(sess, q, 1, "open exponent") == 1,
             "open exponent still matches");
     }
-    /* Reads agree: sealed exponents refuse sensitive, open reads. */
+    /* Reads agree: sealed components refuse sensitive with an
+     * unavailable length and an untouched buffer; open reads. */
     {
       CK_BYTE buf[64];
       CK_ATTRIBUTE q[] = { { CKA_PRIVATE_EXPONENT, buf, sizeof(buf) } };
+      memset(buf, 0xA5, sizeof(buf));
+      q[0].ulValueLen = sizeof(buf);
       rv = f->C_GetAttributeValue(sess, sealedH, q, 1);
       CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
             "sealed exponent read refused (rv=0x%lx)", (unsigned long)rv);
+      CHECK(q[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+            "sealed exponent length unavailable (len=0x%lx)",
+            (unsigned long)q[0].ulValueLen);
+      CHECK(filled_canary(buf, sizeof(buf)), "sealed exponent buffer untouched");
     }
     {
       CK_BYTE buf[64];
       CK_ATTRIBUTE q[] = { { CKA_PRIVATE_EXPONENT, buf, sizeof(buf) } };
+      memset(buf, 0xA5, sizeof(buf));
+      q[0].ulValueLen = sizeof(buf);
       rv = f->C_GetAttributeValue(sess, legacyH, q, 1);
       CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
             "legacy exponent read refused (rv=0x%lx)", (unsigned long)rv);
+      CHECK(q[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+            "legacy exponent length unavailable (len=0x%lx)",
+            (unsigned long)q[0].ulValueLen);
+      CHECK(filled_canary(buf, sizeof(buf)), "legacy exponent buffer untouched");
     }
     {
       CK_BYTE buf[64];
       CK_ATTRIBUTE q[] = { { CKA_PRIME_2, buf, sizeof(buf) } };
+      memset(buf, 0xA5, sizeof(buf));
+      q[0].ulValueLen = sizeof(buf);
       rv = f->C_GetAttributeValue(sess, sealedH, q, 1);
       CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
             "sealed prime2 read refused (rv=0x%lx)", (unsigned long)rv);
+      CHECK(q[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+            "sealed prime2 length unavailable (len=0x%lx)",
+            (unsigned long)q[0].ulValueLen);
+      CHECK(filled_canary(buf, sizeof(buf)), "sealed prime2 buffer untouched");
     }
     {
       CK_BYTE buf[64];
       CK_ATTRIBUTE q[] = { { CKA_EXPONENT_1, buf, sizeof(buf) } };
+      memset(buf, 0xA5, sizeof(buf));
+      q[0].ulValueLen = sizeof(buf);
       rv = f->C_GetAttributeValue(sess, sealedH, q, 1);
       CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
             "sealed exponent1 read refused (rv=0x%lx)", (unsigned long)rv);
+      CHECK(q[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+            "sealed exponent1 length unavailable (len=0x%lx)",
+            (unsigned long)q[0].ulValueLen);
+      CHECK(filled_canary(buf, sizeof(buf)), "sealed exponent1 buffer untouched");
     }
     {
       CK_BYTE buf[64];
       CK_ATTRIBUTE q[] = { { CKA_EXPONENT_2, buf, sizeof(buf) } };
+      memset(buf, 0xA5, sizeof(buf));
+      q[0].ulValueLen = sizeof(buf);
       rv = f->C_GetAttributeValue(sess, legacyH, q, 1);
       CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
             "legacy exponent2 read refused (rv=0x%lx)", (unsigned long)rv);
+      CHECK(q[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+            "legacy exponent2 length unavailable (len=0x%lx)",
+            (unsigned long)q[0].ulValueLen);
+      CHECK(filled_canary(buf, sizeof(buf)), "legacy exponent2 buffer untouched");
     }
     {
       CK_BYTE buf[64];
