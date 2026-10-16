@@ -455,12 +455,19 @@ in `tests/storage/PreflightSpec.hs`).
 1. Refuses, writing nothing, when: the config does not select this
    store; the backup directory is missing, not a real directory (a
    symlink is refused), not writable, or the store's own directory; a
-   process holds the store; an interrupted write left
-   `<store>-journal` (hot, unknown, or a non-empty `-wal`/`-shm`
-   sibling from foreign tooling; see `caseCheckWalShm` in
-   `tests/storage/StoreCtlSpec.hs`); the catalog does not match the
-   stored tokens (labels, slots, ids; restore the catalog the store was
-   written with); or the store changed after the check.
+   process holds the store; a non-empty `-wal` or `-shm` sibling from
+   foreign tooling exists (checked before the journal classification,
+   so a cold journal never bypasses it; see `caseMigrateCliColdWal` in
+   `tests/storage/StoreCtlSpec.hs`); an interrupted write left
+   `<store>-journal` (hot, unknown, or not a regular file, which is
+   refused without opening; see `caseCheckNonRegularJournal` in
+   `tests/storage/StoreCtlSpec.hs` and `caseCheckWalShm` there); the
+   catalog does not match the stored tokens (labels, slots, ids;
+   restore the catalog the store was written with); the store is
+   already current (returns `migrate-not-needed`, leaving any cold
+   journal untouched; see `caseMigrateCliSchema3Cold`); or the store
+   changed after the check. A cold journal is cleared only after this
+   plan says the migration proceeds.
 2. Takes the store's ownership lock for the rest of the run.
 3. Writes a new backup `<store>.pre-migrate.schema<N>.<epoch>.bak`
    (mode 0600; an existing name is never overwritten, the next free
@@ -485,13 +492,19 @@ in `tests/storage/PreflightSpec.hs`).
    `backup-bytes`, `backup-sha256`, `backup-epoch-seconds`,
    `completed-epoch-seconds` (read after the commit and its read-back;
    see `caseMigrateClockReadings`) and `cold-journal-removed`
-   (`yes`/`no`; see Interrupted migration below). The receipt is written
-   through a unique temporary plus `link` so a taken name is never
-   overwritten; on filesystems without hard links it falls back to a
-   direct exclusive write of the final name (`writeReceipt` and
-   `isLinkUnsupported` in `src/Haskoki/Runtime/Storage/Preflight.hs`,
+   (`yes` only when a cold journal was cleared to reach this migration,
+   else `no`; see Interrupted migration below). The receipt is written
+   through a unique temporary `<backup>.receipt.tmp.<pid>.<nonce>` (for
+   example, `token.sqlite.pre-migrate.schema2.1700000000.bak.receipt.tmp.1234.0`)
+   plus `link` so a taken name is never overwritten; on filesystems
+   without hard links it falls back to a direct exclusive write of the
+   final name (`writeReceipt` and `isLinkUnsupported` in
+   `src/Haskoki/Runtime/Storage/Preflight.hs`,
    `caseMigrateReceiptLinkFallback` in
-   `tests/storage/PreflightSpec.hs`).
+   `tests/storage/PreflightSpec.hs`). A stale temporary from a crashed
+   run is ignored, never fatal (`caseMigrateStaleReceiptTmpIgnored`);
+   temporaries from provably-dead owners are removed when the next
+   migration writes its receipt (`caseMigrateStaleReceiptTmpCleaned`).
 
 If the transaction fails (for example, a full disk), it rolls back; the
 store is unchanged, the backup stays, and no receipt is written
@@ -502,10 +515,19 @@ copy of the store.
 ### Interrupted migration
 
 If migrate is killed mid-transaction, `<store>-journal` remains. Do not
-delete it. The journal is classified by its first 8 bytes: hot carries
-the SQLite journal magic, cold is all zero, anything else (including a
-short or unreadable file) is unknown and fails closed (`classifyJournal`
-in `src/Haskoki/Runtime/Storage/SQLite.hs`).
+delete it. The journal is classified only when it is a regular file; a
+symlink, FIFO or device is refused as unknown without opening it, so
+classification never hangs (`caseSnapshotRefusesNonRegularJournal` in
+`tests/storage/PreflightSpec.hs`, `caseCheckNonRegularJournal` in
+`tests/storage/StoreCtlSpec.hs`). A regular journal is classified by
+its first 8 bytes: hot carries the SQLite journal magic, cold is all
+zero, anything else (including a short or unreadable file) is unknown
+and fails closed (`classifyJournal` in
+`src/Haskoki/Runtime/Storage/SQLite.hs`). A non-empty `-wal` or `-shm`
+sibling is checked before the cold classification, so a cold journal
+plus a foreign `-wal` reports `store-journal-present`, never cold, and
+every byte stays untouched (`caseMigrateCliColdWal` in
+`tests/storage/StoreCtlSpec.hs`).
 
 A hot journal (or a non-empty `-wal`/`-shm` sibling, or an unknown
 header) stays refused: `store check` and `store migrate` report
@@ -519,14 +541,22 @@ aside together first (`caseKilledMigrationRecovers`,
 
 A cold journal is refused distinctly: `store check` reports
 `store-journal-cold` and names `store migrate` as the remedy, touching
-neither file. `store migrate` clears a cold journal under exclusive
-locks (the owner probe passes, single-writer ownership is held, a SQLite
-`RESERVED` lock is taken, the journal is still cold on re-read; see
-`clearColdJournal` in `src/Haskoki/Runtime/Storage/SQLite.hs`) and then
-migrates, recording `cold-journal-removed: yes` in the receipt and on
-stdout (`caseMigrateClearsColdJournal`,
-`caseKilledSmallMigrationClears` in `tests/storage/PreflightSpec.hs`).
-A cold journal while another connection holds `RESERVED` stays refused
+neither file. `store migrate` first plans through a read-only snapshot
+that tolerates the cold journal; only when the plan says the migration
+proceeds does it clear the journal under exclusive locks (the owner
+probe passes, single-writer ownership is held, no `-wal` or `-shm`
+sibling exists even zero-byte, a SQLite `RESERVED` lock is taken, the
+journal is still cold on re-read; see `clearColdJournal` in
+`src/Haskoki/Runtime/Storage/SQLite.hs`) and then migrate, recording
+`cold-journal-removed: yes` in the receipt and on stdout
+(`caseMigrateClearsColdJournal`, `caseKilledSmallMigrationClears` in
+`tests/storage/PreflightSpec.hs`). Any other outcome leaves the journal
+untouched: a current store reports `migrate-not-needed` with the journal
+still in place (`caseMigrateCliSchema3Cold` in
+`tests/storage/StoreCtlSpec.hs`); for a current store the cold journal
+is harmless (SQLite already reads committed state, the serving open
+succeeds, and the next write transaction reuses the file). A cold
+journal while another process holds `RESERVED` stays refused
 (`caseColdJournalReservedRefuses`). A migration with no cold journal
 records `cold-journal-removed: no`
 (`caseMigrateReceiptColdJournalNo`).
