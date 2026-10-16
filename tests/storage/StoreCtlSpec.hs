@@ -5,7 +5,7 @@
 live (lock-held) store and resets an offline one only with the
 confirm flag. Never mutates a live store.
 -}
-module StoreCtlSpec (spec) where
+module StoreCtlSpec (spec, relChildMain) where
 
 import Control.Concurrent (forkIO, isEmptyMVar, myThreadId, newEmptyMVar, putMVar, takeMVar, threadDelay, throwTo)
 import Control.Exception (AsyncException (..), bracket, catch, throwIO, toException, try)
@@ -18,10 +18,13 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.StablePtr (castStablePtrToPtr)
 import Foreign.Storable (poke)
-import System.Directory (createDirectory, doesFileExist, listDirectory, removeFile)
+import System.Directory (createDirectory, createDirectoryIfMissing, doesFileExist, listDirectory, removeFile)
+import System.Environment (getExecutablePath)
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Posix.Files (createNamedPipe, createSymbolicLink, removeLink)
 import System.Posix.User (getEffectiveUserID)
+import System.Process (CreateProcess (..), createProcess, proc, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -30,7 +33,9 @@ import Haskoki.Ctl (CtlExit (..), ctlHelp, runCtl)
 import Haskoki.Ctl.Store (renderCheckUnexpectedFailure, renderUnexpectedFailure, storeCheckCommand, storeMigrateCommandWith)
 import Haskoki.Runtime.Storage.Preflight (MigrateHooks (..), noMigrateHooks)
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
+import Haskoki.FFI.Standard (openStdStore)
 import Haskoki.Runtime.Catalog (asyncHomeEntry)
+import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage (CommitResult (..), CredentialRecord (..), Store (..), StoreError (..), emptyDelta)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Types (TokenId (..))
@@ -95,6 +100,11 @@ spec = testGroup "Store commands"
   , testCase "migrate: a sync failure after planning keeps a tag distinct from migrate-failed" caseMigrateSyncFailureDistinctTag
   , testCase "migrate: a non-interrupt async exception is rethrown, not reported" caseMigrateAsyncRethrown
   , testCase "check: an interrupt is exit 130, never store-unreadable" caseCheckInterrupt130
+  , testCase "check: a relative path through an absolute symlink reaches the target" caseCheckRelativeThroughAbsoluteLink
+  , testCase "check: a relative path with dotdot through an absolute symlink reaches the target" caseCheckRelativeDotDotThroughAbsoluteLink
+  , testCase "migrate: a relative path through an absolute symlink migrates the target" caseMigrateRelativeThroughAbsoluteLink
+  , testCase "open: a relative storage.path through an absolute symlink serves the target" caseOpenRelativeThroughAbsoluteLink
+  , testCase "open: a relative storage.path never serves a mirrored directory" caseOpenRelativeThroughAbsoluteLinkMirror
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -1055,3 +1065,161 @@ caseCheckInterrupt130 = withScratch "ctl-check" $ \dir -> do
       assertEqual "exit 130" 130 code
       assertEqual "interrupted line"
         "check-interrupted: no verdict; rerun store check\n" err
+
+-- | The @--rel-child@ body: run one store operation with a relative
+-- path from THIS process's working directory (the parent spawns us
+-- with @cwd@ set, so no test ever changes the suite's own
+-- directory) and report the outcome to a result file as a 'show'n
+-- tuple the parent reads back. @mode@ is @check@, @migrate@ or
+-- @open@; @backups@ is used only by @migrate@.
+relChildMain :: String -> FilePath -> FilePath -> FilePath -> FilePath -> IO ()
+relChildMain mode relpath cfgPath backups result = do
+  body <- case mode of
+    "check" -> do
+      CtlExit code out err <- runCtl ["store", "check", "--path", relpath, "--config", cfgPath]
+      pure (show (code, out, err))
+    "migrate" -> do
+      CtlExit code out err <-
+        runCtl ["store", "migrate", "--path", relpath, "--config", cfgPath, "--backup-dir", backups]
+      pure (show (code, out, err))
+    "open" -> show <$> openRelStore cfgPath
+    _ -> pure (show (False, "unknown rel-child mode: " ++ mode))
+  writeFile result body
+
+-- | The serving open of the config's own storage path (the same
+-- 'openStdStore' the instance open threads), closed at once.
+openRelStore :: FilePath -> IO (Bool, String)
+openRelStore cfgPath = do
+  cfg <- loadConfigOrFail cfgPath
+  env <- newEnv (rulesFromConfig cfg)
+  eSt <- openStdStore env cfg
+  case eSt of
+    Left err -> pure (False, show err)
+    Right mSt -> closeAcquired mSt >> pure (True, "opened")
+
+-- | Spawn this test binary as a @--rel-child@ with its working
+-- directory set to @workdir@. Bounded: a wedged child is killed at
+-- 30s and fails loudly instead of hanging the suite.
+runRelChild :: FilePath -> [String] -> IO ()
+runRelChild workdir args = do
+  exe <- getExecutablePath
+  (_, _, _, ph) <- createProcess ((proc exe ("--rel-child" : args)) { cwd = Just workdir, close_fds = True })
+  mCode <- timeout 30000000 (waitForProcess ph)
+  case mCode of
+    Nothing -> do
+      terminateProcess ph
+      _ <- waitForProcess ph
+      assertFailure "rel child timed out after 30s"
+    Just code -> assertEqual "rel child exit" ExitSuccess code
+
+-- | Read back a @--rel-child@ result file (a 'show'n tuple).
+readRelChild :: Read a => FilePath -> IO a
+readRelChild result = do
+  body <- readFile result
+  case reads body of
+    [(v, "")] -> pure v
+    _ -> assertFailure ("unparseable rel-child result: " ++ body)
+
+-- A relative --path through an absolute symlink resolves to the
+-- absolute target: the mangling that drops the leading slash
+-- reports the target as missing instead of planning it.
+caseCheckRelativeThroughAbsoluteLink :: IO ()
+caseCheckRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
+  let realDir = dir </> "real"; workdir = dir </> "cwd"; result = dir </> "result.txt"
+  createDirectory realDir
+  (realStore, _) <- copyReleasedFixture "v0.4.0.0" realDir
+  createDirectory workdir
+  createSymbolicLink realStore (workdir </> "store.sqlite")
+  cfgPath <- writeStoreConfig (dir </> "config.toml") "store.sqlite" fixtureLabels fixtureSo fixtureUser
+  dbBefore <- BS.readFile realStore
+  runRelChild workdir ["check", "store.sqlite", cfgPath, "-", result]
+  (code, out, err) <- readRelChild result :: IO (Int, String, String)
+  assertEqual "exit 1" 1 code
+  assertBool "plan names migration" ("verdict: migration-required" `isInfixOf` out)
+  assertBool "tag" ("store-migration-required:" `isPrefixOf` err)
+  BS.readFile realStore >>= \b -> assertBool "store untouched" (b == dbBefore)
+
+-- A relative path with dotdot after an absolute symlink still
+-- resolves against the absolute target, not against the mangled
+-- relative spelling.
+caseCheckRelativeDotDotThroughAbsoluteLink :: IO ()
+caseCheckRelativeDotDotThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
+  let workdir = dir </> "cwd"; realDir = workdir </> "realdir"; result = dir </> "result.txt"
+      relpath = "./pd/../pd/store.sqlite"
+  createDirectory workdir
+  createDirectory realDir
+  (realStore, _) <- copyReleasedFixture "v0.4.0.0" realDir
+  createSymbolicLink realDir (workdir </> "pd")
+  cfgPath <- writeStoreConfig (dir </> "config.toml") relpath fixtureLabels fixtureSo fixtureUser
+  dbBefore <- BS.readFile realStore
+  runRelChild workdir ["check", relpath, cfgPath, "-", result]
+  (code, out, err) <- readRelChild result :: IO (Int, String, String)
+  assertEqual "exit 1" 1 code
+  assertBool "plan names migration" ("verdict: migration-required" `isInfixOf` out)
+  assertBool "tag" ("store-migration-required:" `isPrefixOf` err)
+  BS.readFile realStore >>= \b -> assertBool "store untouched" (b == dbBefore)
+
+-- A relative --path through an absolute symlink migrates the real
+-- file: the receipt names the absolute target.
+caseMigrateRelativeThroughAbsoluteLink :: IO ()
+caseMigrateRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
+  let realDir = dir </> "real"; workdir = dir </> "cwd"; backups = dir </> "backups"
+      result = dir </> "result.txt"
+  createDirectory realDir
+  (realStore, _) <- copyReleasedFixture "v0.4.0.0" realDir
+  createDirectory workdir
+  createDirectory backups
+  createSymbolicLink realStore (workdir </> "store.sqlite")
+  cfgPath <- writeStoreConfig (dir </> "config.toml") "store.sqlite" fixtureLabels fixtureSo fixtureUser
+  runRelChild workdir ["migrate", "store.sqlite", cfgPath, backups, result]
+  (code, out, err) <- readRelChild result :: IO (Int, String, String)
+  assertEqual "exit 0" 0 code
+  assertEqual "quiet stderr" "" err
+  assertBool "done" ("migrate-done" `elem` lines out)
+  assertBool "receipt names the target" (("store: " ++ realStore) `elem` lines out)
+  roTexts realStore "SELECT value FROM store_meta WHERE key = 'schema_version'"
+    >>= assertEqual "real file migrated" ["3"]
+
+-- The serving open with a relative storage.path through an absolute
+-- symlink serves the target: the mangled spelling refuses a config
+-- the release serves.
+caseOpenRelativeThroughAbsoluteLink :: IO ()
+caseOpenRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
+  let realDir = dir </> "real"; workdir = dir </> "cwd"; result = dir </> "result.txt"
+      realStore = realDir </> "store.sqlite"
+  createDirectory realDir
+  seedCfg <- writeStoreConfig (dir </> "seed.toml") realStore fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail seedCfg
+  openReconciled realStore cfg >>= either (assertFailure . show) closeAcquired
+  createDirectory workdir
+  createSymbolicLink realStore (workdir </> "store.sqlite")
+  relCfg <- writeStoreConfig (dir </> "config.toml") "store.sqlite" fixtureLabels fixtureSo fixtureUser
+  dbBefore <- BS.readFile realStore
+  runRelChild workdir ["open", "-", relCfg, "-", result]
+  (ok, note) <- readRelChild result :: IO (Bool, String)
+  assertBool ("serving open refused: " ++ note) ok
+  BS.readFile realStore >>= \b -> assertBool "store untouched" (b == dbBefore)
+
+-- The worst case: the mangled relative directory exists under the
+-- working directory. The serving open must still serve the real
+-- store, never create or serve a store at the mangled path.
+caseOpenRelativeThroughAbsoluteLinkMirror :: IO ()
+caseOpenRelativeThroughAbsoluteLinkMirror = withScratch "ctl-rel" $ \dir -> do
+  let realDir = dir </> "real"; workdir = dir </> "cwd"; result = dir </> "result.txt"
+      mirrorBase = workdir </> dropWhile (== '/') realDir
+      realStore = realDir </> "store.sqlite"
+  createDirectory realDir
+  seedCfg <- writeStoreConfig (dir </> "seed.toml") realStore fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail seedCfg
+  openReconciled realStore cfg >>= either (assertFailure . show) closeAcquired
+  createDirectory workdir
+  createSymbolicLink realStore (workdir </> "store.sqlite")
+  createDirectoryIfMissing True mirrorBase
+  relCfg <- writeStoreConfig (dir </> "config.toml") "store.sqlite" fixtureLabels fixtureSo fixtureUser
+  runRelChild workdir ["open", "-", relCfg, "-", result]
+  (ok, note) <- readRelChild result :: IO (Bool, String)
+  assertBool ("serving open refused: " ++ note) ok
+  mirrorLeft <- doesFileExist (mirrorBase </> "store.sqlite")
+  assertBool "no store created at the mangled path" (not mirrorLeft)
+  roTexts realStore "SELECT value FROM store_meta WHERE key = 'schema_version'"
+    >>= assertEqual "real store still served" ["3"]

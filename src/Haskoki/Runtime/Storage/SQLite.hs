@@ -2422,26 +2422,33 @@ anySidecarExists path = do
 resolveStorePath :: FilePath -> IO FilePath
 resolveStorePath p
   | null p = pure p
-  | otherwise = follow (splitPath p) [] 0
+  | otherwise = follow (splitPath p) [] absolute0 0
   where
-    absolute = case p of ('/' : _) -> True; _ -> False
-    follow :: [String] -> [String] -> Int -> IO FilePath
-    follow [] stack _ = pure (joinPath absolute stack)
-    follow (c : cs) stack n
-      | c == ".." = follow cs (popForDotDot stack) n
+    absolute0 = case p of ('/' : _) -> True; _ -> False
+    -- Absoluteness rides in the fold state: an absolute link target
+    -- resets the walk to the filesystem root, so the flag must turn
+    -- 'True' at the jump. Computing it once from the input drops the
+    -- leading slash when a relative path goes through an absolute
+    -- symlink (and misdirects the later link probes at the mangled
+    -- relative spelling).
+    follow :: [String] -> [String] -> Bool -> Int -> IO FilePath
+    follow [] stack absolute _ = pure (joinPath absolute stack)
+    follow (c : cs) stack absolute n
+      | c == ".." = follow cs (popForDotDot absolute stack) absolute n
       | otherwise = do
           eLink <- tryIOError (readSymbolicLink (joinPath absolute (stack ++ [c])))
           case eLink of
-            Left _ -> follow cs (stack ++ [c]) n
+            Left _ -> follow cs (stack ++ [c]) absolute n
             Right link
               | n >= 40 -> pure p
               | otherwise ->
                   let target = splitPath link
                   in case link of
-                       ('/' : _) -> follow (target ++ cs) [] (n + 1)
-                       _ -> follow (target ++ cs) stack (n + 1)
-    popForDotDot [] = if absolute then [] else [".."]
-    popForDotDot stack
+                       ('/' : _) -> follow (target ++ cs) [] True (n + 1)
+                       _ -> follow (target ++ cs) stack absolute (n + 1)
+    popForDotDot :: Bool -> [String] -> [String]
+    popForDotDot absolute [] = if absolute then [] else [".."]
+    popForDotDot absolute stack
       | absolute = init stack
       | last stack == ".." = stack ++ [".."]
       | otherwise = init stack
