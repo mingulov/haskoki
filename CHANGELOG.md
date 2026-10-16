@@ -40,6 +40,23 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   `CKR_KEY_HANDLE_INVALID` (0x60) instead of `CKR_OBJECT_HANDLE_INVALID`
   (0x82). Wrap, unwrap and KEM key resolution still return 0x82.
 
+### Fixed
+
+- A hang in hosts that load the provider with at least 2 RTS
+  capabilities (`GHCRTS=-N2` or higher, or `-N`). When two threads
+  opened the OpenSSL 4 backend at once, they could both evaluate the
+  same lazy capability table, and a GHC runtime bug (GHC #27272, seen
+  on 9.10.3, 9.12.4 and 9.14.1) could leave a string literal's
+  black hole without an owner, blocking every thread that needed it.
+  Capability tables are now fully evaluated before they are published.
+  The default of 1 capability is not exposed. Releases up to 0.4.0.0
+  are affected; until upgrading, run with a single capability or
+  serialize the first open.
+- Store lock and guard file descriptors are now opened with
+  `O_CLOEXEC` atomically. A child process started while a store was
+  being opened could inherit the descriptor and keep the store locked
+  after it was closed.
+
 ## [0.4.0.0] - Unreleased
 
 - Token provisioning lifecycle: `C_InitToken`, `C_InitPIN`, and `C_SetPIN`
