@@ -151,13 +151,10 @@ import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ObjectId (..)
-  , ReturnCode (..)
   , Revision (..)
   , SessionId (..)
   , SlotId (..)
-  , TokenId (..)
   )
 
 spec :: MVar () -> TestTree
@@ -1162,12 +1159,6 @@ handleOf :: NativeOutput -> IO ExternalHandle
 handleOf o = case decodeHandle (outBytes o) of
   Just h -> pure h
   Nothing -> assertFailure "handle output undecodable" >> undefined
-
-expectReject :: ReturnCode -> PlanResult -> IO ()
-expectReject want res = case res of
-  Reject rej -> assertEqual "reject code" want (rejCode rej)
-  Immediate _ -> assertFailure "must reject, created"
-  Execute _ _ -> assertFailure "must reject, executed"
 
 -- KeyImportSpec.hs:170-192 (rsaPrivTmpl, rsaPubTmpl).
 rsaPrivTmpl :: [(AttributeType, AttributeValue)]

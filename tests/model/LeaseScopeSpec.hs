@@ -392,9 +392,9 @@ mkLeaseWorld = do
   let initReq = Request Pkcs11_3_2 F_DigestInit (Just sid) Nothing
         (encodeInitInput (MechanismId 0x250) [] False "") []
   case planCall defaultRules m2 initReq of
-    Execute res (EffectCrypto _) -> do
+    Execute eff (EffectCrypto _) -> do
       m3 <- snapshotModel env
-      case finishEffect defaultRules m3 res
+      case finishEffect defaultRules m3 eff
           (EngineOkResource (EngineResourceId 31)) of
         Left rej -> assertFailure ("digest-init finish rejected: " ++ show rej)
         Right pc -> do

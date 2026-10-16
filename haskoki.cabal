@@ -252,6 +252,7 @@ foreign-library haskoki
     Haskoki.FFI.Decode
     Haskoki.FFI.Encode
     Haskoki.FFI.Exports
+    Haskoki.FFI.MessageParams
     Haskoki.FFI.OpenSSL4.Raw
     Haskoki.FFI.NativeParams
     Haskoki.FFI.Standard

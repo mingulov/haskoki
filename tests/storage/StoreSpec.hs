@@ -34,7 +34,7 @@ module StoreSpec
 
 import Control.Concurrent (forkFinally, forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar, tryReadMVar, tryTakeMVar)
-import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, fromException, mask, onException)
+import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, fromException, mask)
 import Control.Monad (replicateM_, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8

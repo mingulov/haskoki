@@ -5157,8 +5157,8 @@ dualCipherBytes _ = Nothing
 -- | Run the digest/sign/verify side of a dual update over its input
 -- (the caller's part for encrypt direction, the cipher output for
 -- decrypt direction). Silent dialogue: the side produces no bytes.
-runDualPeer :: StdInstance -> SessionId -> SlotKind -> FunctionId -> ByteString -> IO CULong
-runDualPeer inst sid kind func input = do
+runDualPeer :: StdInstance -> SessionId -> FunctionId -> ByteString -> IO CULong
+runDualPeer inst sid func input = do
   m <- snapshotModel (siEnv inst)
   let req = Request Pkcs11_3_2 func (Just sid) Nothing input []
   epc <- runCryptoPlan inst m req
@@ -5216,7 +5216,7 @@ runLinkedPeer
   -> ByteString -> IO CULong
 runLinkedPeer inst sid cKind dKind dFunc bytes = do
   ok <- establishDualLink inst sid cKind dKind
-  if ok then runDualPeer inst sid dKind dFunc bytes
+  if ok then runDualPeer inst sid dFunc bytes
         else pure ckrGeneralError
 
 -- | Whether the peer side of a dual update may take input: the
@@ -5256,7 +5256,7 @@ runDualUpdateBuffered inst sid cKind cFunc cRegion dKind dFunc isDecrypt input p
       (Just _, Just _) | dualPeerEligible (ssOps st) dKind -> do
         let link = isDecrypt && dualLinkAuth (ssOps st) cKind dKind
             runPeer = if link then runLinkedPeer inst sid cKind dKind dFunc
-                              else runDualPeer inst sid dKind dFunc
+                              else runDualPeer inst sid dFunc
             cReq = Request Pkcs11_3_2 cFunc (Just sid) Nothing input
               [RegionBytes cRegion (IntentBuffer cap)]
         epcC <- runCryptoPlan inst m cReq

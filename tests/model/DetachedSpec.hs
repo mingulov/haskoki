@@ -1527,7 +1527,7 @@ caseRetireScopedKeepsOther = do
   assertEqual "B one engine run" 1 nRuns
   -- The durable records agree: pid1 canceled, pid2 delivered.
   jobs <- loadJobs store
-  let stateOf p = [jrState r | r <- jobs, jrPersistentId r == p]
+  let stateOf q = [jrState r | r <- jobs, jrPersistentId r == q]
   assertEqual "pid1 canceled" [JobCanceled] (stateOf pid1)
   assertEqual "pid2 delivered" [JobDelivered] (stateOf pid2)
   -- Whole-context retirement now finds nothing left to retire.

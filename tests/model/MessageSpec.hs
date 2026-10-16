@@ -14,7 +14,6 @@ import Data.Bits (xor)
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64, Word8)
-import Foreign.C.Types (CULong)
 import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
