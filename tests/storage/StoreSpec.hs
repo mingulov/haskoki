@@ -39,7 +39,7 @@ import Control.Monad (replicateM_, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (isSpace)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isPrefixOf, sort)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map.Strict as Map
@@ -52,17 +52,17 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (canonicalizePath, createDirectory, doesDirectoryExist, doesFileExist, listDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removeFile, renameFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, takeExtension, (</>))
-import System.IO.Error (catchIOError, isAlreadyExistsError)
-import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, readSymbolicLink, setFileMode)
+import System.FilePath (takeExtension, (</>))
+import System.IO.Error (catchIOError)
+import System.Posix.Files (createSymbolicLink, fileExist, readSymbolicLink)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
 import System.Posix.Process (exitImmediately, getParentProcessID, getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
-import System.Posix.Types (Fd, FileMode, ProcessID)
-import System.Process (CreateProcess (..), ProcessHandle, createProcess, getPid, getProcessExitCode, proc, readProcess)
+import System.Posix.Types (Fd, ProcessID)
+import System.Process (CreateProcess (..), ProcessHandle, createProcess, proc, readProcess)
 import System.Timeout (timeout)
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -125,6 +125,9 @@ import Haskoki.Runtime.Storage
   , tokensWithoutCredentials
   )
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
+import StoreFixtures
+  ( awaitHolderExit, claimReap, closeAcquired, makeTempDir, openReconciled, rawExec, rawTexts
+  , reapedPid, releaseHolder, spawnedPid, storePackageRoot, waitBounded, withFileMode )
 import Haskoki.FFI.Standard
   ( ObjectProjection (..)
   , StdInstance
@@ -137,7 +140,6 @@ import Haskoki.FFI.Standard
   , haskokiStdLogout
   , haskokiStdOpenSession
   , openStdInstance
-  , openStdStore
   , openStdStoreWith
   )
 import Haskoki.Runtime.Async (newAsyncTable)
@@ -202,26 +204,6 @@ sqliteOpener = do
   dir <- makeTempDir "haskoki-storage-test"
   let path = dir </> "store.db"
   pure (Opener "sqlite" (openSQLiteStore path) (removeDirectoryRecursive dir))
-
--- | Make a fresh scratch directory: pid-suffixed, retrying the next name
--- on an already-exists error (no new dependencies; concurrent runs cannot collide).
-makeTempDir :: String -> IO FilePath
-makeTempDir prefix = do
-  base <- getTemporaryDirectory
-  pid <- getProcessID
-  tryNames base (prefix ++ "-" ++ show pid ++ "-") (0 :: Int)
-  where
-    tryNames :: FilePath -> String -> Int -> IO FilePath
-    tryNames base stem n
-      | n > 10000 = ioError (userError ("makeTempDir: exhausted names for " ++ stem))
-      | otherwise = do
-          let dir = base </> (stem ++ show n)
-          -- Decide from the error itself: a concurrent test may create and
-          -- already remove the same name, so a later existence check races.
-          (createDirectory dir >> pure dir) `catchIOError` \e ->
-            if isAlreadyExistsError e
-              then tryNames base stem (n + 1)
-              else ioError (userError ("makeTempDir: cannot create " ++ dir ++ ": " ++ show e))
 
 -- | Every fd the open store holds on its database and sidecar lock
 -- carries FD_CLOEXEC. Without it a concurrent fork+exec (any thread,
@@ -1174,13 +1156,6 @@ testCorruptDiagnosed = do
           Right _ -> assertFailure (label ++ ": corrupt record loaded")
         storeClose s1
 
--- | Run one raw statement against a closed database file.
-rawExec :: FilePath -> T.Text -> IO ()
-rawExec path sql = do
-  db <- S.open (T.pack path)
-  S.exec db sql
-  S.close db
-
 -- | Acceptance 5 (detached-job records): a pending recipe and a
 -- prepared result both round-trip byte-exact across close/reopen.
 testJobsRoundTrip :: Opener -> IO ()
@@ -1612,20 +1587,6 @@ testRawColumnsClean =
     mapM_ (\t -> assertBool ("raw numbers: " ++ take 40 t) (numbersClean t))
       (tokDocs ++ attrDocs ++ jobDocs)
 
--- | Read one text column from every row of a raw query.
-rawTexts :: S.Database -> T.Text -> IO [String]
-rawTexts db sql =
-  bracket (S.prepare db sql) S.finalize collect
-  where
-    collect stmt = do
-      r <- S.step stmt
-      case r of
-        S.Done -> pure []
-        S.Row -> do
-          cols <- S.columns stmt
-          rest <- collect stmt
-          pure ([T.unpack t | S.SQLText t <- cols] ++ rest)
-
 -- | Read one blob column from every row of a raw query.
 rawBlobs :: S.Database -> T.Text -> IO [String]
 rawBlobs db sql =
@@ -1639,23 +1600,6 @@ rawBlobs db sql =
           cols <- S.columns stmt
           rest <- collect stmt
           pure ([BC8.unpack b | S.SQLBlob b <- cols] ++ rest)
-
--- | The package root, resolved CWD-independently (same
--- funnel-cwd hardening as the model suite: walk up from the test
--- binary's own directory to haskoki.cabal).
-storePackageRoot :: IO FilePath
-storePackageRoot = do
-  exeDir <- takeDirectory <$> getExecutablePath
-  ascend exeDir
-  where
-    ascend dir = do
-      here <- doesFileExist (dir </> "haskoki.cabal")
-      if here
-        then pure dir
-        else let parent = takeDirectory dir
-             in if parent == dir
-                  then assertFailure "schema-shape: haskoki.cabal not found"
-                  else ascend parent
 
 -- | Normalize DDL for comparison: collapse whitespace runs and
 -- drop spaces adjacent to parens/commas. Sound here because no
@@ -2019,68 +1963,6 @@ spawnHolderEnv extra path doneFile readyFile = do
     ((proc exe ["--holder", path, doneFile, readyFile])
       { close_fds = True, env = Just merged })
   pure ph
-
--- | The spawned child's pid for the lock-ownership handshake;
--- fails fast when the child already exited before handshaking.
-spawnedPid :: ProcessHandle -> String -> IO ProcessID
-spawnedPid ph tag = do
-  mPid <- getPid ph
-  case mPid of
-    Just pid -> pure pid
-    Nothing -> assertFailure (tag ++ ": holder child exited before handshake")
-
--- | Claim the exactly-once right to reap a holder child: True
--- for the first claimer (it owns signal+reap), False once the
--- child has been reaped. A reaped numeric pid may be recycled by
--- an unrelated process, so it must never be signaled again.
-claimReap :: IORef Bool -> IO Bool
-claimReap ref = atomicModifyIORef' ref (\done -> (True, not done))
-
--- | Bounded wait on a holder child (10ms non-blocking polls), so
--- a wedged child cannot hang the suite. Nothing on timeout; every
--- error is swallowed on the release path.
-waitBounded :: ProcessHandle -> Int -> IO (Maybe ExitCode)
-waitBounded _ 0 = pure Nothing
-waitBounded ph n = do
-  mSt <- catchIOError (getProcessExitCode ph) (\_ -> pure Nothing)
-  case mSt of
-    Just st -> pure (Just st)
-    Nothing -> threadDelay 10000 >> waitBounded ph (n - 1)
-
--- | Bracket release for a holder child: exactly-once SIGKILL plus
--- a bounded wait. A no-op when the body already reaped the child.
--- The kill targets only our own unreaped child (its pid cannot be
--- recycled before we reap it), never a recycled numeric pid.
--- Every failure is swallowed: the release must not mask the test
--- verdict.
-releaseHolder :: IORef Bool -> ProcessHandle -> IO ()
-releaseHolder reaped ph = do
-  ours <- claimReap reaped
-  when ours $ do
-    catchIOError (getPid ph >>= maybe (pure ()) (signalProcess sigKILL)) (\_ -> pure ())
-    _ <- waitBounded ph 500
-    pure ()
-
--- | Bounded join on a holder child (10s cap) with checked exit
--- status; marks the child reaped so the bracket release skips it.
-awaitHolderExit :: IORef Bool -> ProcessHandle -> String -> IO ()
-awaitHolderExit reaped ph tag = do
-  mSt <- waitBounded ph 1000
-  case mSt of
-    Nothing -> assertFailure (tag ++ ": holder child did not exit within 10s")
-    Just st -> do
-      _ <- claimReap reaped
-      case st of
-        ExitSuccess -> pure ()
-        other -> assertFailure (tag ++ ": holder child failed: " ++ show other)
-
--- | Run with a path's mode overridden, restoring it afterwards
--- (a denied mode must never strand an undeletable fixture, even
--- when the action throws).
-withFileMode :: FilePath -> FileMode -> IO a -> IO a
-withFileMode p mode action = do
-  st <- getFileStatus p
-  bracket_ (setFileMode p mode) (setFileMode p (fileMode st)) action
 
 -- | Run with @HASKOKI_PROC_ROOT@ overridden, restoring it afterwards.
 withProcRoot :: FilePath -> IO a -> IO a
@@ -2616,27 +2498,6 @@ testLivenessMapping = do
   t PidUnknown $ livenessFromProbes ProbeUnknown ProbePresent (Just ProbePresent) ProbeAbsent
   t PidUnknown $ livenessFromProbes ProbePresent ProbeAbsent Nothing ProbeAbsent
   t PidUnknown $ livenessFromProbes ProbePresent ProbeUnknown (Just ProbePresent) ProbeAbsent
-
--- | A provably-dead pid: spawn a fresh process with no inherited
--- store descriptors, reap it, and confirm @\/proc@ has no entry
--- (a reused pid is retried). A raw fork can keep another parallel
--- test's database guard locked after that test closes its store.
-reapedPid :: IO Int
-reapedPid = go (0 :: Int)
-  where
-    go n
-      | n > 50 = assertFailure "could not reap a dead pid"
-      | otherwise = do
-          reaped <- newIORef False
-          bracket spawnReaper (releaseHolder reaped) $ \ph -> do
-            pid <- spawnedPid ph "dead-pid"
-            awaitHolderExit reaped ph "dead-pid"
-            alive <- fileExist ("/proc/" ++ show (fromIntegral pid :: Int))
-            if alive then go (n + 1) else pure (fromIntegral pid)
-    spawnReaper :: IO ProcessHandle
-    spawnReaper = do
-      (_, _, _, ph) <- createProcess ((proc "/bin/true" []) { close_fds = True })
-      pure ph
 
 foreign import ccall unsafe "sys/file.h flock" test_c_flock :: CInt -> CInt -> IO CInt
 
@@ -3890,19 +3751,6 @@ withOpenFile :: (FilePath -> IO a) -> IO a
 withOpenFile use =
   bracket (makeTempDir "haskoki-open-reconcile") removeDirectoryRecursive $ \dir ->
     use (dir </> "store.db")
-
--- | Open the store file at the path through the production
--- acquisition (the same 'openStdStore' the instance open
--- threads): typed reconciliation errors, no assembly.
-openReconciled :: FilePath -> Config -> IO (Either StdStoreError (Maybe StdStore))
-openReconciled path cfg = do
-  env <- newEnv (rulesFromConfig cfg)
-  openStdStore env cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
-
--- | Close an acquired store handle, if any.
-closeAcquired :: Maybe StdStore -> IO ()
-closeAcquired Nothing = pure ()
-closeAcquired (Just ss) = storeClose (stdStore ss)
 
 -- | Hand-built object fixture: one minimal token object
 -- shape per token (attributes stay minimal; ownership is what

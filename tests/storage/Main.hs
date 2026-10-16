@@ -8,6 +8,7 @@ import Test.Tasty.Runners (NumThreads (..))
 
 import qualified CommitSpec
 import qualified MultiSessionSpec
+import qualified PreflightSpec
 import qualified StoreCtlSpec
 import qualified StoreSpec
 
@@ -38,5 +39,6 @@ main = do
         [ StoreSpec.spec
         , CommitSpec.spec
         , StoreCtlSpec.spec
+        , PreflightSpec.spec
         , MultiSessionSpec.spec
         ]

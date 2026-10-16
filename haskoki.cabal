@@ -46,6 +46,9 @@ extra-source-files:
   spec/planning/*.csv
   tests/fixtures/*.der
   tests/fixtures/*.txt
+  tests/fixtures/stores/*.in
+  tests/fixtures/stores/*/store.sqlite
+  tests/fixtures/stores/*/manifest.txt
   tests/ops/fixtures/*.toml
   tests/ops/fixtures/*.json
   tests/ops/fixtures/*.md
@@ -186,6 +189,7 @@ library
     Haskoki.Runtime.Catalog
     Haskoki.Runtime.Storage
     Haskoki.Runtime.Storage.Memory
+    Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Trace
     Haskoki.PKCS11
@@ -278,6 +282,7 @@ foreign-library haskoki
     Haskoki.Runtime.Catalog
     Haskoki.Runtime.Storage
     Haskoki.Runtime.Storage.Memory
+    Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Trace
   c-sources:
@@ -569,8 +574,10 @@ test-suite haskoki-storage-tests
   other-modules:
     CommitSpec
     MultiSessionSpec
+    PreflightSpec
     SQLiteSeams
     StoreCtlSpec
+    StoreFixtures
     StoreSpec
   build-depends:
     base        >= 4.14 && < 5,

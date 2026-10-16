@@ -1,0 +1,15 @@
+schema_version = 1
+profile = "real-crypto"
+[storage]
+kind = "sqlite"
+path = "@STORE@"
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+[trace]
+enabled = false
+[tokens]
+labels = ["haskoki-demo", "haskoki-ops"]
+so_pins = ["58213946", "69324057"]
+user_pins = ["12873465", "23984576"]
