@@ -340,7 +340,7 @@ spec = testGroup "Ownership"
     , testCase "gated normal paths match production, zero outstanding"
         (counted "m1-native-transfers" "gated-normal-zero" (guarded "gated-normal-zero" caseGatedNormalZero))
     , testCase "more than 256 live digests free exactly once"
-        (guarded "gated-live-300" caseGatedLive300)
+        (counted "m1-native-transfers" "gated-live-300" (guarded "gated-live-300" caseGatedLive300))
     ]
   , testGroup "publication contract"
     [ testCase "faulted publish drains releases, fails terminal, sink untouched"

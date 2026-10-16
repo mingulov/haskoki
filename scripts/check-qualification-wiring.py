@@ -973,7 +973,7 @@ def verify_matrix(receipt_dir, expect_sha):
 OWNERSHIP_RTS = (1, 2, 4)
 # (case id, minimum listed tests, counters required)
 OWNERSHIP_CASES = [
-    ("m1-native-transfers", 11, True),
+    ("m1-native-transfers", 12, True),
     ("m1-openssl4-engine", 70, False),
     ("m1-acquisition-hooks", 17, False),
     ("m2-lease-protocol", 6, False),

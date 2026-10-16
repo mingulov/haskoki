@@ -64,7 +64,7 @@ fail() {
 # contain `|`. Rows for later fixtures are appended as `pending`
 # until those fixtures exist.
 CASE_TABLE=$(cat <<'TABLE'
-m1-native-transfers|model|$2 == "Ownership" && $3 == "native ownership transfers"|11|active|gated-adoption-alloc,gated-adoption-load,gated-adoption-park,gated-copy-fault,gated-copy-park,gated-digest-alloc,gated-final-fault,gated-final-park,gated-init-alloc,gated-normal-zero,gated-pair-between
+m1-native-transfers|model|$2 == "Ownership" && $3 == "native ownership transfers"|12|active|gated-adoption-alloc,gated-adoption-load,gated-adoption-park,gated-copy-fault,gated-copy-park,gated-digest-alloc,gated-final-fault,gated-final-park,gated-init-alloc,gated-live-300,gated-normal-zero,gated-pair-between
 m1-openssl4-engine|engine|$2 == "openssl4 engine"|70|active|no
 m1-acquisition-hooks|engine|$2 == "Acquisition hooks"|17|active|no
 m2-lease-protocol|model|$2 == "Ownership" && $3 == "lease protocol"|6|active|no
