@@ -532,36 +532,47 @@ caseMechanismRefused = do
           , ("mechanism", JStr "NO_SUCH_MECHANISM")])]]
   assertRejected "unknown mechanism" bad
   case validateScenario bad of
-    Left err -> assertBool "names the value"
-      ("unknown mechanism 'NO_SUCH_MECHANISM'" `isInfixOf` err)
+    Left err -> do
+      assertBool "names the value"
+        ("unknown mechanism 'NO_SUCH_MECHANISM'" `isInfixOf` err)
+      assertBool "names the action"
+        ("for action 'sign.init'" `isInfixOf` err)
     Right _ -> assertFailure "must reject"
 
--- | An unknown fixture key refuses at load.
+-- | An unknown fixture key refuses at load, naming the reason.
 caseFixtureKeyRefused :: IO ()
-caseFixtureKeyRefused =
-  assertRejected "unknown fixture key"
-    (scenarioWith "key" Nothing [JObj [("action", JStr "sign.init")
-      , ("arguments", JObj [("session", JStr "s1")
-        , ("fixture_key", JStr "no-such-key")
-        , ("mechanism", JStr "CKM_RSA_PKCS")])]])
+caseFixtureKeyRefused = do
+  let bad = scenarioWith "key" Nothing [JObj [("action", JStr "sign.init")
+        , ("arguments", JObj [("session", JStr "s1")
+          , ("fixture_key", JStr "no-such-key")
+          , ("mechanism", JStr "CKM_RSA_PKCS")])]]
+  assertRejected "unknown fixture key" bad
+  case validateScenario bad of
+    Left err -> do
+      assertBool "names the key and value"
+        ("unsupported fixture_key 'no-such-key'" `isInfixOf` err)
+      assertBool "names the action"
+        ("for action 'sign.init'" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
 
--- | Malformed base64 refuses at load, naming the reason.
+-- | Malformed base64 refuses at load, each shape naming the reason.
 caseBase64Refused :: IO ()
 caseBase64Refused = do
-  let bad tag payload = assertRejected tag
-        (scenarioWith "b64" Nothing [JObj [("action", JStr "sign")
-          , ("arguments", JObj [("session", JStr "s1")
-            , ("data_base64", JStr payload), ("output_capacity", JNum 256)])]])
+  let bad tag payload = do
+        let sc = scenarioWith "b64" Nothing [JObj [("action", JStr "sign")
+              , ("arguments", JObj [("session", JStr "s1")
+                , ("data_base64", JStr payload), ("output_capacity", JNum 256)])]]
+        assertRejected tag sc
+        case validateScenario sc of
+          Left err -> assertBool ("names the reason: " ++ tag)
+            ("must be strict base64" `isInfixOf` err)
+          Right _ -> assertFailure "must reject"
   bad "odd length" "eA"
   bad "bad alphabet" "****"
   bad "mid padding" "eA==eA=="
   bad "over padding" "eA==="
   bad "data after pad" "AB=C"
-  case validateScenario (scenarioWith "b64" Nothing [JObj [("action", JStr "sign")
-      , ("arguments", JObj [("session", JStr "s1")
-        , ("data_base64", JStr "eA"), ("output_capacity", JNum 256)])]]) of
-    Left err -> assertBool "names the reason" ("must be strict base64" `isInfixOf` err)
-    Right _ -> assertFailure "must reject"
+  bad "non-canonical trailing bits" "eB=="
 
 -- | Out-of-range capacities refuse at load, naming the range.
 caseCapacityRefused :: IO ()
@@ -578,29 +589,49 @@ caseCapacityRefused = do
     Left err -> assertBool "names the range" ("0..16777216" `isInfixOf` err)
     Right _ -> assertFailure "must reject"
 
--- | A foreign async function refuses at load.
+-- | A foreign async function refuses at load, naming the reason.
 caseFunctionRefused :: IO ()
-caseFunctionRefused =
-  assertRejected "foreign function"
-    (scenarioWith "fn" Nothing [JObj [("action", JStr "async.complete")
-      , ("arguments", JObj [("session", JStr "s1")
-        , ("function", JStr "C_Encrypt")])]])
+caseFunctionRefused = do
+  let bad = scenarioWith "fn" Nothing [JObj [("action", JStr "async.complete")
+        , ("arguments", JObj [("session", JStr "s1")
+          , ("function", JStr "C_Encrypt")])]]
+  assertRejected "foreign function" bad
+  case validateScenario bad of
+    Left err -> do
+      assertBool "names the value"
+        ("unsupported function 'C_Encrypt'" `isInfixOf` err)
+      assertBool "names the action"
+        ("for action 'async.complete'" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
 
--- | An unknown login role refuses at load.
+-- | An unknown login role refuses at load, naming the reason.
 caseRoleRefused :: IO ()
-caseRoleRefused =
-  assertRejected "unknown role"
-    (scenarioWith "role" Nothing [JObj [("action", JStr "session.login")
-      , ("arguments", JObj [("session", JStr "s1")
-        , ("role", JStr "ADMIN"), ("pin", JStr "1234")])]])
+caseRoleRefused = do
+  let bad = scenarioWith "role" Nothing [JObj [("action", JStr "session.login")
+        , ("arguments", JObj [("session", JStr "s1")
+          , ("role", JStr "ADMIN"), ("pin", JStr "1234")])]]
+  assertRejected "unknown role" bad
+  case validateScenario bad of
+    Left err -> do
+      assertBool "names the value"
+        ("unsupported role 'ADMIN'" `isInfixOf` err)
+      assertBool "names the action"
+        ("for action 'session.login'" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
 
 -- | A read-only open refuses at load: the simulator models
 -- read-write sessions only.
 caseReadOnlyRefused :: IO ()
-caseReadOnlyRefused =
-  assertRejected "read-only open"
-    (scenarioWith "ro" Nothing [JObj [("action", JStr "session.open")
-      , ("arguments", JObj [("read_write", JBool False)])]])
+caseReadOnlyRefused = do
+  let bad = scenarioWith "ro" Nothing [JObj [("action", JStr "session.open")
+        , ("arguments", JObj [("read_write", JBool False)])]]
+  assertRejected "read-only open" bad
+  case validateScenario bad of
+    Left err -> do
+      assertBool "names the reason" ("must be true" `isInfixOf` err)
+      assertBool "names the action"
+        ("for action 'session.open'" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
 
 -- | Missing per-operation inputs refuse at load.
 caseRequiredInputs :: IO ()
@@ -631,13 +662,21 @@ caseRequiredInputs = do
     (scenarioWith "req" Nothing [JObj [("action", JStr "async.complete")
       , ("arguments", JObj [("session", JStr "s1")])]])
 
--- | The retired 'only_if_new_store' key refuses at load.
+-- | The retired 'only_if_new_store' key refuses at load, naming
+-- the reason.
 caseRetiredKeyRefused :: IO ()
-caseRetiredKeyRefused =
-  assertRejected "only_if_new_store retired"
-    (scenarioWith "ret" Nothing [JObj [("action", JStr "fixture.load")
-      , ("arguments", JObj [("fixture", JStr "minimal-demo")
-        , ("only_if_new_store", JBool True)])]])
+caseRetiredKeyRefused = do
+  let bad = scenarioWith "ret" Nothing [JObj [("action", JStr "fixture.load")
+        , ("arguments", JObj [("fixture", JStr "minimal-demo")
+          , ("only_if_new_store", JBool True)])]]
+  assertRejected "only_if_new_store retired" bad
+  case validateScenario bad of
+    Left err -> do
+      assertBool "names the retired key"
+        ("unknown argument 'only_if_new_store'" `isInfixOf` err)
+      assertBool "names the action"
+        ("for action 'fixture.load'" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
 
 -- | An unsupported fixture label refuses at load, naming the
 -- supported label.
@@ -652,6 +691,8 @@ caseFixtureRefused = do
         ("unsupported fixture 'other-demo'" `isInfixOf` err)
       assertBool "names the supported label"
         ("(supported: minimal-demo)" `isInfixOf` err)
+      assertBool "names the action"
+        ("for action 'fixture.load'" `isInfixOf` err)
     Right _ -> assertFailure "must reject"
 
 -- | An empty token label refuses at load wherever a label is given.
@@ -665,7 +706,7 @@ caseEmptyTokenRefused = do
       , ("arguments", JObj [("token", JStr "")])]])
 
 -- | The strict base64 length decoder accepts canonical shapes and
--- rejects malformed input.
+-- rejects malformed input, including non-canonical trailing bits.
 caseBase64Shapes :: IO ()
 caseBase64Shapes = do
   assertEqual "empty" (Just 0) (base64DecodedLength "")
@@ -676,6 +717,10 @@ caseBase64Shapes = do
   assertEqual "bad alphabet" Nothing (base64DecodedLength "****")
   assertEqual "mid padding" Nothing (base64DecodedLength "eA==eA==")
   assertEqual "data after pad" Nothing (base64DecodedLength "AB=C")
+  assertEqual "canonical two-pad stays" (Just 1) (base64DecodedLength "Qg==")
+  assertEqual "non-canonical two-pad bits" Nothing (base64DecodedLength "eB==")
+  assertEqual "non-canonical one-pad bits" Nothing (base64DecodedLength "eGh=")
+  assertEqual "non-canonical zero byte" Nothing (base64DecodedLength "AB==")
 
 -- | Duplicate keys reject: lookup takes the first, so a second
 -- entry would silently vanish (notably an empty 'rules' hiding a

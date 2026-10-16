@@ -834,12 +834,12 @@ validateScenario (JObj kvs) = do
           ++ "' must be strict base64")
       Just ArgMechanism -> case v of
         JStr m | knownMechanism m -> Right ()
-        JStr m -> Left ("unknown mechanism '" ++ m ++ "'")
+        JStr m -> Left ("unknown mechanism '" ++ m ++ "' for action '" ++ act ++ "'")
         _ -> typeErr "a string"
       Just (ArgLiteral alts) -> case v of
         JStr s | s `elem` alts -> Right ()
         JStr s -> Left ("unsupported " ++ k ++ " '" ++ s
-          ++ "' (supported: " ++ intercalate ", " alts ++ ")")
+          ++ "' (supported: " ++ intercalate ", " alts ++ ") for action '" ++ act ++ "'")
         _ -> typeErr "a string"
       where
         typeErr want = Left ("scenario argument '" ++ k ++ "' for action '"
@@ -951,8 +951,10 @@ requiredArgs _ = []
 
 -- | Strict base64 decoded length: empty decodes to 0; otherwise the
 -- input length must be a multiple of 4, the body must use the
--- canonical alphabet only, and at most two @=@ may terminate the
--- input. Anything else (including data after the pad) is malformed.
+-- canonical alphabet only, at most two @=@ may terminate the input,
+-- and the unused trailing bits of the final quantum must be zero
+-- (non-canonical encodings such as @eB==@ are malformed). Anything
+-- else (including data after the pad) is malformed.
 base64DecodedLength :: String -> Maybe Int
 base64DecodedLength s
   | null s = Just 0
@@ -961,11 +963,30 @@ base64DecodedLength s
   | not (all isB64 core) = Nothing
   | length pad > 2 = Nothing
   | not (all (== '=') pad) = Nothing
+  | not canonicalTail = Nothing
   | otherwise = Just ((length s `div` 4) * 3 - length pad)
   where
     (core, pad) = span (/= '=') s
     isB64 c = ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')
       || ('0' <= c && c <= '9') || c == '+' || c == '/'
+    sextet c
+      | 'A' <= c && c <= 'Z' = fromEnum c - fromEnum 'A'
+      | 'a' <= c && c <= 'z' = fromEnum c - fromEnum 'a' + 26
+      | '0' <= c && c <= '9' = fromEnum c - fromEnum '0' + 52
+      | c == '+' = 62
+      | otherwise = 63
+    -- One pad: the last sextet carries 4 data bits, so its low 2
+    -- bits must be zero; two pads: it carries 2 data bits, so its
+    -- low 4 bits must be zero. An empty core with pads is
+    -- unreachable (length and pad guards), and rejects.
+    canonicalTail = case length pad of
+      0 -> True
+      1 -> case core of
+        [] -> False
+        _ -> sextet (last core) `mod` 4 == 0
+      _ -> case core of
+        [] -> False
+        _ -> sextet (last core) `mod` 16 == 0
 
 -- | A mechanism name is known when the generated inventory resolves
 -- it (canonical or alias).

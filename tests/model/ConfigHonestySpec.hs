@@ -137,6 +137,7 @@ spec = testGroup "Config honesty"
     , testCase "key table: extra key is caught (negative control)" caseKeyTableExtra
     , testCase "every reserved key is on a reserved-*/template-bounds line" caseReservedOnLines
     , testCase "reserved disclosure: dropped line is caught (negative control)" caseReservedLineMissing
+    , testCase "reserved disclosure: dropped limits lines are caught (negative control)" caseReservedLimitsLineMissing
     , testCase "every key carries an effective record" caseEffectiveComplete
     , testCase "every reserved key is disclosed in capabilities" caseReservedDisclosedComplete
     , testCase "resource inventory names the open dimensions" caseResourceInventory
@@ -1042,9 +1043,29 @@ caseReservedDisclosedComplete :: IO ()
 caseReservedDisclosedComplete = withTimeout "capabilities run" $ do
   r <- runCtl ["capabilities", "--config", fixture "real-crypto.toml"]
   assertEqual "exit 0" 0 (ceCode r)
-  let leaves = [leaf | ((_, leaf), Reserved) <- configKeyCatalog]
   assertEqual "every reserved key named by a disclosure line" []
-    [leaf | leaf <- leaves, not (leaf `isInfixOf` ceOut r)]
+    (undisclosedReserved (ceOut r))
+
+-- | Negative control for the limits leaves: dropping the
+-- @reserved-limits@ line must surface the three unbounded leaves,
+-- and dropping both limits disclosure lines must surface all five,
+-- so the disclosure check cannot pass on a report that lost them.
+caseReservedLimitsLineMissing :: IO ()
+caseReservedLimitsLineMissing = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "real-crypto.toml"]
+  let out = ceOut r
+      without tags = unlines
+        [ ln | ln <- lines out
+             , not (any (`isPrefixOf` ln) tags) ]
+  assertEqual "capabilities without the reserved-limits line"
+    (sort ["limits.transcript_bytes", "limits.aggregate_payload_bytes"
+          , "limits.attribute_depth"])
+    (sort (undisclosedReserved (without ["reserved-limits"])))
+  assertEqual "capabilities without both limits disclosure lines"
+    (sort ["limits.buffer_bytes", "limits.transcript_bytes"
+          , "limits.aggregate_payload_bytes", "limits.attribute_entries"
+          , "limits.attribute_depth"])
+    (sort (undisclosedReserved (without ["reserved-limits", "template-bounds"])))
 
 caseResourceInventory :: IO ()
 caseResourceInventory = do

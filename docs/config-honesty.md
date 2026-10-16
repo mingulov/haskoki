@@ -18,7 +18,7 @@ Invalid values return `CfgInvalid`; configuration errors stop the open.
 |---|---|---|---|---|
 | `schema_version` | E | must be 1 (`Config.hs` build) | `ConfigHonestySpec` schema refusal | 1 only, load gate (config loader; both) |
 | `profile` | E | 3 names validated + reported | `ConfigHonestySpec` + `CtlSpec` capabilities | one of 3 names, validated plus reported (report-only; no behavior selects on it) |
-| `interfaces` | E | subset validated + reported (declarative; no native path gates on it — scope note below) | `ConfigHonestySpec` bad/empty/reported | declared set, gates nothing (report-only; native serves 2.40 3.0 3.2 regardless) |
+| `interfaces` | E | subset validated + reported (declarative; no native path gates on it — scope note below) | `ConfigHonestySpec` bad/empty/reported | declared set, gates nothing (report-only; C_GetInterface and C_GetInterfaceList serve 3.2, 3.1 and 3.0 regardless; 2.40 is served via C_GetFunctionList) |
 | `seed` | R | reserved placeholder: only 1234; does not seed native crypto | `ConfigHonestySpec` seed refusal | 1234 only, read by nothing (config loader; both) |
 | `storage.kind` | E | routes the store (`openStdStore`) | `FfiAsyncSpec` success/bad-sqlite | memory or sqlite, routes the store (native open) |
 | `storage.path` | E/R | sqlite opens it; memory+path refused (ignored otherwise) | `FfiAsyncSpec` + `ConfigHonestySpec` memory-path refusal | sqlite opens it; memory plus path refuses (native open) |
@@ -41,16 +41,16 @@ Invalid values return `CfgInvalid`; configuration errors stop the open.
 | `control.test_enabled` | E | gates mutations; serving slots fixed when false, permanently removable within the interval when true | `ControlSpec` + `SimBridgeSpec` private gates; `NotificationsEngineSpec` serving configuration | gates presence/scenario/scheduler mutations (both; control plane and sim verbs) |
 | `fixtures.set` | R | reserved placeholder: only `"minimal-demo"` | `ConfigHonestySpec` set refusal | "minimal-demo" only, read by nothing (config loader; both) |
 | `fixtures.apply` | R | reserved placeholder: only `"new-store-only"` | `ConfigHonestySpec` apply refusal | "new-store-only" only, read by nothing (config loader; both) |
-| `limits.slots` | E | `rulesFromConfig` → token admission | `AdmissionSpec` tracking | at least 1, serving catalog admission (native; runner models one slot) |
-| `limits.sessions` | E | `rulesFromConfig` → session admission | `ConfigHonestySpec` sessions tracking | at least 1, session admission (native; runner never reads it) |
-| `limits.objects` | E | `rulesFromConfig` → object admission | `AdmissionSpec` tracking | at least 1, object admission (native; runner never reads it) |
+| `limits.slots` | E | `rulesFromConfig` → token admission | `AdmissionSpec` tracking | default 16, at least 1, serving catalog admission (native; runner models one slot) |
+| `limits.sessions` | E | `rulesFromConfig` → session admission | `ConfigHonestySpec` sessions tracking | default 1024, at least 1, session admission (native; runner never reads it) |
+| `limits.objects` | E | `rulesFromConfig` → object admission | `AdmissionSpec` tracking | default 100000, at least 1, object admission (native; runner never reads it) |
 | `limits.buffer_bytes` | D | RESERVED: effective attribute-value bound pinned 4194304 (4 MiB; see `template-bounds`) | `ConfigSpec` template disclosure | reserved; effective 4194304 per value (native template decoder; config value ignored) |
 | `limits.transcript_bytes` | D | reserved: no transcript bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line | reserved; no bound anywhere (report-only; no admission site reads it) |
 | `limits.aggregate_payload_bytes` | D | reserved: no aggregate bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line | reserved; no bound anywhere (report-only; no admission site reads it) |
 | `limits.attribute_entries` | D | RESERVED: effective bound pinned 64 (see `template-bounds`) | `ConfigSpec` template disclosure | reserved; effective 64 entries (native template decoder; config value ignored) |
 | `limits.attribute_depth` | D | reserved: no attribute-depth bound implemented | `ConfigHonestySpec` reserved parse + `reserved-limits` line | reserved; no bound anywhere (report-only; no admission site reads it) |
-| `limits.jobs` | E | async-table bound (`max 8`) | `ConfigHonestySpec` jobs bound | max 8 bound on the async table (both; runner floor and native table bound) |
-| `limits.events` | E | public open requires positive bound at least catalog size; private FIFO retains `max 8` | `NotificationsSpec` + `NotificationsEngineSpec` serving limits; `ConfigHonestySpec` private events bound | at least 1, slot-events bound plus max 8 floor (both; serving slots and private FIFO) |
+| `limits.jobs` | E | async-table bound (`max 8`) | `ConfigHonestySpec` jobs bound | default 1024, at least 1, max 8 bound on the async table (both; runner floor and native table bound) |
+| `limits.events` | E | public open requires positive bound at least catalog size; private FIFO retains `max 8` | `NotificationsSpec` + `NotificationsEngineSpec` serving limits; `ConfigHonestySpec` private events bound | default 1024, at least 1, slot-events bound plus max 8 floor (both; serving slots and private FIFO) |
 | `sim.enabled` | E | gates schedule/script/fault-window | `SimBridgeSpec` boost gating + fault windows | on/off sim gate (both; runner script/faults and control-plane schedule) |
 | `sim.delay_schedule` | E | per-job tick boost | `SimBridgeSpec` schedule boost | NAME:TICKS list, ticks 0..1000000 (native control plane; scheduler.advance boost) |
 | `sim.token_script` | E | runs in the private local scenario owner at scenario start | `SimBridgeSpec` script-ran | insert/remove slot list, slots 0..0xFFFFFFFF (scenario; runner seating script) |
@@ -162,10 +162,10 @@ value. The `D` (reserved) rows (`limits.buffer_bytes`,
 effective attribute bounds are the fixed constants in `template-bounds`,
 and no transcript, aggregate-payload or depth bound exists. Read the
 `capabilities` report, not the configuration file, for what is in force.
-There is no per-key inventory yet of configured value, effective value and
-native-versus-scenario applicability, and the completeness test compares
-selected keyword lists rather than the full parser key list; that audit is
-v0.5 work. On a SQLite store the catalog PINs only seed a token when it is
+The per-key inventory of configured value, effective value and
+native-versus-scenario applicability is the Effective column of the table
+above, checked key-for-key against the parser catalog by the completeness
+test. On a SQLite store the catalog PINs only seed a token when it is
 first created; after that the stored credential row is the PIN authority,
 and editing `tokens.so_pins` or `tokens.user_pins` does not change what an
 existing token accepts (see [operations notes](operations-notes.md)).
@@ -198,8 +198,9 @@ filed.
 
 Coverage is explicitly partial: transcript, aggregate payload and attribute
 depth have no bound anywhere in the tree, because no admission site reads those
-three keys; R32/A44 stay open for exactly those dimensions, and the five
-reserved limits keys above are the complete list.
+three keys; R32/A44 stay open for exactly those dimensions. The five reserved
+limits keys above are the complete list: three have no bound, two are pinned
+to fixed constants.
 
 ## Serving presence and private scenario scope
 
