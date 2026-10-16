@@ -1,5 +1,45 @@
 # Changelog
 
+## [Unreleased]
+
+Behaviour changes a caller written against 0.4.0.0 can observe:
+
+- `CKM_AES_GMAC` no longer advertises `CKF_MESSAGE_SIGN` or
+  `CKF_MESSAGE_VERIFY`: PKCS#11 defines no message-API parameter shape
+  for it. Single-part sign and verify with `CK_GCM_PARAMS` are unchanged.
+- `CKM_XOR_BASE_AND_DATA` accepts a base key and data of different
+  lengths (PKCS#11 v3.1 section 6.43.6). The natural result width is the
+  shorter of the two; a template length past it fails with
+  `CKR_KEY_SIZE_RANGE`. Unequal lengths used to fail with
+  `CKR_DATA_LEN_RANGE`.
+- `CKM_HOTP` takes the standard `CK_OTP_PARAMS` (an array of
+  `CK_OTP_PARAM` entries). A `CK_OTP_COUNTER` entry of 8 big-endian bytes
+  is required for sign and verify, since no token counter is kept;
+  `CK_OTP_OUTPUT_LENGTH` (6 to 8) is optional, default 6. The old 16-byte
+  `counter || digits` image is refused with
+  `CKR_MECHANISM_PARAM_INVALID`. HOTP has no message API: its message
+  routes and `CKF_MESSAGE_SIGN`/`CKF_MESSAGE_VERIFY` flags are withdrawn.
+- `C_MessageEncryptInit`, `C_MessageDecryptInit`, `C_MessageSignInit` and
+  `C_MessageVerifyInit` refuse `CKR_MECHANISM_INVALID` for a mechanism
+  without a message route of that kind: HOTP, `CKM_SSL3_MD5_MAC`,
+  `CKM_SSL3_SHA1_MAC`, `CKM_AES_CCM` and `CKM_CHACHA20_POLY1305`. For the
+  SSL3 MACs, AES-CCM and ChaCha20-Poly1305 these inits used to succeed,
+  and every data call on the context then failed.
+- A missing, short or malformed mechanism parameter returns
+  `CKR_MECHANISM_PARAM_INVALID` (0x71) instead of `CKR_ARGUMENTS_BAD`
+  (0x7) for 21 families: digest, cipher, RSA PKCS#1 v1.5, RSA-PSS,
+  RSA-OAEP, RSA X.509, RSA X9.31, Poly1305, ECDSA, DSA, EdDSA, ML-DSA,
+  SLH-DSA, CMAC, DES3-MAC, CBC-MAC, XCBC-MAC, AES-GMAC, HOTP, AES-GCM and
+  ChaCha20 (HMAC, SSL3 MAC and AES-CCM already returned 0x71). A NULL
+  `pMechanism`, or a NULL `pParameter` with a nonzero length, still
+  returns `CKR_ARGUMENTS_BAD`.
+- An unknown, destroyed or invisible key handle at keyed
+  `C_EncryptInit`/`C_DecryptInit`/`C_SignInit`/`C_VerifyInit` and their
+  message-API counterparts, at `C_DigestKey`, and at
+  `C_SignRecoverInit`/`C_VerifyRecoverInit` returns
+  `CKR_KEY_HANDLE_INVALID` (0x60) instead of `CKR_OBJECT_HANDLE_INVALID`
+  (0x82). Wrap, unwrap and KEM key resolution still return 0x82.
+
 ## [0.4.0.0] - Unreleased
 
 - Token provisioning lifecycle: `C_InitToken`, `C_InitPIN`, and `C_SetPIN`

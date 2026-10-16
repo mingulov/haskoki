@@ -79,9 +79,9 @@ def check_functions(funcs, refusals):
     names = {f["name"] for f in funcs}
     assert len(names) == len(funcs), "duplicate function contract"
     assert len(refusals) == 11, f"C hard refusals: {len(refusals)} want 11"
-    # The C hard refusals are served by the C tables; two of them are
-    # grouped under one contract name (C_VerifySignature*), so every
-    # refusal must name a contract row.
+    # The C hard refusals are served by the C tables, and each one has
+    # its own function contract row (the four C_VerifySignature*
+    # functions included), so every refusal must name a contract row.
     for n in refusals:
         assert n in names, f"hard refusal {n} has no function contract row"
     n_unsup = sum(1 for f in funcs if f["contract"] == "unsupported-with-reason")
