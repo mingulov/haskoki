@@ -5,8 +5,8 @@
 module, writing a record, a combined log and a substituted config per
 leg plus a summary. `check` reads a run directory plus the
 required-leg table and recomputes every verdict from the saved
-evidence. A record's own status claim never turns a failing leg into
-a pass; claiming pass where the recomputation fails is reported as
+evidence. A record's own status claim never overrides the recomputed
+verdict; disagreeing with it in either direction is reported as
 JR-SELF-REPORT next to the specific rule.
 
 Run-directory layout (written by `run`)::
@@ -21,11 +21,13 @@ run root. The leg table is authoritative for every expectation (exit
 codes, markers, file assertions, refusals, verifiers, unchanged
 paths, order); the summary supplies the measured module hashes at
 run start and end plus the completed phases. Table order is run
-order. A malformed table row or profile reports as JR-TABLE, and a
-run whose profile phases are incomplete reports as JR-PHASE; both
-are structural findings without JR-SELF-REPORT. The table shape is
-defined by legs-schema.json and validated structurally by
---self-test.
+order. A malformed table row or profile reports as JR-TABLE, as does
+a profile with no legs; a run whose profile phases are incomplete
+reports as JR-PHASE; both are structural findings without
+JR-SELF-REPORT. A record whose module, client or config section is
+not an object, or whose log path is not the leg's own, reports as
+JR-RECORD. The table shape is defined by legs-schema.json and
+validated structurally by --self-test.
 
 Failure lines look like `JR-<RULE>: <leg>: <detail>`, sorted by leg
 then rule, followed by `JOURNEYS: PASS n/n` or `JOURNEYS: FAIL k/n`
@@ -64,6 +66,7 @@ JR_ORDER = "JR-ORDER"
 JR_TABLE = "JR-TABLE"
 JR_FILE = "JR-FILE"
 JR_PHASE = "JR-PHASE"
+JR_RECORD = "JR-RECORD"
 JR_SELF_REPORT = "JR-SELF-REPORT"
 
 RUN_LEG = "(run)"
@@ -75,7 +78,7 @@ RUN_LEG = "(run)"
 # there is no single pass claim to contradict.
 SELF_REPORT_TRIGGERS = frozenset([
     JR_EXIT, JR_MARKER, JR_REFUSAL_UNREACHED, JR_VERIFY, JR_UNCHANGED,
-    JR_MODULE, JR_CONFIG, JR_PIN, JR_SETUP, JR_FILE,
+    JR_MODULE, JR_CONFIG, JR_PIN, JR_SETUP, JR_FILE, JR_RECORD,
 ])
 
 PIN_FIELDS = ("package", "package_version", "runtime_version",
@@ -441,6 +444,11 @@ def check_run(run_dir, profile, legs_path):
     for leg, detail in validate_legs_table(table):
         failures.append((JR_TABLE, leg, detail))
 
+    # -- a profile that resolves to no legs cannot pass --
+    if not required:
+        failures.append((JR_TABLE, RUN_LEG,
+                         f"profile {profile} has no legs"))
+
     # -- summary: measured module hashes --
     start_hash = None
     try:
@@ -538,9 +546,15 @@ def check_run(run_dir, profile, legs_path):
                 continue
             started = record.get("started_utc_ns")
             ended = other.get("ended_utc_ns")
-            if not isinstance(started, int) or not isinstance(ended, int):
-                continue
-            if started < ended:
+            if type(started) is not int:
+                failures.append((JR_ORDER, name,
+                                 "started_utc_ns missing or invalid; "
+                                 f"cannot order after {dep}"))
+            elif type(ended) is not int:
+                failures.append((JR_ORDER, name,
+                                 f"{dep} ended_utc_ns missing or invalid; "
+                                 f"cannot order {name}"))
+            elif started < ended:
                 failures.append((JR_ORDER, name,
                                  f"started before {dep} ended"))
 
@@ -585,15 +599,21 @@ def check_run(run_dir, profile, legs_path):
                      or name in failed_legs)):
             failures.append((JR_SETUP, name, "setup leg did not pass"))
 
-    # -- self-report --
+    # -- self-report: either direction of disagreement between the
+    # record's own status and the recomputed verdict fails --
     for name in required:
         record = records.get(name)
-        if record is None or record.get("status") != "pass":
+        if record is None:
             continue
-        if any(rule in SELF_REPORT_TRIGGERS
-               for rule, leg, _detail in failures if leg == name):
+        leg_rules = {rule for rule, leg, _detail in failures
+                     if leg == name}
+        if record.get("status") == "pass":
+            if leg_rules & SELF_REPORT_TRIGGERS:
+                failures.append((JR_SELF_REPORT, name,
+                                 "record claims pass where evidence fails"))
+        elif record.get("status") == "fail" and not leg_rules:
             failures.append((JR_SELF_REPORT, name,
-                             "record claims pass where evidence fails"))
+                             "record claims fail where evidence passes"))
 
     failures.sort(key=lambda item: (item[1], item[0]))
     return failures, required
@@ -604,7 +624,8 @@ def check_refusal(name, refusal, log_text, failures):
 
     The expectation needs a non-empty rv or non-empty markers, and
     empty output never counts as a refusal. Anything short of that is
-    JR-REFUSAL-UNREACHED.
+    JR-REFUSAL-UNREACHED. The rv must appear as a whole token;
+    markers stay plain substrings.
     """
     wanted = []
     rv = refusal.get("rv")
@@ -621,7 +642,8 @@ def check_refusal(name, refusal, log_text, failures):
         failures.append((JR_REFUSAL_UNREACHED, name,
                          "empty output never counts as a refusal"))
     else:
-        if isinstance(rv, str) and rv and rv not in log_text:
+        if isinstance(rv, str) and rv \
+                and not token_contains(log_text, rv):
             failures.append((JR_REFUSAL_UNREACHED, name,
                              f"refusal {rv} not observed"))
         for marker in wanted:
@@ -681,44 +703,59 @@ def check_leg(name, row, record, run_dir, clients, start_hash, failures):
         # Malformed expectation: the validator reports JR-TABLE;
         # judge against an empty one so the leg still fails loudly.
         expect = {}
+    # Malformed record sections fail as JR-RECORD; their own
+    # semantic check is skipped while every other section is still
+    # judged, so one bad section can neither raise nor mask the rest.
+    bad_sections = set()
+    for key in ("module", "client", "config"):
+        value = record.get(key)
+        if value is not None and not isinstance(value, dict):
+            failures.append((JR_RECORD, name, f"{key} is not an object"))
+            bad_sections.add(key)
     status = record.get("status")
     if status not in ("pass", "fail"):
         failures.append((JR_STATUS, name, f"status {status!r}"))
-    if record.get("exit_code") != expect.get("exit"):
+    exit_code = record.get("exit_code")
+    if type(exit_code) is not int or exit_code != expect.get("exit"):
         failures.append((JR_EXIT, name,
-                         f"exit {record.get('exit_code')!r}, "
+                         f"exit {exit_code!r}, "
                          f"expected {expect.get('exit')!r}"))
     log_rel = record.get("log")
-    log_text = None
-    if isinstance(log_rel, str):
+    want_log = f"logs/{safe_leg(name)}.log"
+    if log_rel != want_log:
+        failures.append((JR_RECORD, name,
+                         f"log {log_rel!r} is not the leg's own {want_log}"))
+    else:
         try:
             log_text = (run_dir / log_rel).read_text(encoding="utf-8",
                                                      errors="replace")
         except OSError:
             log_text = None
-    if log_text is None:
-        failures.append((JR_MARKER, name, "log unreadable"))
-    else:
-        for marker in expect.get("markers", []) or []:
-            if marker not in log_text:
-                failures.append((JR_MARKER, name,
-                                 f"marker missing: {marker[:80]}"))
-        for marker in expect.get("absent_markers", []) or []:
-            if marker in log_text:
-                failures.append((JR_MARKER, name,
-                                 f"absent marker present: {marker[:80]}"))
-        if "expect_refusal" in row \
-                and isinstance(row.get("expect_refusal"), dict):
-            check_refusal(name, row["expect_refusal"], log_text, failures)
-        if row.get("verification") == "in-leg":
-            marker = row.get("verification_marker")
-            if isinstance(marker, str) and marker:
+        if log_text is None:
+            failures.append((JR_MARKER, name, "log unreadable"))
+        else:
+            for marker in expect.get("markers", []) or []:
                 if marker not in log_text:
-                    failures.append((JR_VERIFY, name,
-                                     "in-leg verification marker missing: "
-                                     f"{marker[:80]}"))
-            # A missing marker is a table problem; the validator
-            # reports it as JR-TABLE.
+                    failures.append((JR_MARKER, name,
+                                     f"marker missing: {marker[:80]}"))
+            for marker in expect.get("absent_markers", []) or []:
+                if marker in log_text:
+                    failures.append((JR_MARKER, name,
+                                     f"absent marker present: {marker[:80]}"))
+            if "expect_refusal" in row \
+                    and isinstance(row.get("expect_refusal"), dict):
+                check_refusal(name, row["expect_refusal"], log_text,
+                              failures)
+            if row.get("verification") == "in-leg":
+                marker = row.get("verification_marker")
+                if isinstance(marker, str) and marker:
+                    if marker not in log_text:
+                        failures.append(
+                            (JR_VERIFY, name,
+                             "in-leg verification marker missing: "
+                             f"{marker[:80]}"))
+                # A missing marker is a table problem; the validator
+                # reports it as JR-TABLE.
     check_files(name, expect.get("files", []) or [], run_dir, failures)
     if row.get("unchanged"):
         seen = record.get("unchanged")
@@ -728,12 +765,15 @@ def check_leg(name, row, record, run_dir, clients, start_hash, failures):
         if path != row["unchanged"] or not before or before != after:
             failures.append((JR_UNCHANGED, name,
                              "output bytes changed during the leg"))
-    if start_hash:
-        module = record.get("module") or {}
+    if start_hash and "module" not in bad_sections:
+        module = record.get("module")
+        if not isinstance(module, dict):
+            module = {}
         if module.get("sha256") != start_hash:
             failures.append((JR_MODULE, name,
                              "record module hash differs from run start"))
-    config = record.get("config") or {}
+    raw_config = record.get("config")
+    config = raw_config if isinstance(raw_config, dict) else {}
     config_rel = config.get("file")
     config_ok = False
     if isinstance(config_rel, str):
@@ -742,14 +782,24 @@ def check_leg(name, row, record, run_dir, clients, start_hash, failures):
                          == config.get("sha256"))
         except OSError:
             config_ok = False
-    if not config_ok:
+    if not config_ok and "config" not in bad_sections:
         failures.append((JR_CONFIG, name,
                          "saved config bytes differ from the record"))
-    client = record.get("client") or {}
-    pin = clients.get(client.get("name"))
-    if not isinstance(pin, dict):
+    raw_client = record.get("client")
+    client = raw_client if isinstance(raw_client, dict) else {}
+    # The pin always comes from the leg table row, never from the
+    # record's own client claim; a record naming another client fails.
+    row_client = row.get("client")
+    pin = clients.get(row_client) if isinstance(row_client, str) else None
+    if "client" in bad_sections:
+        pass  # already flagged as JR-RECORD; nothing to judge
+    elif not isinstance(pin, dict):
         failures.append((JR_PIN, name,
-                         f"no pin for client {client.get('name')!r}"))
+                         f"no pin for client {row_client!r}"))
+    elif client.get("name") != row_client:
+        failures.append((JR_PIN, name,
+                         f"record client {client.get('name')!r} differs "
+                         f"from leg client {row_client!r}"))
     else:
         for field in PIN_FIELDS:
             want = pin.get(field)
@@ -1891,8 +1941,12 @@ def build_clean_run(root):
                                      "seconds": 3.5,
                                      "t0_basis": "bundle-extract"},
         "client_setup_seconds": 12.0,
-        "versions": {"opensc": "0.27.0~rc1-1",
-                     "openssl": "3.5.5-1ubuntu3.7"},
+        "versions": {
+            "opensc": {"package_version": "0.27.0~rc1-1",
+                       "runtime_version": "0.27.0~rc1-1"},
+            "openssl": {"package_version": "3.5.5-1ubuntu3.7",
+                        "runtime_version": "OpenSSL 3.5.5"},
+        },
     })
     return legs_path
 
@@ -2162,6 +2216,77 @@ def mut_pin_package_nearmiss(root):
     mutate_record(root, SUCCESS_LEG, update)
 
 
+def mut_status_fail_clean(root):
+    mutate_record(root, SUCCESS_LEG, set_status_fail)
+
+
+def mut_empty_profile(root):
+    def update(table):
+        table["legs"] = []
+    mutate_legs(root, update)
+    for spec in FIXTURE_RECORDS:
+        drop_record(root, spec[0])
+
+
+def mut_client_pin_bypass(root):
+    def update(record):
+        record["client"] = dict(FIXTURE_CLIENTS["runner"])
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_order_missing_started(root):
+    def update(record):
+        del record["started_utc_ns"]
+    mutate_record(root, KEPT_LEG, update)
+
+
+def mut_order_bad_ended(root):
+    # Drop the verification link so the bad stamp draws only JR-ORDER
+    # instead of cascading through the verifier into JR-VERIFY.
+    def update_table(table):
+        del legs_row(table, SUCCESS_LEG)["requires_verification"]
+    mutate_legs(root, update_table)
+
+    def update(record):
+        record["ended_utc_ns"] = "soon"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_refusal_rv_substring(root):
+    (Path(root) / "logs" / f"{REFUSAL_LEG}.log").write_text(
+        "token busy: CKR_SESSION_EXISTS_NOT\n", encoding="utf-8")
+    mutate_record(root, REFUSAL_LEG, set_status_fail)
+
+
+def mut_exit_bool(root):
+    def update(record):
+        record["exit_code"] = False
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_exit_float(root):
+    def update(record):
+        record["exit_code"] = 0.0
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_log_other_leg(root):
+    def update(record):
+        record["log"] = f"logs/{REFUSAL_LEG}.log"
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_record_client_shapeless(root):
+    def update(record):
+        record["client"] = "opensc"
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
 SELF_TEST_CASES = [
     ("clean run", set(), None,
      (0, "JOURNEYS: PASS 5/5", None)),
@@ -2178,7 +2303,8 @@ SELF_TEST_CASES = [
     ("refusal rv absent", {JR_REFUSAL_UNREACHED},
      mut_refusal_unreached, None),
     ("verifier leg absent", {JR_VERIFY}, mut_verifier_absent, None),
-    ("verifier leg failing", {JR_VERIFY}, mut_verifier_failing, None),
+    ("verifier leg failing", {JR_VERIFY, JR_SELF_REPORT},
+     mut_verifier_failing, None),
     ("unchanged output changed", {JR_UNCHANGED}, mut_unchanged_output,
      None),
     ("record module hash differs", {JR_MODULE}, mut_module_hash, None),
@@ -2220,6 +2346,26 @@ SELF_TEST_CASES = [
      mut_pin_package_nearmiss, None),
     ("summary is not an object", {JR_MODULE},
      mut_summary_shapeless, None),
+    ("fail status with clean evidence", {JR_SELF_REPORT},
+     mut_status_fail_clean, None),
+    ("profile with no legs", {JR_TABLE},
+     mut_empty_profile, None),
+    ("record names a different client than the leg", {JR_PIN},
+     mut_client_pin_bypass, None),
+    ("dependent leg without a start stamp", {JR_ORDER},
+     mut_order_missing_started, None),
+    ("dependency without a valid end stamp", {JR_ORDER},
+     mut_order_bad_ended, None),
+    ("refusal rv only as a substring", {JR_REFUSAL_UNREACHED},
+     mut_refusal_rv_substring, None),
+    ("boolean exit code", {JR_EXIT},
+     mut_exit_bool, None),
+    ("float exit code", {JR_EXIT},
+     mut_exit_float, None),
+    ("record points at another leg's log", {JR_RECORD},
+     mut_log_other_leg, None),
+    ("record client is not an object", {JR_RECORD},
+     mut_record_client_shapeless, None),
 ]
 
 
@@ -2243,10 +2389,39 @@ def check_cli_shape(tmp, legs_path, want):
     return None
 
 
+def fixture_versions_problems():
+    """Problems when the fixture summary versions diverge from `run`.
+
+    The producer writes one object per client with exactly the
+    package_version and runtime_version keys; the fixture must keep
+    that shape so receipts read one form.
+    """
+    with tempfile.TemporaryDirectory(
+            prefix="journeys-versions-") as tmp:
+        build_clean_run(tmp)
+        summary = load_json(Path(tmp) / "summary.json")
+    versions = summary.get("versions")
+    if not isinstance(versions, dict) or not versions:
+        return [(RUN_LEG,
+                 "fixture summary versions is not a non-empty object")]
+    for name in sorted(versions):
+        seen = versions[name]
+        if not isinstance(seen, dict):
+            return [(RUN_LEG,
+                     f"fixture summary versions[{name}] is not an object")]
+        if set(seen) != {"package_version", "runtime_version"}:
+            return [(RUN_LEG,
+                     f"fixture summary versions[{name}] lacks the "
+                     "producer keys")]
+    return []
+
+
 def structural_checks():
     """Yield (label, problems) for the leg-table shape positives."""
     yield ("fixture leg table validates",
            validate_legs_table(FIXTURE_LEGS))
+    yield ("fixture summary versions match the producer shape",
+           fixture_versions_problems())
     here = Path(__file__).resolve().parent
     try:
         schema = load_json(here / "legs-schema.json")
