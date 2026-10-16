@@ -909,18 +909,23 @@ void hsk_ossl4_test_seam_arm_bn_fail(int nth);
 /* The next second derive reports *len += delta; succeed 0 fails it after
  * writing 0x5A over the whole buffer, succeed 1 lets it succeed. */
 void hsk_ossl4_test_seam_arm_derive(long delta, int succeed);
-/* The next output decrypt fails after writing 0x5A over the whole
- * buffer and reporting *len += delta. */
-void hsk_ossl4_test_seam_arm_decrypt(long delta);
+/* The next output decrypt reports *len += delta and fails: realfirst 0
+ * fails without calling the provider (after writing 0x5A over the whole
+ * buffer), realfirst 1 performs the real call first, so provider state
+ * matches the unarmed run, and then reports failure. */
+void hsk_ossl4_test_seam_arm_decrypt(long delta, int realfirst);
 /* The next output encrypt fails after writing 0x5A over the whole
  * buffer and reporting *len += delta. */
 void hsk_ossl4_test_seam_arm_encrypt(long delta);
-/* The next PKEY sign fails after writing 0x5A over the whole
- * buffer and reporting *len += delta. */
+/* The next PKEY sign fails with -1 after writing 0x5A over the whole
+ * buffer and reporting *len += delta (the negative return pins the
+ * <= 0 checks: EVP_PKEY_sign answers -1/-2 on error or when the
+ * operation is unsupported). */
 void hsk_ossl4_test_seam_arm_pkey_sign(long delta);
-/* The next DigestSign fails after writing 0x5A over the whole
- * buffer and reporting *len += delta. */
-void hsk_ossl4_test_seam_arm_digest_sign(long delta);
+/* The next DigestSign reports *len += delta; succeed 0 fails it after
+ * writing 0x5A over the whole buffer, succeed 1 lets the real call
+ * run and moves the reported length (mirrors arm_derive). */
+void hsk_ossl4_test_seam_arm_digest_sign(long delta, int succeed);
 long hsk_ossl4_test_seam_bn_calls(void);
 long hsk_ossl4_test_seam_fired(void);
 /* The last allocation noted for `which`: returns 1 and fills *ptr and

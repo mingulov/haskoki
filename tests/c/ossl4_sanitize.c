@@ -1155,7 +1155,7 @@ static void oaep_fail_case(int grow)
     hsk_ossl4_test_seam_reset();
     before = mark_live();
     if (!g_noarm)
-        hsk_ossl4_test_seam_arm_decrypt(delta);
+        hsk_ossl4_test_seam_arm_decrypt(delta, 0);
     rc = hsk_ossl4_rsa_oaep_decrypt(g_lib, "SHA256", "SHA256", NULL, 0, "",
                                     priv, privlen, in, k, &out);
     seam_fired_check();
@@ -1316,7 +1316,7 @@ static void digest_sign_fail_case(int grow)
     hsk_ossl4_test_seam_reset();
     before = mark_live();
     if (!g_noarm)
-        hsk_ossl4_test_seam_arm_digest_sign(delta);
+        hsk_ossl4_test_seam_arm_digest_sign(delta, 0);
     rc = hsk_ossl4_rsa_sign(g_lib, "SHA256", "", priv, privlen, msg,
                             sizeof(msg), 0, &out);
     seam_fired_check();

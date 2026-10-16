@@ -4718,7 +4718,7 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         sctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
         if (sctx == NULL)
             goto end;
-        if (!EVP_PKEY_sign_init(sctx))
+        if (EVP_PKEY_sign_init(sctx) <= 0)
             goto end;
         md = EVP_MD_fetch(ctx, mdname, propq);
         if (md == NULL)
@@ -4727,7 +4727,7 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         if (!EVP_PKEY_CTX_set_rsa_padding(sctx, RSA_X931_PADDING))
             goto end;
-        if (!EVP_PKEY_sign(sctx, NULL, &buflen, msg, msglen))
+        if (EVP_PKEY_sign(sctx, NULL, &buflen, msg, msglen) <= 0)
             goto end;
         alloc = buflen;
         buf = OPENSSL_malloc(alloc);
@@ -4736,7 +4736,7 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         }
         HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PKEY_SIGN, buf, alloc);
-        if (!HSK_PKEY_SIGN_OUT(sctx, buf, &buflen, msg, msglen)) {
+        if (HSK_PKEY_SIGN_OUT(sctx, buf, &buflen, msg, msglen) <= 0) {
             OPENSSL_clear_free(buf, alloc);
             buf = NULL;
             goto end;
@@ -5903,19 +5903,21 @@ typedef struct {
     int derive_succeed;
     int decrypt_armed;
     long decrypt_delta;
+    int decrypt_realfirst;
     int encrypt_armed;
     long encrypt_delta;
     int pkey_sign_armed;
     long pkey_sign_delta;
     int digest_sign_armed;
     long digest_sign_delta;
+    int digest_sign_succeed;
     long fired;
     void *ptr[6];
     size_t alloc[6];
 } hsk_seam_state_t;
 
 static hsk_seam_state_t hsk_seam = { PTHREAD_MUTEX_INITIALIZER, 0, 0, 0, 0,
-                                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                      { NULL, NULL, NULL, NULL, NULL, NULL },
                                      { 0, 0, 0, 0, 0, 0 } };
 
@@ -5929,12 +5931,14 @@ void hsk_ossl4_test_seam_reset(void)
     hsk_seam.derive_succeed = 0;
     hsk_seam.decrypt_armed = 0;
     hsk_seam.decrypt_delta = 0;
+    hsk_seam.decrypt_realfirst = 0;
     hsk_seam.encrypt_armed = 0;
     hsk_seam.encrypt_delta = 0;
     hsk_seam.pkey_sign_armed = 0;
     hsk_seam.pkey_sign_delta = 0;
     hsk_seam.digest_sign_armed = 0;
     hsk_seam.digest_sign_delta = 0;
+    hsk_seam.digest_sign_succeed = 0;
     hsk_seam.fired = 0;
     hsk_seam.ptr[0] = hsk_seam.ptr[1] = hsk_seam.ptr[2] = NULL;
     hsk_seam.ptr[3] = hsk_seam.ptr[4] = hsk_seam.ptr[5] = NULL;
@@ -5960,11 +5964,12 @@ void hsk_ossl4_test_seam_arm_derive(long delta, int succeed)
     pthread_mutex_unlock(&hsk_seam.mu);
 }
 
-void hsk_ossl4_test_seam_arm_decrypt(long delta)
+void hsk_ossl4_test_seam_arm_decrypt(long delta, int realfirst)
 {
     pthread_mutex_lock(&hsk_seam.mu);
     hsk_seam.decrypt_armed = 1;
     hsk_seam.decrypt_delta = delta;
+    hsk_seam.decrypt_realfirst = realfirst;
     pthread_mutex_unlock(&hsk_seam.mu);
 }
 
@@ -5984,11 +5989,12 @@ void hsk_ossl4_test_seam_arm_pkey_sign(long delta)
     pthread_mutex_unlock(&hsk_seam.mu);
 }
 
-void hsk_ossl4_test_seam_arm_digest_sign(long delta)
+void hsk_ossl4_test_seam_arm_digest_sign(long delta, int succeed)
 {
     pthread_mutex_lock(&hsk_seam.mu);
     hsk_seam.digest_sign_armed = 1;
     hsk_seam.digest_sign_delta = delta;
+    hsk_seam.digest_sign_succeed = succeed;
     pthread_mutex_unlock(&hsk_seam.mu);
 }
 
@@ -6077,11 +6083,12 @@ static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l)
 static int hsk_seam_pkey_decrypt(EVP_PKEY_CTX *c, unsigned char *o, size_t *l,
                                  const unsigned char *in, size_t inlen)
 {
-    int armed;
+    int armed, realfirst;
     long delta;
     pthread_mutex_lock(&hsk_seam.mu);
     armed = hsk_seam.decrypt_armed;
     delta = hsk_seam.decrypt_delta;
+    realfirst = hsk_seam.decrypt_realfirst;
     if (armed) {
         hsk_seam.decrypt_armed = 0;
         hsk_seam.fired++;
@@ -6089,6 +6096,14 @@ static int hsk_seam_pkey_decrypt(EVP_PKEY_CTX *c, unsigned char *o, size_t *l,
     pthread_mutex_unlock(&hsk_seam.mu);
     if (!armed)
         return EVP_PKEY_decrypt(c, o, l, in, inlen);
+    if (realfirst) {
+        /* The real call runs first, so provider state matches the
+         * unarmed run; the seam then reports failure with a changed
+         * length either way. */
+        EVP_PKEY_decrypt(c, o, l, in, inlen);
+        *l = (size_t)((long)*l + delta);
+        return 0;
+    }
     /* A provider that wrote the plaintext, then reported failure
      * with a changed length. */
     memset(o, 0x5A, *l);
@@ -6134,20 +6149,22 @@ static int hsk_seam_pkey_sign(EVP_PKEY_CTX *c, unsigned char *s, size_t *l,
     if (!armed)
         return EVP_PKEY_sign(c, s, l, t, tlen);
     /* A provider that wrote the signature, then reported failure
-     * with a changed length. */
+     * with a changed length. The -1 return pins the <= 0 checks at
+     * the call sites (a bare ! would misread it as success). */
     memset(s, 0x5A, *l);
     *l = (size_t)((long)*l + delta);
-    return 0;
+    return -1;
 }
 
 static int hsk_seam_digest_sign(EVP_MD_CTX *c, unsigned char *s, size_t *l,
                                 const unsigned char *t, size_t tlen)
 {
-    int armed;
+    int armed, succeed;
     long delta;
     pthread_mutex_lock(&hsk_seam.mu);
     armed = hsk_seam.digest_sign_armed;
     delta = hsk_seam.digest_sign_delta;
+    succeed = hsk_seam.digest_sign_succeed;
     if (armed) {
         hsk_seam.digest_sign_armed = 0;
         hsk_seam.fired++;
@@ -6155,6 +6172,12 @@ static int hsk_seam_digest_sign(EVP_MD_CTX *c, unsigned char *s, size_t *l,
     pthread_mutex_unlock(&hsk_seam.mu);
     if (!armed)
         return EVP_DigestSign(c, s, l, t, tlen);
+    if (succeed) {
+        int r = EVP_DigestSign(c, s, l, t, tlen);
+        if (r > 0)
+            *l = (size_t)((long)*l + delta);
+        return r;
+    }
     /* A provider that wrote the signature, then reported failure
      * with a changed length. */
     memset(s, 0x5A, *l);
