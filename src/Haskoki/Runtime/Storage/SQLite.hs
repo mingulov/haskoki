@@ -26,8 +26,11 @@ release unlinks only the owned lock inode.
 An empty database initializes transactionally from the schema in
 @spec\/storage-schema.sql@ (four tables, indexes, meta rows); an
 existing database is verified (tables present, @schema_version@
-exactly @1@) and never silently refixtured. A foreign or garbage
-file is rejected with a diagnosis and left byte-identical.
+exactly @2@, or exactly @1@) and never silently refixtured. A
+version-1 database opens without a single write; its migration to
+version 2 rides the first commit transaction, so an open that is
+refused after reading leaves the file byte-identical. A foreign or
+garbage file is rejected with a diagnosis and left byte-identical.
 
 SQLite configuration (design 08, section 6): foreign keys on, a
 bounded 5s busy timeout, rollback-journal mode, ordinary durable
@@ -139,9 +142,10 @@ import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), SlotId (..)
 
 -- | The schema version this backend creates and accepts.
 -- Version 2 adds the @credentials@ table (one provisioned
--- credential row per token); a version-1 database migrates
--- explicitly at open ('migrateV1toV2'), and anything else
--- refuses without writing.
+-- credential row per token); a version-1 database opens without
+-- writing and migrates explicitly inside its first commit
+-- transaction ('migrateV1InTxn'), and anything else refuses
+-- without writing.
 sqliteSchemaVersion :: Int
 sqliteSchemaVersion = 2
 
@@ -169,6 +173,11 @@ data SQLiteConn = SQLiteConn
   , sqLimits :: !StoreLimits
   , sqHooks :: !SQLiteTestHooks
   , sqClaims :: !ClaimAuthority
+  , sqSchemaV1 :: !(IORef Bool)
+    -- ^ The database was opened at schema version 1 and its
+    -- migration has not been confirmed yet: the next commit
+    -- transaction migrates it first ('migrateV1InTxn'). Read and
+    -- written only under the connection guard.
   }
 
 -- | Test-only hooks run on the store's OWN connection (a second
@@ -274,13 +283,14 @@ openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
           closeQuietFd dbFd
           releaseQuiet lockFd lockPath
           pure (Left err)
-        Right db ->
+        Right (db, schemaV1) ->
           (do lock <- newMVar ()
               closed <- newMVar HandleOpen
               qVar <- newMVar []
               openTxn <- newIORef Nothing
               sVar <- newIORef zeroStats
               claims <- newClaimAuthority
+              v1Ref <- newIORef schemaV1
               let conn = SQLiteConn
                     { sqDb = db
                     , sqLock = lock
@@ -296,6 +306,7 @@ openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
                     , sqLimits = limits
                     , sqHooks = hooks
                     , sqClaims = claims
+                    , sqSchemaV1 = v1Ref
                     }
               pure (Right (mkStore conn)))
             `onException` closeQuiet db
@@ -640,10 +651,11 @@ releaseQuiet fd lockPath = do
 -- one owner: the inner helpers never close it, so no interleaving
 -- can double-close the raw pointer; this function's case analysis
 -- closes once on each failure path and hands the handle off
--- untouched on success.
+-- untouched on success, paired with whether it is a version-1
+-- database whose migration is still pending.
 openAndInit
-  :: (IO (Either StoreError S.Database) -> IO (Either StoreError S.Database))
-  -> Fd -> FilePath -> Bool -> IO (Either StoreError S.Database)
+  :: (IO (Either StoreError (S.Database, Bool)) -> IO (Either StoreError (S.Database, Bool)))
+  -> Fd -> FilePath -> Bool -> IO (Either StoreError (S.Database, Bool))
 openAndInit restore guardFd path created = do
   eSt <- tryStoreIO (getFdStatus guardFd)
   case eSt of
@@ -670,7 +682,7 @@ openAndInit restore guardFd path created = do
       case eCfg of
         Left err -> pure (Left err)
         Right ()
-          | fresh -> initSchema db guardFd dbPath
+          | fresh -> fmap (\d -> (d, False)) <$> initSchema db guardFd dbPath
           | otherwise -> verifyExisting db dbPath
 
 -- | Test seam: when @HASKOKI_OPEN_PAUSE@ names a directory AND
@@ -780,10 +792,12 @@ removeIfOurs guardFd path = do
 
 -- | Verify an existing database: the version-1 tables present
 -- and the schema version exactly ours, or exactly its
--- predecessor (which migrates explicitly). Anything else fails
--- WITHOUT writing a single byte. Never closes the handle
--- (owned by 'openAndInit').
-verifyExisting :: S.Database -> FilePath -> IO (Either StoreError S.Database)
+-- predecessor (opened read-only in effect: it migrates inside its
+-- first commit transaction). Anything else fails. Verification
+-- only reads: it never writes a single byte. Never closes the
+-- handle (owned by 'openAndInit'). The flag reports a version-1
+-- database.
+verifyExisting :: S.Database -> FilePath -> IO (Either StoreError (S.Database, Bool))
 verifyExisting db path = do
   eTables <- queryRows db "SELECT name FROM sqlite_master WHERE type = 'table'" []
   case eTables of
@@ -795,13 +809,17 @@ verifyExisting db path = do
         then checkVersion db path names
         else pure (Left (StoreIO (path ++ ": not a haskoki store (missing tables)")))
 
--- | Check the integer schema version. Exactly ours proceeds (a
--- version-2 database without its @credentials@ table is
--- corruption, never silently repaired); exactly its predecessor
--- migrates explicitly ('migrateV1toV2'); anything else is
--- rejected, never migrated silently. Never closes the handle
+-- | Check the integer schema version, reading only. Exactly ours
+-- proceeds (a version-2 database without its @credentials@ table
+-- is corruption, never silently repaired); exactly its
+-- predecessor opens WITHOUT migrating (a version-1 database that
+-- already carries a @credentials@ table is refused rather than
+-- adopting unknown bytes): the migration waits for the first
+-- commit ('migrateV1InTxn'), so an open that a caller refuses
+-- after reading leaves the version-1 bytes intact. Anything else
+-- is rejected, never migrated silently. Never closes the handle
 -- (owned by 'openAndInit').
-checkVersion :: S.Database -> FilePath -> [Text] -> IO (Either StoreError S.Database)
+checkVersion :: S.Database -> FilePath -> [Text] -> IO (Either StoreError (S.Database, Bool))
 checkVersion db path names = do
   eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
   case eVer of
@@ -809,45 +827,42 @@ checkVersion db path names = do
     Right [[S.SQLText v]]
       | v == T.pack (show sqliteSchemaVersion) ->
           if "credentials" `elem` names
-            then pure (Right db)
+            then pure (Right (db, False))
             else pure (Left (StoreCorrupt (path ++ ": schema version 2 without credentials table")))
-      | v == T.pack (show (sqliteSchemaVersion - 1)) -> migrateV1toV2 db path
+      | v == T.pack (show (sqliteSchemaVersion - 1)) ->
+          if "credentials" `elem` names
+            then pure (Left (StoreCorrupt (path ++ ": schema version 1 with a credentials table")))
+            else pure (Right (db, True))
       | otherwise -> pure
           (Left (StoreSchemaVersion sqliteSchemaVersion (T.unpack v)))
     Right _ -> pure (Left (StoreCorrupt (path ++ ": corrupt store metadata")))
 
--- | Migrate a version-1 database to version 2: create the empty
--- @credentials@ table (the exact 'schemaStatements' text, so the
--- migrated schema matches a fresh one byte for byte in
--- @sqlite_master@) and advance the version marker, in ONE
--- transaction. No row is rewritten or reinterpreted: existing
--- tokens keep serving their catalog PINs until provisioned. Any
--- failure rolls back and refuses the open loudly, leaving the
--- version-1 bytes intact for a retry; a hand-built version-1
--- database that already carries a @credentials@ table refuses
--- (the CREATE fails) rather than adopting unknown bytes. Never
--- closes the handle (owned by 'openAndInit').
-migrateV1toV2 :: S.Database -> FilePath -> IO (Either StoreError S.Database)
-migrateV1toV2 db path = do
-  eBegin <- trySQLite (S.exec db "BEGIN IMMEDIATE")
-  case eBegin of
+-- | Migrate a version-1 database to version 2 INSIDE the caller's
+-- open write transaction (the first commit after a version-1
+-- open): create the empty @credentials@ table (the exact
+-- 'schemaStatements' text, so the migrated schema matches a fresh
+-- one in @sqlite_master@) and advance the version marker. The
+-- marker is re-read inside the transaction, so a migration that an
+-- earlier commit already landed (an outcome the handle could not
+-- confirm) is never repeated. No row is rewritten or
+-- reinterpreted. A failure fails the whole transaction, which
+-- rolls back with the commit's own data: the version-1 bytes stay
+-- intact for a retry.
+migrateV1InTxn :: S.Database -> IO (Either StoreError ())
+migrateV1InTxn db = do
+  eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
+  case eVer of
     Left err -> pure (Left err)
-    Right () -> do
-      eBody <- trySQLite $ do
-        S.exec db createCredentialsTable
-        S.exec db (T.concat ["UPDATE store_meta SET value = '"
-          , T.pack (show sqliteSchemaVersion), "' WHERE key = 'schema_version'"])
-      case eBody of
-        Left err -> do
-          _ <- trySQLite (S.exec db "ROLLBACK")
-          pure (Left (StoreIO (path ++ ": schema migration 1->2 failed: " ++ show err)))
-        Right () -> do
-          eCommit <- trySQLite (S.exec db "COMMIT")
-          case eCommit of
-            Left err -> do
-              _ <- trySQLite (S.exec db "ROLLBACK")
-              pure (Left (StoreIO (path ++ ": schema migration 1->2 commit failed: " ++ show err)))
-            Right () -> verifyExisting db path
+    Right [[S.SQLText v]]
+      | v == T.pack (show sqliteSchemaVersion) -> pure (Right ())
+      | v == T.pack (show (sqliteSchemaVersion - 1)) -> do
+          eMig <- trySQLite $ do
+            S.exec db createCredentialsTable
+            S.exec db (T.concat ["UPDATE store_meta SET value = '"
+              , T.pack (show sqliteSchemaVersion), "' WHERE key = 'schema_version'"])
+          pure (either (\err -> Left (StoreIO ("schema migration 1->2 failed: " ++ show err))) Right eMig)
+      | otherwise -> pure (Left (StoreSchemaVersion sqliteSchemaVersion (T.unpack v)))
+    Right _ -> pure (Left (StoreCorrupt "corrupt store metadata"))
 
 -- | The schema (mirrors @spec\/storage-schema.sql@).
 schemaStatements :: [Text]
@@ -867,7 +882,8 @@ schemaStatements =
 -- | The @credentials@ table: one provisioned credential row per
 -- token, owned by its token (@ON DELETE CASCADE@, mirroring the
 -- object and job tables). Shared by fresh schemas and the
--- version-1 migration, so both spell it identically.
+-- version-1 migration ('migrateV1InTxn'), so both spell it
+-- identically.
 createCredentialsTable :: Text
 createCredentialsTable =
   "CREATE TABLE credentials (token_id TEXT PRIMARY KEY NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
@@ -885,12 +901,12 @@ mkStore :: SQLiteConn -> Store
 mkStore conn = Store
   { storeLoadTokens = withLive conn Left loadTokens
   , storeLoadJobs = withLive conn Left loadJobs
-  , storeLoadCredentials = withLive conn Left loadCredentials
+  , storeLoadCredentials = withLive conn Left (loadCredentialsConn conn)
   , storeCommit = protocolDelta conn
   , storeResetToken = resetTokenConn conn
   , storeReserveJobId = reserveJobIdConn conn
   , storeClose = closeConn conn
-  , storeInspect = withLive conn Left inspectConn
+  , storeInspect = withLive conn Left (inspectConn conn)
   , storeQuarantined = readMVar (sqQuarantine conn)
   , storeReload = reloadConn conn
   , storeStats = readIORef (sqStats conn)
@@ -1005,7 +1021,8 @@ resetTokenConn conn tid wantGen replacement =
 -- | Build the reset's effective delta from one consistent read
 -- (runs under the connection guard, so the generation check is
 -- exact). Owned objects and jobs are dropped explicitly (the
--- foreign-key cascades backstop the same outcome).
+-- foreign-key cascades backstop the same outcome); the credential
+-- row stays with the token.
 resetEffectiveDb :: S.Database -> TokenId -> Generation -> TokenRecord -> IO (Either StoreError StoreDelta)
 resetEffectiveDb db tid wantGen replacement = do
   eToks <- queryRows db "SELECT record_json FROM tokens WHERE token_id = ?"
@@ -1038,7 +1055,7 @@ resetEffectiveDb db tid wantGen replacement = do
                     , sdDropJobs = pids
                     , sdPutMeta = []
                     , sdPutCredentials = []
-                    , sdDropCredentials = [tid]
+                    , sdDropCredentials = []
                     })
                   _ -> pure (Left (StoreCorrupt "corrupt reset ownership rows"))
               (Left err, _) -> pure (Left err)
@@ -1124,7 +1141,9 @@ coverDeletedMeta db doomed = do
 -- quarantined handle still cannot mint a duplicate. A
 -- successful reservation counts as a durable commit; the
 -- observation hooks fire with the commit analogue of the
--- outcome.
+-- outcome. On a version-1 database the reservation writes only
+-- the @store_meta@ mark, which version 1 already has, so it does
+-- not migrate (the next commit does).
 reserveJobIdConn :: SQLiteConn -> IO (Either StoreError Word64)
 reserveJobIdConn conn =
   withLive conn Left (reserveLocked conn)
@@ -1378,7 +1397,7 @@ protocolLocked conn db delta0 = do
       case firstQuarantined q affected of
         Just (tid, why) -> pure (NotCommitted (StoreQuarantined tid why))
         Nothing -> do
-          eValid <- validateDelta db (sqLimits conn) delta
+          eValid <- validateDelta conn db (sqLimits conn) delta
           case eValid of
             Left err -> pure (NotCommitted err)
             Right () -> do
@@ -1423,14 +1442,25 @@ protocolLocked conn db delta0 = do
       case eBegin of
         Left err -> pure (Left (TxnRolledBack err))
         Right () -> do
-          eBody <- runBody d
+          eBody <- firstStep migratePending (runBody d)
           case eBody of
             Left err -> Left <$> endFailedTxn conn db AtBody err
             Right doomed -> do
               eCommit <- trySQLite (S.exec db "COMMIT")
               case eCommit of
                 Left err -> Left <$> endFailedTxn conn db AtCommit err
-                Right () -> pure (Right doomed)
+                Right () -> do
+                  writeIORef (sqSchemaV1 conn) False
+                  pure (Right doomed)
+    -- A version-1 database migrates first, inside this same
+    -- transaction: the migration lands with the commit's data or
+    -- not at all.
+    migratePending :: IO (Either StoreError ())
+    migratePending = do
+      v1 <- readIORef (sqSchemaV1 conn)
+      if v1 then migrateV1InTxn db else pure (Right ())
+    firstStep :: IO (Either StoreError ()) -> IO (Either StoreError b) -> IO (Either StoreError b)
+    firstStep pre body = pre >>= either (pure . Left) (const body)
     -- The observed outcome is discarded; a reload decides. Present
     -- verifies committed (every table). Anything else — a failed
     -- reload, or a reload that does not hold the whole delta —
@@ -1454,7 +1484,7 @@ protocolLocked conn db delta0 = do
           eLoaded <- loadTokens db
           eJobs <- loadJobs db
           eMeta <- loadMeta db
-          eCreds <- loadCredentials db
+          eCreds <- loadCredentialsConn conn db
           case (eLoaded, eJobs, eMeta, eCreds) of
             (Right loaded, Right jobs, Right meta, Right creds)
               | reconcileReload d loaded == ReconciledPresent
@@ -1613,11 +1643,11 @@ tokensForDelta db delta = do
 -- token references, slot uniqueness, then expected revisions
 -- against the stored revision map. Runs under the connection
 -- guard, so the validated state is the committed-against state.
-validateDelta :: S.Database -> StoreLimits -> StoreDelta -> IO (Either StoreError ())
-validateDelta db limits delta = do
+validateDelta :: SQLiteConn -> S.Database -> StoreLimits -> StoreDelta -> IO (Either StoreError ())
+validateDelta conn db limits delta = do
   eLoaded <- loadTokens db
   eJobs <- loadJobs db
-  eCreds <- loadCredentials db
+  eCreds <- loadCredentialsConn conn db
   case (eLoaded, eJobs, eCreds) of
     (Left err, _, _) -> pure (Left err)
     (_, Left err, _) -> pure (Left err)
@@ -1716,7 +1746,7 @@ reloadConn conn = withConn conn (pure (Left storeClosed)) $ \db -> do
     Left err -> pure (Left err)
     Right () -> do
       eLoaded <- loadTokens db
-      eCreds <- loadCredentials db
+      eCreds <- loadCredentialsConn conn db
       case (eLoaded, eCreds) of
         (Right _, Right _) ->
           modifyMVar_ (sqQuarantine conn) (\_ -> pure []) >> pure (Right ())
@@ -1850,6 +1880,24 @@ loadCredentials db = do
     Left err -> pure (Left err)
     Right rows -> pure (mapM decodeCredentialRow rows)
 
+-- | 'loadCredentials' through the handle: a version-1 database
+-- (opened without writing, migration pending) has no
+-- @credentials@ table and therefore no credential rows. The table
+-- itself decides, not the flag alone, so a migration that landed
+-- under an unconfirmed commit outcome still reads its rows.
+loadCredentialsConn :: SQLiteConn -> S.Database -> IO (Either StoreError [CredentialRecord])
+loadCredentialsConn conn db = do
+  v1 <- readIORef (sqSchemaV1 conn)
+  if not v1
+    then loadCredentials db
+    else do
+      eTable <- queryRows db
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'credentials'" []
+      case eTable of
+        Left err -> pure (Left err)
+        Right [] -> pure (Right [])
+        Right _ -> loadCredentials db
+
 -- | Decode one credential row: the document first, then the
 -- redundant key column must agree with it (any mismatch is
 -- corruption).
@@ -1882,11 +1930,11 @@ loadMeta db = do
 -- then re-encode, so inspection always shows canonical form). A
 -- failed load reports the error instead of a silent empty
 -- list, so corruption stays diagnosed.
-inspectConn :: S.Database -> IO (Either StoreError [StoredDoc])
-inspectConn db = do
+inspectConn :: SQLiteConn -> S.Database -> IO (Either StoreError [StoredDoc])
+inspectConn conn db = do
   eLoaded <- loadTokens db
   eJobs <- loadJobs db
-  eCreds <- loadCredentials db
+  eCreds <- loadCredentialsConn conn db
   case (eLoaded, eJobs, eCreds) of
     (Right toks, Right jobs, Right creds) -> pure $ Right $
       [ StoredDoc "tokens" (show (unTokenId (trId t))) (encodeTokenRecord t)

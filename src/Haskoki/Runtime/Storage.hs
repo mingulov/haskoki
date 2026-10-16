@@ -82,6 +82,7 @@ module Haskoki.Runtime.Storage
   , ReconcilePlan (..)
   , reconcileIdentities
   , renderIdentityRefusal
+  , tokensWithoutCredentials
   , SlotMoveRefusal (..)
   , planSlotMoves
   , renderSlotMoveRefusal
@@ -128,6 +129,7 @@ import Data.Char (chr, isHexDigit, ord)
 import Data.List (nub, sort, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Word (Word8, Word64)
 
 import Control.Exception (Exception)
@@ -198,10 +200,15 @@ data TokenRecord = TokenRecord
 -- | One persisted token credential: the provisioned SO PIN
 -- (always present once the row exists) and the provisioned user
 -- PIN ('Nothing' = uninitialized: no user login can succeed
--- until the SO sets one). At most one row per token; a token
--- without a row is unprovisioned and serves its catalog PINs.
--- The row is owned by its token exactly like objects and jobs:
--- dropping the token removes it, and reset removes it.
+-- until the SO sets one). At most one row per token. A stored
+-- token gets its row when it is seeded (the catalog PINs, in the
+-- seed transaction), and from then on the row is its only
+-- credential: config PIN edits never replace it, and a stored
+-- token without a row serves no login (a legacy store).
+-- The row is owned by its token like objects and jobs: dropping
+-- the token removes it. A token reset keeps it (the durable
+-- credential always wins), unlike the reset token's objects and
+-- jobs.
 data CredentialRecord = CredentialRecord
   { crToken :: !TokenId
   , crSoPin :: !ByteString
@@ -313,9 +320,9 @@ data JobRecord = JobRecord
 -- every owned object, job, and credential; dropping a token
 -- removes its owned objects, jobs, and credential;
 -- 'storeResetToken' is the generation-guarded
--- replacement-plus-removal path (the credential goes with the
--- reset: the replacement token serves catalog PINs until it is
--- provisioned again).
+-- replacement-plus-removal path for objects and jobs. The
+-- credential row stays: an existing durable credential always
+-- wins over the catalog PINs.
 --
 -- Duplicate credential puts for one token resolve first-wins in
 -- both backends (the token-row precedent): the validated
@@ -833,10 +840,11 @@ checkSlotUnique currentToks delta =
 -- removal, or a label change reopens refused, with the durable
 -- bytes untouched, until the operator either restores the
 -- matching catalog or performs the explicit slot move
--- ('planSlotMoves'). PIN values stay configuration-owned (the
--- store carries no PIN and no PIN check): a PIN edit changes the
--- credential that reaches the SAME durable identity, and the
--- credential lifecycle itself stays outside this contract.
+-- ('planSlotMoves'). PINs are not part of identity: a token's
+-- PINs are its durable credential row (seeded from the catalog
+-- when the token is created), so a later catalog PIN edit is
+-- accepted here and changes nothing durable. The credential
+-- lifecycle itself stays outside this contract.
 --
 -- The home anchor is unconditional: 'TokenId' 1 sits at 'SlotId'
 -- 0 and 'SlotId' 0 holds 'TokenId' 1. The configuration parser,
@@ -901,6 +909,14 @@ data IdentityRefusal
 data ReconcilePlan = ReconcilePlan
   { planSeeds :: ![TokenRecord]
   } deriving (Eq, Show)
+
+-- | The stored tokens with no credential row, ascending by id: the
+-- set a legacy store must freeze before it serves.
+tokensWithoutCredentials :: [TokenRecord] -> [TokenId] -> [TokenId]
+tokensWithoutCredentials tokens holders =
+  sort [trId t | t <- tokens, trId t `Set.notMember` withRow]
+  where
+    withRow = Set.fromList holders
 
 -- | Compare the configured catalog against the stored tokens.
 -- Shape checks (home anchor, duplicate identities) run first;
@@ -1103,7 +1119,8 @@ renderSlotMoveRefusal r = case r of
 -- quarantine listing, authoritative reload, commit counters, job
 -- loads, durable job-id reservation, and token reset:
 -- 'storeResetToken' replaces the token (expected-generation
--- guarded) and atomically removes its objects and jobs.
+-- guarded) and atomically removes its objects and jobs, keeping
+-- its credential row.
 --
 -- Quarantine is a live-handle property: it guards a handle whose
 -- view may have diverged from durable truth. A fresh handle loads

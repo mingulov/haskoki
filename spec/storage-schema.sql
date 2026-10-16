@@ -12,11 +12,12 @@
 -- * `detached_jobs` is created with the rest of the schema but first
 --   populated by the record writer; the store layer owns the lifecycle.
 -- * Version 2 adds `credentials` (one provisioned credential row
---   per token, owned by its token). A version-1 database migrates
---   explicitly at open (the backend creates the empty table and
---   advances the marker in one transaction; no row is rewritten
---   or reinterpreted), and anything but version 1 or 2 refuses
---   without writing. See `migrateV1toV2` in
+--   per token, owned by its token). A version-1 database opens
+--   without writing and migrates explicitly inside its first
+--   commit transaction (the backend creates the empty table and
+--   advances the marker together with that commit's data; no row
+--   is rewritten or reinterpreted), and anything but version 1 or
+--   2 refuses without writing. See `migrateV1InTxn` in
 --   `src/Haskoki/Runtime/Storage/SQLite.hs`.
 --
 -- The Haskell backend (`src/Haskoki/Runtime/Storage/SQLite.hs`)

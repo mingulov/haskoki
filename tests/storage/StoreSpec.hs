@@ -46,6 +46,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import Data.Word (Word64)
+import Foreign.C.String (withCString)
 import Foreign.C.Types (CInt (..), CULong (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
@@ -61,7 +62,7 @@ import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
 import System.Posix.Process (exitImmediately, getParentProcessID, getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
 import System.Posix.Types (Fd, FileMode, ProcessID)
-import System.Process (CreateProcess (..), ProcessHandle, createProcess, getPid, getProcessExitCode, proc)
+import System.Process (CreateProcess (..), ProcessHandle, createProcess, getPid, getProcessExitCode, proc, readProcess)
 import System.Timeout (timeout)
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -89,6 +90,7 @@ import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
   , DesiredToken (..)
+  , FaultPoint (..)
   , IdentityRefusal (..)
   , JobBody (..)
   , JobExecState (..)
@@ -104,11 +106,14 @@ import Haskoki.Runtime.Storage
   , StoredDoc (..)
   , TokenRecord (..)
   , claimCensus
+  , defaultLimits
   , docTopKeys
   , emptyDelta
+  , encodeHex16
   , encodeHexWord64
   , jobIdCounterKey
   , markCensus
+  , noFaults
   , objectToRecord
   , planSlotMoves
   , reconcileCredentialsReload
@@ -116,7 +121,10 @@ import Haskoki.Runtime.Storage
   , renderIdentityRefusal
   , renderSlotMoveRefusal
   , reserveRestoredIds
+  , scriptedFaults
+  , tokensWithoutCredentials
   )
+import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
 import Haskoki.FFI.Standard
   ( ObjectProjection (..)
   , StdInstance
@@ -130,9 +138,10 @@ import Haskoki.FFI.Standard
   , haskokiStdOpenSession
   , openStdInstance
   , openStdStore
+  , openStdStoreWith
   )
 import Haskoki.Runtime.Async (newAsyncTable)
-import Haskoki.Runtime.Catalog (effectiveCatalog, identityCatalog)
+import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, effectiveCatalog, identityCatalog, tokenSerial)
 import Haskoki.Runtime.Detached (markJobOpaque, openDetached)
 import Haskoki.Runtime.Config
   ( Config (..)
@@ -144,7 +153,7 @@ import Haskoki.Runtime.Config
   )
 import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
-import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), livenessFromProbes, openSQLiteStore)
+import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), SQLiteTestHooks (..), livenessFromProbes, noSQLiteTestHooks, openSQLiteStore, openSQLiteStoreWith, openSQLiteStoreWithHooks)
 import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
@@ -317,6 +326,9 @@ spec = testGroup "store contract"
       , testCase "garbage file is rejected without rewrite" testGarbageRejected
       , testCase "future schema version rejected without rewrite" testFutureVersionRejected
       , testCase "version-1 database migrates explicitly" testV1Migrates
+      , testCase "version-1 store opened and read writes nothing" testV1ReadOnlyOpenWritesNothing
+      , testCase "version-1 migration rolls back with a failed first commit" testV1FailedCommitStaysV1
+      , testCase "async store open refuses a version-1 store without writing" testV1AsyncRefusalWritesNothing
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
       , testCase "raw columns contain no pointers or handles" testRawColumnsClean
       , testCase "live schema matches spec/storage-schema.sql" testSchemaShape
@@ -363,15 +375,28 @@ spec = testGroup "store contract"
       , testCase "hand-built id mismatch falls back to positional" caseMismatchFallsBack
       , testCase "duplicate desired identity refuses" caseDuplicateDesiredRefuses
       , testCase "reconciler enforces the home anchor" caseReconcilerHomeAnchor
+      , testCase "token serial is the canonical 16-hex identity" caseTokenSerialCanonical
+      , testCase "desired tokens project the pinned catalog" caseDesiredTokensProject
+      , testCase "catalog credential follows identity, not position" caseCatalogCredentialByIdentity
+      , testCase "tokens without credentials are listed ascending" caseTokensWithoutCredentials
       ]
   , testGroup "standard open reconciliation"
       [ testCase "standard open seeds a fresh file positionally" caseOpenSeedsFresh
+      , testCase "a failed seed commit leaves neither tokens nor credentials" caseOpenSeedFailsAtomically
+      , testCase "a credential insert failing inside the seed rolls the tokens back" caseOpenSeedCredentialFailureLeavesNoToken
+      , testCase "an appended catalog token seeds one token and one credential" caseOpenAppendSeedsOne
       , testCase "standard open refuses a reorder with the actionable message" caseOpenReorderRefuses
       , testCase "standard open refuses a removal, preserving the file" caseOpenRemovalRefuses
       , testCase "standard open accepts after an explicit move" caseOpenAcceptsMoved
       , testCase "standard open refuses an interrupted move until completed" caseOpenInterruptedRefuses
       , testCase "standard open refuses a positional downgrade over a moved store" caseOpenDowngradeRefuses
-      , testCase "PIN edit changes the credential for the same identity" caseOpenPinEditAccepted
+      , testCase "a config PIN edit leaves the seeded credentials in force" caseOpenPinEditIgnoredAfterSeed
+      , testCase "legacy tokens without credentials refuse as migration-required" caseOpenLegacyRefusesMigrationRequired
+      , testCase "a mixed store names only its legacy tokens" caseOpenMixedLegacyNamesOnlyLegacy
+      , testCase "identity drift refuses before missing credentials" caseOpenIdentityRefusalPrecedesMigration
+      , testCase "a schema-1 legacy store refuses before any write" caseOpenSchema1LegacyRefusesWithoutWrite
+      , testCase "a schema-1 identity refusal writes nothing" caseOpenSchema1IdentityRefusalWithoutWrite
+      , testCase "an empty schema-1 store migrates and seeds" caseOpenSchema1EmptyMigratesAndSeeds
       , testCase "publication resolves moved slots through the reconciled layout" caseProjectionUsesReconciledLayout
       ]
   ]
@@ -461,8 +486,8 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener testCredentialCascade
   , testCase "token refresh preserves the credential" $
       withOpener mkOpener testTokenRefreshPreservesCredential
-  , testCase "reset drops the credential" $
-      withOpener mkOpener testResetDropsCredential
+  , testCase "reset keeps the credential" $
+      withOpener mkOpener testResetKeepsCredential
   , testCase "refused commits preserve stored bytes" $
       withOpener mkOpener testRefusedPreservesBytes
   , testCase "credential Show redacts both PINs" $
@@ -930,57 +955,194 @@ testFutureVersionRejected =
     assertBool "no stranded lock" (not lockLeft)
 
 -- | Acceptance (explicit migration): a version-1 database opens
--- by migrating to version 2 — the empty @credentials@ table is
--- created and the marker advances, in one transaction — while
--- no existing row is rewritten or reinterpreted (a marker meta
--- row survives byte-identical). Afterwards the store serves
--- credentials and reopens cleanly at version 2. The version-1
--- DDL below is frozen history (copied from the
--- pre-provisioning @spec/storage-schema.sql@), not a live
--- reference: it must never track the current schema.
+-- WITHOUT writing (the open only reads it), and its first commit
+-- migrates it to version 2 inside that commit's own transaction —
+-- the empty @credentials@ table is created and the marker
+-- advances — while no existing row is rewritten or reinterpreted
+-- (a marker meta row survives byte-identical). Afterwards the
+-- store serves credentials and reopens cleanly at version 2.
 testV1Migrates :: IO ()
 testV1Migrates =
   bracket (makeTempDir "haskoki-storage-migrate") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "store.db"
-        v1 =
-          [ "CREATE TABLE store_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)"
-          , "CREATE TABLE tokens (token_id TEXT PRIMARY KEY NOT NULL, slot_key BLOB NOT NULL CHECK (typeof(slot_key) = 'blob' AND length(slot_key) = 8), generation_key BLOB NOT NULL CHECK (typeof(generation_key) = 'blob' AND length(generation_key) = 8), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1), UNIQUE(slot_key))"
-          , "CREATE TABLE objects (object_id TEXT PRIMARY KEY NOT NULL, token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, class_key BLOB NOT NULL CHECK (typeof(class_key) = 'blob' AND length(class_key) = 8), key_type_key BLOB CHECK (key_type_key IS NULL OR (typeof(key_type_key) = 'blob' AND length(key_type_key) = 8)), attributes_json TEXT NOT NULL, material_encoding TEXT NOT NULL, material_blob BLOB, revision INTEGER NOT NULL CHECK (revision > 0), format_version INTEGER NOT NULL CHECK (format_version = 1))"
-          , "CREATE INDEX objects_by_token ON objects(token_id)"
-          , "CREATE TABLE detached_jobs (persistent_id_key BLOB PRIMARY KEY NOT NULL CHECK (typeof(persistent_id_key) = 'blob' AND length(persistent_id_key) = 8), token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, token_generation_key BLOB NOT NULL CHECK (typeof(token_generation_key) = 'blob' AND length(token_generation_key) = 8), function_name TEXT NOT NULL, execution_state TEXT NOT NULL CHECK (execution_state IN ('queued','ready','failed','canceled','delivered')), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
-          , "CREATE INDEX jobs_by_token ON detached_jobs(token_id)"
-          , "INSERT INTO store_meta(key, value) VALUES ('store_format', 'haskoki-demo-v1')"
-          , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '1')"
-          , "INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001')"
-          , "INSERT INTO store_meta(key, value) VALUES ('p6-migration-marker', 'kept')"
-          ]
-    mapM_ (rawExec path . T.pack) v1
+    mapM_ (rawExec path . T.pack)
+      (v1SchemaDdl ++ ["INSERT INTO store_meta(key, value) VALUES ('p6-migration-marker', 'kept')"])
+    before <- diskHashes path
     eStore <- openSQLiteStore path
-    s <- either (\e -> assertFailure ("migrating open: " ++ show e)) pure eStore
+    s <- either (\e -> assertFailure ("version-1 open: " ++ show e)) pure eStore
     eMeta <- storeLoadMeta s
     meta <- either (\e -> assertFailure ("load meta: " ++ show e)) pure eMeta
-    assertEqual "marker survives migration" (Just "kept") (lookup "p6-migration-marker" meta)
+    assertEqual "marker readable before migration" (Just "kept") (lookup "p6-migration-marker" meta)
     storeClose s
-    db <- S.open (T.pack path)
-    ver <- rawTexts db (T.pack "SELECT value FROM store_meta WHERE key = 'schema_version'")
-    tables <- rawTexts db (T.pack "SELECT name FROM sqlite_master WHERE type = 'table'")
-    S.close db
-    assertEqual "version advanced to 2" ["2"] ver
-    assertBool "credentials table migrated" ("credentials" `elem` tables)
-    -- The migrated store serves credentials and reopens cleanly.
+    afterOpen <- diskHashes path
+    assertEqual "the open alone writes nothing" before afterOpen
+    stateOpen <- rawSchemaState path
+    assertEqual "the open alone leaves version 1" ("1", False) stateOpen
+    -- The first commit migrates and lands in one transaction.
     eStore2 <- openSQLiteStore path
-    s2 <- either (\e -> assertFailure ("post-migration open: " ++ show e)) pure eStore2
+    s2 <- either (\e -> assertFailure ("second version-1 open: " ++ show e)) pure eStore2
     let tok = TokenRecord (TokenId 7) (SlotId 0) (Generation 1) "migrated" tokenAuthNew
         cred = CredentialRecord (TokenId 7) "so-pin-1" (Just "user-pin-1")
     r <- storeCommit s2 emptyDelta { sdPutTokens = [tok], sdPutCredentials = [cred] }
-    assertEqual "credential commits on migrated store" Committed r
+    assertEqual "the first commit lands on a version-1 store" Committed r
+    eMeta2 <- storeLoadMeta s2
+    meta2 <- either (\e -> assertFailure ("load meta after commit: " ++ show e)) pure eMeta2
+    assertEqual "marker survives migration" (Just "kept") (lookup "p6-migration-marker" meta2)
     storeClose s2
+    stateMigrated <- rawSchemaState path
+    assertEqual "version advanced to 2 with the credentials table" ("2", True) stateMigrated
+    -- The migrated store reopens cleanly and serves the credential.
     eStore3 <- openSQLiteStore path
     s3 <- either (\e -> assertFailure ("reopen: " ++ show e)) pure eStore3
     eCreds <- storeLoadCredentials s3
     creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
     assertEqual "credential survives reopen" [cred] creds
     storeClose s3
+
+-- | The version-1 schema. Frozen history (copied from the
+-- pre-provisioning @spec/storage-schema.sql@), not a live
+-- reference: it must never track the current schema.
+v1SchemaDdl :: [String]
+v1SchemaDdl =
+  [ "CREATE TABLE store_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)"
+  , "CREATE TABLE tokens (token_id TEXT PRIMARY KEY NOT NULL, slot_key BLOB NOT NULL CHECK (typeof(slot_key) = 'blob' AND length(slot_key) = 8), generation_key BLOB NOT NULL CHECK (typeof(generation_key) = 'blob' AND length(generation_key) = 8), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1), UNIQUE(slot_key))"
+  , "CREATE TABLE objects (object_id TEXT PRIMARY KEY NOT NULL, token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, class_key BLOB NOT NULL CHECK (typeof(class_key) = 'blob' AND length(class_key) = 8), key_type_key BLOB CHECK (key_type_key IS NULL OR (typeof(key_type_key) = 'blob' AND length(key_type_key) = 8)), attributes_json TEXT NOT NULL, material_encoding TEXT NOT NULL, material_blob BLOB, revision INTEGER NOT NULL CHECK (revision > 0), format_version INTEGER NOT NULL CHECK (format_version = 1))"
+  , "CREATE INDEX objects_by_token ON objects(token_id)"
+  , "CREATE TABLE detached_jobs (persistent_id_key BLOB PRIMARY KEY NOT NULL CHECK (typeof(persistent_id_key) = 'blob' AND length(persistent_id_key) = 8), token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, token_generation_key BLOB NOT NULL CHECK (typeof(token_generation_key) = 'blob' AND length(token_generation_key) = 8), function_name TEXT NOT NULL, execution_state TEXT NOT NULL CHECK (execution_state IN ('queued','ready','failed','canceled','delivered')), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
+  , "CREATE INDEX jobs_by_token ON detached_jobs(token_id)"
+  , "INSERT INTO store_meta(key, value) VALUES ('store_format', 'haskoki-demo-v1')"
+  , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '1')"
+  , "INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001')"
+  ]
+
+-- | SHA-256 of the database file and of every SQLite sidecar that
+-- can carry database bytes (@-journal@, @-wal@, @-shm@), with
+-- "absent" for a missing one. The @.lock@ ownership sidecar is the
+-- documented transient lock artifact, not database bytes.
+diskHashes :: FilePath -> IO [(String, String)]
+diskHashes path = mapM one ["", "-journal", "-wal", "-shm"]
+  where
+    one suffix = do
+      let p = path ++ suffix
+      exists <- doesFileExist p
+      if exists
+        then do
+          out <- readProcess "sha256sum" [p] ""
+          pure ("store.db" ++ suffix, takeWhile (not . isSpace) out)
+        else pure ("store.db" ++ suffix, "absent")
+
+-- | The schema marker and whether the @credentials@ table exists,
+-- read on a plain connection (SELECTs only).
+rawSchemaState :: FilePath -> IO (String, Bool)
+rawSchemaState path = bracket (S.open (T.pack path)) S.close $ \db -> do
+  ver <- rawTexts db (T.pack "SELECT value FROM store_meta WHERE key = 'schema_version'")
+  tables <- rawTexts db (T.pack "SELECT name FROM sqlite_master WHERE type = 'table'")
+  pure (concat ver, "credentials" `elem` tables)
+
+-- | A version-1 store at the path holding the given token rows:
+-- the frozen version-1 DDL, then the rows exactly as the backend
+-- writes them (committed to a scratch version-2 store beside it
+-- and copied across with ATTACH). Version 1 has no @credentials@
+-- table, so every token in it is without a credential row.
+seedSchema1 :: FilePath -> [TokenRecord] -> IO ()
+seedSchema1 path toks = do
+  mapM_ (rawExec path . T.pack) v1SchemaDdl
+  when (not (null toks)) $ do
+    let src = path ++ ".v2-source"
+    r <- commitFile src emptyDelta { sdPutTokens = toks }
+    assertEqual "source token rows commit" Committed r
+    rawExec path (T.pack (concat
+      [ "ATTACH DATABASE '", src, "' AS src; "
+      , "INSERT INTO main.tokens SELECT * FROM src.tokens; "
+      , "DETACH DATABASE src" ]))
+    removeFile src
+  state <- rawSchemaState path
+  assertEqual "fixture is schema 1 without a credentials table" ("1", False) state
+
+-- | AC-05 (refusal before any write): a version-1 store holding a
+-- token opens, loads every surface and closes without changing a
+-- byte. Every caller that refuses after reading (the standard
+-- open's identity and migration-required checks, the async open's
+-- home-token check) therefore leaves the version-1 file intact and
+-- openable by the binary that wrote it.
+testV1ReadOnlyOpenWritesNothing :: IO ()
+testV1ReadOnlyOpenWritesNothing =
+  bracket (makeTempDir "haskoki-storage-v1-read") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        tok = TokenRecord (TokenId 2) (SlotId 1) (Generation 0) "haskoki-ops" tokenAuthNew
+    seedSchema1 path [tok]
+    before <- diskHashes path
+    s <- openSQLiteStore path >>= either (\e -> assertFailure ("version-1 open: " ++ show e)) pure
+    loaded <- storeLoadTokens s >>= either (\e -> assertFailure ("load tokens: " ++ show e)) pure
+    assertEqual "the version-1 token loads" [TokenId 2] [trId t | (t, _) <- loaded]
+    creds <- storeLoadCredentials s >>= either (\e -> assertFailure ("load credentials: " ++ show e)) pure
+    assertEqual "a version-1 store holds no credential rows" [] creds
+    jobs <- storeLoadJobs s >>= either (\e -> assertFailure ("load jobs: " ++ show e)) pure
+    assertEqual "no jobs" 0 (length jobs)
+    _ <- storeLoadMeta s >>= either (\e -> assertFailure ("load meta: " ++ show e)) pure
+    _ <- storeInspect s >>= either (\e -> assertFailure ("inspect: " ++ show e)) pure
+    storeClose s
+    hashesAfter <- diskHashes path
+    assertEqual "open, reads and close leave every byte (SHA-256)" before hashesAfter
+    state <- rawSchemaState path
+    assertEqual "still schema 1 without a credentials table" ("1", False) state
+    lockLeft <- doesFileExist (path ++ ".lock")
+    assertBool "no stranded lock" (not lockLeft)
+
+-- | The migration rides the first commit's transaction: a first
+-- commit whose body fails (an injected TEMP trigger on the store's
+-- own connection refuses the token insert) rolls the migration
+-- back with it, so the file stays version 1, byte for byte. A
+-- clean retry then migrates and commits.
+testV1FailedCommitStaysV1 :: IO ()
+testV1FailedCommitStaysV1 =
+  bracket (makeTempDir "haskoki-storage-v1-fail") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        tok = TokenRecord (TokenId 7) (SlotId 0) (Generation 1) "migrated" tokenAuthNew
+        cred = CredentialRecord (TokenId 7) "so-pin-1" (Just "user-pin-1")
+        failTokenInsert db = S.exec db (T.pack (concat
+          [ "CREATE TEMP TRIGGER IF NOT EXISTS haskoki_test_fail_token_insert"
+          , " BEFORE INSERT ON main.tokens"
+          , " BEGIN SELECT RAISE(ABORT, 'haskoki-test: injected token insert failure'); END" ]))
+        hooks = noSQLiteTestHooks { sthBeforeBegin = failTokenInsert }
+    seedSchema1 path []
+    before <- diskHashes path
+    s <- openSQLiteStoreWithHooks path defaultLimits noFaults hooks
+      >>= either (\e -> assertFailure ("hooked version-1 open: " ++ show e)) pure
+    r <- storeCommit s emptyDelta { sdPutTokens = [tok], sdPutCredentials = [cred] }
+    case r of
+      NotCommitted _ -> pure ()
+      other -> assertFailure ("an injected body failure must not commit: " ++ show other)
+    storeClose s
+    hashesAfter <- diskHashes path
+    assertEqual "the failed first commit leaves every byte (SHA-256)" before hashesAfter
+    state <- rawSchemaState path
+    assertEqual "still schema 1 without a credentials table" ("1", False) state
+    s2 <- openSQLiteStore path >>= either (\e -> assertFailure ("retry open: " ++ show e)) pure
+    r2 <- storeCommit s2 emptyDelta { sdPutTokens = [tok], sdPutCredentials = [cred] }
+    assertEqual "the clean retry commits" Committed r2
+    storeClose s2
+    state2 <- rawSchemaState path
+    assertEqual "the retry migrated to version 2" ("2", True) state2
+
+-- | The async process-level store open refuses a non-empty store
+-- without its home token; on a version-1 file that refusal writes
+-- nothing (the open no longer migrates first).
+testV1AsyncRefusalWritesNothing :: IO ()
+testV1AsyncRefusalWritesNothing =
+  bracket (makeTempDir "haskoki-storage-v1-async") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        tok = TokenRecord (TokenId 2) (SlotId 1) (Generation 0) "haskoki-ops" tokenAuthNew
+    seedSchema1 path [tok]
+    before <- diskHashes path
+    box <- withCString path haskokiAsyncStoreOpen
+    when (castStablePtrToPtr box /= nullPtr) $ do
+      alloca $ \slot -> poke slot box >> haskokiAsyncStoreClose slot
+      assertFailure "async open accepted a store without its home token"
+    hashesAfter <- diskHashes path
+    assertEqual "the refused async open leaves every byte (SHA-256)" before hashesAfter
+    state <- rawSchemaState path
+    assertEqual "still schema 1 without a credentials table" ("1", False) state
 
 -- | Acceptance 4 (corrupt records): garbage in each decodable
 -- surface diagnoses 'StoreCorrupt' at load (open itself stays
@@ -3005,13 +3167,6 @@ expectInvalid ctx body = case parseConfig body of
   Left err -> assertFailure (ctx ++ ": wrong refusal: " ++ show err)
   Right _ -> assertFailure (ctx ++ ": bad catalog parsed")
 
--- | Desired tokens from a config, in slot order.
-desiredOf :: Config -> [DesiredToken]
-desiredOf cfg =
-  [ DesiredToken slot tid label
-  | (slot, (tid, label)) <- Map.toAscList (identityCatalog cfg)
-  ]
-
 -- | Which credential reaches which objects: per slot, the
 -- configured user PIN, the durable identity seated there, and
 -- its owned object ids. Call only on aligned layouts (after an
@@ -3098,7 +3253,7 @@ testIdentitySeedAppend o = withStore o $ \s -> do
   loaded <- expectLoaded s
   cfg <- parseCatalog positionalDoc
   snapBefore <- snapshotBytes s
-  case reconcileIdentities (desiredOf cfg) [t | (t, _) <- loaded] of
+  case reconcileIdentities (desiredTokens cfg) [t | (t, _) <- loaded] of
     Left refusal ->
       assertFailure ("matching catalog refused: " ++ renderIdentityRefusal refusal)
     Right plan -> assertEqual "steady state seeds nothing" [] (planSeeds plan)
@@ -3108,7 +3263,7 @@ testIdentitySeedAppend o = withStore o $ \s -> do
   assertEqual "three credentials served" 3 (length reachBefore)
   cfgAppend <- parseCatalog (catalogDoc
     (threeLabels ++ ["haskoki-vault"]) (threeSo ++ ["8901"]) (threeUser ++ ["4567"]) [])
-  plan <- case reconcileIdentities (desiredOf cfgAppend) [t | (t, _) <- loaded] of
+  plan <- case reconcileIdentities (desiredTokens cfgAppend) [t | (t, _) <- loaded] of
     Left refusal -> assertFailure ("append refused: " ++ renderIdentityRefusal refusal)
     Right p -> pure p
   case planSeeds plan of
@@ -3138,7 +3293,7 @@ testIdentityReorderRefuses o = withStore o $ \s -> do
   let reachBefore = credentialReach cfg loaded
   bytesBefore <- snapshotBytes s
   cfgSwap <- parseCatalog swappedDoc
-  case reconcileIdentities (desiredOf cfgSwap) [t | (t, _) <- loaded] of
+  case reconcileIdentities (desiredTokens cfgSwap) [t | (t, _) <- loaded] of
     Left refusal@(RefuseSlotChanged tid _ _ _) -> do
       assertEqual "first drifted token" (TokenId 2) tid
       assertBool "refusal names the explicit move"
@@ -3165,7 +3320,7 @@ testIdentityInsertion o = withStore o $ \s -> do
     ["haskoki-demo", "haskoki-new", "haskoki-ops", "haskoki-audit"]
     ["5678", "1111", "6789", "7890"]
     ["1234", "2222", "2345", "3456"] [])
-  case reconcileIdentities (desiredOf cfgLegacyMid) stored of
+  case reconcileIdentities (desiredTokens cfgLegacyMid) stored of
     Left (RefuseLabelChanged tid _ _ _) ->
       assertEqual "legacy insert hits id 2" (TokenId 2) tid
     other -> assertFailure
@@ -3175,7 +3330,7 @@ testIdentityInsertion o = withStore o $ \s -> do
     ["5678", "1111", "6789", "7890"]
     ["1234", "2222", "2345", "3456"]
     ["1", "9", "2", "3"])
-  case reconcileIdentities (desiredOf cfgPinnedMid) stored of
+  case reconcileIdentities (desiredTokens cfgPinnedMid) stored of
     Left (RefuseSlotChanged tid _ _ _) ->
       assertEqual "pinned insert hits id 2" (TokenId 2) tid
     other -> assertFailure
@@ -3192,7 +3347,7 @@ testIdentityRemovalRefuses o = withStore o $ \s -> do
   bytesBefore <- snapshotBytes s
   cfgShrunk <- parseCatalog (catalogDoc
     ["haskoki-demo", "haskoki-ops"] ["5678", "6789"] ["1234", "2345"] [])
-  case reconcileIdentities (desiredOf cfgShrunk) [t | (t, _) <- loaded] of
+  case reconcileIdentities (desiredTokens cfgShrunk) [t | (t, _) <- loaded] of
     Left refusal@(RefuseStoredUnconfigured tid _ _) -> do
       assertEqual "unconfigured token" (TokenId 3) tid
       assertBool "refusal rules out pruning"
@@ -3218,7 +3373,7 @@ testIdentityLabelChangeRefuses o = withStore o $ \s -> do
   cfgRenamed <- parseCatalog (catalogDoc
     ["haskoki-demo", "haskoki-ops-renamed", "haskoki-audit"]
     threeSo threeUser [])
-  case reconcileIdentities (desiredOf cfgRenamed) [t | (t, _) <- loaded] of
+  case reconcileIdentities (desiredTokens cfgRenamed) [t | (t, _) <- loaded] of
     Left refusal@(RefuseLabelChanged tid _ durable desired) -> do
       assertEqual "renamed token" (TokenId 2) tid
       assertEqual "durable label" "haskoki-ops" durable
@@ -3290,7 +3445,7 @@ testIdentitySlotMoves o = withStore o $ \s -> do
   loaded1 <- expectLoaded s
   assertEqual "objects ride along under their identities" (owned loaded0) (owned loaded1)
   cfgSwap <- parseCatalog swappedDoc
-  case reconcileIdentities (desiredOf cfgSwap) [t | (t, _) <- loaded1] of
+  case reconcileIdentities (desiredTokens cfgSwap) [t | (t, _) <- loaded1] of
     Left refusal ->
       assertFailure ("post-swap catalog refused: " ++ renderIdentityRefusal refusal)
     Right planAfter ->
@@ -3324,7 +3479,7 @@ testIdentityFreshSeeds o = withStore o $ \s -> do
   loaded <- expectLoaded s
   assertEqual "fresh store loads empty" [] loaded
   cfg <- parseCatalog (catalogDoc threeLabels threeSo threeUser ["1", "2", "3"])
-  case reconcileIdentities (desiredOf cfg) [] of
+  case reconcileIdentities (desiredTokens cfg) [] of
     Left refusal -> assertFailure ("fresh seeds refused: " ++ renderIdentityRefusal refusal)
     Right plan -> do
       let seeds = planSeeds plan
@@ -3497,11 +3652,11 @@ testCredentialCascade o = withStore o $ \s -> do
   creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
   assertEqual "credential cascaded away" [] creds
 
--- | Reset drops the token's credential with its objects and
--- jobs: the replacement token serves catalog PINs until it is
--- provisioned again.
-testResetDropsCredential :: Opener -> IO ()
-testResetDropsCredential o = withStore o $ \s -> do
+-- | Reset drops the token's objects and jobs but keeps its
+-- credential row: an existing durable credential always wins
+-- over the catalog PINs.
+testResetKeepsCredential :: Opener -> IO ()
+testResetKeepsCredential o = withStore o $ \s -> do
   (tok, _) <- seedStore s
   let tid = trId tok
       cred = CredentialRecord tid "so-pin-1" (Just "user-pin-1")
@@ -3512,7 +3667,7 @@ testResetDropsCredential o = withStore o $ \s -> do
   assertEqual "reset commits" Committed rr
   eCreds <- storeLoadCredentials s
   creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
-  assertEqual "reset drops the credential" [] creds
+  assertEqual "reset keeps the credential" [cred] creds
   eLoaded <- storeLoadTokens s
   loaded <- either (\e -> assertFailure ("load tokens: " ++ show e)) pure eLoaded
   assertEqual "replacement token present" [replacement] (map fst loaded)
@@ -3681,6 +3836,50 @@ caseReconcilerHomeAnchor = do
       assertEqual "intruder slot" (SlotId 0) slot
     other -> assertFailure ("intruder at slot 0 must refuse: " ++ show other)
 
+-- | The serial projection is the stored 16-hex identity encoding:
+-- lowercase, fixed width, and the same bytes 'encodeHex16' writes
+-- for @token_id@ (ids above 9 tell hex from the old decimal form).
+caseTokenSerialCanonical :: IO ()
+caseTokenSerialCanonical = do
+  assertEqual "home serial" "0000000000000001" (tokenSerial (TokenId 1))
+  assertEqual "id 26 serial" "000000000000001a" (tokenSerial (TokenId 26))
+  let top = tokenSerial (TokenId 0x7fffffff)
+  assertEqual "max id serial" "000000007fffffff" top
+  assertEqual "max id serial width" 16 (length top)
+  assertBool "max id serial lowercase hex" (all (`elem` ("0123456789abcdef" :: String)) top)
+  assertEqual "serial is the stored id encoding"
+    (encodeHex16 0x7fffffff) top
+
+caseDesiredTokensProject :: IO ()
+caseDesiredTokensProject = do
+  cfg <- parseCatalog swappedDoc
+  assertEqual "desired tokens follow the pinned ids"
+    [ DesiredToken (SlotId 0) (TokenId 1) "haskoki-demo"
+    , DesiredToken (SlotId 1) (TokenId 3) "haskoki-audit"
+    , DesiredToken (SlotId 2) (TokenId 2) "haskoki-ops"
+    ]
+    (desiredTokens cfg)
+
+caseCatalogCredentialByIdentity :: IO ()
+caseCatalogCredentialByIdentity = do
+  cfg <- parseCatalog swappedDoc
+  assertEqual "id 3 takes slot 1's PINs"
+    (Just (CredentialRecord (TokenId 3) "7890" (Just "3456")))
+    (catalogCredential cfg (TokenId 3))
+  assertEqual "id 2 takes slot 2's PINs"
+    (Just (CredentialRecord (TokenId 2) "6789" (Just "2345")))
+    (catalogCredential cfg (TokenId 2))
+  assertEqual "an unconfigured id has no catalog credential"
+    Nothing (catalogCredential cfg (TokenId 9))
+
+caseTokensWithoutCredentials :: IO ()
+caseTokensWithoutCredentials = do
+  let tok n = TokenRecord (TokenId n) (SlotId (fromIntegral n - 1)) (Generation 0) "t" tokenAuthNew
+  assertEqual "rowless ids, ascending"
+    [TokenId 1, TokenId 3]
+    (tokensWithoutCredentials [tok 3, tok 2, tok 1] [TokenId 2])
+  assertEqual "no tokens, no gaps" [] (tokensWithoutCredentials [] [TokenId 2])
+
 -- ---------------------------------------------------------------------------
 -- Standard open reconciliation
 -- ---------------------------------------------------------------------------
@@ -3794,6 +3993,279 @@ caseOpenSeedsFresh = withOpenFile $ \path -> do
     [trGeneration t | (t, _) <- loaded]
   assertEqual "seed auths" [tokenAuthNew, tokenAuthNew, tokenAuthNew]
     [trAuth t | (t, _) <- loaded]
+  creds <- fileCredentials path
+  assertEqual "one durable credential per seeded token, from the catalog"
+    [ (TokenId 1, "5678", Just "1234")
+    , (TokenId 2, "6789", Just "2345")
+    , (TokenId 3, "7890", Just "3456") ]
+    creds
+
+-- | A seed whose commit fails before it lands leaves the file
+-- with neither token rows nor credential rows (tokens and
+-- credentials ride one delta), and a clean reopen seeds both.
+caseOpenSeedFailsAtomically :: IO ()
+caseOpenSeedFailsAtomically = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  inj <- scriptedFaults [FaultBeforeCommit]
+  env <- newEnv (rulesFromConfig cfg)
+  eAcq <- openStdStoreWith (\p -> openSQLiteStoreWith p defaultLimits inj) env
+    cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+  case eAcq of
+    Left StdStoreCommit -> pure ()
+    Left err -> assertFailure ("faulted seed failed for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "faulted seed commit accepted"
+  loaded <- fileLoaded path
+  assertEqual "no token rows after the failed seed" 0 (length loaded)
+  creds <- fileCredentials path
+  assertEqual "no credential rows after the failed seed" [] creds
+  eAgain <- openReconciled path cfg
+  case eAgain of
+    Left err -> assertFailure ("clean reopen must seed: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  loadedAgain <- fileLoaded path
+  assertEqual "clean reopen seeds three tokens" 3 (length loadedAgain)
+  credsAgain <- fileCredentials path
+  assertEqual "clean reopen seeds three credentials"
+    [TokenId 1, TokenId 2, TokenId 3] [tid | (tid, _, _) <- credsAgain]
+
+-- | The seed is one transaction: a credential insert failing
+-- inside it (an injected TEMP trigger on the store's own
+-- connection, after the token rows are written in the same
+-- transaction) rolls the token rows back too, so no token without
+-- its credential persists. A seed split into a token commit and a
+-- credential commit would leave the tokens here.
+caseOpenSeedCredentialFailureLeavesNoToken :: IO ()
+caseOpenSeedCredentialFailureLeavesNoToken = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  env <- newEnv (rulesFromConfig cfg)
+  let failCredentialInsert db = S.exec db (T.pack (concat
+        [ "CREATE TEMP TRIGGER IF NOT EXISTS haskoki_test_fail_credential_insert"
+        , " BEFORE INSERT ON main.credentials"
+        , " BEGIN SELECT RAISE(ABORT, 'haskoki-test: injected credential insert failure'); END" ]))
+      hooks = noSQLiteTestHooks { sthBeforeBegin = failCredentialInsert }
+  eAcq <- openStdStoreWith (\p -> openSQLiteStoreWithHooks p defaultLimits noFaults hooks) env
+    cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+  case eAcq of
+    Left StdStoreCommit -> pure ()
+    Left err -> assertFailure ("faulted seed failed for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "seed with a failing credential insert accepted"
+  loaded <- fileLoaded path
+  assertEqual "no token rows after the failed credential insert" 0 (length loaded)
+  creds <- fileCredentials path
+  assertEqual "no credential rows after the failed credential insert" [] creds
+
+-- | Appending one catalog entry to a seeded store seeds exactly
+-- that token and its credential; the existing rows stay as they
+-- were.
+caseOpenAppendSeedsOne :: IO ()
+caseOpenAppendSeedsOne = withOpenFile $ \path -> do
+  seedOpenSeeded path
+  credsBefore <- fileCredentials path
+  assertEqual "seeded store holds three credentials" 3 (length credsBefore)
+  cfgAppended <- parseCatalog (catalogDoc
+    (threeLabels ++ ["haskoki-extra"]) (threeSo ++ ["8901"])
+    (threeUser ++ ["4567"]) [])
+  eAcq <- openReconciled path cfgAppended
+  case eAcq of
+    Left err -> assertFailure ("appended catalog refused: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  loaded <- fileLoaded path
+  assertEqual "one token appended"
+    [(TokenId 4, SlotId 3, "haskoki-extra")]
+    [(trId t, trSlot t, trLabel t) | (t, _) <- loaded, trId t == TokenId 4]
+  assertEqual "four tokens in all" 4 (length loaded)
+  credsAfter <- fileCredentials path
+  assertEqual "existing credentials untouched" credsBefore
+    [c | c@(tid, _, _) <- credsAfter, tid /= TokenId 4]
+  assertEqual "one credential appended, from the catalog"
+    [(TokenId 4, "8901", Just "4567")]
+    [c | c@(tid, _, _) <- credsAfter, tid == TokenId 4]
+
+-- | Which stored user PIN reaches which objects: per catalog slot
+-- in order, the durable credential row of the token seated there
+-- and that token's objects. Row-based: the configured PINs play
+-- no part.
+rowReach :: FilePath -> Config -> [(TokenRecord, [ObjectRecord])] -> IO [(String, TokenId, [ObjectId])]
+rowReach path cfg loaded = do
+  creds <- fileCredentials path
+  pure
+    [ (userPin, tid, sort [orId o | o <- objs])
+    | (slot, (tid, _)) <- Map.toAscList (identityCatalog cfg)
+    , Just (t, objs) <- [lookup tid byId]
+    , trSlot t == slot
+    , (ctid, _, Just userPin) <- creds
+    , ctid == tid
+    ]
+  where
+    byId = [(trId t, (t, os)) | (t, os) <- loaded]
+
+-- | Every credential row of a closed file, by token, PINs as
+-- text.
+fileCredentials :: FilePath -> IO [(TokenId, String, Maybe String)]
+fileCredentials path = do
+  eStore <- openSQLiteStore path
+  s <- either (assertFailure . show) pure eStore
+  eCreds <- storeLoadCredentials s
+  storeClose s
+  creds <- either (assertFailure . show) pure eCreds
+  pure (sort [ (crToken c, BC8.unpack (crSoPin c), BC8.unpack <$> crUserPin c)
+             | c <- creds ])
+
+-- | Commit the catalog's fresh token rows through the raw
+-- backend, with no credential rows: the shape of a store
+-- written before durable credentials were seeded.
+seedLegacyTokens :: FilePath -> Config -> IO ()
+seedLegacyTokens path cfg = do
+  loaded <- fileLoaded path
+  plan <- case reconcileIdentities (desiredTokens cfg) [t | (t, _) <- loaded] of
+    Left refusal -> assertFailure ("legacy seed must plan: " ++ show refusal)
+    Right plan -> pure plan
+  r <- commitFile path emptyDelta { sdPutTokens = planSeeds plan }
+  assertEqual "legacy token rows commit" Committed r
+
+-- | Expect the open to refuse as migration-required naming
+-- exactly the given tokens, and leave the file byte-exact.
+expectMigrationRequired :: FilePath -> Config -> [TokenId] -> IO ()
+expectMigrationRequired path cfg want = do
+  bytesBefore <- fileBytes path
+  eAcq <- openReconciled path cfg
+  case eAcq of
+    Left (StdStoreMigrationRequired got) ->
+      assertEqual "refusal names exactly the legacy tokens" want got
+    Left err -> assertFailure ("legacy open refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "legacy store opened without credentials"
+  bytesAfter <- fileBytes path
+  assertEqual "refused legacy open preserves bytes exactly" bytesBefore bytesAfter
+
+-- | Stored tokens with no credential row refuse at the
+-- production open as migration-required, naming every such
+-- token; nothing is written and no credential is invented
+-- from the catalog.
+caseOpenLegacyRefusesMigrationRequired :: IO ()
+caseOpenLegacyRefusesMigrationRequired = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  seedLegacyTokens path cfg
+  expectMigrationRequired path cfg [TokenId 1, TokenId 2, TokenId 3]
+  creds <- fileCredentials path
+  assertEqual "no credential invented from the catalog" [] creds
+
+-- | One provisioned token and one legacy token: the refusal
+-- names only the legacy token.
+caseOpenMixedLegacyNamesOnlyLegacy :: IO ()
+caseOpenMixedLegacyNamesOnlyLegacy = withOpenFile $ \path -> do
+  cfgOne <- parseCatalog (catalogDoc ["haskoki-demo"] ["5678"] ["1234"] [])
+  eAcq <- openReconciled path cfgOne
+  case eAcq of
+    Left err -> assertFailure ("fresh open must seed: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  cfgTwo <- parseCatalog (catalogDoc
+    ["haskoki-demo", "haskoki-ops"] ["5678", "6789"] ["1234", "2345"] [])
+  seedLegacyTokens path cfgTwo
+  expectMigrationRequired path cfgTwo [TokenId 2]
+  creds <- fileCredentials path
+  assertEqual "the provisioned credential is untouched"
+    [(TokenId 1, "5678", Just "1234")] creds
+
+-- | A legacy store opened under a reordered catalog reports
+-- the identity refusal, not the missing credentials.
+caseOpenIdentityRefusalPrecedesMigration :: IO ()
+caseOpenIdentityRefusalPrecedesMigration = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  seedLegacyTokens path cfg
+  bytesBefore <- fileBytes path
+  cfgSwap <- parseCatalog swappedDoc
+  eAcq <- openReconciled path cfgSwap
+  case eAcq of
+    Left (StdStoreIdentityRefusal msg) ->
+      assertBool "refusal names the explicit move" ("planSlotMoves" `isInfixOf` msg)
+    Left err -> assertFailure ("identity drift refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "reordered legacy open accepted"
+  bytesAfter <- fileBytes path
+  assertEqual "refused open preserves bytes exactly" bytesBefore bytesAfter
+
+-- | The catalog's fresh token rows (what an open of an empty
+-- store would seed).
+catalogSeeds :: Config -> IO [TokenRecord]
+catalogSeeds cfg = case reconcileIdentities (desiredTokens cfg) [] of
+  Left refusal -> assertFailure ("empty-store plan refused: " ++ show refusal)
+  Right plan -> pure (planSeeds plan)
+
+-- | Expect a refused standard open to leave the database file and
+-- its sidecars byte-identical (SHA-256), at schema 1, with no
+-- stranded lock.
+expectSchema1Untouched :: FilePath -> [(String, String)] -> IO ()
+expectSchema1Untouched path before = do
+  hashesAfter <- diskHashes path
+  assertEqual "refused open leaves every byte (SHA-256)" before hashesAfter
+  state <- rawSchemaState path
+  assertEqual "still schema 1 without a credentials table" ("1", False) state
+  lockLeft <- doesFileExist (path ++ ".lock")
+  assertBool "no stranded lock" (not lockLeft)
+
+-- | AC-04/AC-05 on a schema-1 store: a version-1 file holding the
+-- catalog's tokens has no @credentials@ table, so every token is
+-- without a row. The open refuses it as migration-required, naming
+-- every token, BEFORE any write: the database file and its
+-- sidecars stay byte-identical and the schema stays 1.
+caseOpenSchema1LegacyRefusesWithoutWrite :: IO ()
+caseOpenSchema1LegacyRefusesWithoutWrite = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  seedSchema1 path =<< catalogSeeds cfg
+  before <- diskHashes path
+  eAcq <- openReconciled path cfg
+  case eAcq of
+    Left (StdStoreMigrationRequired got) ->
+      assertEqual "refusal names every token" [TokenId 1, TokenId 2, TokenId 3] got
+    Left err -> assertFailure ("schema-1 legacy open refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "schema-1 legacy store opened without credentials"
+  expectSchema1Untouched path before
+
+-- | Identity drift on a schema-1 store reports first (the identity
+-- refusal, not migration-required) and also writes nothing.
+caseOpenSchema1IdentityRefusalWithoutWrite :: IO ()
+caseOpenSchema1IdentityRefusalWithoutWrite = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  seedSchema1 path =<< catalogSeeds cfg
+  before <- diskHashes path
+  cfgSwap <- parseCatalog swappedDoc
+  eAcq <- openReconciled path cfgSwap
+  case eAcq of
+    Left (StdStoreIdentityRefusal msg) ->
+      assertBool "refusal names the explicit move" ("planSlotMoves" `isInfixOf` msg)
+    Left err -> assertFailure ("schema-1 identity drift refused for the wrong reason: " ++ show err)
+    Right mAcq -> do
+      closeAcquired mAcq
+      assertFailure "reordered schema-1 open accepted"
+  expectSchema1Untouched path before
+
+-- | Control: an empty schema-1 store has no token to refuse, so the
+-- open succeeds; its seed commit migrates the schema and seeds the
+-- tokens with their credentials in that one transaction.
+caseOpenSchema1EmptyMigratesAndSeeds :: IO ()
+caseOpenSchema1EmptyMigratesAndSeeds = withOpenFile $ \path -> do
+  cfg <- parseCatalog positionalDoc
+  seedSchema1 path []
+  eAcq <- openReconciled path cfg
+  case eAcq of
+    Left err -> assertFailure ("empty schema-1 open must seed: " ++ show err)
+    Right mAcq -> closeAcquired mAcq
+  state <- rawSchemaState path
+  assertEqual "the seed commit migrated to version 2" ("2", True) state
+  loaded <- fileLoaded path
+  assertEqual "three tokens seeded" [TokenId 1, TokenId 2, TokenId 3] [trId t | (t, _) <- loaded]
+  creds <- fileCredentials path
+  assertEqual "three credentials seeded with them"
+    [TokenId 1, TokenId 2, TokenId 3] [tid | (tid, _, _) <- creds]
 
 -- | A reordered catalog refuses at the production open with
 -- the actionable message; the file survives byte-exact and
@@ -3803,7 +4275,7 @@ caseOpenReorderRefuses = withOpenFile $ \path -> do
   seedOpenSeeded path
   cfgSteady <- parseCatalog positionalDoc
   loadedSteady <- fileLoaded path
-  let reachBefore = credentialReach cfgSteady loadedSteady
+  reachBefore <- rowReach path cfgSteady loadedSteady
   bytesBefore <- fileBytes path
   cfgSwap <- parseCatalog swappedDoc
   eAcq <- openReconciled path cfgSwap
@@ -3822,8 +4294,8 @@ caseOpenReorderRefuses = withOpenFile $ \path -> do
     Left err -> assertFailure ("steady reopen refused after refusal: " ++ show err)
     Right mAcq -> closeAcquired mAcq
   loadedAgain <- fileLoaded path
-  assertEqual "mapping intact after refused open"
-    reachBefore (credentialReach cfgSteady loadedAgain)
+  reachAgain <- rowReach path cfgSteady loadedAgain
+  assertEqual "mapping intact after refused open" reachBefore reachAgain
 
 -- | A removed entry refuses at the production open: the
 -- durable token is never pruned, its objects survive, and
@@ -3875,8 +4347,8 @@ caseOpenAcceptsMoved = withOpenFile $ \path -> do
         (Map.toAscList (stdTokenIds ss))
       closeAcquired acquired
   loadedAfter <- fileLoaded path
-  let reach = credentialReach cfgSwap loadedAfter
-      objsOf tid = sort [orId o | (_, os) <- loadedAfter, o <- os, orToken o == tid]
+  reach <- rowReach path cfgSwap loadedAfter
+  let objsOf tid = sort [orId o | (_, os) <- loadedAfter, o <- os, orToken o == tid]
   assertEqual "credentials follow identities through the open"
     [ ("1234", TokenId 1, objsOf (TokenId 1))
     , ("3456", TokenId 3, objsOf (TokenId 3))
@@ -3955,16 +4427,18 @@ caseOpenDowngradeRefuses = withOpenFile $ \path -> do
     Left err -> assertFailure ("pinned catalog refused after downgrade refusal: " ++ show err)
     Right mAcq -> closeAcquired mAcq
 
--- | A PIN edit reopens accepted: PINs are not identity, so
--- the changed credential reaches the same durable identity
--- and the same objects, and nothing else moves.
-caseOpenPinEditAccepted :: IO ()
-caseOpenPinEditAccepted = withOpenFile $ \path -> do
+-- | A config PIN edit after the seed changes nothing durable:
+-- the reopen with the edited user PIN writes no bytes, and the
+-- seeded credential rows keep the original PINs, which keep
+-- reaching the same objects.
+caseOpenPinEditIgnoredAfterSeed :: IO ()
+caseOpenPinEditIgnoredAfterSeed = withOpenFile $ \path -> do
   seedOpenSeeded path
   loaded <- fileLoaded path
   cfg <- parseCatalog positionalDoc
-  let reachBefore = credentialReach cfg loaded
+  reachBefore <- rowReach path cfg loaded
   assertEqual "three credentials served" 3 (length reachBefore)
+  credsBefore <- fileCredentials path
   cfgRotated <- parseCatalog (catalogDoc threeLabels threeSo ["1234", "9999", "3456"] [])
   bytesBefore <- fileBytes path
   eAcq <- openReconciled path cfgRotated
@@ -3972,14 +4446,14 @@ caseOpenPinEditAccepted = withOpenFile $ \path -> do
     Left err -> assertFailure ("PIN edit refused: " ++ show err)
     Right mAcq -> closeAcquired mAcq
   bytesAfter <- fileBytes path
-  assertEqual "accepted PIN edit writes nothing" bytesBefore bytesAfter
+  assertEqual "a PIN edit writes nothing" bytesBefore bytesAfter
+  credsAfter <- fileCredentials path
+  assertEqual "stored credentials keep the seeded PINs" credsBefore credsAfter
   loadedAfter <- fileLoaded path
-  let reachAfter = credentialReach cfgRotated loadedAfter
-      pinsOf reach = [pin | (pin, _, _) <- reach]
-      ownersOf reach = [(tid, objs) | (_, tid, objs) <- reach]
-  assertEqual "PINs before" ["1234", "2345", "3456"] (pinsOf reachBefore)
-  assertEqual "only the ops PIN changed" ["1234", "9999", "3456"] (pinsOf reachAfter)
-  assertEqual "owners untouched by PIN edit" (ownersOf reachBefore) (ownersOf reachAfter)
+  reachAfter <- rowReach path cfgRotated loadedAfter
+  assertEqual "PINs unchanged by the edit" ["1234", "2345", "3456"]
+    [pin | (pin, _, _) <- reachAfter]
+  assertEqual "the same PINs reach the same objects" reachBefore reachAfter
 
 -- | The durable publication path resolves serving slots
 -- through the reconciled layout: a real creation delta for a

@@ -132,6 +132,7 @@ module Haskoki.FFI.Standard
   , haskokiStdTokenLive
   , haskokiStdTokenPolicy
   , haskokiStdTokenLabel
+  , haskokiStdTokenSerial
   , haskokiStdSlotPresent
     -- * objects (pure helpers + exports)
   , nativeEncodeAttr
@@ -327,7 +328,7 @@ import Haskoki.FFI.Encode
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.Instance (Instance (..), InstanceCell, readLiveInstance)
 import Haskoki.FFI.Notify
-import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry, identityCatalog)
+import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, effectiveCatalog, homeCatalogEntry, identityCatalog, tokenSerial)
 import Haskoki.Runtime.Control (PresenceOwner (..), bindPresenceOwner)
 import Haskoki.Runtime.SlotEvents
   ( SlotEvents, SlotDefinition (..), SlotSnapshot (..), PresenceError (..), newSlotEvents
@@ -486,7 +487,6 @@ import Haskoki.Runtime.Lifecycle
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
-  , DesiredToken (..)
   , JobRecord (..)
   , ObjectPut (..)
   , ObjectRecord (orId)
@@ -503,6 +503,7 @@ import Haskoki.Runtime.Storage
   , reconcileJobsReload
   , reconcileReload
   , renderIdentityRefusal
+  , tokensWithoutCredentials
   )
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session
@@ -569,8 +570,9 @@ tokenIdForSlot :: SlotId -> TokenId
 tokenIdForSlot (SlotId n) = TokenId (n + 1)
 
 -- | One slot's LIVE serving credential: the effective label
--- plus the effective PINs. Seeded at open from the catalog,
--- with durable provisioned rows winning where present; every
+-- plus the effective PINs. On a SQLite store the durable
+-- credential row is the only authority (a stored token without
+-- one serves no login); memory mode seeds from the catalog. Every
 -- granted provisioning call rewrites exactly its slot's entry
 -- after its commit lands, so the view tracks durable truth
 -- under the single-writer invariant (the store admits one
@@ -628,7 +630,10 @@ data StdStore = StdStore
 -- | The owned standard-surface instance: model environment, live
 -- OpenSSL4 backend, per-session find cursors, the optional process
 -- store, the effective serving catalog (per-slot labels/PINs as
--- configured), the live serving-credential view (per-slot
+-- configured), the seated slot-to-identity layout (the reconciled
+-- 'stdTokenIds' for SQLite, the pinned 'identityCatalog' for
+-- memory; an empty map reads positionally), the live
+-- serving-credential view (per-slot
 -- effective labels/PINs: catalog-seeded, durable-winning,
 -- rewritten by granted provisioning calls), and the dirty slots
 -- (serving entries whose authority is unknown after a failed
@@ -640,6 +645,7 @@ data StdInstance = StdInstance
   , siFind :: !(IORef (Map SessionId [ExternalHandle]))
   , siStore :: !(Maybe StdStore)
   , siCatalog :: !(Map SlotId (String, String, String))
+  , siTokenIds :: !(Map SlotId TokenId)
   , siServing :: !(IORef (Map SlotId ServingCredential))
   , siDirty :: !(IORef [SlotId])
   , siSlots :: !SlotEvents
@@ -891,42 +897,69 @@ assembleStdInstance env be mStore cfg slots unbind release invoker = do
       case opened of
         Left deny -> ioError (userError ("standard detached context: " ++ show deny))
         Right dc -> pure (Just dc)
-  serving <- newServingView mStore cfg
-  dirty <- newIORef []
+  (serving, unbacked) <- newServingView mStore cfg
+  dirty <- newIORef unbacked
   views <- newIORef Map.empty
   bindings <- newIORef Map.empty
   notify <- newIORef Map.empty
   pure (StdInstance env be cursors mStore (effectiveCatalog cfg)
+    (seatedIdentities mStore cfg)
     serving dirty slots unbind release table detach views bindings notify invoker Nothing)
 
--- | Seed the live serving-credential view: every catalog slot
--- serves its catalog label and PINs unless the store holds a
--- provisioned credential row for its token, which wins (both
--- halves: the first provisioning call freezes the token's
--- effective credential durably). A credential load failure
--- fails the whole open loudly, exactly like the detached
--- refusal above: serving must never start on an unknown
--- credential.
-newServingView :: Maybe StdStore -> Config -> IO (IORef (Map SlotId ServingCredential))
+-- | The instance's slot-to-identity layout: the reconciled store
+-- layout where a store is open (restored slots plus seeds), else
+-- the configured identity catalog, so pinned @token_ids@ hold for
+-- memory instances too (never a positional guess for a pinned
+-- slot).
+seatedIdentities :: Maybe StdStore -> Config -> Map SlotId TokenId
+seatedIdentities mStore cfg = case mStore of
+  Just ss -> stdTokenIds ss
+  Nothing -> Map.map fst (identityCatalog cfg)
+
+-- | Seed the live serving-credential view. Without a store
+-- (memory mode) every catalog slot serves its catalog label and
+-- PINs. With a store the durable credential row is the only
+-- authority: a token's row serves both halves, and a token with
+-- no row (a legacy store the open should have refused) is
+-- returned as unbacked, so the instance starts with it dirty and
+-- authentication against it fails closed instead of falling back
+-- to the catalog PINs. A credential load failure fails the whole
+-- open loudly, exactly like the detached refusal above: serving
+-- must never start on an unknown credential.
+newServingView
+  :: Maybe StdStore -> Config
+  -> IO (IORef (Map SlotId ServingCredential), [SlotId])
 newServingView mStore cfg = do
   eCreds <- case mStore of
     Nothing -> pure (Right [])
     Just ss -> storeLoadCredentials (stdStore ss)
   case eCreds of
     Left err -> ioError (userError ("standard credential view: " ++ show err))
-    Right creds -> newIORef (Map.fromList
-      [ (slot, entry slot triple)
-      | (slot, triple) <- Map.toAscList (effectiveCatalog cfg)
-      ])
+    Right creds -> do
+      ref <- newIORef (Map.fromList
+        [ (slot, entry slot triple)
+        | (slot, triple) <- Map.toAscList (effectiveCatalog cfg)
+        ])
+      pure (ref, unbacked)
       where
         ids = case mStore of
           Nothing -> Map.empty
           Just ss -> stdTokenIds ss
         tokenOf slot = Map.findWithDefault (tokenIdForSlot slot) slot ids
-        entry slot (label, so, user) =
-          case find ((== tokenOf slot) . crToken) creds of
-            Just c -> ServingCredential label (crSoPin c) (crUserPin c)
-            Nothing -> ServingCredential label (BC8.pack so) (Just (BC8.pack user))
+        rowOf slot = find ((== tokenOf slot) . crToken) creds
+        entry slot (label, so, user) = case (mStore, rowOf slot) of
+          (_, Just c) -> ServingCredential label (crSoPin c) (crUserPin c)
+          (Nothing, Nothing) ->
+            ServingCredential label (BC8.pack so) (Just (BC8.pack user))
+          -- Store-backed and no row: the entry keeps the label only
+          -- and is never read for authentication (the slot starts
+          -- dirty and its re-sync refuses).
+          (Just _, Nothing) -> ServingCredential label BS.empty Nothing
+        unbacked = case mStore of
+          Nothing -> []
+          Just _ ->
+            [ slot | slot <- Map.keys (effectiveCatalog cfg)
+            , Nothing <- [rowOf slot] ]
 
 -- | Seat every catalog slot in index order. The first refusal
 -- (past the seating bound) fails the whole open loudly — catalogs
@@ -967,6 +1000,14 @@ data StdStoreError
   -- 'StdStoreIdentityRefusal' with the reconciler's message.
   | StdStoreCatalogMismatch
   | StdStoreIdentityRefusal !String
+  -- | Stored tokens with no durable credential row (a store
+  -- written before credentials were seeded with each token,
+  -- including every token of a schema-1 store). Lists every
+  -- such token, ascending; the open writes nothing (the SQLite
+  -- open only reads, and a schema-1 store migrates only inside
+  -- a commit, which a refused open never reaches) and never
+  -- invents a credential from the catalog PINs.
+  | StdStoreMigrationRequired ![TokenId]
   deriving (Eq, Show)
 
 openStdStore :: Env -> Config -> IO (Either StdStoreError (Maybe StdStore))
@@ -977,6 +1018,11 @@ openStdStore = openStdStoreWith openSQLiteStore
 -- scripted opener ('openSQLiteStoreWith' with limits and
 -- faults). The reconcile\/seat\/seed flow is identical either
 -- way, so injected faults exercise the production open path.
+-- The seed commit is the open's only write: the SQLite opener
+-- only reads an existing store (a schema-1 store migrates inside
+-- that commit), and every refusal (identity first, then
+-- migration-required) returns before it, so a refused open
+-- leaves the database bytes unchanged.
 openStdStoreWith
   :: (FilePath -> IO (Either StoreError Store))
   -> Env
@@ -1029,31 +1075,54 @@ openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
                               storeClose store
                               pure (Left (StdStoreIdentityRefusal (renderIdentityRefusal refusal)))
                             Right plan -> do
-                              let seeds = planSeeds plan
-                              eSeat <- seatAll env [trSlot t | t <- seeds]
-                              case eSeat of
-                                Left deny -> do
+                              -- Every stored token must carry its
+                              -- durable credential row. A token
+                              -- written before credentials were
+                              -- seeded refuses as migration-required,
+                              -- after the identity check so drift
+                              -- reports first; the catalog PINs never
+                              -- stand in for a missing row.
+                              eCreds <- storeLoadCredentials store
+                              case eCreds of
+                                Left err -> do
                                   storeClose store
-                                  pure (Left (StdStoreSeating deny))
-                                Right () -> do
-                                  res <- if null seeds
-                                    then pure Committed
-                                    else storeCommit store emptyDelta { sdPutTokens = seeds }
-                                  case res of
-                                    Committed ->
-                                      let slotIds = Map.fromList
-                                            ([(trSlot t, trId t) | (t, _) <- loaded]
-                                              ++ [(trSlot t, trId t) | t <- seeds])
-                                      in pure (Right (Just (StdStore store homeTokenId slotIds)))
-                                    _ -> do
+                                  pure (Left (StdStoreSQLite err))
+                                Right creds ->
+                                  case tokensWithoutCredentials [t | (t, _) <- loaded] (map crToken creds) of
+                                    legacy@(_ : _) -> do
                                       storeClose store
-                                      pure (Left StdStoreCommit)
+                                      pure (Left (StdStoreMigrationRequired legacy))
+                                    [] -> seatAndSeed store loaded plan
   where
     catalog = effectiveCatalog cfg
-    desired =
-      [ DesiredToken slot tid label
-      | (slot, (tid, label)) <- Map.toAscList (identityCatalog cfg)
-      ]
+    seatAndSeed store loaded plan = do
+      let seeds = planSeeds plan
+      eSeat <- seatAll env [trSlot t | t <- seeds]
+      case eSeat of
+        Left deny -> do
+          storeClose store
+          pure (Left (StdStoreSeating deny))
+        Right () -> do
+          -- A fresh durable token carries its catalog PINs as its
+          -- credential from the start, in the same transaction: a
+          -- later catalog PIN edit never rebinds a token that already
+          -- exists.
+          let seedCreds =
+                [c | t <- seeds, Just c <- [catalogCredential cfg (trId t)]]
+          res <- if null seeds
+            then pure Committed
+            else storeCommit store emptyDelta
+              { sdPutTokens = seeds, sdPutCredentials = seedCreds }
+          case res of
+            Committed ->
+              let slotIds = Map.fromList
+                    ([(trSlot t, trId t) | (t, _) <- loaded]
+                      ++ [(trSlot t, trId t) | t <- seeds])
+              in pure (Right (Just (StdStore store homeTokenId slotIds)))
+            _ -> do
+              storeClose store
+              pure (Left StdStoreCommit)
+    desired = desiredTokens cfg
 
 -- | Reserve the durable handle/revision high-waters after a
 -- store reload: @mNextHandle@ advances past the maximum of the
@@ -1854,9 +1923,10 @@ publishStd :: StdInstance -> StateDelta -> IO (Either ModelFault ())
 publishStd inst delta = publishStdWithCred inst Nothing delta
 
 -- | One gate-held credential rewrite: the home token, the seed
--- when no durable row exists yet (catalog-derived: the token
--- serves catalog PINs until its first provisioning commit),
--- and the pure modification producing the committed row. The
+-- used only when no durable row exists (catalog-derived; a store
+-- opened through 'openStdStore' always has a row for every
+-- token, because the open refuses rowless tokens), and the pure
+-- modification producing the committed row. The
 -- read-modify-put runs inside the gate-held publish section,
 -- so concurrent provisioning calls linearize instead of losing
 -- each other's halves.
@@ -2586,6 +2656,8 @@ haskokiStdTokenPolicy ctx slot
 
 foreign export ccall "haskoki_std_token_label" haskokiStdTokenLabel
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO CULong
+foreign export ccall "haskoki_std_token_serial" haskokiStdTokenSerial
+  :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO CULong
 foreign export ccall "haskoki_std_slot_present" haskokiStdSlotPresent
   :: StablePtr StdInstance -> CULong -> IO CULong
 
@@ -2613,6 +2685,27 @@ haskokiStdTokenLabel ctx slot pOut =
                 serving <- readIORef (siServing inst)
                 pokeArray pOut (padLabel32 (scLabel (servingFor serving sid)))
                 pure ckrOk
+
+-- | Project a seated slot's durable identity onto the 16-byte
+-- @CK_TOKEN_INFO@ serial field ('tokenSerial': canonical
+-- lowercase hex, the C side copies the bytes verbatim). The
+-- identity comes from the seated layout ('slotTokenId'), so the
+-- serial follows the token across slot moves and is independent
+-- of the label; identities are fixed for the instance's
+-- lifetime, so no serving re-sync is consulted. Unseated slots
+-- refuse with @SLOT_ID_INVALID@ and a null buffer with
+-- @ARGUMENTS_BAD@, both before any byte is written.
+haskokiStdTokenSerial :: StablePtr StdInstance -> CULong -> Ptr Word8 -> IO CULong
+haskokiStdTokenSerial ctx slot pOut =
+  withLiveStdCtx ctx $ \inst -> do
+    slots <- snapshotSlots (siSlots inst)
+    case tokenSlot slots slot of
+      Left rv -> pure rv
+      Right sid
+        | pOut == nullPtr -> pure ckrArgsBad
+        | otherwise -> do
+            pokeArray pOut (map (fromIntegral . ord) (tokenSerial (slotTokenId inst sid)))
+            pure ckrOk
 
 -- | Blank-pad a catalog label to exactly 32 bytes (truncate past
 -- 32; validation caps labels at 32 chars, ASCII in practice).
@@ -3184,12 +3277,13 @@ foreign export ccall "haskoki_std_set_pin" haskokiStdSetPin
   -> CULong -> IO CULong
 
 -- | Resolve a serving slot to its durable token identity: the
--- reconciled layout where the store has one, else the legacy
--- positional reading (the auth-projection precedent).
+-- instance's seated layout ('siTokenIds': the reconciled store
+-- layout for SQLite, the pinned identity catalog for memory),
+-- else the legacy positional reading (manually seated instances,
+-- the auth-projection precedent).
 slotTokenId :: StdInstance -> SlotId -> TokenId
-slotTokenId inst slot = case siStore inst of
-  Nothing -> tokenIdForSlot slot
-  Just ss -> Map.findWithDefault (tokenIdForSlot slot) slot (stdTokenIds ss)
+slotTokenId inst slot =
+  Map.findWithDefault (tokenIdForSlot slot) slot (siTokenIds inst)
 
 -- | Rewrite one slot's serving credential after its commit
 -- lands (the cursor-clearing precedent: the serving view
@@ -3207,12 +3301,13 @@ markServingDirty inst slot =
   atomicModifyIORef' (siDirty inst) (\s -> (if slot `elem` s then s else slot : s, ()))
 
 -- | Re-sync one slot's serving entry from the store: the token
--- row carries the authoritative label, the credential row (if
--- any) the authoritative PINs, and the catalog seeds the
--- halves no row covers. 'True' means the entry is
+-- row carries the authoritative label and the credential row
+-- the authoritative PINs. The durable row is the only
+-- authority: a missing token or credential row never falls
+-- back to the catalog PINs. 'True' means the entry is
 -- authoritative again (the slot clears); 'False' means the
--- re-read failed and the caller must fail closed without
--- consulting the view. Memory instances have no durable half,
+-- re-read failed or found no row, and the caller must fail
+-- closed without consulting the view. Memory instances have no durable half,
 -- so the view is trivially authoritative there.
 resyncServing :: StdInstance -> SlotId -> IO Bool
 resyncServing inst slot = case siStore inst of
@@ -3224,12 +3319,14 @@ resyncServing inst slot = case siStore inst of
       (Right loaded, Right creds) ->
         let tid = Map.findWithDefault (tokenIdForSlot slot) slot ids
         in case (find ((== tid) . trId . fst) loaded, find ((== tid) . crToken) creds) of
-          (Just (row, _), mCred) -> do
-            let (_, catSo, catUser) = Map.findWithDefault homeCatalogEntry slot (siCatalog inst)
-                entry = ServingCredential
+          -- The durable row is the only authority for a stored
+          -- token: no row means no credential to serve, never a
+          -- fallback to the configured PINs.
+          (Just (row, _), Just cred) -> do
+            let entry = ServingCredential
                   { scLabel = trLabel row
-                  , scSoPin = maybe (BC8.pack catSo) crSoPin mCred
-                  , scUserPin = maybe (Just (BC8.pack catUser)) crUserPin mCred
+                  , scSoPin = crSoPin cred
+                  , scUserPin = crUserPin cred
                   }
             atomicModifyIORef' (siServing inst) (\m -> (Map.insert slot entry m, ()))
             atomicModifyIORef' (siDirty inst) (\s -> (filter (/= slot) s, ()))
@@ -3286,8 +3383,8 @@ setPinRole m sid = do
 -- generation bumps (stale job references refuse), the auth
 -- state goes fresh, and the user PIN becomes uninitialized
 -- (the SO sets it with 'C_InitPIN'). Every seated token
--- carries an SO PIN (catalog-seeded until its first
--- provisioning commit, durable after), so this call always
+-- carries an SO PIN (on SQLite its durable credential row,
+-- seeded with the token; in memory mode the catalog's), so this call always
 -- takes the reinitialization path: the caller PIN is checked
 -- against the token's existing SO PIN with the
 -- position-constant 'pinsMatch' fold, and a mismatch refuses

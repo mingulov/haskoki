@@ -49,6 +49,31 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   secret buffer when OpenSSL reports a shorter secret than the size query,
   and fail closed (a native error, with the whole buffer cleansed) when it
   reports a longer one. The tail used to be left as the derive wrote it.
+- Token serial numbers come from the durable token identity.
+  `C_GetTokenInfo` reports the token's `TokenId` as 16 lowercase hex
+  digits, independent of slot and label, so a moved token keeps its
+  serial and `C_InitToken` keeps it too. v0.4 reported the slot index
+  plus one in decimal. The values are unchanged for a positional
+  catalog of up to 9 tokens. They change for a 10th or later token, for
+  pinned non-positional `token_ids`, and after a slot move: update any
+  saved `pkcs11:` URI that selects those tokens by `serial=`. Serials
+  are unique within one store only: every store seeded from a catalog
+  gives its home token `0000000000000001`.
+- SQLite stores write each new token's credential row (the configured
+  SO and user PIN) in the same transaction as the token. The stored row
+  is then the PIN authority: editing a configured PIN no longer changes
+  what an existing token accepts.
+- A SQLite store holding tokens without a credential row (written by
+  v0.4 or earlier, including every schema-1 store with tokens) refuses
+  to open as migration-required before any write: the file stays
+  byte-identical. Identity refusals report first. The open fails
+  `C_Initialize`; `haskoki-ctl store check` names the tokens and
+  `haskoki-ctl store migrate` migrates such a store.
+- Opening a schema-1 SQLite store no longer migrates it at open. The
+  open only reads; the schema moves to version 2 inside the first
+  commit transaction, so a refused open leaves a schema-1 file at
+  schema 1.
+- The test-only `storeResetToken` keeps the token's credential row.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and

@@ -238,14 +238,28 @@ configuration parser, the reconciler, and the move planner each
 refuse anything else there (see `parseTokenIds`,
 `RefuseHomeAnchor`, and `MoveHomeAnchored`).
 
-The public serial number is not the stable identity. `C_GetTokenInfo`
-renders `serialNumber` from the slot index plus one
-(`cbits/standard_surface.c`, `%016u` of `slotID + 1`), so a token moved to
-another slot reports another serial, and a different identity seated in
-the same slot reports the same one. Durable identity, label, objects and
-credentials follow the `TokenId`; external clients that key on the serial
-should not rely on it surviving a slot move. A stable external serial and
-reset/migration semantics for it are v0.5 work.
+The public serial number is the durable identity. `C_GetTokenInfo`
+renders `serialNumber` as the token's `TokenId` in 16 lowercase hex
+digits, zero-padded (`tokenSerial` in `Haskoki.Runtime.Catalog`, the same
+form the store writes for `token_id`). It does not depend on the slot,
+the label or the store file: a token moved to another slot keeps its
+serial, the same label under another id reports another serial, and
+`C_InitToken` keeps it, because a reset keeps the `TokenId`. Deleting the
+store and reseeding it from the same catalog gives the same serials.
+
+Serials are unique within one store only, not globally. Every store
+seeded from a catalog gives its home token `0000000000000001`, so two
+stores built from the default catalog report identical token URIs
+(`token=haskoki-demo;serial=0000000000000001`). A client that loads two
+haskoki modules or configurations and selects by `serial=` alone matches
+both: add the module path or another attribute to tell them apart.
+
+v0.4 rendered the slot index plus one in decimal (`%016u`). The two forms
+agree for a positional catalog of up to 9 tokens, where slot `n` holds
+`TokenId (n+1)`: `0000000000000001` to `0000000000000009`. They differ for
+a 10th or later token (`000000000000000a`, not `0000000000000010`), for a
+pinned non-positional `token_ids` entry, and after a slot move. Update any
+saved `pkcs11:` URI that selects by `serial=` for those tokens.
 
 Stable identities come from the optional `[tokens] token_ids`
 parallel array (decimal ids in strings, positional with
@@ -259,10 +273,10 @@ positional layout still matches the durable one.
 A SQLite open reconciles the catalog against the durable
 identities before anything publishes. Matches proceed; unknown
 identities seed with generation zero and fresh auth; every
-drift refuses the whole open. The reconciler itself is pure and
-writes nothing, but it runs after the SQLite store has been
-opened, and that open can first commit a schema migration (below),
-so "refused" does not guarantee unchanged database bytes:
+drift refuses the whole open. The reconciler is pure, and the
+SQLite open before it only reads an existing store (a version-1
+store migrates inside the first commit, below), so a refused open
+leaves the database file unchanged:
 
 | Drift | Refusal | Operator action |
 |---|---|---|
@@ -290,53 +304,65 @@ Versions: configuration keeps `schema_version = 1`
 `token_id` from `slot`; the new credential document starts at
 its own `format_version = 1`), and the SQLite schema moves to
 `schema_version = 2` by one explicit migration: a version-1
-database gains the empty `credentials` table and the advanced
-marker in a single transaction at open, with no row rewritten
-or reinterpreted (see `migrateV1toV2` in
-`src/Haskoki/Runtime/Storage/SQLite.hs` and the migration case
+database opens without any write, and gains the empty
+`credentials` table and the advanced marker inside its first
+commit transaction, together with that commit's data, with no
+row rewritten or reinterpreted (see `migrateV1InTxn` in
+`src/Haskoki/Runtime/Storage/SQLite.hs` and the version-1 cases
 in `tests/storage/StoreSpec.hs`). Anything but version 1 or 2
 refuses at open without writing; unknown document versions
 refuse on decode, as before. Binary rollback across the bump
 refuses loudly: a version-1 binary meets `schema_version = 2`
 and declines, so operators upgrade every serving binary first.
 
-Migration happens before identity reconciliation. Opening a
-version-1 store with a catalog that is then refused (label,
-slot, stored-unconfigured or duplicate-identity drift) can
-therefore already have committed the version-1 to version-2
-migration and left the file at `schema_version = 2` even though
-the open failed. The migration is one transaction that rewrites
-no existing row, so this is not a data-loss path, but a
-version-1 binary can no longer open that file. There is no
-no-write-on-refusal guarantee for a rejected persistent open,
-and no preflight or migrate-only command exists: back up the
-database file before upgrading. A preflight/migrate command and a
-defined refusal contract are v0.5 work.
+Migration happens only when an open succeeds. Opening a version-1
+store reads it without writing. A version-1 store holding tokens
+always refuses: a label, slot, stored-unconfigured or
+duplicate-identity drift reports first, and otherwise every token
+lacks a credential row (version 1 has no `credentials` table), so
+the open refuses as migration-required. Either way the database
+file and its `-journal` stay byte-identical and the file stays at
+`schema_version = 1`, still openable by the binary that wrote it.
+Only the ownership sidecar `<db>.lock` is created and removed
+again. An empty version-1 store opens, and its seed commit
+migrates it and writes the seeded tokens and their credential rows
+in one transaction; if that commit fails, the file stays at version
+1. The async process-level store open follows the same rule: its
+home-token refusal writes nothing. Back up the database file before
+upgrading all the same.
 
-PIN values start configuration-owned and become durable-owned on
-first provisioning: each token gains a credential row (the
-provisioned SO PIN plus the provisioned user PIN, or null while
-uninitialized) the first time `C_InitToken`, `C_InitPIN`, or
-`C_SetPIN` grants on it, and from then on the durable row wins
-over the catalog for that token. An unprovisioned token keeps
-serving its catalog PINs, so a PIN edit still changes the
-credential that reaches the same durable identity there; on a
-provisioned token the catalog PINs are seeds the durable row
-has superseded, and re-provisioning in-band is the way to move
-them. There is no token-editor surface here, and no path
+On a SQLite store, PIN values are durable from the moment a token
+exists: the open that creates a token row writes its credential
+row (the catalog SO PIN and user PIN at that moment) in the same
+transaction. From then on the durable row is the credential
+authority for that token. Editing a catalog PIN later changes
+nothing for a token that already exists; the edited value is
+refused and the stored one keeps serving. `C_InitToken`,
+`C_InitPIN` and `C_SetPIN` replace the row in-band, and that is
+the way to move a PIN. In memory mode the catalog PINs seed each
+interval, as before.
+
+A store written before this (v0.4 and earlier) can hold tokens
+with no credential row. The open refuses such a store as
+migration-required before any write, so the file stays
+byte-identical; the catalog PINs never stand in for a missing
+row. The refusal fails `C_Initialize` with `CKR_GENERAL_ERROR`
+and does not print the token ids itself:
+`haskoki-ctl store check --path FILE --config FILE`
+names every token without a row without opening the file for
+writing, and
+`haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR`
+records the configured PINs as those tokens' rows after taking
+a backup. Identity refusals (a reorder, a removal, a relabel)
+report first. There is no token-editor surface here, and no path
 reassigns one token's objects to another token's credential
 silently (every reassignment-shaped change above refuses
 loudly instead; `C_InitToken` destroys only its own token's
 objects, jobs, and credential).
 
-Until a token's first provisioning commit the configuration file is the
-credential authority: editing a catalog PIN changes what that token
-accepts. Seeding every new store's credentials durably at creation is v0.5
-work.
-
 Reinitializing a token is an authorized operation: every seated
-token carries an SO PIN (catalog-seeded until its first
-provisioning commit, durable after), so `C_InitToken` always
+token carries an SO PIN (the durable row on a SQLite store;
+in memory mode the catalog value until it changes in-band), so `C_InitToken` always
 takes the reinitialization path and checks the caller PIN
 against the token's existing SO PIN with the position-constant
 `pinsMatch` fold before planning anything. A mismatch answers
