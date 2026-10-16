@@ -1440,8 +1440,9 @@ finishWork model st pw res
     stampPub :: Word64 -> PendingObject -> ByteString -> PendingObject
     stampPub k po bs
       | k == ckkRsa = case parseRsaPublic bs of
-          Just (n, e) -> po { poAttrs = Map.insert AttrModulus (ValBytes n)
-            (Map.insert AttrPublicExponent (ValBytes e) (poAttrs po)) }
+          Just (n, e) -> po { poAttrs = Map.insert AttrModulusBits (ValULong (fromIntegral (bitsOf n)))
+            (Map.insert AttrModulus (ValBytes n)
+            (Map.insert AttrPublicExponent (ValBytes e) (poAttrs po))) }
           Nothing -> po
       | k == ckkEc = case ecSpkiFields bs of
           Just (params, pt) | BS.take 1 pt == BS.singleton 0x04 ->
@@ -1483,8 +1484,11 @@ storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAtt
 
 -- | Stamp keygen components back onto a pending pair. Reads serve
 -- stored attributes only (no decode-on-read path), so an RSA pair
--- must carry its CRT components: the public half gets the modulus
--- and exponent, the private half all eight PKCS#1 parts. The two
+-- must carry its CRT components: the public half gets the modulus,
+-- the exponent and the authoritative @CKA_MODULUS_BITS@ (the true
+-- bit width of the modulus; the private half carries no size, per
+-- PKCS#11 3.2 section 6.1), the private half all eight PKCS#1
+-- parts. The two
 -- DER halves must agree on (n, e); any parse failure or mismatch
 -- is 'Nothing' (the finisher rejects with zero objects). A DSA
 -- pair stamps @CKA_PRIME@\/@CKA_SUBPRIME@\/@CKA_BASE@ onto both
@@ -1589,8 +1593,9 @@ stampPairComponents pub priv pubM privM
       (n, e) <- parseRsaPublic pubM
       crt <- parseRsaPrivate privM
       guard (crtN crt == n && crtE crt == e)
-      let pubA = Map.insert AttrModulus (ValBytes n)
-            (Map.insert AttrPublicExponent (ValBytes e) (poAttrs pub))
+      let pubA = Map.insert AttrModulusBits (ValULong (fromIntegral (bitsOf n)))
+            (Map.insert AttrModulus (ValBytes n)
+            (Map.insert AttrPublicExponent (ValBytes e) (poAttrs pub)))
           privA = Map.insert AttrModulus (ValBytes n)
             (Map.insert AttrPublicExponent (ValBytes e)
             (Map.insert AttrPrivateExponent (ValBytes (crtD crt))
@@ -2017,10 +2022,12 @@ checkDataTemplate wantData tmpl =
 
 -- | Pending object from validated template attributes: the token
 -- flag decides the lifetime owner, the calling session the home
--- slot. Generation parameters that are not stored key attributes
--- (@AttrModulusBits@, @AttrPrimeBits@, @AttrSubprimeBits@) are
--- dropped (the finisher re-stamps authoritative sizes); everything
--- else carries over verbatim.
+-- slot. Generation size parameters (@AttrModulusBits@,
+-- @AttrPrimeBits@, @AttrSubprimeBits@) are dropped: the finisher
+-- re-stamps the authoritative size where the object carries one
+-- (RSA public @CKA_MODULUS_BITS@, domain-parameter prime widths);
+-- DSA/DH key halves carry no size, so nothing is re-stamped there.
+-- Everything else carries over verbatim.
 pendingFromAttrs :: SessionState -> Map AttributeType AttributeValue -> PendingObject
 pendingFromAttrs st attrs = PendingObject
   { poAttrs = Map.delete AttrSubprimeBits (Map.delete AttrPrimeBits (Map.delete AttrModulusBits attrs))
