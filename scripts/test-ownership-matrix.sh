@@ -61,8 +61,8 @@ fail() {
 # excluded from its label set on purpose.
 # Patterns are tasty 1.5 awk expressions over the test path
 # ($1 = suite root, $2 = top group, $3 = subgroup). They must not
-# contain `|`. WP07-WP09 rows are appended by those packages as
-# `pending` until their fixtures exist.
+# contain `|`. Rows for later fixtures are appended as `pending`
+# until those fixtures exist.
 CASE_TABLE=$(cat <<'TABLE'
 m1-native-transfers|model|$2 == "Ownership" && $3 == "native ownership transfers"|11|active|gated-adoption-alloc,gated-adoption-load,gated-adoption-park,gated-copy-fault,gated-copy-park,gated-digest-alloc,gated-final-fault,gated-final-park,gated-init-alloc,gated-normal-zero,gated-pair-between
 m1-openssl4-engine|engine|$2 == "openssl4 engine"|70|active|no
@@ -75,13 +75,12 @@ m3-async-engine|engine|$2 == "Async engine"|25|active|caseasyncadmissionwidths,c
 m4-store-contract|storage|$2 == "store contract"|123|active|no
 m4-multi-session|storage|$2 == "Multi-session store"|34|active|no
 m5-attachment-claims|model|$2 == "Ownership" && $3 == "attachment claims"|5|active|claim-rival-refusal
-m5-detached-jobs|model|$2 == "Detached jobs"|35|active|interruption-after-start-retires-the-fresh-job,retire-rolls-a-racing-claim-back-the-join-cannot-commit
+m5-detached-jobs|model|$2 == "Detached jobs"|55|active|a-cancelled-parked-claim-frees-the-id-for-the-other-context,interruption-after-start-retires-the-fresh-job,retire-rolls-a-racing-claim-back-the-join-cannot-commit
 m5-scoped-detach-leases|model|$2 == "Scoped detach leases"|9|active|no
 m6-two-contexts-distinct-ids|model|$2 == "Detached jobs" && /two contexts on one store/|1|active|no
 m6-store-wide-counter|model|$2 == "Detached jobs" && /two tokens share the store-wide counter/|1|active|no
 m7-attached-async|model|$2 == "Attached async"|37|active|byte-budget-clears-suite-shaped-fills-with-headroom,byte-evicted-store-delivery-retry-cancel-semantics-unchanged,byte-retention-bound-n-max-size-digests-keep-bytes-within-budget,capped-store-delivery-retry-cancel-semantics-unchanged,reap-drops-tombstones-live-jobs-survive,retention-bound-n-delivered-digests-keep-at-most-cap-tombstones,sync-sessions-stay-synchronous-under-async-storm
 m7-retirement|model|$2 == "Ownership" && /retire/|5|active|no
-wp07-pending|model|-|0|pending|no
 wp08-pending|model|-|0|pending|no
 wp09-pending|model|-|0|pending|no
 TABLE

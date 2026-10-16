@@ -279,6 +279,7 @@ import Haskoki.Output (maxOutputBytes)
 import Haskoki.Registry.Generated (generatedInventory)
 import Haskoki.Registry.Types (MechanismId (..))
 import Haskoki.Request (OutputRegion (..))
+import Haskoki.Runtime.Attach (AsyncTableId (..))
 import Haskoki.Runtime.Lifecycle (Env, checkReservation, envRules, publish, snapshotModel)
 import Haskoki.Transition (finishEffect)
 import Haskoki.Types
@@ -593,18 +594,6 @@ stepJob ev st e = case ev of
   EvCancel -> case st of
     JobTerminal _ -> Left (JobReject ev st)
     _ -> Right (JobStep (JobTerminal TermCanceled, e + 1))
-
--- | Opaque process-local identity of one async job table,
--- minted uniquely per table. Job ids are table-local counters
--- (every fresh table starts at 0), so detached attachments key
--- their live bindings by @('AsyncTableId', 'JobId')@ instead of
--- the bare job id: two tables sharing a detach context never
--- confuse each other's job zero. The constructor is private —
--- identities come only from 'asyncTableId' — and values are
--- meaningless across processes (never persisted, never on the
--- wire; persistent job ids are unchanged).
-newtype AsyncTableId = AsyncTableId Int
-  deriving (Eq, Ord, Show)
 
 -- | The table allocator refused: the process already holds 2^32-1
 -- tables, so no distinct nonzero 32-bit salt remains for another

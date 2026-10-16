@@ -164,7 +164,7 @@ class DriverControls(unittest.TestCase):
         self.no_build()
 
     def test_pending_case_cannot_be_selected(self):
-        p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="wp07-pending")
+        p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="wp08-pending")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("pending", p.stdout + p.stderr)
         self.no_build()
@@ -340,9 +340,9 @@ class DriverControls(unittest.TestCase):
     def test_full_table_runs_every_nonpending_case_and_lists_pending(self):
         p = self.run_driver(FAKE_COUNTER=1)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("PENDING wp07-pending", p.stdout)
+        self.assertIn("PENDING wp08-pending", p.stdout)
         ids = {json.loads(r.read_text())["case"] for r in self.receipts()}
-        self.assertNotIn("wp07-pending", ids)
+        self.assertNotIn("wp08-pending", ids)
         self.assertEqual(len(self.receipts()), 3 * len(ids))
         self.assertTrue((self.out / "index.tsv").is_file())
 

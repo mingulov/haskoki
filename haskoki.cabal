@@ -189,9 +189,12 @@ library
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Trace
     Haskoki.PKCS11
-  -- Private provider-only OpenSSL 4 raw bindings (not a public API).
+  -- Private provider-only OpenSSL 4 raw bindings (not a public API),
+  -- and the private store-handle-owned detached-job claim authority
+  -- (keeps the AsyncTableId constructor out of the public API).
   other-modules:
     Haskoki.FFI.OpenSSL4.Raw
+    Haskoki.Runtime.Attach
   -- Narrow ossl4 shim, linked against the pinned static libcrypto
   -- at $OPENSSL4_PREFIX (/opt/openssl-4.0.2 in the image; bind-mount the
   -- staged prefix there when building outside the rebuilt image).
@@ -260,6 +263,7 @@ foreign-library haskoki
     Haskoki.FFI.Instance
     Haskoki.FFI.Types
     Haskoki.Runtime.Async
+    Haskoki.Runtime.Attach
     Haskoki.Runtime.Config
     Haskoki.Runtime.Control
     Haskoki.Runtime.Detached

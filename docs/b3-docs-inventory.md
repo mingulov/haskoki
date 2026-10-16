@@ -11,10 +11,10 @@ and the onboarding docs checked against the artifacts named in section 5.
 
 | Component | Visibility | Modules | Notes |
 |---|---|---:|---|
-| Main library, `exposed-modules` | public | 30 | `haskoki.cabal:160-190` |
-| Main library, `other-modules` | private | 1 | `Haskoki.FFI.OpenSSL4.Raw` (`haskoki.cabal:192-193`), provider-only bindings |
+| Main library, `exposed-modules` | public | 30 | `haskoki.cabal:161-191` |
+| Main library, `other-modules` | private | 2 | `Haskoki.FFI.OpenSSL4.Raw` (provider-only bindings) and `Haskoki.Runtime.Attach` (store-owned detached claim authority) (`haskoki.cabal:195-197`) |
 | `haskoki-core` | `private` component | 67 | `haskoki.cabal:78-156`; module list at `:81-148`; not the package public API |
-| Foreign library `haskoki`, `other-modules` | bundled, not imported | 25 | `haskoki.cabal:244-269`; compiled into `libhaskoki.so` |
+| Foreign library `haskoki`, `other-modules` | bundled, not imported | 27 | `haskoki.cabal:250-277`; compiled into `libhaskoki.so` |
 
 Main-library exposed set (30): `Haskoki`, `Haskoki.PKCS11`,
 `Haskoki.Engine.Backend`, `Haskoki.Engine.Driver`, `Haskoki.Engine.OpenSSL4`,
@@ -33,7 +33,7 @@ Library/flib divergence (for H3/V5; unexplained in-tree):
 
 | Fact | Detail |
 |---|---|
-| 7 library-exposed modules absent from the flib | `Haskoki`, `Haskoki.PKCS11`, `Haskoki.Ctl`, `Haskoki.Engine.Synthetic`, `Haskoki.FFI.KeyOutputs`, `Haskoki.FFI.MessageParams`, `Haskoki.Runtime` |
+| 6 library-exposed modules absent from the flib | `Haskoki`, `Haskoki.PKCS11`, `Haskoki.Ctl`, `Haskoki.Engine.Synthetic`, `Haskoki.FFI.KeyOutputs`, `Haskoki.Runtime` (`Haskoki.FFI.MessageParams` is bundled in the flib) |
 | `Engine.Synthetic` omission is consistent | `src/Haskoki/Engine/Driver.hs` imports `Haskoki.Engine.Backend` only, never `Synthetic`; synthetic stays test-only |
 | 1 flib-only module, absent from the library | `Haskoki.FFI.Types` (`ffi/Haskoki/FFI/Types.hsc:16`); zero in-tree `import` sites found by search over `src/`, `ffi/`, `app/`, `tests/`, `test/` |
 | `Haskoki` re-exports a core module | `src/Haskoki.hs:12-20` re-exports `Haskoki.Types` (a `haskoki-core` module) alongside `Haskoki.PKCS11` |
@@ -167,6 +167,6 @@ is fixed reason-side.
 | D1 | The facade explanation lives only in-source: `src/Haskoki/PKCS11.hs:3-9` plus per-function `Stub` notes already name the C serving path and unconditional failure, but nothing at the `Haskoki` re-export site points there | H3: one pointer sentence in the `src/Haskoki.hs` header or a deprecation marker; do not duplicate the existing header text |
 | D2 | Stale denials R4-R10 and planner-scope R1-R3 read as serving truth to anyone who opens `spec/function-contracts.json` without the planner-scope context | V5: reword the 7 stale denials to name the existing `std_` route, add serving context to the 3 planner-scope rows, and resolve the R11 code-name wording |
 | D3 | Meta item R0: `scope` disclaims C-table routing while reasons assert routing facts | V5: pick one level per field and pin it in the generator docstring |
-| D4 | 7 library-exposed modules missing from the flib, and flib-only `Haskoki.FFI.Types` with zero in-tree importers, are unexplained | H3: document which Haskell API (if any) external consumers should use |
+| D4 | 6 library-exposed modules missing from the flib, and flib-only `Haskoki.FFI.Types` with zero in-tree importers, are unexplained | H3: document which Haskell API (if any) external consumers should use |
 | D5 | Image-size figures in `try-it.md` cite CI runs that cannot be re-measured from the tree | V5: keep the run links adjacent to the figures (already the case); re-measure on publication |
 | D6 | `v0.3.1.0` tag/publication wording across README, `try-it.md`, and the 0.3.1.0 notes is time-sensitive | V5: refresh once after publication instead of patching per-branch |
