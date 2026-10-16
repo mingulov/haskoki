@@ -650,7 +650,12 @@ mintTableId = do
 -- close-admission gate @(live borrowers, close phase)@: export
 -- calls admitted through the context boundary hold one borrower
 -- each across the whole call, and close claims the gate and waits
--- the borrowers out before draining anything.
+-- the borrowers out before draining anything. The raw table
+-- methods ('startJob', 'pollJob', 'completeJob', 'cancelJob', and
+-- the rest) take no context admission, so their callers serialize
+-- use with destruction: hold a borrower across the call
+-- ('enterTableUse'\/'exitTableUse'), or bound the call by the
+-- owning context's lifetime.
 data AsyncTable = AsyncTable
   { atJobs :: !(TVar (Map JobId Job))
   , atNext :: !(TVar Int)

@@ -10,8 +10,9 @@
  *
  * Kind codes: 1 names a live owned context, 2 a live borrowed view
  * (admit-only, never teardown authority). A lookup reports 0 for an
- * absent key (never registered: a foreign value), 1 or 2 for a live
- * entry with its table root, and 3 for a tombstone (refuses without
+ * absent key (never registered: a foreign value, or a hook-only
+ * park), which refuses like a tombstone, 1 or 2 for a live entry
+ * with its table root, and 3 for a tombstone (refuses without
  * dereferencing; carries no table). A tombstone persists until its
  * pointer value is reused: the next owner re-registers over it.
  * Retiring also clears the entry hook in the same locked step, so a

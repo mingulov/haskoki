@@ -51,6 +51,23 @@ at 0). Admission and retirement run masked single atomic steps;
 resolution is a pure read. The registry path takes no locks, so
 it cannot invert with the per-job delivery leases — every job
 operation runs strictly after its resolution returns.
+
+Standalone ownership (caller-owned contexts and store boxes).
+Each standalone context and store box is owned by the caller
+that opened it and is closed explicitly ('haskokiAsyncClose',
+'haskokiAsyncStoreClose'). Close is cancellable at every
+blocking wait: a canceled close leaves the context owned by its
+slot in a closing state that admits nothing, and the next close
+through the slot resumes teardown where it stopped. A failed or
+canceled box close likewise keeps its slot until a retry closes
+for real. Callers close every context on a box — and join their
+calls — before closing the box, and never close one slot
+concurrently from two threads. The masked return of an open
+helper is the ownership transfer point: a Haskell caller that
+must not lose the pointer acquires under 'mask' (see
+'openAsyncCtxWith'). A Store no caller can receive is recovered
+by the next standalone open or close in the process; until then
+its lock stays held (see 'ResidueOwner').
 -}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -278,6 +295,10 @@ data AsyncCtx = AsyncCtx
 -- world or SQLite file) plus its detach state. Outlives every
 -- context opened on it; contexts come and go (finalize\/reinit,
 -- process exit\/reopen) while the box keeps the durable truth.
+-- Callers must close every context on a box (and join their calls)
+-- before closing the box, and never close one box slot
+-- concurrently from two threads: only a serialized box lifetime is
+-- supported.
 data StoreBox = StoreBox
   { sbStore :: !Store
   , sbDetach :: !DetachCtx
@@ -435,6 +456,14 @@ data CtxEntry
 -- drains taken roots below: a root frees only when its entry holds
 -- no borrow, every root is preserved until freed, and nothing
 -- stands retained past joined teardown.
+--
+-- Tests pin orphan-root freedom through the registration\/
+-- retirement balance plus the reclaim polls
+-- ('ctxPendingReclaims'\/'ctxReclaimStats', polled to balance by
+-- @awaitNoPendingReclaims@ and @awaitReclaimBalanced@ in
+-- @tests\/model\/FfiAsyncSpec.hs@): the balance covers
+-- record-side roots, the polls cover every queued root
+-- process-wide.
 foreign import ccall unsafe "haskoki_ctx_register"
   c_ctxRegister :: Ptr () -> CInt -> StablePtr AsyncTable -> IO ()
 
@@ -572,7 +601,9 @@ registerOwnedCtx sp table = mask_ $ do
 -- release. Overwrites that value's tombstone when the allocator
 -- reuses a freed pointer value, so a valid borrowed view on a
 -- recycled index admits while genuinely retired contexts stay
--- refused.
+-- refused. Borrowed Standard views are internal and serialized by
+-- the C state lock; concurrent direct borrowed-view use is not
+-- offered.
 registerBorrowedCtx :: StablePtr AsyncCtx -> AsyncTable -> IO ()
 registerBorrowedCtx sp table = mask_ $ do
   stable <- newStablePtr table
@@ -1312,16 +1343,23 @@ asyncOpenReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
 -- | Close a context through its handle slot: resolve the entry
 -- through the registry (no dereference before the claim), and on
 -- the winning claim wait out admitted borrowers, cancel every
--- live job exactly once, retire every live handle, shut the
+-- live job, retire every live handle, shut the
 -- backend, retire the entry to a tombstone, free the pointer,
--- and null the slot. The dereference runs only after the winning
--- claim, when no other thread can free the pointer — racing
--- closes never dereference. A racing second close through the
--- same slot claims nothing and returns without touching the
--- slot: the owner completes teardown and nulls it, so the
--- pointer frees exactly once. A kill past the borrower drain
--- leaves the table closing without a closer, and the next close
--- resumes teardown where it stopped. Closing a null slot is a
+-- and null the slot. The drain reruns idempotently, so a resumed
+-- close re-cancels before it retires. The dereference runs only
+-- after the winning claim, when no other thread can free the
+-- pointer — racing closes never dereference. A racing second
+-- close through the same slot claims nothing and returns without
+-- touching the slot: the owner completes teardown and nulls it,
+-- so the pointer frees exactly once. Close is cancellable at
+-- every blocking wait. A kill before teardown starts reopens the
+-- gate; a kill past the borrower drain leaves the context owned
+-- by its slot in a closing state that admits nothing, and the
+-- next close through the slot resumes teardown where it stopped.
+-- After killing a closer, join it — or loop until the slot is
+-- null — before retrying: a retry issued while the killed closer
+-- still unwinds claims nothing and returns silently with the
+-- slot set. Closing a null slot is a
 -- silent no-op, and closing a retired, borrowed, or
 -- never-registered value reclaims the slot without teardown
 -- (borrowed entries are released by their Standard owner, never
@@ -1375,8 +1413,9 @@ closeCtxSlotWith acq pSlot = do
 -- winning claim — retire this table's detach attachments (its
 -- active joins resolve canceled, durably; sibling contexts on
 -- the same store keep theirs), drain jobs and handles, shut the
--- backend. Only the winning claim drains; closes after teardown
--- are silent no-ops. The claim and the teardown run under one
+-- backend. Only a winning claim drains — a resumed claim wins
+-- again and drains too; a close that claims nothing is a silent
+-- no-op. The claim and the teardown run under one
 -- mask, so no kill can split the claim from the teardown
 -- ownership it installs. Value-level teardown only: a
 -- 'StablePtr' owner frees its own pointer separately. Exported
@@ -1406,7 +1445,11 @@ asyncCloseCtx ctx = mask_ $ do
 -- reclaim the slot while leaking the pointer. The re-register
 -- runs through the production step, never injected, so the throw
 -- arm stays total; a throwing tail step must report before
--- running its effect.
+-- running its effect. No canary test plants an exception between
+-- the tail steps: the transfer is one uninterruptible block with
+-- no interruptible operation inside, verified by construction,
+-- and the TEST-ONLY close step ('aaCloseStep') parks before it so
+-- the revert check covers the ordering.
 transferCtxClose
   :: AsyncTable -> Maybe (StablePtr AsyncCtx) -> IO () -> IO ()
 transferCtxClose table mSp after = uninterruptibleMask_ $
@@ -1425,8 +1468,13 @@ transferCtxClose table mSp after = uninterruptibleMask_ $
 -- reopens, past it the table stays closing without a closer, and a
 -- retrying close re-claims and completes. Every drain step is
 -- idempotent on re-run, and the backend close runs interruptibly,
--- so its gate wait is cancellable. Nothing here runs under an
--- uninterruptible mask: only the pointer transfer does.
+-- so its gate wait is cancellable. The drain runs
+-- masked-interruptible: the worker holds 'mask' across it, and
+-- both close callers hold 'mask_', so the restored sections
+-- deliver kills only at blocking waits (the quiescence wait, the
+-- Store lock wait, the job lease waits, the backend gate wait) —
+-- never between two non-blocking steps. Nothing here runs under
+-- an uninterruptible mask: only the pointer transfer does.
 closeClaimedCtx :: AsyncAcquisition -> AsyncCtx -> IO ()
 closeClaimedCtx acq ctx = mask $ \restore -> do
   restore (awaitTableQuiescent (acTable ctx))
@@ -1439,8 +1487,9 @@ closeClaimedCtx acq ctx = mask $ \restore -> do
 -- retire this table's detach attachments, drain its live jobs
 -- and handles, shut the backend. Runs only from
 -- 'closeClaimedCtx', after a successful quiescence wait and a
--- started teardown, interruptibly: a kill leaves every step
--- re-runnable, and the retry resumes them. The backend closes
+-- started teardown, masked-interruptibly (see 'closeClaimedCtx'):
+-- a kill lands at a blocking wait, leaves every step re-runnable,
+-- and the retry resumes them. The backend closes
 -- through the record.
 drainClaimedCtx :: AsyncAcquisition -> AsyncCtx -> IO ()
 drainClaimedCtx acq ctx = do
@@ -1456,10 +1505,13 @@ drainClaimedCtx acq ctx = do
     drainOne :: Ptr () -> IO ()
     drainOne key = do
       let h = castPtrToStablePtr key :: StablePtr JobHandle
-      -- Cancel-then-retire per key: the cancel lands first, so a
-      -- kill between the two leaves the job canceled but the key
-      -- live, and the retry re-cancels (idempotent) before it
-      -- retires. The job id comes from the pure key decode —
+      -- Cancel-then-retire per key: the cancel lands first, so the
+      -- retry order stays valid — a kill between the two would leave
+      -- the job canceled but the key live, and the retry re-cancels
+      -- (idempotent) before it retires. No interruptible point sits
+      -- between the two steps, so under the masked drain the window
+      -- never opens; the order is the standing idempotence argument.
+      -- The job id comes from the pure key decode —
       -- nothing is dereferenced — and the retirement is an
       -- idempotent delete, so a racing terminal path simply wins
       -- or loses it.
@@ -1909,7 +1961,10 @@ ensureHomeToken store = do
 -- | Close a store through its handle slot: release single-writer
 -- ownership, free the pointer, and null the slot. Idempotent by
 -- construction, like context close. A failed or killed close keeps
--- the slot and the pointer, and a retry closes for real.
+-- the slot and the pointer, and a retry closes for real. Close
+-- every context on the box — and join their calls — before
+-- closing the box, and never close one slot concurrently from two
+-- threads: only a serialized box lifetime is supported.
 haskokiAsyncStoreClose :: Ptr (StablePtr StoreBox) -> IO ()
 haskokiAsyncStoreClose pSlot =
   guardedUnit (closeStoreBoxSlotWith asyncAcquisition pSlot)
@@ -1917,7 +1972,10 @@ haskokiAsyncStoreClose pSlot =
 -- | The one store-box close transfer: free the box pointer, then
 -- null the slot. Neither step blocks, so the transfer runs
 -- uninterruptibly: no kill can split the freed box from its nulled
--- slot.
+-- slot. No canary test plants an exception between the two steps:
+-- the transfer is one uninterruptible block, verified by
+-- construction, and the TEST-ONLY close step ('aaCloseStep') parks
+-- before it so the revert check covers the ordering.
 transferBoxClose
   :: AsyncAcquisition -> StablePtr StoreBox -> Ptr (StablePtr StoreBox) -> IO ()
 transferBoxClose acq box pSlot =
