@@ -385,6 +385,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "RSA exponent plans, agrees and refuses" caseRsaExponentPlanner
   , testCase "RSA stamping refuses mismatched halves" caseRsaStampMismatch
   , testCase "EC stamping lands CKA_EC_POINT" caseEcPointStamped
+  , testCase "EC stamping copies params onto opaque bare half" caseEcOpaqueBareCopy
   , testCase "EC planner refuses disagreeing curve parameters" caseEcParamsDisagree
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
   , testCase "AES-KW wrap/unwrap roundtrips with +8 expansion" caseAesKwWrapRoundtrip
@@ -3052,6 +3053,23 @@ caseEcPointStamped = do
   -- EC_POINT, no rejection.
   assertEqual "opaque passthrough" (Just (ecPub, ecPriv))
     (stampPairComponents ecPub ecPriv "pub" "priv")
+
+caseEcOpaqueBareCopy :: IO ()
+caseEcOpaqueBareCopy = do
+  m0 <- seedModel
+  st <- getSession m0
+  let ecPub = pendingFromAttrs st (Map.fromList ecPubTmpl)
+      barePriv = pendingFromAttrs st (Map.delete AttrEcParams (Map.fromList ecPrivTmpl))
+  -- Opaque halves with a bare private template: the
+  -- template-derived copy still lands CKA_EC_PARAMS on the
+  -- private half, without stamping CKA_EC_POINT on it.
+  case stampPairComponents ecPub barePriv "pub" "priv" of
+    Just (_, priv') -> do
+      assertEqual "opaque bare priv inherits params"
+        (Just (ValBytes "P-256")) (Map.lookup AttrEcParams (poAttrs priv'))
+      assertEqual "no EC_POINT on opaque bare priv"
+        Nothing (Map.lookup AttrEcPoint (poAttrs priv'))
+    Nothing -> assertFailure "opaque halves must pass through"
 
 caseEcParamsDisagree :: IO ()
 caseEcParamsDisagree = withSynth $ \answer -> do

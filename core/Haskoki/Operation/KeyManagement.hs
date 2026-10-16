@@ -1518,15 +1518,16 @@ storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAtt
 -- without @CKA_EC_POINT@ rather than rejecting. Halves that
 -- disagree on the curve never reach the stamp: the planner
 -- ('ecCurveOf') refuses them before generation, and equal values
--- pass through. An Edwards pair
--- stamps the raw @CKA_EC_POINT@ on the public half and the
--- agreed engine curve name as @CKA_EC_PARAMS@ on the private
--- half (whose template lacks it); disagreeing or opaque halves
--- pass through unstamped. A Montgomery pair stamps the same way
--- (the raw u-coordinate point, the agreed curve name). An ML-DSA
--- pair stamps the @CKA_SEED@
--- on the private half (parsed from the PKCS#8 half, whose seed
--- the planner cannot know; the set rides both halves from the
+-- pass through.
+-- An Edwards pair stamps the raw @CKA_EC_POINT@ on the public
+-- half and the agreed engine curve name as @CKA_EC_PARAMS@ on
+-- the private half (whose template lacks it); disagreeing or
+-- opaque halves pass through unstamped.
+-- A Montgomery pair stamps the same way (the raw u-coordinate
+-- point, the agreed curve name).
+-- An ML-DSA pair stamps the @CKA_SEED@ on the private half
+-- (parsed from the PKCS#8 half, whose seed the planner
+-- cannot know; the set rides both halves from the planner
 -- planner tag, and @AttrValue@ keeps the DER halves via
 -- 'storeMaterial' as for every asymmetric family — reads serve
 -- DER as @CKA_VALUE@, the codebase-wide convention);
