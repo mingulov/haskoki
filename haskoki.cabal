@@ -62,6 +62,8 @@ extra-source-files:
   tests/journeys/java/*.java
   tests/journeys/keystore/*.toml
   tests/journeys/keystore/*.cfg
+  tests/journeys/keystore/*.txt
+  tests/journeys/keystore/changed/*.txt
   tests/journeys/native/*.c
   tests/journeys/native/*.toml
   tests/journeys/opensc/*.toml

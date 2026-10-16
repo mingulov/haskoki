@@ -55,6 +55,7 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1101,39 +1102,49 @@ def probe_setup_note(argv_raw, ctx):
     return None
 
 
+PROVIDER_CFGS = (
+    ("sunpkcs11/sunpkcs11.cfg", "cfg/sunpkcs11.cfg"),
+    ("keystore/sunpkcs11-keystore.cfg", "cfg/sunpkcs11-keystore.cfg"),
+    ("keystore/sunpkcs11-wrong-slot.cfg",
+     "cfg/sunpkcs11-wrong-slot.cfg"),
+)
+
+
 def ensure_provider_cfg(run_dir, ctx):
-    """Write the substituted provider cfg for Java legs.
+    """Write the substituted provider cfgs for Java legs.
 
     The Java probe run template points at cfg/sunpkcs11.cfg under the
-    run root; the bytes come from the committed template with the
-    module path substituted. A missing template (synthetic source
-    roots in controls) means nothing to write.
+    run root, and the KeyStore legs at the two keystore cfgs; the
+    bytes come from the committed templates with the module path
+    substituted. A missing template (synthetic source roots in
+    controls) means nothing to write for that file.
     """
     src_root = ctx.get("src_root")
     if src_root is None:
         return
-    template = (Path(src_root) / "tests" / "journeys" / "sunpkcs11"
-                / "sunpkcs11.cfg")
-    try:
-        exists = template.is_file()
-    except OSError:
-        return
-    if not exists:
-        return
-    try:
-        text = template.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise SetupRefusal(f"provider template unreadable: {exc}")
-    text = substitute_text(text, {"@MODULE@": ctx["module_path"]})
-    out = run_dir / "cfg" / "sunpkcs11.cfg"
-    try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise SetupRefusal(f"cannot create cfg dir: {exc}")
-    try:
-        out.write_text(text, encoding="utf-8")
-    except OSError as exc:
-        raise SetupRefusal(f"cannot write provider cfg: {exc}")
+    for template_rel, out_rel in PROVIDER_CFGS:
+        template = (Path(src_root) / "tests" / "journeys"
+                    / template_rel)
+        try:
+            exists = template.is_file()
+        except OSError:
+            return
+        if not exists:
+            continue
+        try:
+            text = template.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SetupRefusal(f"provider template unreadable: {exc}")
+        text = substitute_text(text, {"@MODULE@": ctx["module_path"]})
+        out = run_dir / out_rel
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise SetupRefusal(f"cannot create cfg dir: {exc}")
+        try:
+            out.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            raise SetupRefusal(f"cannot write provider cfg: {exc}")
 
 
 def run_one_leg(run_dir, row, profile_rows, clients, ctx):
@@ -2351,6 +2362,255 @@ def cmd_store_owned_refusal(args):
     return 0
 
 
+def _tool_argv_or_fail(tool_argv, tag):
+    """The tool argv after one leading separator, or None with a line."""
+    argv = list(tool_argv or [])
+    if argv[:1] == ["--"]:
+        argv.pop(0)
+    if not argv:
+        print(f"{tag}-FAIL: no tool argv")
+        return None
+    return argv
+
+
+def _run_tool(argv, tag, stage, capture=False, cwd=None):
+    """Run one argv; return (returncode, combined text) or (None, text).
+
+    Output passes through to the leg log unless captured; a missing
+    tool is (None, reason), never a pass.
+    """
+    try:
+        if capture:
+            proc = subprocess.run(argv, capture_output=True,
+                                  text=True, errors="replace",
+                                  cwd=cwd)
+            return proc.returncode, ((proc.stdout or "")
+                                     + (proc.stderr or ""))
+        proc = subprocess.run(argv, cwd=cwd)
+        return proc.returncode, ""
+    except OSError as exc:
+        return None, f"{tag}-FAIL: cannot run {stage}: {exc}"
+
+
+def _jar_signature_names(tag, jar_path):
+    """The single (SF, EC) pair from `jar tf`, or (None, reason)."""
+    if shutil.which("jar") is None:
+        return None, f"{tag}-FAIL: jar tool missing"
+    rc, listing = _run_tool(["jar", "tf", str(jar_path)], tag,
+                            "jar tf", capture=True)
+    if rc is None:
+        return None, listing
+    if rc != 0:
+        return None, (f"{tag}-FAIL: jar tf exit {rc} "
+                      f"stage=list")
+    sfs = [line for line in listing.splitlines()
+           if line.startswith("META-INF/") and line.endswith(".SF")
+           and "/" not in line[len("META-INF/"):]]
+    ecs = [line for line in listing.splitlines()
+           if line.startswith("META-INF/") and line.endswith(".EC")
+           and "/" not in line[len("META-INF/"):]]
+    if len(sfs) != 1 or len(ecs) != 1:
+        return None, (f"{tag}-FAIL: want one META-INF signature "
+                      f"file and one block, saw {len(sfs)} SF "
+                      f"and {len(ecs)} EC stage=list")
+    if sfs[0][:-len(".SF")] != ecs[0][:-len(".EC")]:
+        return None, (f"{tag}-FAIL: signature stems differ: "
+                      f"{sfs[0]} vs {ecs[0]} stage=list")
+    return (sfs[0], ecs[0]), ""
+
+
+def _jar_cms_core(tag, run_dir, jar_rel, ca_rel, sig_rel):
+    """Verify a jar signature block with openssl cms.
+
+    Lists the jar, extracts the single META-INF SF/EC pair into the
+    sig dir, and verifies the block against the run CA. The openssl
+    output passes through to the leg log. Returns True only when
+    every step succeeds; prints one stage line per step.
+    """
+    run_dir = Path(run_dir)
+    if not is_run_relative(jar_rel) or not is_run_relative(ca_rel) \
+            or not is_run_relative(sig_rel):
+        print(f"{tag}-FAIL: path is not run-relative: "
+              f"{jar_rel} {ca_rel} {sig_rel}")
+        return False
+    jar_path = run_dir / jar_rel
+    ca_path = run_dir / ca_rel
+    sig_dir = run_dir / sig_rel
+    if not jar_path.is_file():
+        print(f"{tag}-FAIL: jar missing: {jar_rel} stage=list")
+        return False
+    if not ca_path.is_file():
+        print(f"{tag}-FAIL: ca missing: {ca_rel} stage=cms")
+        return False
+    names, reason = _jar_signature_names(tag, jar_path)
+    if names is None:
+        print(reason)
+        return False
+    sfn, ecn = names
+    print(f"{tag} sig={sfn} block={ecn} stage=list", flush=True)
+    try:
+        sig_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"{tag}-FAIL: cannot create {sig_rel}: {exc}")
+        return False
+    rc, reason = _run_tool(["jar", "xf", str(jar_path), sfn, ecn],
+                           tag, "jar xf", cwd=str(sig_dir))
+    if rc is None:
+        print(reason)
+        return False
+    if rc != 0:
+        print(f"{tag}-FAIL: jar xf exit {rc} stage=extract")
+        return False
+    print(f"{tag} extracted stage=extract", flush=True)
+    if shutil.which("openssl") is None:
+        print(f"{tag}-FAIL: openssl tool missing")
+        return False
+    rc, reason = _run_tool(
+        ["openssl", "cms", "-verify", "-inform", "DER",
+         "-in", str(sig_dir / ecn), "-content", str(sig_dir / sfn),
+         "-binary", "-CAfile", str(ca_path), "-purpose", "any",
+         "-out", os.devnull],
+        tag, "openssl cms -verify")
+    if rc is None:
+        print(reason)
+        return False
+    if rc != 0:
+        print(f"{tag}-FAIL: openssl cms exit {rc} stage=cms")
+        return False
+    print(f"{tag} cms verified stage=cms", flush=True)
+    return True
+
+
+def cmd_jar_cms_verify(args):
+    """Verify a jar signature block outside the JDK (openssl cms).
+
+    Prints JOURNEY-JAR-INDEPENDENT-VERIFIED with the openssl marker
+    when every step succeeds; any failed step prints
+    JOURNEY-JAR-FAIL and exits 1.
+    """
+    ok = _jar_cms_core("JOURNEY-JAR", args.run, args.jar, args.ca,
+                       args.sig_dir)
+    if not ok:
+        return 1
+    print("JOURNEY-JAR-INDEPENDENT-VERIFIED")
+    return 0
+
+
+def cmd_jar_tamper(args):
+    """Tamper a signed jar copy, then require verify to refuse it.
+
+    Copies the signed jar, replaces the payload with the changed
+    bytes via `jar uf`, and runs the verify argv (whose output passes
+    through). Prints JOURNEY-TAMPER-DETECTED and exits 0 only when
+    the setup steps succeed and verification refuses; a verified
+    tampered jar or any failed step prints JOURNEY-TAMPER-FAIL and
+    exits 1.
+    """
+    tag = "JOURNEY-TAMPER"
+    verify_argv = _tool_argv_or_fail(args.tool_argv, tag)
+    if verify_argv is None:
+        return 1
+    run_dir = Path(args.run)
+    if not is_run_relative(args.signed) \
+            or not is_run_relative(args.tampered):
+        print(f"{tag}-FAIL: jar path is not run-relative: "
+              f"{args.signed} {args.tampered}")
+        return 1
+    signed = run_dir / args.signed
+    tampered = run_dir / args.tampered
+    try:
+        blob = signed.read_bytes()
+    except OSError as exc:
+        print(f"{tag}-FAIL: cannot read {args.signed}: {exc}")
+        return 1
+    try:
+        tampered.parent.mkdir(parents=True, exist_ok=True)
+        tampered.write_bytes(blob)
+    except OSError as exc:
+        print(f"{tag}-FAIL: cannot stage {args.tampered}: {exc}")
+        return 1
+    print(f"{tag} staged {args.tampered} ({len(blob)} bytes) "
+          "stage=copy", flush=True)
+    if shutil.which("jar") is None:
+        print(f"{tag}-FAIL: jar tool missing")
+        return 1
+    rc, reason = _run_tool(["jar", "uf", str(tampered), "-C",
+                            args.payload_dir, "payload.txt"],
+                           tag, "jar uf")
+    if rc is None:
+        print(reason)
+        return 1
+    if rc != 0:
+        print(f"{tag}-FAIL: jar uf exit {rc} stage=tamper")
+        return 1
+    print(f"{tag} payload replaced stage=tamper", flush=True)
+    rc, reason = _run_tool(verify_argv, tag, "jarsigner -verify")
+    if rc is None:
+        print(reason)
+        return 1
+    if rc == 0:
+        print(f"{tag}-FAIL: tampered jar verified "
+              "stage=verify")
+        return 1
+    print(f"{tag} verify refused exit={rc} stage=verify",
+          flush=True)
+    print("JOURNEY-TAMPER-DETECTED")
+    return 0
+
+
+def cmd_mismatch_refusal(args):
+    """Sign with a mismatched alias; no step may verify a signature.
+
+    Runs the sign argv (whose output passes through). A refused sign
+    ends the leg. When the sign succeeds, jarsigner must refuse the
+    result and the openssl cms check over the extracted signature
+    block must fail too. Prints JOURNEY-NO-VERIFIED-SIGNATURE with
+    the deciding stage and exits 0 when no step yields a verified
+    signature; a verified signature anywhere prints
+    JOURNEY-MISMATCH-VERIFIED-UNEXPECTED and exits 1.
+    """
+    tag = "JOURNEY-MISMATCH"
+    sign_argv = _tool_argv_or_fail(args.tool_argv, tag)
+    if sign_argv is None:
+        return 1
+    run_dir = Path(args.run)
+    if not is_run_relative(args.signed):
+        print(f"{tag}-FAIL: signed path is not run-relative: "
+              f"{args.signed}")
+        return 1
+    rc, reason = _run_tool(sign_argv, tag, "jarsigner sign")
+    if rc is None:
+        print(reason)
+        return 1
+    if rc != 0:
+        print(f"{tag} sign exit={rc} stage=sign", flush=True)
+        print("JOURNEY-NO-VERIFIED-SIGNATURE stage=sign")
+        return 0
+    print(f"{tag} sign exit=0 stage=sign", flush=True)
+    if shutil.which("jarsigner") is None:
+        print(f"{tag}-FAIL: jarsigner tool missing")
+        return 1
+    rc, output = _run_tool(
+        ["jarsigner", "-verify", str(run_dir / args.signed)],
+        tag, "jarsigner -verify", capture=True)
+    if rc is None:
+        print(output)
+        return 1
+    sys.stdout.write(output)
+    sys.stdout.flush()
+    verified = "jar verified." in output
+    print(f"{tag} verify exit={rc} verified={verified} "
+          "stage=verify", flush=True)
+    cms_ok = _jar_cms_core(tag, run_dir, args.signed, args.ca,
+                           args.sig_dir)
+    if not verified and not cms_ok:
+        print("JOURNEY-NO-VERIFIED-SIGNATURE stage=verify")
+        return 0
+    print("JOURNEY-MISMATCH-VERIFIED-UNEXPECTED "
+          f"verified={verified} cms={cms_ok} stage=verify")
+    return 1
+
+
 # ------------------------------------------------------------------
 # Self-test: a synthetic five-leg fixture run plus one mutation per
 # rule, plus live run-path checks over tiny synthetic legs, bundles
@@ -2446,6 +2706,13 @@ FIXTURE_LEGS = {
             "package_version": "3.5.5-1ubuntu3.7",
             "runtime_argv": ["openssl", "version"],
             "runtime_version": "OpenSSL 3.5.5",
+        },
+        "java": {
+            "package": "default-jdk-headless",
+            "package_version": "2:1.25-77",
+            "runtime_argv": ["java", "-version"],
+            "runtime_version": "25.0.4.1",
+            "compile_target": "17",
         },
         "runner": {
             "package": None,
@@ -2574,6 +2841,10 @@ FIXTURE_CLIENTS = {
                 "package_version": "3.5.5-1ubuntu3.7",
                 "runtime_version": "OpenSSL 3.5.5",
                 "compile_target": None},
+    "java": {"name": "java", "package": "default-jdk-headless",
+             "package_version": "2:1.25-77",
+             "runtime_version": "25.0.4.1",
+             "compile_target": "17"},
     "runner": {"name": "runner", "package": None,
                "package_version": None, "runtime_version": None,
                "compile_target": None},
@@ -3205,6 +3476,77 @@ def mut_decrypt_output_differs(root):
                             "out/message.txt": b"m" * 42})
 
 
+def mut_unsigned_jar_verify_passes(root):
+    row = {
+        "name": "java-keystore-verify",
+        "profiles": ["portfolio"],
+        "phase": "verifier",
+        "client": "java",
+        "argv": ["jarsigner", "-verify", "@RUN@/out/app-signed.jar"],
+        "env": {},
+        "timeout_seconds": 60,
+        "expect": {"exit": 0,
+                   "markers": ["jar verified."],
+                   "absent_markers": ["jar is unsigned."]},
+        "depends_on": [],
+    }
+    log = "jar is unsigned.\n"
+    append_named_leg(root, row, log, 0, "fail")
+
+
+def mut_mismatch_verified_signature(root):
+    row = {
+        "name": "java-keystore-refuse-mismatched",
+        "profiles": ["portfolio"],
+        "phase": "module",
+        "client": "java",
+        "store": "keystore-store",
+        "argv": ["python3", "@SRC@/tests/journeys/journeys.py",
+                 "mismatch-refusal"],
+        "env": {},
+        "timeout_seconds": 60,
+        "expect": {"exit": 0, "markers": []},
+        "expect_refusal": {
+            "markers": ["JOURNEY-NO-VERIFIED-SIGNATURE"]},
+        "depends_on": [],
+    }
+    log = ("JOURNEY-MISMATCH sign exit=0 stage=sign\n"
+           "jar verified.\n"
+           "JOURNEY-MISMATCH-VERIFIED-UNEXPECTED stage=verify\n")
+    append_named_leg(root, row, log, 1, "fail")
+
+
+def mut_wrong_alias_changed_jar(root):
+    row = {
+        "name": "java-keystore-refuse-alias",
+        "profiles": ["portfolio"],
+        "phase": "module",
+        "client": "java",
+        "store": "keystore-store",
+        "argv": ["jarsigner", "@RUN@/out/app.jar", "no-such-alias"],
+        "env": {},
+        "timeout_seconds": 60,
+        "expect": {"exit": 1,
+                   "markers": ["Certificate chain not found for: "
+                               "no-such-alias"],
+                   "files": [{"path": "out/alias.jar",
+                              "op": "absent"}]},
+        "unchanged": "out/app.jar",
+        "depends_on": [],
+    }
+    log = ("jarsigner: Certificate chain not found for: "
+           "no-such-alias.\n")
+    append_named_leg(root, row, log, 1, "fail")
+
+    def update(record):
+        record["unchanged"] = {
+            "path": "out/app.jar",
+            "sha256_before": hashlib.sha256(b"jar-before").hexdigest(),
+            "sha256_after": hashlib.sha256(b"jar-after").hexdigest(),
+        }
+    mutate_record(root, "java-keystore-refuse-alias", update)
+
+
 SELF_TEST_CASES = [
     ("clean run", set(), None,
      (0, "JOURNEYS: PASS 5/5", None)),
@@ -3311,6 +3653,13 @@ SELF_TEST_CASES = [
      mut_native_expects_general_error, None),
     ("decrypt output differs from the staged plaintext",
      {JR_FILE}, mut_decrypt_output_differs, None),
+    ("unsigned jar verify passes on exit 0 alone",
+     {JR_MARKER}, mut_unsigned_jar_verify_passes, None),
+    ("mismatched alias produced a verified signature",
+     {JR_EXIT, JR_REFUSAL_UNREACHED},
+     mut_mismatch_verified_signature, None),
+    ("wrong alias changed the jar",
+     {JR_UNCHANGED}, mut_wrong_alias_changed_jar, None),
 ]
 
 
@@ -3390,6 +3739,8 @@ def structural_checks():
            validate_legs_table(committed))
     yield ("committed table carries the busy-split rows",
            committed_busy_rows_problems(committed))
+    yield ("committed table carries the application rows",
+           committed_application_rows_problems(committed))
 
 
 def committed_busy_rows_problems(table):
@@ -3427,6 +3778,119 @@ def committed_busy_rows_problems(table):
             for entry in files):
         return [(RUN_LEG,
                  "committed opensc-decrypt lacks an equal assertion")]
+    return []
+
+
+APPLICATION_ROWS = (
+    "gnutls-discovery",
+    "gnutls-list-key",
+    "gnutls-test-sign",
+    "gnutls-test-sign-by-id",
+    "gnutls-refuse-wrong-pin",
+    "gnutls-list-after-refusal",
+    "gnutls-refuse-unknown-url",
+    "gnutls-refuse-wrong-token",
+    "java-probe-compile",
+    "java-connect-sign",
+    "java-refuse-wrong-pin",
+    "keystore-create-key",
+    "keystore-export-pubkey",
+    "keystore-issue-cert",
+    "keystore-write-cert",
+    "keystore-read-cert",
+    "keystore-spki-match",
+    "java-keystore-refuse-pin",
+    "java-keystore-list",
+    "java-keystore-refuse-token",
+    "keystore-make-jar",
+    "java-keystore-sign",
+    "java-keystore-verify",
+    "java-keystore-verify-independent",
+    "java-keystore-tamper",
+    "java-keystore-refuse-alias",
+    "keystore-mismatch-create",
+    "keystore-mismatch-export-pubkey",
+    "keystore-mismatch-write-cert",
+    "keystore-mismatch-spki",
+    "java-keystore-refuse-mismatched",
+)
+
+
+def committed_application_rows_problems(table):
+    """Problems when the committed rows miss the application shapes.
+
+    Every GnuTLS, Java probe and KeyStore row is portfolio-only; the
+    two test-sign legs and the probe sign leg verify in-leg; the
+    application sign leg names its independent verifier; the wrong
+    alias leg guards the jar bytes and the alias output; the mismatch
+    control refuses with its marker; the three setup legs are
+    module-phase setup rows. Subset assertions: later rows never
+    disturb them.
+    """
+    rows = table.get("legs")
+    if not isinstance(rows, list):
+        return [(RUN_LEG, "committed legs is not a list")]
+    by_name = {row.get("name"): row for row in rows
+               if isinstance(row, dict)}
+    for name in APPLICATION_ROWS:
+        row = by_name.get(name)
+        if not isinstance(row, dict):
+            return [(RUN_LEG, f"committed table lacks {name}")]
+        if row.get("profiles") != ["portfolio"]:
+            return [(RUN_LEG,
+                     f"committed {name} is not portfolio-only")]
+    for name in ("gnutls-test-sign", "gnutls-test-sign-by-id",
+                 "java-connect-sign"):
+        row = by_name[name]
+        if row.get("verification") != "in-leg":
+            return [(RUN_LEG,
+                     f"committed {name} lacks in-leg verification")]
+        if not isinstance(row.get("verification_marker"), str) \
+                or not row.get("verification_marker"):
+            return [(RUN_LEG,
+                     f"committed {name} lacks a verification marker")]
+    row = by_name["java-keystore-sign"]
+    if row.get("requires_verification") != \
+            "java-keystore-verify-independent":
+        return [(RUN_LEG,
+                 "committed java-keystore-sign lacks its verifier")]
+    row = by_name["java-keystore-refuse-alias"]
+    if row.get("unchanged") != "out/app.jar":
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-alias lacks "
+                 "its unchanged jar")]
+    expect = row.get("expect")
+    files = expect.get("files") if isinstance(expect, dict) else None
+    if not isinstance(files, list) or not any(
+            isinstance(entry, dict) and entry.get("op") == "absent"
+            and entry.get("path") == "out/alias.jar"
+            for entry in files):
+        return [(RUN_LEG,
+                 "committed java-keystore-refuse-alias lacks "
+                 "its absent alias jar")]
+    row = by_name["keystore-mismatch-spki"]
+    if not isinstance(row.get("expect"), dict) \
+            or row["expect"].get("exit") != 1:
+        return [(RUN_LEG,
+                 "committed keystore-mismatch-spki lacks exit 1")]
+    refusal = row.get("expect_refusal")
+    if not isinstance(refusal, dict) \
+            or refusal.get("markers") != ["SPKI-MISMATCH"]:
+        return [(RUN_LEG,
+                 "committed keystore-mismatch-spki lacks "
+                 "its refusal marker")]
+    for name in ("keystore-issue-cert", "keystore-make-jar",
+                 "java-probe-compile"):
+        row = by_name[name]
+        if row.get("phase") != "module" \
+                or row.get("classification") != "setup":
+            return [(RUN_LEG,
+                     f"committed {name} is not a module setup leg")]
+    if by_name["java-keystore-verify-independent"].get("phase") != \
+            "verifier":
+        return [(RUN_LEG,
+                 "committed java-keystore-verify-independent "
+                 "is not a verifier leg")]
     return []
 
 
@@ -4336,6 +4800,342 @@ def check_issue_cert(tmp):
     return None
 
 
+def helper_cli_env(argv, env, timeout=120):
+    """Run this engine's CLI over argv with an explicit environment."""
+    return subprocess.run(
+        [sys.executable, "-I", str(Path(__file__).resolve()),
+         *argv],
+        capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def _stub_env(tmp, stubs, inherit=True):
+    """Write stub tools under tmp/bin; return (bin, env) for helpers."""
+    tmp = Path(tmp)
+    bindir = tmp / "bin"
+    try:
+        bindir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return None, f"cannot create the stub dir: {exc}"
+    for name, text in stubs.items():
+        try:
+            (bindir / name).write_text(text, encoding="utf-8")
+            (bindir / name).chmod(0o755)
+        except OSError as exc:
+            return None, f"cannot write stub {name}: {exc}"
+    env = dict(os.environ)
+    if inherit:
+        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+    else:
+        env["PATH"] = str(bindir)
+    return env, None
+
+
+STUB_JAR_LISTING = (
+    "#!/bin/sh\n"
+    "set -eu\n"
+    "if [ \"$1\" = \"tf\" ]; then\n"
+    "  printf 'META-INF/MANIFEST.MF\\n"
+    "META-INF/APP-KEY.SF\\nMETA-INF/APP-KEY.EC\\npayload.txt\\n'\n"
+    "elif [ \"$1\" = \"xf\" ]; then\n"
+    "  mkdir -p META-INF\n"
+    "  printf 'stub-sf' > META-INF/APP-KEY.SF\n"
+    "  printf 'stub-ec' > META-INF/APP-KEY.EC\n"
+    "elif [ \"$1\" = \"uf\" ]; then\n"
+    "  exit 0\n"
+    "else\n"
+    "  echo \"stub jar: unknown $1\" >&2\n"
+    "  exit 2\n"
+    "fi\n")
+
+STUB_OPENSSL_OK = (
+    "#!/bin/sh\n"
+    "set -eu\n"
+    "if [ \"$1\" = \"cms\" ]; then\n"
+    "  echo 'CMS Verification successful'\n"
+    "else\n"
+    "  echo \"stub openssl: unknown $1\" >&2\n"
+    "  exit 2\n"
+    "fi\n")
+
+STUB_OPENSSL_FAIL = "#!/bin/sh\necho 'CMS Verification failure' >&2\nexit 1\n"
+
+
+def check_jar_cms_verify(tmp):
+    tmp = Path(tmp)
+    run = tmp / "run"
+    try:
+        (run / "out").mkdir(parents=True)
+        (run / "ca").mkdir(parents=True)
+        (run / "out" / "app-signed.jar").write_bytes(b"fake-jar")
+        (run / "ca" / "ca.pem").write_bytes(b"fake-ca")
+    except OSError as exc:
+        return f"cannot stage the run files: {exc}"
+
+    def attempt(stubs, inherit=True):
+        env, problem = _stub_env(tmp / f"env-{attempt.count}",
+                                 stubs, inherit)
+        attempt.count += 1
+        if problem is not None:
+            return None, problem
+        proc = helper_cli_env(
+            ["jar-cms-verify", "--run", str(run),
+             "--jar", "out/app-signed.jar", "--ca", "ca/ca.pem",
+             "--sig-dir", f"sig-{attempt.count}"], env)
+        combined = ((proc.stdout or "") + "\n"
+                    + (proc.stderr or "")).strip()
+        return proc.returncode, combined
+    attempt.count = 0
+
+    rc, combined = attempt({"jar": STUB_JAR_LISTING,
+                            "openssl": STUB_OPENSSL_OK})
+    if rc is None:
+        return combined
+    if rc != 0:
+        return (f"jar-cms-verify exited {rc}: {combined[:200]}")
+    for marker in ("CMS Verification successful",
+                   "JOURNEY-JAR-INDEPENDENT-VERIFIED"):
+        if marker not in combined:
+            return f"jar-cms-verify lacks {marker}"
+    try:
+        blob = (run / "sig-1" / "META-INF" / "APP-KEY.EC").read_bytes()
+    except OSError as exc:
+        return f"extracted signature block unreadable: {exc}"
+    if blob != b"stub-ec":
+        return "extracted signature block holds the wrong bytes"
+    rc, _combined = attempt({"jar": STUB_JAR_LISTING,
+                             "openssl": STUB_OPENSSL_FAIL})
+    if rc is None:
+        return _combined
+    if rc == 0:
+        return "jar-cms-verify passed when cms verification failed"
+    rc, _combined = attempt({"jar": "#!/bin/sh\nexit 1\n",
+                             "openssl": STUB_OPENSSL_OK})
+    if rc is None:
+        return _combined
+    if rc == 0:
+        return "jar-cms-verify passed when the jar listing failed"
+    rc, _combined = attempt({"jar": STUB_JAR_LISTING}, inherit=False)
+    if rc is None:
+        return _combined
+    if rc == 0:
+        return "jar-cms-verify passed with openssl missing"
+    two_sf = STUB_JAR_LISTING.replace(
+        "META-INF/APP-KEY.SF\\n",
+        "META-INF/APP-KEY.SF\\nMETA-INF/OTHER.SF\\n")
+    rc, _combined = attempt({"jar": two_sf,
+                             "openssl": STUB_OPENSSL_OK})
+    if rc is None:
+        return _combined
+    if rc == 0:
+        return "jar-cms-verify passed with two signature files"
+    return None
+
+
+def check_jar_tamper(tmp):
+    tmp = Path(tmp)
+    run = tmp / "run"
+    changed = tmp / "changed"
+    try:
+        (run / "out").mkdir(parents=True)
+        changed.mkdir(parents=True)
+        (run / "out" / "app-signed.jar").write_bytes(b"signed-jar")
+        (changed / "payload.txt").write_bytes(b"changed-bytes")
+    except OSError as exc:
+        return f"cannot stage the run files: {exc}"
+    refused = tmp / "fake-verify-refused.sh"
+    problem = _write_stub(
+        refused,
+        "#!/bin/sh\n"
+        "echo 'jarsigner error: java.lang.SecurityException: "
+        "SHA-384 digest error for payload.txt'\n"
+        "exit 1\n")
+    if problem is not None:
+        return problem
+    passed = tmp / "fake-verify-passed.sh"
+    problem = _write_stub(passed, "#!/bin/sh\necho 'jar verified.'\n")
+    if problem is not None:
+        return problem
+    env, problem = _stub_env(tmp / "env", {"jar": STUB_JAR_LISTING})
+    if problem is not None:
+        return problem
+
+    def attempt(verify_argv, signed="out/app-signed.jar",
+                tampered="out/tampered.jar"):
+        proc = helper_cli_env(
+            ["jar-tamper", "--run", str(run),
+             "--payload-dir", str(changed),
+             "--signed", signed, "--tampered", tampered,
+             "--", *[str(part) for part in verify_argv]], env)
+        combined = ((proc.stdout or "") + "\n"
+                    + (proc.stderr or "")).strip()
+        return proc.returncode, combined
+
+    rc, combined = attempt([str(refused)])
+    if rc != 0:
+        return f"jar-tamper exited {rc}: {combined[:200]}"
+    for marker in ("JOURNEY-TAMPER-DETECTED", "digest error"):
+        if marker not in combined:
+            return f"jar-tamper lacks {marker}"
+    if "jar verified." in combined:
+        return "jar-tamper log carries the verified marker"
+    try:
+        staged = (run / "out" / "tampered.jar").read_bytes()
+    except OSError as exc:
+        return f"tampered jar unreadable: {exc}"
+    if staged != b"signed-jar":
+        return "tampered jar does not start as a copy"
+    rc, _combined = attempt([str(passed)],
+                            tampered="out/tampered-pass.jar")
+    if rc == 0:
+        return "jar-tamper passed when verification succeeded"
+    rc, _combined = attempt([str(refused)],
+                            signed="out/no-such.jar",
+                            tampered="out/tampered-missing.jar")
+    if rc == 0:
+        return "jar-tamper passed with the signed jar missing"
+    rc, _combined = attempt([str(tmp / "no-such-tool")],
+                            tampered="out/tampered-notool.jar")
+    if rc == 0:
+        return "jar-tamper passed with a missing verify tool"
+    return None
+
+
+def check_mismatch_refusal(tmp):
+    tmp = Path(tmp)
+    run = tmp / "run"
+    try:
+        (run / "out").mkdir(parents=True)
+        (run / "ca").mkdir(parents=True)
+        (run / "out" / "app.jar").write_bytes(b"unsigned-jar")
+        (run / "ca" / "ca.pem").write_bytes(b"fake-ca")
+    except OSError as exc:
+        return f"cannot stage the run files: {exc}"
+    sign_refused = tmp / "fake-sign-refused.sh"
+    problem = _write_stub(
+        sign_refused,
+        "#!/bin/sh\n"
+        "echo 'jarsigner error: CKR_ATTRIBUTE_TYPE_INVALID 0x162'\n"
+        "exit 1\n")
+    if problem is not None:
+        return problem
+    sign_ok = tmp / "fake-sign-ok.sh"
+    problem = _write_stub(
+        sign_ok,
+        "#!/bin/sh\n"
+        "printf 'signed-by-mismatch' > \"$MISMATCH_JAR\"\n"
+        "echo 'jar signed.'\n")
+    if problem is not None:
+        return problem
+
+    def attempt(stubs, sign_argv, count, inherit=True):
+        env, problem = _stub_env(tmp / f"env-{count}", stubs,
+                                 inherit)
+        if problem is not None:
+            return None, problem
+        env["MISMATCH_JAR"] = str(run / "out" / "mismatch.jar")
+        try:
+            (run / "out" / "mismatch.jar").unlink(missing_ok=True)
+        except OSError as exc:
+            return None, f"cannot clear the signed jar: {exc}"
+        proc = helper_cli_env(
+            ["mismatch-refusal", "--run", str(run),
+             "--signed", "out/mismatch.jar", "--ca", "ca/ca.pem",
+             "--sig-dir", f"sigm-{count}",
+             "--", *[str(part) for part in sign_argv]], env)
+        combined = ((proc.stdout or "") + "\n"
+                    + (proc.stderr or "")).strip()
+        return proc.returncode, combined
+
+    rc, combined = attempt({}, [str(sign_refused)], 0)
+    if rc is None:
+        return combined
+    if rc != 0:
+        return (f"mismatch-refusal exited {rc} on a refused sign: "
+                f"{combined[:200]}")
+    if "JOURNEY-NO-VERIFIED-SIGNATURE" not in combined:
+        return "mismatch-refusal lacks its refusal marker"
+    if "stage=sign" not in combined:
+        return "mismatch-refusal lacks the sign stage record"
+    verify_refused = ("#!/bin/sh\n"
+                      "echo 'jarsigner error: digest error'\n"
+                      "exit 1\n")
+    rc, combined = attempt(
+        {"jarsigner": verify_refused, "jar": STUB_JAR_LISTING,
+         "openssl": STUB_OPENSSL_FAIL}, [str(sign_ok)], 1)
+    if rc is None:
+        return combined
+    if rc != 0:
+        return ("mismatch-refusal exited "
+                f"{rc} when verify and cms refused: "
+                f"{combined[:200]}")
+    if "JOURNEY-NO-VERIFIED-SIGNATURE" not in combined:
+        return "mismatch-refusal lacks its refusal marker"
+    verify_passed = "#!/bin/sh\necho 'jar verified.'\n"
+    rc, combined = attempt(
+        {"jarsigner": verify_passed, "jar": STUB_JAR_LISTING,
+         "openssl": STUB_OPENSSL_FAIL}, [str(sign_ok)], 2)
+    if rc is None:
+        return combined
+    if rc == 0:
+        return ("mismatch-refusal passed when jarsigner verified "
+                "the mismatched signature")
+    if "JOURNEY-MISMATCH-VERIFIED-UNEXPECTED" not in combined:
+        return "mismatch-refusal lacks its unexpected marker"
+    rc, combined = attempt(
+        {"jarsigner": verify_refused, "jar": STUB_JAR_LISTING,
+         "openssl": STUB_OPENSSL_OK}, [str(sign_ok)], 3)
+    if rc is None:
+        return combined
+    if rc == 0:
+        return ("mismatch-refusal passed when cms verified "
+                "the mismatched signature")
+    rc, _combined = attempt({}, [], 4)
+    if rc is None:
+        return _combined
+    if rc == 0:
+        return "mismatch-refusal passed without a sign argv"
+    return None
+
+
+def check_keystore_cfg_written(tmp):
+    ctx = _run_check_ctx(Path(tmp),
+                         module_path="/opt/fixture/lib/libhaskoki.so")
+    row = _run_check_row("keystore-probe",
+                         [sys.executable, "-c", "pass"])
+    run_dir, record = _run_check_leg(tmp, row, ctx)
+    if record.get("status") != "pass":
+        return ("synthetic leg did not pass: "
+                f"{record.get('failure_stage')}")
+    try:
+        template = (find_src_root() / "tests" / "journeys"
+                    / "keystore").resolve(strict=False)
+    except OSError as exc:
+        return f"keystore template dir unreadable: {exc}"
+    for name, slot in (("sunpkcs11-keystore.cfg", "slot = 0"),
+                       ("sunpkcs11-wrong-slot.cfg", "slot = 9")):
+        try:
+            text = (run_dir / "cfg" / name).read_text(
+                encoding="utf-8")
+        except OSError as exc:
+            return f"engine did not write cfg/{name}: {exc}"
+        if "@MODULE@" in text:
+            return f"substituted {name} still holds its placeholder"
+        want_lib = "library = " + ctx["module_path"]
+        if want_lib not in text:
+            return f"substituted {name} lacks the module line"
+        if slot not in text:
+            return f"substituted {name} lacks {slot!r}"
+        try:
+            want = substitute_text(
+                (template / name).read_text(encoding="utf-8"),
+                {"@MODULE@": ctx["module_path"]})
+        except OSError as exc:
+            return f"provider template {name} unreadable: {exc}"
+        if text != want:
+            return f"substituted {name} differs from its template"
+    return None
+
+
 def run_path_checks():
     """Yield (label, check) for live run-path behavior.
 
@@ -4386,6 +5186,14 @@ def run_path_checks():
            check_decrypt_staged)
     yield ("store-owned refusal holds the store while the tool fails",
            check_store_owned_refusal)
+    yield ("jar-cms-verify checks the signature block with openssl",
+           check_jar_cms_verify)
+    yield ("jar-tamper detects the changed payload",
+           check_jar_tamper)
+    yield ("mismatch-refusal reports no verified signature",
+           check_mismatch_refusal)
+    yield ("engine writes the substituted keystore cfgs",
+           check_keystore_cfg_written)
 
 
 def self_test():
@@ -4487,6 +5295,29 @@ def build_parser():
     owned.add_argument("--native", required=True)
     owned.add_argument("--run", required=True)
     owned.add_argument("tool_argv", nargs=argparse.REMAINDER)
+    cms = sub.add_parser(
+        "jar-cms-verify",
+        help="verify a jar signature block with openssl cms")
+    cms.add_argument("--run", required=True)
+    cms.add_argument("--jar", required=True)
+    cms.add_argument("--ca", required=True)
+    cms.add_argument("--sig-dir", required=True)
+    tamper = sub.add_parser(
+        "jar-tamper",
+        help="tamper a signed jar copy, then require refusal")
+    tamper.add_argument("--run", required=True)
+    tamper.add_argument("--payload-dir", required=True)
+    tamper.add_argument("--signed", required=True)
+    tamper.add_argument("--tampered", required=True)
+    tamper.add_argument("tool_argv", nargs=argparse.REMAINDER)
+    mismatch = sub.add_parser(
+        "mismatch-refusal",
+        help="sign with a mismatched alias; refuse verification")
+    mismatch.add_argument("--run", required=True)
+    mismatch.add_argument("--signed", required=True)
+    mismatch.add_argument("--ca", required=True)
+    mismatch.add_argument("--sig-dir", required=True)
+    mismatch.add_argument("tool_argv", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -4506,6 +5337,12 @@ def main(argv=None):
         return cmd_decrypt_staged(args)
     if args.command == "store-owned-refusal":
         return cmd_store_owned_refusal(args)
+    if args.command == "jar-cms-verify":
+        return cmd_jar_cms_verify(args)
+    if args.command == "jar-tamper":
+        return cmd_jar_tamper(args)
+    if args.command == "mismatch-refusal":
+        return cmd_mismatch_refusal(args)
     build_parser().print_usage(sys.stderr)
     return 2
 
