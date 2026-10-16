@@ -1,6 +1,8 @@
 -- | The effective serving catalog, shared by both interval owners.
 module Haskoki.Runtime.Catalog
-  ( catalogCredential
+  ( asyncHomeConfig
+  , asyncHomeEntry
+  , catalogCredential
   , desiredTokens
   , effectiveCatalog
   , homeCatalogEntry
@@ -19,6 +21,23 @@ import Haskoki.Types (SlotId (..), TokenId (..))
 -- | Label, SO PIN, user PIN. The absent-section provisioning is unchanged.
 homeCatalogEntry :: (String, String, String)
 homeCatalogEntry = ("haskoki-demo", "5678", "1234")
+
+-- | The home token the async surface creates: label, SO PIN, user PIN.
+-- The label is the durable name of async-created stores and never
+-- changes; the PINs are the home catalog entry's. No parsed config can
+-- name this label (slot 0 is anchored to the home label), so the
+-- offline tools apply 'asyncHomeConfig' to plan such a store.
+asyncHomeEntry :: (String, String, String)
+asyncHomeEntry = ("haskoki-async", so, user)
+  where (_, so, user) = homeCatalogEntry
+
+-- | The config's token catalog replaced by the async home token alone
+-- (pinned identities cleared, so the home identity applies).
+asyncHomeConfig :: Config -> Config
+asyncHomeConfig cfg = cfg
+  { cfgTokens = (cfgTokens cfg) { tcEntries = [asyncHomeEntry] }
+  , cfgTokenIds = Nothing
+  }
 
 -- | Declared catalog indices, or the home singleton when absent.
 effectiveCatalog :: Config -> Map SlotId (String, String, String)

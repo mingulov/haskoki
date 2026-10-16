@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- | Store preflight, explicit migration and recovery (AC-05):
 released-binary fixtures, refused opens that write nothing, the
@@ -6,20 +7,27 @@ read-only snapshot and plan, the owned migration, and recovery.
 module PreflightSpec (spec) where
 
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC8
+import qualified Data.Map.Strict as Map
+import Control.Exception (bracket)
 import Data.List (isInfixOf)
+import Foreign.C.Types (CInt (..))
 import qualified Data.Text as T
 import System.Directory (createDirectory, doesFileExist)
 import System.FilePath ((</>))
-import System.Posix.Files (createSymbolicLink)
-import System.Posix.Files (getFileStatus, modificationTime)
+import System.Posix.Files (createSymbolicLink, getFileStatus, modificationTime)
+import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
+import System.Posix.User (getEffectiveUserID)
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.FFI.Standard (StdStoreError (..))
 import Haskoki.Runtime.Storage
   (CommitResult (..), CredentialRecord (..), IdentityRefusal (..), StoreError (..), TokenRecord (..), emptyDelta, storeClose, storeCommit)
-import Haskoki.Types (TokenId (..))
+import Haskoki.Types (SlotId (..), TokenId (..))
+import Haskoki.Runtime.Catalog (asyncHomeConfig, asyncHomeEntry, homeCatalogEntry, identityCatalog)
 import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..))
+
 import Haskoki.Runtime.Storage.Preflight
   ( MigrationOp (..), PlanVerdict (..), PreflightRefusal (..), StoreOpenPlan (..)
   , checkStoreOpen, configSelectsStore, planVerdict, renderPlan, renderStoreRefusal, sha256Hex )
@@ -68,7 +76,11 @@ spec = testGroup "Store preflight"
       , testCase "plan rendering carries ids, never PINs" casePlanRedacted
       , testCase "config must select the same sqlite file" caseConfigSelects
       , testCase "schema-3 rowless tokens plan a freeze with no version move" casePlanV3Rowless
-      , testCase "an async-created store is not migration-required" casePlanAsyncCreated
+      , testCase "a v0.4 async-created store plans a freeze and a move under the async home catalog" casePlanAsyncV04
+      , testCase "a schema-3 async-created store is openable under the async home catalog" casePlanAsyncSeededV3
+      , testCase "the async home entry is the async label with the home PINs" caseAsyncHomeEntry
+      , testCase "check on a missing path says there is no store" casePlanMissingPath
+      , testCase "check on a store held by another fd is refused as live" casePlanLiveOwner
       , testCase "store-full has its own refusal tag" caseStoreFullTag
       ]
   ]
@@ -293,11 +305,16 @@ caseProbeUnreadableLive :: IO ()
 caseProbeUnreadableLive = withScratch "probe" $ \dir -> do
   let store = dir </> "store.db"
   makeSchemaStore 3 store [] []
-  writeFile (store ++ ".lock") "1\n"
-  p <- withFileMode (store ++ ".lock") 0o000 (probeOwner store)
-  case p of
-    OwnerLive _ -> pure ()
-    other -> assertFailure ("unreadable lock not live: " ++ show other)
+  euid <- getEffectiveUserID
+  if euid == 0
+    then putStrLn "skipped: chmod 000 does not deny root"
+    else do
+      dead <- reapedPid
+      writeFile (store ++ ".lock") (show dead ++ "\n")
+      p <- withFileMode (store ++ ".lock") 0o000 (probeOwner store)
+      case p of
+        OwnerLive _ -> pure ()
+        other -> assertFailure ("unreadable lock not live: " ++ show other)
 
 fixturePlan :: String -> FilePath -> IO (FilePath, FilePath, StoreOpenPlan)
 fixturePlan tag dir = do
@@ -400,25 +417,83 @@ casePlanV3Rowless = withScratch "plan" $ \dir -> do
   assertEqual "verdict" VerdictMigrationRequired (planVerdict plan)
   assertNoPins "renderPlan" (renderPlan plan)
 
--- A store the async open created (home label haskoki-async, the
--- home credential row seeded in the same commit) has its rows, so no
--- freeze or version move is planned. Against the standard catalog
--- (slot 0 must be haskoki-demo) the verdict is an identity refusal,
--- never migration-required.
-casePlanAsyncCreated :: IO ()
-casePlanAsyncCreated = withScratch "plan" $ \dir -> do
+-- A store the v0.4 async open created: one token labelled
+-- haskoki-async and, in that build, no credential row (its open
+-- committed the token alone). The parser's slot-0 anchor keeps any
+-- loaded config from naming that label, so the plan runs under the
+-- async home catalog; the standard catalog refuses on identity.
+casePlanAsyncV04 :: IO ()
+casePlanAsyncV04 = withScratch "plan" $ \dir -> do
   let store = dir </> "store.db"
-  makeSchemaStore 3 store [fixtureToken 1 0 "haskoki-async"]
-    [CredentialRecord (TokenId 1) "5678" (Just "1234")]
+  makeSchemaStore 2 store [fixtureToken 1 0 "haskoki-async"] []
   std <- writeStoreConfig (dir </> "s.toml") store ["haskoki-demo"] ["5678"] ["1234"]
   cfg <- loadConfigOrFail std
-  r <- checkStoreOpen store cfg
+  checkStoreOpen store cfg >>= either (assertFailure . show) (\p ->
+    case planVerdict p of
+      VerdictIdentityRefused (RefuseLabelChanged (TokenId 1) _ "haskoki-async" "haskoki-demo") -> pure ()
+      other -> assertFailure ("standard config: wrong verdict: " ++ show other))
+  r <- checkStoreOpen store (asyncHomeConfig cfg)
   plan <- either (assertFailure . show) pure r
-  assertEqual "no absent credentials" [] (sopAbsentCredentials plan)
+  assertEqual "rowless" [TokenId 1] (sopAbsentCredentials plan)
+  assertEqual "ops" [OpFreezeCredentials [TokenId 1], OpSetSchemaVersion 2 3] (sopOps plan)
+  assertEqual "verdict" VerdictMigrationRequired (planVerdict plan)
+  assertNoPins "renderPlan" (renderPlan plan)
+
+-- A store this build's async open creates: schema 3 with the home
+-- credential row seeded, so nothing to migrate.
+casePlanAsyncSeededV3 :: IO ()
+casePlanAsyncSeededV3 = withScratch "plan" $ \dir -> do
+  let store = dir </> "store.db"
+      (_, so, user) = homeCatalogEntry
+  makeSchemaStore 3 store [fixtureToken 1 0 "haskoki-async"]
+    [CredentialRecord (TokenId 1) (BC8.pack so) (Just (BC8.pack user))]
+  std <- writeStoreConfig (dir </> "s.toml") store ["haskoki-demo"] ["5678"] ["1234"]
+  cfg <- loadConfigOrFail std
+  r <- checkStoreOpen store (asyncHomeConfig cfg)
+  plan <- either (assertFailure . show) pure r
   assertEqual "no ops" [] (sopOps plan)
-  case planVerdict plan of
-    VerdictIdentityRefused (RefuseLabelChanged (TokenId 1) _ "haskoki-async" "haskoki-demo") -> pure ()
-    other -> assertFailure ("wrong verdict: " ++ show other)
+  assertEqual "verdict" VerdictOpenable (planVerdict plan)
+  checkStoreOpen store cfg >>= either (assertFailure . show) (\p ->
+    case planVerdict p of
+      VerdictIdentityRefused (RefuseLabelChanged {}) -> pure ()
+      other -> assertFailure ("standard config: wrong verdict: " ++ show other))
+
+caseAsyncHomeEntry :: IO ()
+caseAsyncHomeEntry = withScratch "plan" $ \dir -> do
+  let (label, so, user) = asyncHomeEntry
+      (_, hso, huser) = homeCatalogEntry
+  assertEqual "label" "haskoki-async" label
+  assertEqual "pins" (hso, huser) (so, user)
+  cfgPath <- writeStoreConfig (dir </> "c.toml") (dir </> "s.db") fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  assertEqual "catalog" [(SlotId 0, (TokenId 1, "haskoki-async"))]
+    (Map.toList (identityCatalog (asyncHomeConfig cfg)))
+
+casePlanMissingPath :: IO ()
+casePlanMissingPath = withScratch "plan" $ \dir -> do
+  let store = dir </> "absent.db"
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  r <- checkStoreOpen store cfg
+  case r of
+    Left (StoreIO m) -> assertBool "names the missing store" ("no store file" `isInfixOf` m)
+    other -> assertFailure ("wrong result: " ++ show (fmap sopPath other))
+  exists <- doesFileExist store
+  assertBool "check created nothing" (not exists)
+
+foreign import ccall unsafe "flock" c_flockT :: CInt -> CInt -> IO CInt
+
+casePlanLiveOwner :: IO ()
+casePlanLiveOwner = withScratch "plan" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  cfg <- loadConfigOrFail cfgPath
+  bracket (openFd store ReadOnly defaultFileFlags) closeFd $ \fd -> do
+    rc <- c_flockT (fromIntegral fd) 2 -- LOCK_EX
+    assertEqual "test holds the db lock" 0 rc
+    r <- checkStoreOpen store cfg
+    case r of
+      Left (StoreSecondWriter m) -> assertBool "says in use" ("in use" `isInfixOf` m)
+      other -> assertFailure ("wrong result: " ++ show (fmap sopPath other))
 
 caseStoreFullTag :: IO ()
 caseStoreFullTag = do

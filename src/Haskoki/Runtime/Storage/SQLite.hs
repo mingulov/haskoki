@@ -77,8 +77,8 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
-import Data.List (nub, sort)
 import qualified Data.ByteString.Char8 as BC8
+import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
@@ -2274,21 +2274,26 @@ probeOwner path = do
     Right stale -> do
       held <- kernelLockHeld path
       pure $ case (held, stale) of
-        (True, _) -> OwnerLive "the database kernel lock is held"
-        (False, Nothing) -> OwnerAbsent
-        (False, Just n) -> OwnerStale n
+        (Left why, _) -> OwnerLive why
+        (Right True, _) -> OwnerLive "the database kernel lock is held"
+        (Right False, Nothing) -> OwnerAbsent
+        (Right False, Just n) -> OwnerStale n
 
 -- | Try a SHARED non-blocking flock on a read-only fd and drop it at
--- once. Any failure to probe counts as held (fail closed).
-kernelLockHeld :: FilePath -> IO Bool
+-- once. A missing file has no holder; any other failure to probe is a
+-- 'Left' reason the caller treats as live (fail closed), never as a
+-- held lock.
+kernelLockHeld :: FilePath -> IO (Either String Bool)
 kernelLockHeld path = mask_ $ do
   eFd <- tryIOError (openFd path ReadOnly defaultFileFlags)
   case eFd of
-    Left _ -> pure True
+    Left e
+      | isDoesNotExistError e -> pure (Right False)
+      | otherwise -> pure (Left "the database cannot be opened to probe its lock")
     Right fd -> do
       ok <- (== 0) <$> c_flock (fromIntegral fd) (lockSh .|. lockNb)
       closeQuietFd fd
-      pure (not ok)
+      pure (Right (not ok))
 
 lockSh :: CInt
 lockSh = 1 -- LOCK_SH: shared

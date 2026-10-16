@@ -194,7 +194,7 @@ import Haskoki.Request
   , OutputRegion (..)
   , Request (..)
   )
-import Haskoki.Runtime.Catalog (homeCatalogEntry)
+import Haskoki.Runtime.Catalog (asyncHomeEntry)
 import Haskoki.Runtime.Async
   ( AsyncTable
   , AsyncWork (..)
@@ -1972,15 +1972,15 @@ ensureHomeToken store = do
       { trId = storeHomeToken
       , trSlot = SlotId 0
       , trGeneration = Generation 0
-      , trLabel = "haskoki-async"
+      , trLabel = homeLabel
       , trAuth = tokenAuthNew
       }
     -- The home token's credential row seeds in the same transaction
     -- as the token, from the home catalog entry's PINs: a store this
     -- open creates is a complete schema-3 store.
+    (homeLabel, homeSo, homeUser) = asyncHomeEntry
     homeCredential =
-      let (_, so, user) = homeCatalogEntry
-      in CredentialRecord storeHomeToken (BC8.pack so) (Just (BC8.pack user))
+      CredentialRecord storeHomeToken (BC8.pack homeSo) (Just (BC8.pack homeUser))
     openDc = do
       eDc <- openDetached store storeHomeToken
       pure $ case eDc of
