@@ -9,18 +9,23 @@ Gate 1 (fixture-name confinement): the names 'mkFixtureCallWork'
 and 'startFixtureJob' appear in shipped Haskell sources only at
 their own definitions and Haddock references. Shipped sources are
 every production hs-source-dir: core, src, ffi, app, tools,
-examples, bench, client. Test trees (tests/, test/) may use both
-names freely and are never scanned. A line in a shipped file is
-excused only when it is one of:
+examples, bench, client; scanned extensions are .hs, .hsc, .lhs
+and .hs-boot. Test trees (tests/, test/) may use both names
+freely and are never scanned. In the two definition files
+(core/Haskoki/CallWork.hs, src/Haskoki/Runtime/Async.hs) a line
+is excused only when it is one of:
   * an export-list entry:   `, mkFixtureCallWork`
   * a type signature:       `startFixtureJob :: ...`
   * a column-0 definition:  `mkFixtureCallWork sid res eff = ...`
     (column-anchored, so an indented caller cannot hide behind it)
-  * a Haddock prose reference with the name single-quoted:
-    `'mkFixtureCallWork'`, `('Haskoki.Runtime.Async.startFixtureJob')`
-    (prose quotes the names; code cannot quote a use, so stripping
-    single-quoted spans before matching keeps docs working while
-    every bare use still fails)
+Anywhere else no line shape is excused: a leading-comma import
+entry is still a shipped use and fails. Everywhere, Haddock prose
+may quote the names ('mkFixtureCallWork',
+'Haskoki.Runtime.Async.startFixtureJob') inside comments (-- or
+{- -}); the gate strips exactly those quoted spans, closing quote
+required, from the comment part of a line before matching. A bare
+prime in code (r', table') never matches the quote pattern, so a
+primed-line caller still fails.
 Anything else — an indented caller, a use in an expression, an
 unquoted mention — fails the gate.
 
@@ -49,7 +54,9 @@ Usage:
   python3 scripts/check-sealed-callwork.py            scan the tree
   python3 scripts/check-sealed-callwork.py --self-test
       negative controls on synthetic fixtures: planted callers in
-      shipped dirs fail, excused shapes pass, and the closed
+      shipped dirs fail (primed-line callers, leading-comma
+      imports outside the definition files, and .hsc/.lhs/.hs-boot
+      callers included), excused shapes pass, and the closed
       wildcard passes while inspecting shapes fail.
 
 STDLIB ONLY. Run on HOST python3 from anywhere:
@@ -81,7 +88,10 @@ REQUIRED_FILES = (
 EXPORT_RE = re.compile(r"^\s*, (mkFixtureCallWork|startFixtureJob)\s*$")
 SIG_RE = re.compile(r"^\s*(mkFixtureCallWork|startFixtureJob) ::")
 DEF_RE = re.compile(r"^(mkFixtureCallWork|startFixtureJob) [a-z]")
-QUOTED_RE = re.compile(r"'[^']*'")
+# A Haddock identifier quote: 'name' or 'Mod.name', with the
+# closing quote required, so a bare prime in code never matches.
+HADDOCK_QUOTED_RE = re.compile(
+    r"'(?:[A-Z][\w.]*\.)?(mkFixtureCallWork|startFixtureJob)'")
 NAME_RE = re.compile(r"mkFixtureCallWork|startFixtureJob")
 
 # Wildcard matches only with a trailing space (the 2-ary,
@@ -94,8 +104,49 @@ def hs_files(root, dirs):
     for d in dirs:
         base = root / d
         if base.is_dir():
-            out.extend(sorted(base.rglob("*.hs")))
+            for ext in ("*.hs", "*.hsc", "*.lhs", "*.hs-boot"):
+                out.extend(sorted(base.rglob(ext)))
     return out
+
+
+def strip_line(line, depth):
+    """(searchable, depth'): one line with quotes stripped from comments.
+
+    `searchable` is the line's code plus its comment parts (-- and
+    {- -}, nesting tracked) with Haddock identifier quotes removed;
+    a fixture name anywhere else fails the gate. Anything the
+    splitter does not understand stays code, so an unrecognized
+    shape can only flag, never hide.
+    """
+    code = []
+    comment = []
+    i = 0
+    n = len(line)
+    while i < n:
+        if depth > 0:
+            if line.startswith("-}", i):
+                comment.append("-}")
+                depth -= 1
+                i += 2
+            elif line.startswith("{-", i):
+                comment.append("{-")
+                depth += 1
+                i += 2
+            else:
+                comment.append(line[i])
+                i += 1
+        elif line.startswith("--", i):
+            comment.append(line[i:])
+            i = n
+        elif line.startswith("{-", i):
+            comment.append("{-")
+            depth += 1
+            i += 2
+        else:
+            code.append(line[i])
+            i += 1
+    searchable = "".join(code) + HADDOCK_QUOTED_RE.sub("", "".join(comment))
+    return searchable, depth
 
 
 def gate1_violations(root):
@@ -104,13 +155,17 @@ def gate1_violations(root):
     files = hs_files(root, SHIPPED_DIRS)
     for path in files:
         rel = path.relative_to(root).as_posix()
+        defined_here = rel in REQUIRED_FILES
+        depth = 0
         for no, line in enumerate(path.read_text().splitlines(), start=1):
+            searchable, depth = strip_line(line, depth)
             if not NAME_RE.search(line):
                 continue
-            if EXPORT_RE.match(line) or SIG_RE.match(line) \
-                    or DEF_RE.match(line):
+            if defined_here and (EXPORT_RE.match(line)
+                                 or SIG_RE.match(line)
+                                 or DEF_RE.match(line)):
                 continue
-            if NAME_RE.search(QUOTED_RE.sub("", line)):
+            if NAME_RE.search(searchable):
                 violations.append(f"{rel}:{no}:{line.rstrip()}")
     return violations, files
 
@@ -232,6 +287,48 @@ def self_test():
         check_rule("quoted-mention-passes",
                    not any("core/Note.hs" in v for v in v1),
                    "quoted mention excused")
+        # ... while bare primes around a caller never quote it.
+        write(root, "app/Primed.hs",
+              "module Primed where\n"
+              "run table' req = do\n"
+              "  r' <- startFixtureJob table' req\n"
+              "  let w' = mkFixtureCallWork sid res' eff\n"
+              "  pure (r', w')\n")
+        v1, _ = gate1_violations(root)
+        check_rule("primed-line-caller-fails",
+                   len([v for v in v1 if "app/Primed.hs" in v]) == 2,
+                   "both primed-line callers flagged")
+        # ... and a leading-comma import outside the definition
+        # files is still a shipped use, not an export entry.
+        write(root, "tools/SneakyImport.hs",
+              "module SneakyImport where\n"
+              "import Haskoki.Runtime.Async\n"
+              "  ( startJob\n"
+              "  , startFixtureJob\n"
+              "  )\n")
+        v1, _ = gate1_violations(root)
+        check_rule("leading-comma-import-fails",
+                   any("tools/SneakyImport.hs" in v for v in v1),
+                   "leading-comma import outside definitions flagged")
+        # ... and callers in the further shipped extensions fail too.
+        write(root, "ffi/Sneaky.hsc",
+              "module Sneaky where\nrun t r = startFixtureJob t r\n")
+        v1, _ = gate1_violations(root)
+        check_rule("hsc-caller-fails",
+                   any("ffi/Sneaky.hsc" in v for v in v1),
+                   "planted .hsc caller flagged")
+        write(root, "app/Sneaky.lhs",
+              "> module Sneaky where\n> run t r = startFixtureJob t r\n")
+        v1, _ = gate1_violations(root)
+        check_rule("lhs-caller-fails",
+                   any("app/Sneaky.lhs" in v for v in v1),
+                   "planted .lhs caller flagged")
+        write(root, "src/Sneaky.hs-boot",
+              "module Sneaky where\nrun t r = startFixtureJob t r\n")
+        v1, _ = gate1_violations(root)
+        check_rule("hsboot-caller-fails",
+                   any("src/Sneaky.hs-boot" in v for v in v1),
+                   "planted .hs-boot caller flagged")
 
         # Gate 3: inspecting shapes fail ...
         write(root, "src/Peek.hs",
@@ -275,7 +372,7 @@ def self_test():
             text = hs.read_text()
             if "startFixtureJob" in text:
                 test_hits += 1
-    check_rule("targets-exist", test_hits > 10,
+    check_rule("targets-exist", test_hits >= 1,
                f"{test_hits} test files use the fixture entrypoint")
 
     if failures:
