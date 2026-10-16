@@ -72,6 +72,7 @@ JR_MODULE = "JR-MODULE"
 JR_CONFIG = "JR-CONFIG"
 JR_PIN = "JR-PIN"
 JR_SETUP = "JR-SETUP"
+JR_TIMEOUT = "JR-TIMEOUT"
 JR_ORDER = "JR-ORDER"
 JR_TABLE = "JR-TABLE"
 JR_FILE = "JR-FILE"
@@ -88,7 +89,8 @@ RUN_LEG = "(run)"
 # there is no single pass claim to contradict.
 SELF_REPORT_TRIGGERS = frozenset([
     JR_EXIT, JR_MARKER, JR_REFUSAL_UNREACHED, JR_VERIFY, JR_UNCHANGED,
-    JR_MODULE, JR_CONFIG, JR_PIN, JR_SETUP, JR_FILE, JR_RECORD,
+    JR_MODULE, JR_CONFIG, JR_PIN, JR_SETUP, JR_TIMEOUT, JR_FILE,
+    JR_RECORD,
 ])
 
 PIN_FIELDS = ("package", "package_version", "runtime_version",
@@ -637,7 +639,8 @@ def check_run(run_dir, profile, legs_path):
         if not grown:
             break
 
-    # -- setup --
+    # -- setup and timeout: the record's own stage always fails
+    # under its own rule, whatever the status and evidence claim --
     failed_legs = {leg for _rule, leg, _detail in failures}
     for name in required:
         record = records.get(name)
@@ -645,6 +648,8 @@ def check_run(run_dir, profile, legs_path):
             continue
         if record.get("failure_stage") == "setup":
             failures.append((JR_SETUP, name, "failure_stage: setup"))
+        elif record.get("failure_stage") == "timeout":
+            failures.append((JR_TIMEOUT, name, "failure_stage: timeout"))
         elif (record.get("classification") == "setup"
                 and (record.get("status") != "pass"
                      or name in failed_legs)):
@@ -1199,6 +1204,7 @@ def run_one_leg(run_dir, row, profile_rows, clients, ctx):
                     # Reap the whole group on every path: a leg that
                     # exits while a holder child still runs must not
                     # leave it behind.
+                    # recycled pids may be signalled; setsid children escape.
                     try:
                         os.killpg(proc.pid, signal.SIGKILL)
                     except (OSError, ProcessLookupError):
@@ -1476,18 +1482,56 @@ def _link_target_escapes(name, target, hard):
     return shape.is_absolute() or ".." in shape.parts
 
 
+LINK_CHAIN_BOUND = 40
+
+
+def _bundle_link_resolves(name, target, members):
+    """True when a symlink resolves through members to a regular file.
+
+    Every hop joins lexically against the link's own directory and
+    must name another member inside the prefix; the chain ends only
+    at a regular-file member. Dangling, escaping, over-long and
+    cyclic chains fail.
+    """
+    seen = {posixpath.normpath(name)}
+    for _ in range(LINK_CHAIN_BOUND):
+        if _link_target_escapes(name, target, False):
+            return False
+        parent = posixpath.dirname(posixpath.normpath(name))
+        resolved = posixpath.normpath(posixpath.join(parent, target))
+        if resolved in seen:
+            return False
+        seen.add(resolved)
+        follow = members.get(resolved)
+        if follow is None:
+            return False
+        if follow.isreg():
+            return True
+        if not follow.issym():
+            return False
+        name, target = resolved, follow.linkname
+    return False
+
+
 def screen_bundle_members(bundle_tar):
     """Refuse unsafe bundle members before anything is extracted.
 
-    Absolute paths, '..' components and links resolving outside the
-    install prefix are refused here, never after extraction.
+    Absolute paths, '..' components, device and other special
+    members, and links resolving outside the install prefix are
+    refused here, never after extraction. A symlink member is
+    accepted only when its target resolves through the archive's own
+    member set to a regular-file member inside the prefix.
     """
     try:
         handle = tarfile.open(bundle_tar, "r:*")
     except (OSError, tarfile.TarError) as exc:
         raise SetupRefusal(f"bundle unreadable: {exc}")
     with handle:
-        for member in handle.getmembers():
+        members = handle.getmembers()
+        table = {}
+        for member in members:
+            table[posixpath.normpath(member.name)] = member
+        for member in members:
             name = member.name
             if PurePosixPath(name).is_absolute():
                 raise SetupRefusal(
@@ -1495,11 +1539,21 @@ def screen_bundle_members(bundle_tar):
             if ".." in PurePosixPath(name).parts:
                 raise SetupRefusal(
                     f"bundle member escapes the prefix: {name[:80]}")
+            if not (member.isreg() or member.isdir()
+                    or member.issym() or member.islnk()):
+                raise SetupRefusal(
+                    "bundle member is not a regular file, directory "
+                    f"or link: {name[:80]}")
             if member.issym():
                 if _link_target_escapes(name, member.linkname, False):
                     raise SetupRefusal(
                         "bundle link escapes the prefix: "
                         f"{name[:80]}")
+                if not _bundle_link_resolves(name, member.linkname,
+                                             table):
+                    raise SetupRefusal(
+                        "bundle symlink does not resolve to a "
+                        f"regular file: {name[:80]}")
             elif member.islnk():
                 if _link_target_escapes(name, member.linkname, True):
                     raise SetupRefusal(
@@ -2755,6 +2809,38 @@ def mut_exit_null_timeout_clean(root):
     mutate_record(root, SUCCESS_LEG, update)
 
 
+def mut_timeout_stage_pass_null(root):
+    def update(record):
+        record["exit_code"] = None
+        record["failure_stage"] = "timeout"
+        record["status"] = "pass"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_timeout_stage_pass_zero(root):
+    def update(record):
+        record["exit_code"] = 0
+        record["failure_stage"] = "timeout"
+        record["status"] = "pass"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_timeout_stage_fail_zero(root):
+    def update(record):
+        record["exit_code"] = 0
+        record["failure_stage"] = "timeout"
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_setup_stage_pass(root):
+    def update(record):
+        record["exit_code"] = None
+        record["failure_stage"] = "setup"
+        record["status"] = "pass"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
 SELF_TEST_CASES = [
     ("clean run", set(), None,
      (0, "JOURNEYS: PASS 5/5", None)),
@@ -2838,10 +2924,21 @@ SELF_TEST_CASES = [
      mut_exit_null_setup, None),
     ("ordinary leg with a null exit", {JR_EXIT},
      mut_exit_null_normal, None),
-    ("timeout leg with a null exit and missing markers", {JR_MARKER},
+    ("timeout leg with a null exit and missing markers",
+     {JR_MARKER, JR_TIMEOUT},
      mut_exit_null_timeout_markers_missing, None),
     ("timeout leg with a null exit and clean evidence",
-     {JR_SELF_REPORT}, mut_exit_null_timeout_clean, None),
+     {JR_TIMEOUT}, mut_exit_null_timeout_clean, None),
+    ("pass status with a timeout stage and a null exit",
+     {JR_TIMEOUT, JR_SELF_REPORT},
+     mut_timeout_stage_pass_null, None),
+    ("pass status with a timeout stage and a zero exit",
+     {JR_TIMEOUT, JR_SELF_REPORT},
+     mut_timeout_stage_pass_zero, None),
+    ("fail status with a timeout stage and a zero exit",
+     {JR_TIMEOUT}, mut_timeout_stage_fail_zero, None),
+    ("pass status with a setup stage",
+     {JR_SETUP, JR_SELF_REPORT}, mut_setup_stage_pass, None),
 ]
 
 
@@ -3130,6 +3227,13 @@ def _write_tar_member(tar, name, data=b"ok", mode=0o644,
     tar.addfile(info, io.BytesIO(data))
 
 
+def _write_tar_dir(tar, name, mode=0o755):
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.DIRTYPE
+    info.mode = mode
+    tar.addfile(info)
+
+
 def _bundle_layout(tar, leaf="haskoki-9", module_link=None):
     _write_tar_member(tar, f"{leaf}/ok.txt", data=b"benign")
     if module_link is None:
@@ -3220,6 +3324,135 @@ def check_bundle_module_is_regular(tmp):
     except SetupRefusal:
         return None
     return "a bundle whose module is a link was accepted"
+
+
+def _chain_build_dangling(tar):
+    _bundle_layout(tar)
+    _write_tar_member(tar, "haskoki-9/lib/dangling",
+                       linkname="no-such-member",
+                       linktype=tarfile.SYMTYPE)
+
+
+def _chain_build_to_dir(tar):
+    _bundle_layout(tar)
+    _write_tar_dir(tar, "haskoki-9/share")
+    _write_tar_member(tar, "haskoki-9/lib/to-dir",
+                       linkname="../share",
+                       linktype=tarfile.SYMTYPE)
+
+
+def _chain_build_through_link(tar):
+    _bundle_layout(tar)
+    _write_tar_member(tar, "haskoki-9/l/y", linkname="..",
+                       linktype=tarfile.SYMTYPE)
+    _write_tar_member(tar, "haskoki-9/l/x", linkname="y/..",
+                       linktype=tarfile.SYMTYPE)
+
+
+def _chain_build_cycle(tar):
+    _bundle_layout(tar)
+    _write_tar_member(tar, "haskoki-9/lib/cyc-a",
+                       linkname="cyc-b",
+                       linktype=tarfile.SYMTYPE)
+    _write_tar_member(tar, "haskoki-9/lib/cyc-b",
+                       linkname="cyc-a",
+                       linktype=tarfile.SYMTYPE)
+
+
+def _chain_build_long(tar):
+    _bundle_layout(tar)
+    depth = LINK_CHAIN_BOUND + 8  # past the screen bound
+    for index in range(depth):
+        if index == depth - 1:
+            target = "libhaskoki.so"
+        else:
+            target = "chain-%02d" % (index + 1)
+        _write_tar_member(tar, "haskoki-9/lib/chain-%02d" % index,
+                           linkname=target,
+                           linktype=tarfile.SYMTYPE)
+
+
+def _chain_build_direct(tar):
+    _bundle_layout(tar)
+    _write_tar_member(tar, "haskoki-9/lib/alias.so",
+                       linkname="libhaskoki.so",
+                       linktype=tarfile.SYMTYPE)
+
+
+def _chain_build_two_hop(tar):
+    _bundle_layout(tar)
+    _write_tar_member(tar, "haskoki-9/lib/hop-b",
+                       linkname="libhaskoki.so",
+                       linktype=tarfile.SYMTYPE)
+    _write_tar_member(tar, "haskoki-9/lib/hop-a",
+                       linkname="hop-b",
+                       linktype=tarfile.SYMTYPE)
+
+
+def _install_case(workdir, build, label):
+    """Expect build() to install; return an error string or None."""
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    run_dir = workdir / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    bundle = workdir / "bundle.tar.gz"
+    with tarfile.open(bundle, "w:gz") as tar:
+        build(tar)
+    try:
+        module_path, _sha, _ver, _tool, _t0 = install_bundle(
+            str(bundle), run_dir)
+    except SetupRefusal as exc:
+        return f"{label} was refused: {exc}"
+    if not Path(module_path).is_file():
+        return f"{label} installed without a module file"
+    return None
+
+
+def check_bundle_special_members(tmp):
+    tmp = Path(tmp)
+    cases = [
+        ("char device", tarfile.CHRTYPE),
+        ("block device", tarfile.BLKTYPE),
+        ("fifo", tarfile.FIFOTYPE),
+    ]
+    for label, kind in cases:
+        def build(tar, kind=kind):
+            _bundle_layout(tar)
+            _write_tar_member(tar, "haskoki-9/evil-node",
+                               linkname="",
+                               linktype=kind)
+        problem = _screen_case(tmp / label.replace(" ", "-"), build,
+                               f"a bundle with a {label} member")
+        if problem is not None:
+            return problem
+    return None
+
+
+def check_bundle_symlink_chains(tmp):
+    tmp = Path(tmp)
+    refuse = [
+        ("dangling symlink", _chain_build_dangling),
+        ("symlink to a directory", _chain_build_to_dir),
+        ("symlinks chained through another link",
+         _chain_build_through_link),
+        ("symlink cycle", _chain_build_cycle),
+        ("symlink chain past the bound", _chain_build_long),
+    ]
+    for label, build in refuse:
+        problem = _screen_case(tmp / ("refuse-" + label.replace(
+            " ", "-")), build, f"a bundle with a {label}")
+        if problem is not None:
+            return problem
+    accept = [
+        ("symlink to a regular file", _chain_build_direct),
+        ("two-hop symlink to a regular file", _chain_build_two_hop),
+    ]
+    for label, build in accept:
+        problem = _install_case(tmp / ("accept-" + label.replace(
+            " ", "-")), build, f"a bundle with a {label}")
+        if problem is not None:
+            return problem
+    return None
 
 
 def check_bundle_installs(tmp):
@@ -3478,6 +3711,10 @@ def run_path_checks():
            check_bundle_dotdot_member)
     yield ("bundle links outside the prefix are refused",
            check_bundle_outside_links)
+    yield ("bundle device and fifo members are refused",
+           check_bundle_special_members)
+    yield ("bundle symlinks resolve to regular files",
+           check_bundle_symlink_chains)
     yield ("a bundle whose module is a link is refused",
            check_bundle_module_is_regular)
     yield ("a well-formed bundle installs", check_bundle_installs)
