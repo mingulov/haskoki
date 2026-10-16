@@ -13,6 +13,7 @@ module Haskoki.Runtime.Storage.Preflight
   , planStoreOpen
   , planVerdict
   , checkStoreOpen
+  , checkStoreOpenAllowCold
   , renderPlan
   , renderStoreRefusal
   , MigrateHooks (..)
@@ -178,9 +179,9 @@ checkStoreOpen path0 cfg = do
     _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshot path
 
 -- | Like 'checkStoreOpen' but a cold journal does not refuse: used
--- only by the migration to learn its verdict before deciding
--- whether the cold journal may be cleared. Never exported from this
--- module's public surface beyond the migration's use.
+-- by the migration to learn its verdict before deciding whether the
+-- cold journal may be cleared, and by @store check@ to accept a
+-- current store whose only blocker is the cold journal.
 checkStoreOpenAllowCold :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
 checkStoreOpenAllowCold path0 cfg = do
   path <- resolveStorePath path0
@@ -226,7 +227,7 @@ renderStoreRefusal e = case e of
     ++ "; do not delete it. Start the serving haskoki once (its open rolls the write back),"
     ++ " or restore a backup with the store and journal moved aside together;"
     ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
-  StoreJournalCold j -> ("store-journal-cold", "an interrupted migration left a cold journal " ++ j
+  StoreJournalCold j -> ("store-journal-cold", "an interrupted write left a cold journal " ++ j
     ++ " (SQLite treats it as not hot: the database already reads as committed state);"
     ++ " run haskoki-ctl store migrate to clear it under exclusive locks,"
     ++ " or restore a backup with the store and journal moved aside together;"

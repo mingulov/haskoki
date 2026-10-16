@@ -196,8 +196,10 @@ run_tag() {
   head -c 512 /dev/zero > "$r3w/store.sqlite-journal"
   local j_r3; j_r3=$(sha "$r3w/store.sqlite-journal")
   set +e; "$CTL" store check --path "$r3w/store.sqlite" --config "$r3w/config.toml" >"$w/recovery-cold-current.check.out" 2>"$w/recovery-cold-current.check.err"; rc=$?; set -e
-  [ "$rc" -eq 1 ] || fail "$tag: current cold check exit"
-  grep -q '^store-journal-cold:' "$w/recovery-cold-current.check.err" || fail "$tag: current cold check tag"
+  [ "$rc" -eq 0 ] || fail "$tag: current cold check exit"
+  grep -qx 'verdict: ok' "$w/recovery-cold-current.check.out" || fail "$tag: current cold verdict"
+  grep -qx 'journal: cold (harmless; reused by the next write)' "$w/recovery-cold-current.check.out" || fail "$tag: current cold journal line"
+  [ ! -s "$w/recovery-cold-current.check.err" ] || fail "$tag: current cold stderr not empty"
   [ "$(sha "$r3w/store.sqlite")" = "$s_r3" ] || fail "$tag: current cold check wrote the store"
   [ "$(sha "$r3w/store.sqlite-journal")" = "$j_r3" ] || fail "$tag: current cold check wrote the journal"
   set +e; "$CTL" store migrate --path "$r3w/store.sqlite" --config "$r3w/config.toml" --backup-dir "$r3w/backups" \

@@ -601,9 +601,10 @@ caseMigrateCliColdWal = withScratch "ctl-migrate" $ \dir -> do
   shmLeft <- doesFileExist (store ++ "-shm")
   assertBool "no -shm created" (not shmLeft)
 
--- A current store with a cold journal needs no migration and the
--- journal is left untouched: clearing runs only when the plan says
--- the migration proceeds.
+-- A current store with a cold journal is openable: the check
+-- exits 0 with the harmless-journal line (the serving open takes
+-- the store and the next write reuses the file), while migrate
+-- still needs nothing and leaves the journal untouched.
 caseMigrateCliSchema3Cold :: IO ()
 caseMigrateCliSchema3Cold = withScratch "ctl-migrate" $ \dir -> do
   let store = dir </> "store.sqlite"; backups = dir </> "backups"; journal = store ++ "-journal"
@@ -615,8 +616,10 @@ caseMigrateCliSchema3Cold = withScratch "ctl-migrate" $ \dir -> do
   BS.writeFile journal (BS.replicate 512 0)
   jBefore <- BS.readFile journal
   c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
-  assertEqual "check refuses the cold journal" 1 (ceCode c)
-  assertBool "check names cold" ("store-journal-cold:" `isPrefixOf` ceErr c)
+  assertEqual "check accepts the cold journal on a current store" 0 (ceCode c)
+  assertBool "verdict ok" ("verdict: ok" `isInfixOf` ceOut c)
+  assertBool "journal line" ("journal: cold (harmless; reused by the next write)" `elem` lines (ceOut c))
+  assertEqual "quiet stderr" "" (ceErr c)
   m <- migrateCli store cfgPath backups
   assertEqual "migrate needs nothing" 0 (ceCode m)
   assertBool "not needed" ("migrate-not-needed:" `isPrefixOf` ceOut m)

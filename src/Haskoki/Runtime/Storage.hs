@@ -457,7 +457,7 @@ data StoreError
     -- tools refuse rather than recover it (see the recovery guide).
     -- Never a @-wal@ or @-shm@ file: those are 'StoreForeignSidecar'.
   | StoreJournalCold !FilePath
-    -- ^ An interrupted migration left this rollback journal cold
+    -- ^ An interrupted write left this rollback journal cold
     -- (SQLite itself treats it as not hot, so the database already
     -- reads as committed state). The check refuses it distinctly;
     -- only the explicit migration clears it, under exclusive locks.

@@ -101,12 +101,13 @@ storeCheckCommand args0 = case strictFlagsSwitch ["--path", "--config"] "--async
 checkSelected :: FilePath -> FilePath -> Bool -> Config -> IO (Int, String, String)
 checkSelected path cfgPath asyncHome cfg = do
   r <- try (checkStoreOpen path cfg) :: IO (Either SomeException (Either StoreError StoreOpenPlan))
-  pure $ case r of
-    Left ex -> (1, "", line (renderCheckUnexpectedFailure ex))
+  case r of
+    Left ex -> pure (1, "", line (renderCheckUnexpectedFailure ex))
     Right (Left (StoreIO m))
-      | "no store file" `isPrefixOf` m -> (1, "", line ("store-missing", m))
-    Right (Left se) -> (1, "", line (renderStoreRefusal se))
-    Right (Right plan) -> case planVerdict plan of
+      | "no store file" `isPrefixOf` m -> pure (1, "", line ("store-missing", m))
+    Right (Left cold@(StoreJournalCold _)) -> coldOkOrRefusal cold
+    Right (Left se) -> pure (1, "", line (renderStoreRefusal se))
+    Right (Right plan) -> pure $ case planVerdict plan of
       VerdictOpenable -> (0, renderPlan plan, "")
       VerdictMigrationRequired -> (1, renderPlan plan, line ("store-migration-required",
         "stop the store owner, then run haskoki-ctl store migrate --path " ++ path
@@ -114,6 +115,18 @@ checkSelected path cfgPath asyncHome cfg = do
           ++ (if asyncHome then " --async-home" else "")))
       VerdictIdentityRefused ir ->
         (1, renderPlan plan, line ("store-identity-refused", renderIdentityRefusal ir))
+  where
+    -- A cold journal whose plan is otherwise openable is not a
+    -- refusal: the serving open takes the store and the next write
+    -- reuses the file. Any other retry outcome keeps the cold
+    -- refusal.
+    coldOkOrRefusal cold = do
+      r2 <- try (checkStoreOpenAllowCold path cfg)
+        :: IO (Either SomeException (Either StoreError StoreOpenPlan))
+      pure $ case r2 of
+        Right (Right plan) | planVerdict plan == VerdictOpenable ->
+          (0, renderPlan plan ++ "journal: cold (harmless; reused by the next write)\n", "")
+        _ -> (1, "", line (renderStoreRefusal cold))
 
 migrateUsage :: String
 migrateUsage = unlines

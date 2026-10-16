@@ -550,26 +550,29 @@ the service to clear it. Move `<store>-wal` and `<store>-shm` aside
 (`caseForeignSidecarRemedy` in `tests/storage/PreflightSpec.hs`,
 `caseServingRefusesForeignWal` there).
 
-A cold journal is refused distinctly: `store check` reports
-`store-journal-cold` and names `store migrate` as the remedy, touching
-neither file. `store migrate` first plans through a read-only snapshot
-that tolerates the cold journal; only when the plan says the migration
-proceeds does it clear the journal under exclusive locks (the owner
-probe passes, single-writer ownership is held, no `-wal` or `-shm`
-sibling exists even zero-byte, a SQLite `RESERVED` lock is taken, the
-journal is still cold on re-read; see `clearColdJournal` in
+A cold journal on a store that still needs migration is refused
+distinctly: `store check` reports `store-journal-cold` and names
+`store migrate` as the remedy, touching neither file. `store migrate`
+first plans through a read-only snapshot that tolerates the cold
+journal; only when the plan says the migration proceeds does it clear
+the journal under exclusive locks (the owner probe passes,
+single-writer ownership is held, no `-wal` or `-shm` sibling exists
+even zero-byte, a SQLite `RESERVED` lock is taken, the journal is
+still cold on re-read; see `clearColdJournal` in
 `src/Haskoki/Runtime/Storage/SQLite.hs`) and then migrate, recording
 `cold-journal-removed: yes` in the receipt and on stdout
 (`caseMigrateClearsColdJournal`, `caseKilledSmallMigrationClears` in
 `tests/storage/PreflightSpec.hs`). Any other outcome leaves the journal
-untouched: a current store reports `migrate-not-needed` with the journal
-still in place (`caseMigrateCliSchema3Cold` in
-`tests/storage/StoreCtlSpec.hs`); for a current store the cold journal
-is harmless (SQLite already reads committed state, the serving open
-succeeds, and the next write transaction reuses the file). A cold
-journal while another process holds `RESERVED` stays refused
-(`caseColdJournalReservedRefuses`). A migration with no cold journal
-records `cold-journal-removed: no`
+untouched. A cold journal on a current store is not a refusal at all:
+`store check` exits 0 with `verdict: ok` and the line `journal: cold
+(harmless; reused by the next write)`, touching neither file, and
+`store migrate` reports `migrate-not-needed` with the journal still in
+place (`caseMigrateCliSchema3Cold` in `tests/storage/StoreCtlSpec.hs`);
+the journal is harmless there (SQLite already reads committed state,
+the serving open succeeds, and the next write transaction reuses the
+file). A cold journal while another process holds `RESERVED` stays
+refused (`caseColdJournalReservedRefuses`). A migration with no cold
+journal records `cold-journal-removed: no`
 (`caseMigrateReceiptColdJournalNo`).
 
 ### Restore from a backup
