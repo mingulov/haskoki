@@ -252,7 +252,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (ord)
 import qualified Data.ByteString.Unsafe as BSU
-import Data.List (find, sort)
+import Data.List (find)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -328,7 +328,7 @@ import Haskoki.FFI.Encode
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.FFI.Instance (Instance (..), InstanceCell, readLiveInstance)
 import Haskoki.FFI.Notify
-import Haskoki.Runtime.Catalog (effectiveCatalog, homeCatalogEntry, identityCatalog, tokenSerial)
+import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, effectiveCatalog, homeCatalogEntry, identityCatalog, tokenSerial)
 import Haskoki.Runtime.Control (PresenceOwner (..), bindPresenceOwner)
 import Haskoki.Runtime.SlotEvents
   ( SlotEvents, SlotDefinition (..), SlotSnapshot (..), PresenceError (..), newSlotEvents
@@ -487,7 +487,6 @@ import Haskoki.Runtime.Lifecycle
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
-  , DesiredToken (..)
   , JobRecord (..)
   , ObjectPut (..)
   , ObjectRecord (orId)
@@ -504,6 +503,7 @@ import Haskoki.Runtime.Storage
   , reconcileJobsReload
   , reconcileReload
   , renderIdentityRefusal
+  , tokensWithoutCredentials
   )
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session
@@ -1088,7 +1088,7 @@ openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
                                   storeClose store
                                   pure (Left (StdStoreSQLite err))
                                 Right creds ->
-                                  case missingCredentials [t | (t, _) <- loaded] creds of
+                                  case tokensWithoutCredentials [t | (t, _) <- loaded] (map crToken creds) of
                                     legacy@(_ : _) -> do
                                       storeClose store
                                       pure (Left (StdStoreMigrationRequired legacy))
@@ -1108,10 +1108,7 @@ openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
           -- later catalog PIN edit never rebinds a token that already
           -- exists.
           let seedCreds =
-                [ CredentialRecord (trId t) (BC8.pack so) (Just (BC8.pack user))
-                | t <- seeds
-                , Just (_, so, user) <- [Map.lookup (trSlot t) catalog]
-                ]
+                [c | t <- seeds, Just c <- [catalogCredential cfg (trId t)]]
           res <- if null seeds
             then pure Committed
             else storeCommit store emptyDelta
@@ -1125,18 +1122,7 @@ openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
             _ -> do
               storeClose store
               pure (Left StdStoreCommit)
-    desired =
-      [ DesiredToken slot tid label
-      | (slot, (tid, label)) <- Map.toAscList (identityCatalog cfg)
-      ]
-
--- | The stored tokens with no durable credential row, ascending
--- by id.
-missingCredentials :: [TokenRecord] -> [CredentialRecord] -> [TokenId]
-missingCredentials tokens creds =
-  sort [trId t | t <- tokens, trId t `Set.notMember` withRow]
-  where
-    withRow = Set.fromList (map crToken creds)
+    desired = desiredTokens cfg
 
 -- | Reserve the durable handle/revision high-waters after a
 -- store reload: @mNextHandle@ advances past the maximum of the

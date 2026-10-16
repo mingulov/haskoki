@@ -122,6 +122,7 @@ import Haskoki.Runtime.Storage
   , renderSlotMoveRefusal
   , reserveRestoredIds
   , scriptedFaults
+  , tokensWithoutCredentials
   )
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
 import Haskoki.FFI.Standard
@@ -140,7 +141,7 @@ import Haskoki.FFI.Standard
   , openStdStoreWith
   )
 import Haskoki.Runtime.Async (newAsyncTable)
-import Haskoki.Runtime.Catalog (effectiveCatalog, identityCatalog, tokenSerial)
+import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, effectiveCatalog, identityCatalog, tokenSerial)
 import Haskoki.Runtime.Detached (markJobOpaque, openDetached)
 import Haskoki.Runtime.Config
   ( Config (..)
@@ -375,6 +376,9 @@ spec = testGroup "store contract"
       , testCase "duplicate desired identity refuses" caseDuplicateDesiredRefuses
       , testCase "reconciler enforces the home anchor" caseReconcilerHomeAnchor
       , testCase "token serial is the canonical 16-hex identity" caseTokenSerialCanonical
+      , testCase "desired tokens project the pinned catalog" caseDesiredTokensProject
+      , testCase "catalog credential follows identity, not position" caseCatalogCredentialByIdentity
+      , testCase "tokens without credentials are listed ascending" caseTokensWithoutCredentials
       ]
   , testGroup "standard open reconciliation"
       [ testCase "standard open seeds a fresh file positionally" caseOpenSeedsFresh
@@ -3163,13 +3167,6 @@ expectInvalid ctx body = case parseConfig body of
   Left err -> assertFailure (ctx ++ ": wrong refusal: " ++ show err)
   Right _ -> assertFailure (ctx ++ ": bad catalog parsed")
 
--- | Desired tokens from a config, in slot order.
-desiredOf :: Config -> [DesiredToken]
-desiredOf cfg =
-  [ DesiredToken slot tid label
-  | (slot, (tid, label)) <- Map.toAscList (identityCatalog cfg)
-  ]
-
 -- | Which credential reaches which objects: per slot, the
 -- configured user PIN, the durable identity seated there, and
 -- its owned object ids. Call only on aligned layouts (after an
@@ -3256,7 +3253,7 @@ testIdentitySeedAppend o = withStore o $ \s -> do
   loaded <- expectLoaded s
   cfg <- parseCatalog positionalDoc
   snapBefore <- snapshotBytes s
-  case reconcileIdentities (desiredOf cfg) [t | (t, _) <- loaded] of
+  case reconcileIdentities (desiredTokens cfg) [t | (t, _) <- loaded] of
     Left refusal ->
       assertFailure ("matching catalog refused: " ++ renderIdentityRefusal refusal)
     Right plan -> assertEqual "steady state seeds nothing" [] (planSeeds plan)
@@ -3266,7 +3263,7 @@ testIdentitySeedAppend o = withStore o $ \s -> do
   assertEqual "three credentials served" 3 (length reachBefore)
   cfgAppend <- parseCatalog (catalogDoc
     (threeLabels ++ ["haskoki-vault"]) (threeSo ++ ["8901"]) (threeUser ++ ["4567"]) [])
-  plan <- case reconcileIdentities (desiredOf cfgAppend) [t | (t, _) <- loaded] of
+  plan <- case reconcileIdentities (desiredTokens cfgAppend) [t | (t, _) <- loaded] of
     Left refusal -> assertFailure ("append refused: " ++ renderIdentityRefusal refusal)
     Right p -> pure p
   case planSeeds plan of
@@ -3296,7 +3293,7 @@ testIdentityReorderRefuses o = withStore o $ \s -> do
   let reachBefore = credentialReach cfg loaded
   bytesBefore <- snapshotBytes s
   cfgSwap <- parseCatalog swappedDoc
-  case reconcileIdentities (desiredOf cfgSwap) [t | (t, _) <- loaded] of
+  case reconcileIdentities (desiredTokens cfgSwap) [t | (t, _) <- loaded] of
     Left refusal@(RefuseSlotChanged tid _ _ _) -> do
       assertEqual "first drifted token" (TokenId 2) tid
       assertBool "refusal names the explicit move"
@@ -3323,7 +3320,7 @@ testIdentityInsertion o = withStore o $ \s -> do
     ["haskoki-demo", "haskoki-new", "haskoki-ops", "haskoki-audit"]
     ["5678", "1111", "6789", "7890"]
     ["1234", "2222", "2345", "3456"] [])
-  case reconcileIdentities (desiredOf cfgLegacyMid) stored of
+  case reconcileIdentities (desiredTokens cfgLegacyMid) stored of
     Left (RefuseLabelChanged tid _ _ _) ->
       assertEqual "legacy insert hits id 2" (TokenId 2) tid
     other -> assertFailure
@@ -3333,7 +3330,7 @@ testIdentityInsertion o = withStore o $ \s -> do
     ["5678", "1111", "6789", "7890"]
     ["1234", "2222", "2345", "3456"]
     ["1", "9", "2", "3"])
-  case reconcileIdentities (desiredOf cfgPinnedMid) stored of
+  case reconcileIdentities (desiredTokens cfgPinnedMid) stored of
     Left (RefuseSlotChanged tid _ _ _) ->
       assertEqual "pinned insert hits id 2" (TokenId 2) tid
     other -> assertFailure
@@ -3350,7 +3347,7 @@ testIdentityRemovalRefuses o = withStore o $ \s -> do
   bytesBefore <- snapshotBytes s
   cfgShrunk <- parseCatalog (catalogDoc
     ["haskoki-demo", "haskoki-ops"] ["5678", "6789"] ["1234", "2345"] [])
-  case reconcileIdentities (desiredOf cfgShrunk) [t | (t, _) <- loaded] of
+  case reconcileIdentities (desiredTokens cfgShrunk) [t | (t, _) <- loaded] of
     Left refusal@(RefuseStoredUnconfigured tid _ _) -> do
       assertEqual "unconfigured token" (TokenId 3) tid
       assertBool "refusal rules out pruning"
@@ -3376,7 +3373,7 @@ testIdentityLabelChangeRefuses o = withStore o $ \s -> do
   cfgRenamed <- parseCatalog (catalogDoc
     ["haskoki-demo", "haskoki-ops-renamed", "haskoki-audit"]
     threeSo threeUser [])
-  case reconcileIdentities (desiredOf cfgRenamed) [t | (t, _) <- loaded] of
+  case reconcileIdentities (desiredTokens cfgRenamed) [t | (t, _) <- loaded] of
     Left refusal@(RefuseLabelChanged tid _ durable desired) -> do
       assertEqual "renamed token" (TokenId 2) tid
       assertEqual "durable label" "haskoki-ops" durable
@@ -3448,7 +3445,7 @@ testIdentitySlotMoves o = withStore o $ \s -> do
   loaded1 <- expectLoaded s
   assertEqual "objects ride along under their identities" (owned loaded0) (owned loaded1)
   cfgSwap <- parseCatalog swappedDoc
-  case reconcileIdentities (desiredOf cfgSwap) [t | (t, _) <- loaded1] of
+  case reconcileIdentities (desiredTokens cfgSwap) [t | (t, _) <- loaded1] of
     Left refusal ->
       assertFailure ("post-swap catalog refused: " ++ renderIdentityRefusal refusal)
     Right planAfter ->
@@ -3482,7 +3479,7 @@ testIdentityFreshSeeds o = withStore o $ \s -> do
   loaded <- expectLoaded s
   assertEqual "fresh store loads empty" [] loaded
   cfg <- parseCatalog (catalogDoc threeLabels threeSo threeUser ["1", "2", "3"])
-  case reconcileIdentities (desiredOf cfg) [] of
+  case reconcileIdentities (desiredTokens cfg) [] of
     Left refusal -> assertFailure ("fresh seeds refused: " ++ renderIdentityRefusal refusal)
     Right plan -> do
       let seeds = planSeeds plan
@@ -3853,6 +3850,36 @@ caseTokenSerialCanonical = do
   assertEqual "serial is the stored id encoding"
     (encodeHex16 0x7fffffff) top
 
+caseDesiredTokensProject :: IO ()
+caseDesiredTokensProject = do
+  cfg <- parseCatalog swappedDoc
+  assertEqual "desired tokens follow the pinned ids"
+    [ DesiredToken (SlotId 0) (TokenId 1) "haskoki-demo"
+    , DesiredToken (SlotId 1) (TokenId 3) "haskoki-audit"
+    , DesiredToken (SlotId 2) (TokenId 2) "haskoki-ops"
+    ]
+    (desiredTokens cfg)
+
+caseCatalogCredentialByIdentity :: IO ()
+caseCatalogCredentialByIdentity = do
+  cfg <- parseCatalog swappedDoc
+  assertEqual "id 3 takes slot 1's PINs"
+    (Just (CredentialRecord (TokenId 3) "7890" (Just "3456")))
+    (catalogCredential cfg (TokenId 3))
+  assertEqual "id 2 takes slot 2's PINs"
+    (Just (CredentialRecord (TokenId 2) "6789" (Just "2345")))
+    (catalogCredential cfg (TokenId 2))
+  assertEqual "an unconfigured id has no catalog credential"
+    Nothing (catalogCredential cfg (TokenId 9))
+
+caseTokensWithoutCredentials :: IO ()
+caseTokensWithoutCredentials = do
+  let tok n = TokenRecord (TokenId n) (SlotId (fromIntegral n - 1)) (Generation 0) "t" tokenAuthNew
+  assertEqual "rowless ids, ascending"
+    [TokenId 1, TokenId 3]
+    (tokensWithoutCredentials [tok 3, tok 2, tok 1] [TokenId 2])
+  assertEqual "no tokens, no gaps" [] (tokensWithoutCredentials [] [TokenId 2])
+
 -- ---------------------------------------------------------------------------
 -- Standard open reconciliation
 -- ---------------------------------------------------------------------------
@@ -4094,7 +4121,7 @@ fileCredentials path = do
 seedLegacyTokens :: FilePath -> Config -> IO ()
 seedLegacyTokens path cfg = do
   loaded <- fileLoaded path
-  plan <- case reconcileIdentities (desiredOf cfg) [t | (t, _) <- loaded] of
+  plan <- case reconcileIdentities (desiredTokens cfg) [t | (t, _) <- loaded] of
     Left refusal -> assertFailure ("legacy seed must plan: " ++ show refusal)
     Right plan -> pure plan
   r <- commitFile path emptyDelta { sdPutTokens = planSeeds plan }
@@ -4167,7 +4194,7 @@ caseOpenIdentityRefusalPrecedesMigration = withOpenFile $ \path -> do
 -- | The catalog's fresh token rows (what an open of an empty
 -- store would seed).
 catalogSeeds :: Config -> IO [TokenRecord]
-catalogSeeds cfg = case reconcileIdentities (desiredOf cfg) [] of
+catalogSeeds cfg = case reconcileIdentities (desiredTokens cfg) [] of
   Left refusal -> assertFailure ("empty-store plan refused: " ++ show refusal)
   Right plan -> pure (planSeeds plan)
 

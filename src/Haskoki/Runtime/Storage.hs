@@ -82,6 +82,7 @@ module Haskoki.Runtime.Storage
   , ReconcilePlan (..)
   , reconcileIdentities
   , renderIdentityRefusal
+  , tokensWithoutCredentials
   , SlotMoveRefusal (..)
   , planSlotMoves
   , renderSlotMoveRefusal
@@ -128,6 +129,7 @@ import Data.Char (chr, isHexDigit, ord)
 import Data.List (nub, sort, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Word (Word8, Word64)
 
 import Control.Exception (Exception)
@@ -907,6 +909,14 @@ data IdentityRefusal
 data ReconcilePlan = ReconcilePlan
   { planSeeds :: ![TokenRecord]
   } deriving (Eq, Show)
+
+-- | The stored tokens with no credential row, ascending by id: the
+-- set a legacy store must freeze before it serves.
+tokensWithoutCredentials :: [TokenRecord] -> [TokenId] -> [TokenId]
+tokensWithoutCredentials tokens holders =
+  sort [trId t | t <- tokens, trId t `Set.notMember` withRow]
+  where
+    withRow = Set.fromList holders
 
 -- | Compare the configured catalog against the stored tokens.
 -- Shape checks (home anchor, duplicate identities) run first;
