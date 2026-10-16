@@ -29,6 +29,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
 import OwnershipCounters (assertZero, counted)
+import StormBudget (stormScaleBudget)
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Model (Model (..), SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Codec (encodeInitInput)
@@ -374,20 +375,12 @@ openSecondSession gen = do
   enableAsyncSession (lgTable gen) sid
   pure st
 
--- | Storm-scale no-wedge budget for race-worker joins: 300
--- seconds of wall clock. Partial machine stalls legitimately
--- exceed 60 seconds while every worker still progresses; the
--- budget bounds hang detection, never the work itself. A join
--- that never completes still fails loudly, naming the worker.
-wedgeBudget :: Int
-wedgeBudget = 300000000
-
 -- | No-wedge join for race workers: a lock inversion would hang the
 -- take, so the storm-scale backstop fails loudly instead of
 -- wedging the suite.
 joinBounded :: String -> MVar a -> IO a
 joinBounded name mv = do
-  r <- timeout wedgeBudget (takeMVar mv)
+  r <- timeout stormScaleBudget (takeMVar mv)
   case r of
     Nothing -> assertFailure ("wedged (>300s): " ++ name)
     Just v -> pure v

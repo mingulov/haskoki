@@ -36,6 +36,7 @@ import Control.Monad (replicateM, when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Word (Word64)
+import GHC.Clock (getMonotonicTime)
 import qualified Database.SQLite3 as S
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
@@ -217,8 +218,7 @@ reserveJoinBudget :: Int
 reserveJoinBudget = 300000000
 
 -- | Reservation-join survey slice: 10 milliseconds between result
--- surveys. Oversleep under load only extends patience, never
--- causes a false timeout.
+-- surveys.
 joinPollSlice :: Int
 joinPollSlice = 10000
 
@@ -411,15 +411,21 @@ collectReserveResults
   :: [MVar [Either StoreError Word64]]
   -> [MVar (Either SomeException ())]
   -> IO [[Either StoreError Word64]]
-collectReserveResults resultVars outcomes = go reserveJoinBudget
+collectReserveResults resultVars outcomes = do
+  t0 <- getMonotonicTime
+  go (t0 + budgetSeconds)
   where
-    go left
-      | left <= 0 = do
+    budgetSeconds :: Double
+    budgetSeconds = fromIntegral reserveJoinBudget / 1000000
+    go deadline = do
+      now <- getMonotonicTime
+      if now >= deadline
+        then do
           failed <- workerFailures outcomes
           case failed of
             (t, e) : _ -> assertFailure ("reserve worker " ++ show t ++ " failed: " ++ show e)
             [] -> assertFailure "reserve workers timed out"
-      | otherwise = do
+        else do
           snaps <- mapM tryReadMVar resultVars
           case sequence snaps of
             Just _ -> mapM takeMVar resultVars
@@ -427,7 +433,7 @@ collectReserveResults resultVars outcomes = go reserveJoinBudget
               failed <- workerFailures outcomes
               case failed of
                 (t, e) : _ -> assertFailure ("reserve worker " ++ show t ++ " failed: " ++ show e)
-                [] -> threadDelay joinPollSlice >> go (left - joinPollSlice)
+                [] -> threadDelay joinPollSlice >> go deadline
 
 -- | The index and exception of every worker whose outcome cell
 -- already holds a failure (non-consuming: the 'withWorker' join

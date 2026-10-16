@@ -30,6 +30,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
+import GHC.Clock (getMonotonicTime)
 import System.Directory
   ( createDirectory
   , doesDirectoryExist
@@ -43,6 +44,7 @@ import Text.Read (readMaybe)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import StormBudget (stormScaleBudget)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model, SessionState (..), lookupSession)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
@@ -154,18 +156,7 @@ envInt name def lo hi = do
     Just n -> max lo (min hi n)
     Nothing -> def
 
--- | Shared storm-scale join deadline for every 'runWorkers'
--- join: 300 seconds for all N workers together. Partial machine
--- stalls (a swapped-out lock holder convoying every worker)
--- legitimately exceed 60 seconds while every worker still
--- progresses, so the deadline bounds hang detection, never the
--- work itself.
-workerJoinBudget :: Int
-workerJoinBudget = 300000000
-
 -- | Join survey slice: 10 milliseconds between outcome surveys.
--- Oversleep under load only extends patience, never causes a
--- false timeout.
 workerJoinSlice :: Int
 workerJoinSlice = 10000
 
@@ -179,20 +170,25 @@ workerJoinSlice = 10000
 runWorkers :: Int -> (Int -> IO ()) -> IO ()
 runWorkers n action = do
   workers <- mapM spawn [0 .. n - 1]
-  survey workers workerJoinBudget
+  t0 <- getMonotonicTime
+  survey workers (t0 + budgetSeconds)
   where
+    budgetSeconds :: Double
+    budgetSeconds = fromIntegral stormScaleBudget / 1000000
     spawn :: Int -> IO (ThreadId, MVar (Either SomeException ()))
     spawn t = do
       v <- newEmptyMVar
       tid <- forkIO (try (action t) >>= putMVar v)
       pure (tid, v)
-    survey :: [(ThreadId, MVar (Either SomeException ()))] -> Int -> IO ()
-    survey workers left
-      | left <= 0 = do
+    survey :: [(ThreadId, MVar (Either SomeException ()))] -> Double -> IO ()
+    survey workers deadline = do
+      now <- getMonotonicTime
+      if now >= deadline
+        then do
           pending <- pendingWorkers workers
           killWorkers workers
           assertFailure ("workers timed out: " ++ show pending)
-      | otherwise = do
+        else do
           snaps <- mapM (tryReadMVar . snd) workers
           case sequence snaps of
             Just outs -> mapM_ (checkDone workers) (zip [0 ..] outs)
@@ -200,7 +196,7 @@ runWorkers n action = do
               Just (t, e) -> do
                 killWorkers workers
                 assertFailure ("worker " ++ show t ++ " failed: " ++ show e)
-              Nothing -> threadDelay workerJoinSlice >> survey workers (left - workerJoinSlice)
+              Nothing -> threadDelay workerJoinSlice >> survey workers deadline
     checkDone :: [(ThreadId, MVar (Either SomeException ()))] -> (Int, Either SomeException ()) -> IO ()
     checkDone _ (_, Right ()) = pure ()
     checkDone workers (t, Left e) = do
@@ -239,23 +235,26 @@ killWorkers workers = do
 -- | A failing worker must not strand its siblings: the join kills
 -- every worker on the failure path, so no live thread outlives the
 -- case into teardown (live sqlite workers once recreated journal
--- files mid-cleanup). Worker 0 fails at once; worker 1 naps past
--- any test bound and reports its own death. The nap is a delay,
--- never an unreachable 'MVar' (the collector would reap that
--- itself and fake the kill).
+-- files mid-cleanup). Worker 0 fails only after worker 1 signals
+-- it has installed its death handler; worker 1 naps past any test
+-- bound and reports its own death. The nap is a delay, never an
+-- unreachable 'MVar' (the collector would reap that itself and
+-- fake the kill).
 caseStragglersDie :: IO ()
 caseStragglersDie = do
   diedVar <- newEmptyMVar
-  r <- try (runWorkers 2 (worker diedVar)) :: IO (Either SomeException ())
+  startedVar <- newEmptyMVar
+  r <- try (runWorkers 2 (worker diedVar startedVar)) :: IO (Either SomeException ())
   case r of
     Left _ -> pure ()
     Right () -> assertFailure "the failing worker must fail the join"
   mDied <- timeout 5000000 (takeMVar diedVar)
   assertBool "the straggler was killed" (isJust mDied)
   where
-    worker :: MVar () -> Int -> IO ()
-    worker _ 0 = assertFailure "sibling boom"
-    worker died _ = threadDelay 300000000 `onException` putMVar died ()
+    worker :: MVar () -> MVar () -> Int -> IO ()
+    worker _ started 0 = takeMVar started >> assertFailure "sibling boom"
+    worker died started _ =
+      (putMVar started () >> threadDelay 300000000) `onException` putMVar died ()
 
 -- | Canned effect answer (64 bytes, matching the attached capacity).
 cannedSig :: ByteString

@@ -95,6 +95,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import OwnershipCounters (assertCensusZero, assertZero, counted, emitCounters)
+import StormBudget (stormScaleBudget)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import qualified Haskoki.Engine.Backend as B
 import Haskoki.Engine.Driver (encodeResult, runEffect, toCryptoError)
@@ -408,20 +409,11 @@ spec = testGroup "Ownership"
     ]
   ]
 
--- | Storm-scale no-wedge budget: 300 seconds of wall clock per
--- probe body. The bodies need well under a second of running
--- time, but partial machine stalls (a swapped-out lock holder
--- convoying the body) legitimately exceed 60 seconds; the budget
--- bounds hang detection, never the work itself. A body that never
--- finishes still fails loudly, naming the probe.
-wedgeBudget :: Int
-wedgeBudget = 300000000
-
 -- | No-wedge guard: every probe body runs under the storm-scale
--- 'wedgeBudget' 'timeout'.
+-- 'stormScaleBudget' 'timeout'.
 guarded :: String -> IO () -> IO ()
 guarded name body = do
-  r <- timeout wedgeBudget body
+  r <- timeout stormScaleBudget body
   case r of
     Nothing -> assertFailure ("wedged (>300s): " ++ name)
     Just () -> pure ()
