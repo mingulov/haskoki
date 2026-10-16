@@ -112,7 +112,12 @@ boundaries:
 - Message operations: [issue 23](https://github.com/mingulov/pkcs11-proxy-ng/issues/23).
 - Public async output ownership and detach/join: [issue 24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24).
 - Rich waits/callback/control semantics: [issue 25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25).
-- Certificate cross-session visibility/restart: [issue 27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27).
+
+The certificate visibility and restart legs run proxied. Two restart
+assertions check the proxy's own behavior instead of the provider's
+(nearest upstream reference:
+[issue 27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27)); see
+[proxy exclusions](proxy-exclusions.md#proxy-owned-divergences-inside-gated-consumers).
 
 Larger direct-only probes also exceed the proxy's request limit. These
 exclusions and the checker's frozen comparison differences are different

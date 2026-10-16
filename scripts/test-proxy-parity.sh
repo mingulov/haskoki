@@ -235,25 +235,30 @@ done
 # storage the leg passes in all four versions x both storages and is
 # gated; the shared-daemon attribution to #27 was wrong).
 # consumer_certificates:restart:sqlite and :restart:memory (both
-# re-probed 2026-10-16, after the storage-attribute fix, error in all
-# four versions; see docs/proxy-exclusions.md). The old sqlite failure,
-# restart-token-refind (0 matches proxied, 1 direct), was a Haskoki
-# defect, now fixed: objects created without CKA_PRIVATE read
-# CKR_ATTRIBUTE_TYPE_INVALID for it, and the proxy hides objects of
-# unknown privacy from a logged-out context it did not mint them in.
-# They now read CKA_PRIVATE false and the re-find passes proxied. What
-# remains is proxy behavior:
-#   sqlite: restart-stale-fault rv=0x150 expected=0x82. The proxy's
-#     virtual object handles are per client context and restart at 1,
-#     so the pre-restart handle names the first object found after
-#     re-initialize instead of faulting.
-#   memory: restart-memory-volatile matches=1 expected=0. The daemon
-#     never finalizes the backend on a client C_Finalize, so the
+# re-probed 2026-10-16, after the storage-attribute fix; REMOVED: the
+# restart leg is gated in both storages; see docs/proxy-exclusions.md).
+# The old sqlite failure, restart-token-refind (0 matches proxied, 1
+# direct), was a Haskoki defect, now fixed: objects created without
+# CKA_PRIVATE read CKR_ATTRIBUTE_TYPE_INVALID for it, and the proxy
+# hides objects of unknown privacy from a logged-out context it did not
+# mint them in. They now read CKA_PRIVATE false, and the re-find, the
+# CKA_PRIVATE readback and the CKA_PRIVATE find are compared proxied.
+# Two proxy behaviors branch on topology (printed on topology: lines,
+# recorded in proxy_owned_divergences of spec/findings-ledger.json):
+#   stale handle: restart-stale-fault (sqlite) and
+#     restart-memory-stale-fault (memory) rv=0x150 proxied, 0x82
+#     direct. The proxy's virtual object handles are per client context
+#     and restart at 1, so the pre-restart handle names the first object
+#     found after re-initialize instead of faulting. The memory
+#     assertion first ran proxied once the leg was gated.
+#   memory: restart-memory-volatile matches=1 proxied, 0 direct. The
+#     daemon never finalizes the backend on a client C_Finalize, so the
 #     memory-store object outlives the client restart. The leg passed
 #     before only because the CKA_PRIVATE defect hid that object.
-# Upstream issue 27 is the reference for both: closed by design on
-# 2026-10-05 (backend objects outlive a client C_Finalize; per-client
-# teardown, which covers the per-context handles, deferred to v0.3):
+# Upstream issue 27 reports the memory symptom exactly (closed by
+# design on 2026-10-05: backend objects outlive a client C_Finalize;
+# per-client teardown deferred to v0.3); the sqlite divergence has no
+# upstream issue, and 27 is its nearest reference:
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/27.
 # consumer_certificates:create+find+lifecycle+atomicity:3.1 (R9:
 # REMOVED on v0.2.2 — all hold, 112/174/215/87 forwarded lines
@@ -265,9 +270,7 @@ done
 # https://github.com/mingulov/pkcs11-proxy-ng/issues/36.
 DIRECT_ONLY="message_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/23
 async_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/24
-notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25
-consumer_certificates:restart:sqlite:https://github.com/mingulov/pkcs11-proxy-ng/issues/27
-consumer_certificates:restart:memory:https://github.com/mingulov/pkcs11-proxy-ng/issues/27"
+notifications_routed:https://github.com/mingulov/pkcs11-proxy-ng/issues/25"
 for entry in $DIRECT_ONLY; do
   dname="${entry%%:*}"; durl="${entry#*:}"
   [ -n "$durl" ] && [ "$durl" != "$entry" ] \

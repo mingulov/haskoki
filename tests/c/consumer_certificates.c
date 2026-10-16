@@ -53,7 +53,7 @@ static const char *legs[] = {"create", "find", "lifecycle", "visibility",
   "atomicity", "restart"};
 static CK_SLOT_ID slots[2];
 static unsigned slot_count;
-static int live, failed;
+static int live, failed, is_proxy;
 static unsigned assertions;
 static void *module;
 static char fixture_config[PATH_MAX];
@@ -70,6 +70,7 @@ static CK_BYTE hsubj[32], hiss[32];
 static int check(int, const char *);
 static int expect(CK_RV, CK_RV, const char *);
 static int filled(const void *, size_t);
+static int topology_check(int, const char *, const char *);
 static void setup_error(const char *);
 static void sha256(const CK_BYTE *, size_t, CK_BYTE[32]);
 static void load_fixture(void);
@@ -538,9 +539,36 @@ static void leg_atomicity(void) {
   STEP(finalize());
 }
 
+/* The pre-restart handle must fault. Proxied, it names the first object
+ * found after re-initialize (the re-found token certificate, whose value
+ * does not fit the buffer), so each topology asserts its own result.
+ * With a canary name, direct also proves the buffer untouched. */
+static void stale_fault(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
+    const char *name, const char *canary) {
+  CK_BYTE buf[64]; memset(buf, 0xa5, sizeof buf);
+  CK_ATTRIBUTE get[] = {{CKA_VALUE, buf, sizeof buf}};
+  CK_RV got = a.GetAttributeValue(h, o, get, N(get));
+  CK_RV want = is_proxy ? CKR_BUFFER_TOO_SMALL : CKR_OBJECT_HANDLE_INVALID;
+  char detail[64];
+  snprintf(detail, sizeof detail, "rv=0x%lx expected=0x%lx",
+    (unsigned long)got, (unsigned long)want);
+  if (!topology_check(got == want, name, detail)) return;
+  if (canary && !is_proxy)
+    (void)topology_check(filled(buf, sizeof buf) &&
+      get[0].ulValueLen == sizeof buf, canary, "buffer");
+}
+
 /* T-C02 caseCertTokenRestart/caseCertSessionVolatile. Token certs
  * survive a SQLite restart with exact readback and fresh handles;
- * session certs never survive; memory stays volatile. */
+ * session certs never survive; memory stays volatile.
+ * Two behaviors are proxy-owned divergences (HASKOKI_CONSUMER_TOPOLOGY=
+ * proxy; docs/proxy-exclusions.md). pkcs11-proxy-ng v0.2.2 keeps the
+ * backend initialized across a client C_Finalize, so a memory-store
+ * token object survives the client restart; and its object handles are
+ * per client context and start again at 1, so the pre-restart handle
+ * names the first object found after re-initialize (both storages).
+ * Each topology asserts its own behavior on a topology: line;
+ * everything else is compared. */
 static void leg_restart(void) {
   STEP(initialize());
   unsigned d = demo_slot();
@@ -584,19 +612,20 @@ static void leg_restart(void) {
     CK_ATTRIBUTE qp[] = {qt[0], {CKA_PRIVATE, &no, sizeof no}};
     STEP(find_count(h, qp, N(qp), 1, "restart-private-find"));
     STEP(find_count(h, qs, N(qs), 0, "restart-session-gone"));
-    CK_BYTE buf[64]; memset(buf, 0xa5, sizeof buf);
-    CK_ATTRIBUTE get[] = {{CKA_VALUE, buf, sizeof buf}};
-    RV(a.GetAttributeValue(h, o, get, N(get)), CKR_OBJECT_HANDLE_INVALID,
-      "restart-stale-fault");
-    REQUIRE(filled(buf, sizeof buf) && get[0].ulValueLen == sizeof buf,
-      "restart-stale-canary");
+    STEP(stale_fault(h, o, "restart-stale-fault", "restart-stale-canary"));
   } else {
-    STEP(find_count(h, qt, N(qt), 0, "restart-memory-volatile"));
+    CK_OBJECT_HANDLE kept[8];
+    for (unsigned i = 0; i < N(kept); ++i) kept[i] = SENTINEL;
+    unsigned total = find_all(h, qt, N(qt), kept, N(kept));
+    if (failed) return;
+    /* Proxied, the daemon never finalized the memory store. */
+    unsigned want = is_proxy ? 1 : 0;
+    char detail[64];
+    snprintf(detail, sizeof detail, "matches=%u expected=%u", total, want);
+    if (!topology_check(total == want, "restart-memory-volatile", detail))
+      return;
     STEP(find_count(h, qs, N(qs), 0, "restart-memory-session-gone"));
-    CK_BYTE buf[64]; memset(buf, 0xa5, sizeof buf);
-    CK_ATTRIBUTE get[] = {{CKA_VALUE, buf, sizeof buf}};
-    RV(a.GetAttributeValue(h, o, get, N(get)), CKR_OBJECT_HANDLE_INVALID,
-      "restart-memory-stale-fault");
+    STEP(stale_fault(h, o, "restart-memory-stale-fault", NULL));
   }
   RV(a.CloseSession(h), CKR_OK, "restart-close");
   STEP(finalize());
@@ -616,6 +645,17 @@ static int expect(CK_RV got, CK_RV want, const char *name) {
   printf("certificates:%s/%s/%s/%s rv=0x%lx expected=0x%lx\n", leg, name,
     version, storage, (unsigned long)got, (unsigned long)want);
   return check(got == want, name);
+}
+/* A topology-specific assertion: printed on a topology: line, which the
+ * parity driver drops from the diff, and not counted in the compared
+ * assertions. A mismatch still fails the leg in either topology. */
+static int topology_check(int good, const char *name, const char *detail) {
+  if (failed) return 0;
+  printf("topology: certificates:%s/%s/%s/%s %s %s check=%s\n", leg, name,
+    version, storage, is_proxy ? "proxy" : "direct", detail,
+    good ? "pass" : "FAIL");
+  if (!good) failed = 1;
+  return good;
 }
 static int filled(const void *memory, size_t n) {
   const CK_BYTE *p = memory;
@@ -1062,6 +1102,8 @@ static int child(const char *path, unsigned v, unsigned s, unsigned l) {
     setup_error("owned-child-directory");
   /* A process alarm is a crash/timeout, never assertion exit 1. */
   alarm(150);
+  const char *topology = getenv("HASKOKI_CONSUMER_TOPOLOGY");
+  is_proxy = topology && !strcmp(topology, "proxy");
   configure(l == 3 /* visibility configures two tokens */);
   load_table(path, v);
   load_fixture();
