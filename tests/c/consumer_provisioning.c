@@ -27,8 +27,8 @@
  *     strike counter. The replace legs race two distinct
  *     transitions (A->B vs A->C, then winner->D/E): exactly one
  *     racer wins, the loser is refused on the superseded old
- *     credential, and the durable credential advances with no
- *     torn state.
+ *     credential, and the serving credential advances with no
+ *     torn state (in-process probes only; no restart here).
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module and drives it through the pinned 3.2
@@ -840,20 +840,70 @@ static void *stale_worker(void *arg) {
 
 #define REPLACE_WORKERS 2
 
-static pthread_barrier_t g_replace_start;
+/* Fail-aware two-party rendezvous for the replace race: a plain
+ * pthread barrier cannot abort, so a worker that fails its open
+ * (or a pthread_create failure with only one worker alive) would
+ * leave the peer waiting forever and the join hanging. Here a
+ * worker failure broadcasts and every waiter fails cleanly. */
+static pthread_mutex_t g_replace_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_replace_cond = PTHREAD_COND_INITIALIZER;
+static int g_replace_arrived = 0;
+static int g_replace_failed = 0;
+static int g_replace_generation = 0;
 static CK_RV g_replace_rv[REPLACE_WORKERS];
 static const char *g_replace_old = "pin-alpha-01";
 static const char *g_replace_new[REPLACE_WORKERS] = { "pin-bravo-02",
                                                       "pin-charlie-03" };
 
+static void replace_barrier_reset(void) {
+  pthread_mutex_lock(&g_replace_mutex);
+  g_replace_arrived = 0;
+  g_replace_failed = 0;
+  g_replace_generation++;
+  pthread_mutex_unlock(&g_replace_mutex);
+}
+
+static void replace_barrier_fail(void) {
+  pthread_mutex_lock(&g_replace_mutex);
+  g_replace_failed = 1;
+  pthread_cond_broadcast(&g_replace_cond);
+  pthread_mutex_unlock(&g_replace_mutex);
+}
+
+static int replace_barrier_wait(void) {
+  int gen;
+  int rc = 0;
+  pthread_mutex_lock(&g_replace_mutex);
+  if (g_replace_failed) {
+    pthread_mutex_unlock(&g_replace_mutex);
+    return -1;
+  }
+  gen = g_replace_generation;
+  g_replace_arrived++;
+  if (g_replace_arrived == REPLACE_WORKERS) {
+    g_replace_arrived = 0;
+    g_replace_generation++;
+    pthread_cond_broadcast(&g_replace_cond);
+    pthread_mutex_unlock(&g_replace_mutex);
+    return 0;
+  }
+  while (gen == g_replace_generation && !g_replace_failed)
+    pthread_cond_wait(&g_replace_cond, &g_replace_mutex);
+  if (g_replace_failed) rc = -1;
+  pthread_mutex_unlock(&g_replace_mutex);
+  return rc;
+}
+
 static void *replace_worker(void *arg) {
   long id = (long)arg;           /* 0 -> B, 1 -> C */
   CK_SESSION_HANDLE sess = 0;
-  int brc;
   /* public RW session; NO login: the old PIN authenticates */
-  if (open_rw(0, &sess) != CKR_OK) { race_note_bad(); return NULL; }
-  brc = pthread_barrier_wait(&g_replace_start);
-  if (brc != 0 && brc != PTHREAD_BARRIER_SERIAL_THREAD) {
+  if (open_rw(0, &sess) != CKR_OK) {
+    race_note_bad();
+    replace_barrier_fail();
+    return NULL;
+  }
+  if (replace_barrier_wait() != 0) {
     race_note_bad();
     g_api->C_CloseSession(sess);
     return NULL;
@@ -877,17 +927,17 @@ static int run_replace_race(const char *tag) {
   int refused = 0;
 
   g_race_bad = 0;
-  if (pthread_barrier_init(&g_replace_start, NULL, REPLACE_WORKERS) != 0) {
-    CHECKC(0, "race: replace barrier init");
-    return 0;
-  }
+  for (i = 0; i < REPLACE_WORKERS; i++) g_replace_rv[i] = CKR_GENERAL_ERROR;
+  replace_barrier_reset();
   for (i = 0; i < REPLACE_WORKERS; i++) {
-    if (pthread_create(&workers[i], NULL, replace_worker, (void *)i) != 0)
+    if (pthread_create(&workers[i], NULL, replace_worker, (void *)i) != 0) {
+      CHECKC(0, "race: replace worker spawn");
+      replace_barrier_fail();
       break;
+    }
     created++;
   }
   for (i = 0; i < created; i++) pthread_join(workers[i], NULL);
-  pthread_barrier_destroy(&g_replace_start);
   for (i = 0; i < created; i++) {
     if (g_replace_rv[i] == CKR_OK) {
       ok++;

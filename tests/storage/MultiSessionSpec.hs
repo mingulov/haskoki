@@ -13,12 +13,11 @@ same cases.
 module MultiSessionSpec (spec) where
 
 import qualified Data.Map.Strict as Map
-import Data.Bits (complement, rotateR, shiftL, shiftR, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import Data.Char (chr)
-import Data.Word (Word8, Word32, Word64)
+import Data.Word (Word8)
 import Data.List (isInfixOf, sort, sortOn)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
@@ -1969,6 +1968,13 @@ pinDelta = "pin-delta-04"
 rvText :: ReturnCode -> String
 rvText rc = let CULong n = stdRvOf rc in show n
 
+-- | The FFI's @CKR_USER_PIN_NOT_INITIALIZED@ (0x102): the core
+-- has no such 'ReturnCode', so the serving layer answers the
+-- FFI-owned value ('ckrUserPinNotInitialized'); this is its
+-- test-local name, not a second literal per use.
+rvUserPinNotInitialized :: CULong
+rvUserPinNotInitialized = CULong 0x102
+
 -- | The journey store config: the two-token catalog over a SQLite
 -- file (slot 0 demo, slot 1 ops).
 journeyConfig :: FilePath -> Config
@@ -2010,16 +2016,17 @@ journeyTokenAuth path tid = do
 
 -- | PIN-observing helper: 'TokenAuth' carries counters and lock
 -- flags only; PIN bytes live in 'CredentialRecord'
--- ('crSoPin'/'crUserPin') via 'storeLoadCredentials'. Returns
--- SHA-256 digests, so comparisons never log credential bytes.
-journeyCredentialHash :: FilePath -> TokenId -> IO (ByteString, Maybe ByteString)
-journeyCredentialHash path tid = do
+-- ('crSoPin'/'crUserPin') via 'storeLoadCredentials'. Callers
+-- compare with 'assertBool' so failure output never logs
+-- credential bytes.
+journeyCredential :: FilePath -> TokenId -> IO CredentialRecord
+journeyCredential path tid = do
   eSt <- openSQLiteStore path
   st <- either (assertFailure . show) pure eSt
   creds <- either (assertFailure . show) pure =<< storeLoadCredentials st
   storeClose st
   case [c | c <- creds, crToken c == tid] of
-    [c] -> pure (sha256 (crSoPin c), sha256 <$> crUserPin c)
+    [c] -> pure c
     _ -> assertFailure ("expected one credential row for " ++ show tid)
 
 -- | Spawn one provision child over the path with the given script,
@@ -2076,8 +2083,9 @@ journeyChildren = [child1, child2, child3, child4, child5]
         ]
       )
     child4 =
-      ( "open,login/so/5678,init-pin/" ++ pinDelta ++ ",logout,login/user/" ++ pinDelta ++ ",logout,close"
+      ( "open,lock-check/" ++ pinCharlie ++ ",login/so/5678,init-pin/" ++ pinDelta ++ ",logout,login/user/" ++ pinDelta ++ ",logout,close"
       , [ "open=0"
+        , "lock-check/" ++ pinCharlie ++ "=" ++ rvText CKR_PIN_LOCKED
         , "login/so/5678=0"
         , "init-pin/" ++ pinDelta ++ "=0"
         , "logout=0"
@@ -2146,7 +2154,6 @@ journeySlotRows path tid = do
 caseProvisionJourneyFresh :: IO ()
 caseProvisionJourneyFresh =
   bracket (makeTempDir "haskoki-provision-journey") removeDirectoryRecursive $ \dir -> do
-    assertSha256Kat
     let path = dir </> "journey.db"
         cfg = journeyConfig path
     withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()
@@ -2165,14 +2172,16 @@ caseProvisionJourneyFresh =
       }
     storeClose st
     assertEqual "seed journey rows" Committed rSeed
-    witnessBefore <- journeySlotRows path (trId tokOps)
+    witnessBefore@(witnessObjs, witnessJobs) <- journeySlotRows path (trId tokOps)
+    assertEqual "witnessBefore: slot-1 seeded rows read back" (2, 2)
+      (length witnessObjs, length witnessJobs)
     -- Leg 1: a logged-in change to B.
     let (script1, expected1) = journeyChild 1
     childOut1 <- runProvisionChild dir path (dir </> "result-1") script1
     assertEqual "leg 1 lines" expected1 childOut1
-    (soHash1, userHash1) <- journeyCredentialHash path (trId tokDemo)
-    assertEqual "leg 1: SO PIN unchanged" (sha256 (BC8.pack "5678")) soHash1
-    assertEqual "leg 1: user PIN is B" (Just (sha256 (BC8.pack pinBravo))) userHash1
+    cred1 <- journeyCredential path (trId tokDemo)
+    assertBool "leg 1: SO PIN unchanged" (crSoPin cred1 == BC8.pack "5678")
+    assertBool "leg 1: user PIN is B" (crUserPin cred1 == Just (BC8.pack pinBravo))
     witnessAfter1 <- journeySlotRows path (trId tokOps)
     assertEqual "leg 1: slot-1 rows unchanged" witnessBefore witnessAfter1
     withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
@@ -2182,9 +2191,9 @@ caseProvisionJourneyFresh =
     let (script2, expected2) = journeyChild 2
     childOut2 <- runProvisionChild dir path (dir </> "result-2") script2
     assertEqual "leg 2 lines" expected2 childOut2
-    (soHash2, userHash2) <- journeyCredentialHash path (trId tokDemo)
-    assertEqual "leg 2: SO PIN unchanged" (sha256 (BC8.pack "5678")) soHash2
-    assertEqual "leg 2: user PIN is C" (Just (sha256 (BC8.pack pinCharlie))) userHash2
+    cred2 <- journeyCredential path (trId tokDemo)
+    assertBool "leg 2: SO PIN unchanged" (crSoPin cred2 == BC8.pack "5678")
+    assertBool "leg 2: user PIN is C" (crUserPin cred2 == Just (BC8.pack pinCharlie))
     -- Leg 3: three strikes lock the role; the right PIN then locks too.
     let (script3, expected3) = journeyChild 3
     childOut3 <- runProvisionChild dir path (dir </> "result-3") script3
@@ -2196,36 +2205,45 @@ caseProvisionJourneyFresh =
     let (script4, expected4) = journeyChild 4
     childOut4 <- runProvisionChild dir path (dir </> "result-4") script4
     assertEqual "leg 4 lines" expected4 childOut4
-    (soHash4, userHash4) <- journeyCredentialHash path (trId tokDemo)
-    assertEqual "leg 4: SO PIN unchanged" (sha256 (BC8.pack "5678")) soHash4
-    assertEqual "leg 4: user PIN is D" (Just (sha256 (BC8.pack pinDelta))) userHash4
+    cred4 <- journeyCredential path (trId tokDemo)
+    assertBool "leg 4: SO PIN unchanged" (crSoPin cred4 == BC8.pack "5678")
+    assertBool "leg 4: user PIN is D" (crUserPin cred4 == Just (BC8.pack pinDelta))
     auth4 <- journeyTokenAuth path (trId tokDemo)
     assertEqual "leg 4: lock cleared" False (taUserLocked auth4)
     assertEqual "leg 4: attempts reset" 0 (taUserAttempts auth4)
     -- Leg 5: reset drops only its own rows and unsets only its own user PIN.
+    (slot0ObjsBefore, slot0JobsBefore) <- journeySlotRows path (trId tokDemo)
+    assertEqual "leg 5 pre: slot-0 seeded rows read back" (2, 2)
+      (length slot0ObjsBefore, length slot0JobsBefore)
     let (script5, expected5) = journeyChild 5
     childOut5 <- runProvisionChild dir path (dir </> "result-5") script5
     assertEqual "leg 5 lines" expected5 childOut5
     (slot0Objs, slot0Jobs) <- journeySlotRows path (trId tokDemo)
     assertEqual "leg 5: slot-0 objects dropped" [] slot0Objs
     assertEqual "leg 5: slot-0 jobs dropped" [] slot0Jobs
-    (soHash5, userHash5) <- journeyCredentialHash path (trId tokDemo)
-    assertEqual "leg 5: SO PIN unchanged" (sha256 (BC8.pack "5678")) soHash5
-    assertEqual "leg 5: user PIN unset" Nothing userHash5
+    cred5 <- journeyCredential path (trId tokDemo)
+    assertBool "leg 5: SO PIN unchanged" (crSoPin cred5 == BC8.pack "5678")
+    assertBool "leg 5: user PIN unset" (crUserPin cred5 == Nothing)
+    auth5 <- journeyTokenAuth path (trId tokDemo)
+    assertEqual "leg 5: user unlocked" False (taUserLocked auth5)
+    assertEqual "leg 5: user attempts reset" 0 (taUserAttempts auth5)
+    assertEqual "leg 5: SO unlocked" False (taSoLocked auth5)
+    assertEqual "leg 5: SO attempts reset" 0 (taSoAttempts auth5)
     witnessAfter5 <- journeySlotRows path (trId tokOps)
     assertEqual "leg 5: slot-1 rows still unchanged" witnessBefore witnessAfter5
     withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
       h0 <- openAuthSession ctx
-      loginAs ctx h0 1 pinDelta >>= assertEqual "leg 5: user PIN uninitialized" (CULong 0x102)
+      loginAs ctx h0 1 pinDelta >>= assertEqual "leg 5: user PIN uninitialized"
+        rvUserPinNotInitialized
       sessionLoginOf ctx h0 >>= assertEqual "leg 5: slot-0 session public" (CULong 0)
       h1 <- openAuthSessionOn ctx 1
       sessionLoginOf ctx h1 >>= assertEqual "leg 5: slot-1 session public" (CULong 0)
 
 -- | The same five legs replayed over a store whose slot-1 rows are
 -- snapshotted at the raw-table level: slot-1 rows stay byte-equal
--- end to end. A perturbed copy of the snapshot must mismatch, so
--- the equality is a witnessed comparison, never a degenerate
--- empty pass.
+-- end to end. A credential-targeted perturbation of the snapshot
+-- must mismatch, so the equality is a witnessed comparison,
+-- never a degenerate empty pass.
 caseProvisionSiblingIsolation :: IO ()
 caseProvisionSiblingIsolation =
   bracket (makeTempDir "haskoki-provision-isolation") removeDirectoryRecursive $ \dir -> do
@@ -2245,7 +2263,14 @@ caseProvisionSiblingIsolation =
       }
     storeClose st
     assertEqual "seed slot-1 rows" Committed rSeed
+    (isoObjs, isoJobs) <- journeySlotRows path (trId tokOps)
+    assertEqual "isolation: slot-1 seeded rows read back" (2, 2)
+      (length isoObjs, length isoJobs)
     before <- slotSnapshot path (trId tokOps)
+    let rowsOfTable t = maybe [] id (lookup t before)
+    assertBool "isolation: objects in snapshot" (not (null (rowsOfTable "objects")))
+    assertBool "isolation: detached_jobs in snapshot" (not (null (rowsOfTable "detached_jobs")))
+    assertBool "isolation: credentials in snapshot" (not (null (rowsOfTable "credentials")))
     mapM_ (\n -> do
       let (script, expected) = journeyChild n
       out <- runProvisionChild dir path (dir </> ("result-" ++ show n)) script
@@ -2266,38 +2291,30 @@ slotSnapshot path tid = do
   let want = S.SQLText (T.pack (encodeHex16 (unTokenId tid)))
   pure [(t, filter (elem want) rows) | (t, rows) <- dump, t /= "store_meta"]
 
--- | Flip one byte in the first flippable cell of a snapshot copy
--- (the control: an empty snapshot has no flippable cell, so it
--- comes back unchanged and the control comparison passes, which
--- the caller treats as failure).
+-- | Flip one byte in the credential document of the snapshot's
+-- @credentials@ row (the control: the snapshot must carry the
+-- credential cells, so a targeted perturbation must mismatch; a
+-- snapshot without a flippable credential cell comes back
+-- unchanged and the control comparison passes, which the caller
+-- treats as failure).
 perturbSnapshot :: [(Text, [[S.SQLData]])] -> [(Text, [[S.SQLData]])]
-perturbSnapshot [] = []
-perturbSnapshot ((t, rows) : rest) =
-  case perturbRows rows of
-    Just rows' -> (t, rows') : rest
-    Nothing -> (t, rows) : perturbSnapshot rest
+perturbSnapshot snapshot = case break ((== "credentials") . fst) snapshot of
+  (_, []) -> snapshot
+  (pre, (t, rows) : post) -> case perturbCredentialRows rows of
+    Nothing -> snapshot
+    Just rows' -> pre ++ ((t, rows') : post)
 
--- | Flip one byte in the first flippable row ('Nothing' when no
--- row carries a flippable cell).
-perturbRows :: [[S.SQLData]] -> Maybe [[S.SQLData]]
-perturbRows [] = Nothing
-perturbRows (r : rs) = case perturbCells r of
-  Nothing -> (r :) <$> perturbRows rs
-  Just r' -> Just (r' : rs)
-
--- | Flip one byte in the first flippable cell ('Nothing' for an
--- empty or null-only row).
-perturbCells :: [S.SQLData] -> Maybe [S.SQLData]
-perturbCells [] = Nothing
-perturbCells (S.SQLBlob bs : cs) = case BS.uncons bs of
-  Nothing -> (S.SQLBlob bs :) <$> perturbCells cs
-  Just (b, rest) -> Just (S.SQLBlob (BS.cons (b + 1) rest) : cs)
-perturbCells (S.SQLText t : cs) = case T.uncons t of
-  Nothing -> (S.SQLText t :) <$> perturbCells cs
-  Just (c, rest) -> Just (S.SQLText (T.cons (if c == 'X' then 'Y' else 'X') rest) : cs)
-perturbCells (S.SQLInteger n : cs) = Just (S.SQLInteger (n + 1) : cs)
-perturbCells (S.SQLFloat x : cs) = Just (S.SQLFloat (x + 1) : cs)
-perturbCells (S.SQLNull : cs) = (S.SQLNull :) <$> perturbCells cs
+-- | Flip one byte in the @record_json@ cell (second column) of
+-- the first credentials row ('Nothing' when no row carries a
+-- flippable credential cell).
+perturbCredentialRows :: [[S.SQLData]] -> Maybe [[S.SQLData]]
+perturbCredentialRows [] = Nothing
+perturbCredentialRows (r : rs) = case r of
+  [tok, S.SQLText doc, ver] -> case T.uncons doc of
+    Nothing -> (r :) <$> perturbCredentialRows rs
+    Just (c, rest) ->
+      Just ([tok, S.SQLText (T.cons (if c == 'X' then 'Y' else 'X') rest), ver] : rs)
+  _ -> (r :) <$> perturbCredentialRows rs
 
 -- | A completed change leaves no stale grant behind: after one
 -- child moves the user PIN 1234 -> A -> B, a fresh process finds
@@ -2326,96 +2343,3 @@ caseProvisionStaleRefused =
     assertEqual "establish A then B" expectedA outA
     outB <- runProvisionChild dir path (dir </> "result-2") scriptB
     assertEqual "stale A refused, B serves" expectedB outB
-
--- | SHA-256 over short inputs (FIPS 180-4; a test-local
--- change detector so failure output carries digests, never
--- credential bytes). The storage suite has no digest dependency
--- and shells out to nothing, so the function lives here; it is
--- verified against the system @sha256sum@ over every PIN literal
--- used in this module plus @"abc"@ and the empty input, and
--- 'assertSha256Kat' pins it in the suite.
-sha256 :: ByteString -> ByteString
-sha256 input = BS.pack (concatMap be32 finalState)
-  where
-    be32 :: Word32 -> [Word8]
-    be32 w = map fromIntegral [w `shiftR` 24, w `shiftR` 16, w `shiftR` 8, w]
-    be64 :: Word64 -> [Word8]
-    be64 n = map fromIntegral [n `shiftR` s | s <- [56, 48, 40, 32, 24, 16, 8, 0]]
-    bytes = BS.unpack input
-    bitLen = fromIntegral (length bytes) * 8 :: Word64
-    padLen = (55 - length bytes) `mod` 64
-    padded = bytes ++ [0x80] ++ replicate padLen 0x00 ++ be64 bitLen
-    blocks = chunksOf 64 padded
-    finalState = tupleToList (foldl compress hInit (map (extend . map toW32 . chunksOf 4) blocks))
-    toW32 [a, b, c, d] =
-      (fromIntegral a `shiftL` 24) .|. (fromIntegral b `shiftL` 16)
-        .|. (fromIntegral c `shiftL` 8) .|. fromIntegral d
-    toW32 _ = 0
-    tupleToList (a, b, c, d, e, f, g, h) = [a, b, c, d, e, f, g, h]
-
--- | Split a list into chunks (a 'sha256' helper).
-chunksOf :: Int -> [a] -> [[a]]
-chunksOf _ [] = []
-chunksOf n xs = take n xs : chunksOf n (drop n xs)
-
--- | The SHA-256 initial state (a 'sha256' helper).
-hInit :: (Word32, Word32, Word32, Word32, Word32, Word32, Word32, Word32)
-hInit = (0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19)
-
--- | The SHA-256 round constants (a 'sha256' helper).
-kTable :: [Word32]
-kTable =
-  [ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5
-  , 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174
-  , 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da
-  , 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967
-  , 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85
-  , 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070
-  , 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3
-  , 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-  ]
-
--- | Extend sixteen block words to the sixty-four-word schedule (a
--- 'sha256' helper).
-extend :: [Word32] -> [Word32]
-extend seed = go seed 16
-  where
-    go ws i
-      | i > 63 = ws
-      | otherwise =
-          let v15 = ws !! (i - 15)
-              v2 = ws !! (i - 2)
-              s0 = rotateR v15 7 `xor` rotateR v15 18 `xor` (v15 `shiftR` 3)
-              s1 = rotateR v2 17 `xor` rotateR v2 19 `xor` (v2 `shiftR` 10)
-          in go (ws ++ [ws !! (i - 16) + s0 + ws !! (i - 7) + s1]) (i + 1)
-
--- | Compress one block into the running state (a 'sha256' helper).
-compress
-  :: (Word32, Word32, Word32, Word32, Word32, Word32, Word32, Word32)
-  -> [Word32]
-  -> (Word32, Word32, Word32, Word32, Word32, Word32, Word32, Word32)
-compress (a0, b0, c0, d0, e0, f0, g0, h0) ws =
-  let (a, b, c, d, e, f, g, h) = foldl step (a0, b0, c0, d0, e0, f0, g0, h0) (zip kTable ws)
-  in (a0 + a, b0 + b, c0 + c, d0 + d, e0 + e, f0 + f, g0 + g, h0 + h)
-  where
-    step (a, b, c, d, e, f, g, h) (k, w) =
-      let s1 = rotateR e 6 `xor` rotateR e 11 `xor` rotateR e 25
-          ch = (e .&. f) `xor` (complement e .&. g)
-          t1 = h + s1 + ch + k + w
-          s0 = rotateR a 2 `xor` rotateR a 13 `xor` rotateR a 22
-          maj = (a .&. b) `xor` (a .&. c) `xor` (b .&. c)
-          t2 = s0 + maj
-      in (t1 + t2, a, b, c, d + t1, e, f, g)
-
--- | The embedded digest is the real SHA-256 (FIPS 180-4 digest of
--- @"abc"@): without this pin a drifted oracle would still agree
--- with itself on both sides of every comparison.
-assertSha256Kat :: IO ()
-assertSha256Kat = assertEqual "sha256 KAT" expected (sha256 "abc")
-  where
-    expected = BS.pack
-      [ 0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea
-      , 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23
-      , 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c
-      , 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
-      ]
