@@ -65,6 +65,7 @@ module Haskoki.Runtime.Storage.SQLite
   , FileIdentity (..)
   , StoreSnapshot (..)
   , resolveStorePath
+  , resolveStorePathTracked
   , requireRegularStore
   , readStoreSnapshot
   , readStoreSnapshotAllowCold
@@ -269,13 +270,27 @@ openSQLiteStoreWith path limits inj = openSQLiteStoreWithHooks path limits inj n
 -- ('SQLiteTestHooks'); the storage suites use it to stimulate
 -- real statement failures on the store's own connection. The path
 -- is resolved once up front: every sidecar and every open below
--- derives from the real file.
+-- derives from the real file. A dangling symlink refuses: no store
+-- is ever created at a link target.
 openSQLiteStoreWithHooks
   :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
   -> IO (Either StoreError Store)
 openSQLiteStoreWithHooks path0 limits inj hooks = do
-  path <- resolveStorePath path0
-  openSQLiteStoreResolved path limits inj hooks
+  (path, sawLink) <- resolveStorePathTracked path0
+  if not sawLink
+    then openSQLiteStoreResolved path limits inj hooks
+    else do
+      -- A link that resolves to a missing target is dangling (a
+      -- moved store, an unmounted volume): refuse before taking
+      -- ownership, so neither the target nor its lock is created.
+      -- Only a proven-missing target refuses; anything else takes
+      -- the normal path and fails closed downstream.
+      eSt <- lstatOpt path
+      case eSt of
+        Right Nothing -> pure (Left (StoreIO
+          ("dangling symlink " ++ path0 ++ " (target " ++ path
+            ++ " is missing); refusing to create a store at a link target")))
+        _ -> openSQLiteStoreResolved path limits inj hooks
 
 -- | 'openSQLiteStoreWithHooks' on an already-resolved path.
 openSQLiteStoreResolved
@@ -2420,9 +2435,17 @@ anySidecarExists path = do
 -- back to the input unchanged (the downstream open then fails
 -- closed). No @filepath@ dependency: the splitting is local.
 resolveStorePath :: FilePath -> IO FilePath
-resolveStorePath p
-  | null p = pure p
-  | otherwise = follow (splitPath p) [] absolute0 0
+resolveStorePath p = fst <$> resolveStorePathTracked p
+
+-- | Like 'resolveStorePath', also reporting whether any path
+-- component was a symlink. The serving open refuses to create a
+-- store when the walk crossed a link and the resolved target is
+-- missing (a dangling link means a moved store or an unmounted
+-- volume, never a fresh one).
+resolveStorePathTracked :: FilePath -> IO (FilePath, Bool)
+resolveStorePathTracked p
+  | null p = pure (p, False)
+  | otherwise = follow (splitPath p) [] absolute0 False 0
   where
     absolute0 = case p of ('/' : _) -> True; _ -> False
     -- Absoluteness rides in the fold state: an absolute link target
@@ -2431,21 +2454,21 @@ resolveStorePath p
     -- leading slash when a relative path goes through an absolute
     -- symlink (and misdirects the later link probes at the mangled
     -- relative spelling).
-    follow :: [String] -> [String] -> Bool -> Int -> IO FilePath
-    follow [] stack absolute _ = pure (joinPath absolute stack)
-    follow (c : cs) stack absolute n
-      | c == ".." = follow cs (popForDotDot absolute stack) absolute n
+    follow :: [String] -> [String] -> Bool -> Bool -> Int -> IO (FilePath, Bool)
+    follow [] stack absolute saw _ = pure (joinPath absolute stack, saw)
+    follow (c : cs) stack absolute saw n
+      | c == ".." = follow cs (popForDotDot absolute stack) absolute saw n
       | otherwise = do
           eLink <- tryIOError (readSymbolicLink (joinPath absolute (stack ++ [c])))
           case eLink of
-            Left _ -> follow cs (stack ++ [c]) absolute n
+            Left _ -> follow cs (stack ++ [c]) absolute saw n
             Right link
-              | n >= 40 -> pure p
+              | n >= 40 -> pure (p, saw)
               | otherwise ->
                   let target = splitPath link
                   in case link of
-                       ('/' : _) -> follow (target ++ cs) [] True (n + 1)
-                       _ -> follow (target ++ cs) stack absolute (n + 1)
+                       ('/' : _) -> follow (target ++ cs) [] True True (n + 1)
+                       _ -> follow (target ++ cs) stack absolute True (n + 1)
     popForDotDot :: Bool -> [String] -> [String]
     popForDotDot absolute [] = if absolute then [] else [".."]
     popForDotDot absolute stack

@@ -105,6 +105,9 @@ spec = testGroup "Store commands"
   , testCase "migrate: a relative path through an absolute symlink migrates the target" caseMigrateRelativeThroughAbsoluteLink
   , testCase "open: a relative storage.path through an absolute symlink serves the target" caseOpenRelativeThroughAbsoluteLink
   , testCase "open: a relative storage.path never serves a mirrored directory" caseOpenRelativeThroughAbsoluteLinkMirror
+  , testCase "check: a dangling symlink refuses, creating nothing at the target" caseCheckDanglingLink
+  , testCase "migrate: a dangling symlink refuses, creating nothing at the target" caseMigrateDanglingLink
+  , testCase "open: a dangling symlink refuses, creating nothing at the target" caseOpenDanglingLink
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -1223,3 +1226,55 @@ caseOpenRelativeThroughAbsoluteLinkMirror = withScratch "ctl-rel" $ \dir -> do
   assertBool "no store created at the mangled path" (not mirrorLeft)
   roTexts realStore "SELECT value FROM store_meta WHERE key = 'schema_version'"
     >>= assertEqual "real store still served" ["3"]
+
+-- A dangling store symlink refuses as missing: the error names the
+-- resolved target, and nothing is created there.
+caseCheckDanglingLink :: IO ()
+caseCheckDanglingLink = withScratch "ctl-dangling" $ \dir -> do
+  let realDir = dir </> "real"; target = realDir </> "store.sqlite"; link = dir </> "link.sqlite"
+  createDirectory realDir
+  createSymbolicLink target link
+  cfgPath <- writeStoreConfig (dir </> "c.toml") link fixtureLabels fixtureSo fixtureUser
+  r <- check link cfgPath
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-missing:" `isPrefixOf` ceErr r)
+  assertBool "names the resolved target" (("no store file at " ++ target) `isInfixOf` ceErr r)
+  targetLeft <- doesFileExist target
+  lockLeft <- doesFileExist (target ++ ".lock")
+  assertBool "nothing created at the target" (not targetLeft)
+  assertBool "no lock at the target" (not lockLeft)
+
+-- A dangling store symlink refuses before ownership: no backup, no
+-- lock, nothing at the target.
+caseMigrateDanglingLink :: IO ()
+caseMigrateDanglingLink = withScratch "ctl-dangling" $ \dir -> do
+  let realDir = dir </> "real"; target = realDir </> "store.sqlite"; link = dir </> "link.sqlite"
+      backups = dir </> "backups"
+  createDirectory realDir
+  createDirectory backups
+  createSymbolicLink target link
+  cfgPath <- writeStoreConfig (dir </> "c.toml") link fixtureLabels fixtureSo fixtureUser
+  r <- migrateCli link cfgPath backups
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-unreadable:" `isPrefixOf` ceErr r)
+  assertBool "names the missing target" (("no store file at " ++ target) `isInfixOf` ceErr r)
+  targetLeft <- doesFileExist target
+  lockLeft <- doesFileExist (target ++ ".lock")
+  assertBool "nothing created at the target" (not targetLeft)
+  assertBool "no lock at the target" (not lockLeft)
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- The serving open never creates a store at a link target: a
+-- dangling symlink refuses, leaving the target absent.
+caseOpenDanglingLink :: IO ()
+caseOpenDanglingLink = withScratch "ctl-dangling" $ \dir -> do
+  let realDir = dir </> "real"; target = realDir </> "store.sqlite"; link = dir </> "link.sqlite"
+  createDirectory realDir
+  createSymbolicLink target link
+  cfgPath <- writeStoreConfig (dir </> "c.toml") link fixtureLabels fixtureSo fixtureUser
+  (ok, note) <- openRelStore cfgPath
+  assertBool ("serving open must refuse a dangling link, but opened: " ++ note) (not ok)
+  targetLeft <- doesFileExist target
+  lockLeft <- doesFileExist (target ++ ".lock")
+  assertBool "nothing created at the target" (not targetLeft)
+  assertBool "no lock at the target" (not lockLeft)
