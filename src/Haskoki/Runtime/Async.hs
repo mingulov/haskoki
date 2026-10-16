@@ -203,6 +203,7 @@ module Haskoki.Runtime.Async
   , startSeededJob
     -- * Operations
   , startJob
+  , startFixtureJob
   , effectHoldable
   , pollJob
   , completeJob
@@ -254,7 +255,14 @@ import qualified Data.Text as T
 import Data.Word (Word32, Word64)
 
 import Haskoki.Attribute (AttributeValue (..))
-import Haskoki.CallWork (callPairCompatible)
+import Haskoki.CallWork
+  ( CallFamily (..)
+  , CallWork
+  , callWorkEffect
+  , callWorkFamily
+  , callWorkReservation
+  , checkedCallWork
+  )
 import Haskoki.Engine.Driver (encodeResult)
 import Haskoki.Model (SessionState (..), lookupSession)
 import Haskoki.Object (decodeHandle, encodeHandle)
@@ -316,20 +324,20 @@ data JobFunction
 -- commit plus the effect the drive step runs. 'WorkCall' finishes
 -- through the call finisher; 'WorkKey' through the key finisher.
 data AsyncWork
-  = WorkCall !Reservation !EffectRequest
+  = WorkCall !CallWork
   | WorkKey !Reservation !PendingWork !CryptoEffect
   deriving (Eq, Show)
 
 -- | The effect a drive step runs for a job.
 workEffect :: AsyncWork -> CryptoEffect
-workEffect (WorkCall _ (EffectCrypto fx)) = fx
+workEffect (WorkCall w) = case callWorkEffect w of EffectCrypto fx -> fx
 workEffect (WorkKey _ _ fx) = fx
 
 -- | The reservation that guards a job's commit. The drive step
 -- refuses to run against stale revisions; the complete step
 -- re-validates through its finisher before publishing.
 workReservation :: AsyncWork -> Reservation
-workReservation (WorkCall res _) = res
+workReservation (WorkCall w) = callWorkReservation w
 workReservation (WorkKey res _ _) = res
 
 -- | A submit request: session, function, planned work, polls before
@@ -952,12 +960,13 @@ inspectTableClose table = snd <$> readTVarIO (atGate table)
 -- ---------------------------------------------------------------------------
 
 -- | Submit a job. Work/result compatibility, call-work coherence,
--- enablement, attached-capacity bounds, and live capacity are all
--- validated BEFORE pending, in one transaction with the id
--- allocation, so every refusal consumes no id and leaves the table
--- unchanged. Check order: holdability, call coherence, session,
--- attached capacity, live capacity. Terminal tombstones never
--- count toward live capacity (reap them with 'reapJob').
+-- outer-function coherence, enablement, attached-capacity bounds,
+-- and live capacity are all validated BEFORE pending, in one
+-- transaction with the id allocation, so every refusal consumes no
+-- id and leaves the table unchanged. Check order: holdability,
+-- call coherence, outer coherence, session, attached capacity,
+-- live capacity. Terminal tombstones never count toward live
+-- capacity (reap them with 'reapJob').
 startJob :: AsyncTable -> JobRequest -> IO (Either StartDeny JobId)
 startJob table req = startJobWith table req (JobPending (jrTicks req))
 
@@ -973,13 +982,26 @@ startSeededJob table req bs = startJobWith table req (JobReady (GotBytes bs))
 -- the given initial state, all in one transaction. The static
 -- work/result compatibility check runs first (a misconstructed
 -- job is refused however healthy the table is); then call-work
--- coherence ('callWorkAdmissible'); then session, attached
--- capacity, live capacity, as before.
+-- coherence ('callWorkAdmissible'); then outer-function coherence
+-- ('jobFunctionCoherent'); then session, attached capacity, live
+-- capacity, as before.
 startJobWith :: AsyncTable -> JobRequest -> JobState -> IO (Either StartDeny JobId)
-startJobWith table req initial
+startJobWith table req initial = startJobChecked table req initial True
+
+-- | TEST-ONLY fixture admission: the coherence gates are skipped so
+-- hand-built fixtures submit; holdability, session, capacity and
+-- live gates still apply. Production never calls this.
+startFixtureJob :: AsyncTable -> JobRequest -> IO (Either StartDeny JobId)
+startFixtureJob table req =
+  startJobChecked table req (JobPending (jrTicks req)) False
+
+startJobChecked :: AsyncTable -> JobRequest -> JobState -> Bool -> IO (Either StartDeny JobId)
+startJobChecked table req initial checkCoherence
   | not (effectHoldable (workEffect (jrWork req))) =
       pure (Left StartIncompatibleWork)
-  | not (callWorkAdmissible (jrSession req) (jrWork req)) =
+  | checkCoherence, not (callWorkAdmissible (jrSession req) (jrWork req)) =
+      pure (Left StartIncompatibleWork)
+  | checkCoherence, not (jobFunctionCoherent (jrFunction req) (jrWork req)) =
       pure (Left StartIncompatibleWork)
   | otherwise = do
       lock <- newMVar ()
@@ -1018,17 +1040,66 @@ startJobWith table req initial
       JobTerminal _ -> False
       _ -> True
 
--- | Submit-time call-work admissibility: call pairs must be
--- pair-compatible under the submitting session
--- ('Haskoki.CallWork.callPairCompatible' — step/session identity,
--- the function/slot family, and effect compatibility, with
--- legacy unstepped fixtures admitted explicitly and never by
--- content sniffing). Key pairs keep their existing contract:
--- submit admits them and the drive refuses incoherent ones
--- ('pairRefusal'), unchanged.
+-- | Submit-time call-work admissibility: the carried triple must
+-- re-check under the submitting session (step presence, step/session
+-- identity, the function/slot family, effect compatibility — first
+-- failure reports, before any id is consumed). Key pairs keep their
+-- existing contract: submit admits them and the drive refuses
+-- incoherent ones ('pairRefusal'), unchanged.
 callWorkAdmissible :: SessionId -> AsyncWork -> Bool
-callWorkAdmissible sid (WorkCall res eff) = callPairCompatible sid res eff
+callWorkAdmissible sid (WorkCall w) =
+  case checkedCallWork sid (callWorkReservation w) (callWorkEffect w) of
+    Right _ -> True
+    Left _ -> False
 callWorkAdmissible _ (WorkKey _ _ _) = True
+
+-- | Submit-time outer-function coherence: the stored 'JobFunction'
+-- must serve the inner work's family — sign work under 'JobSign',
+-- digest work under 'JobDigest' (families from 'callWorkFamily'),
+-- single-key work under 'JobGenKey', pair work under 'JobGenKeyPair'.
+-- Key matching is PendingWork-shape based and effect-blind: inner
+-- key/effect coherence stays a drive-time refusal, unchanged. All
+-- eight outer arms are explicit (no wildcard), and each inner
+-- 'PendingWork' case covers all 13 shapes explicitly: a new function
+-- or work shape breaks the build here. Non-keygen shapes pair with
+-- no outer and refuse.
+jobFunctionCoherent :: JobFunction -> AsyncWork -> Bool
+jobFunctionCoherent JobSign (WorkCall w) =
+  callWorkFamily w == FamilySign
+jobFunctionCoherent JobSign (WorkKey {}) = False
+jobFunctionCoherent JobDigest (WorkCall w) =
+  callWorkFamily w == FamilyDigest
+jobFunctionCoherent JobDigest (WorkKey {}) = False
+jobFunctionCoherent JobGenKey (WorkCall _) = False
+jobFunctionCoherent JobGenKey (WorkKey _ pw _) = case pw of
+  PwGenerateKey _ -> True
+  PwGenerateKeyIv _ _ -> True
+  PwGeneratePair _ _ -> False
+  PwEncaps _ _ _ -> False
+  PwDecaps _ -> False
+  PwBlobOut _ -> False
+  PwUnwrap _ -> False
+  PwUnwrapRaw _ -> False
+  PwUnwrapPad8 _ -> False
+  PwUnwrapTail _ _ _ -> False
+  PwDerive _ _ -> False
+  PwDeriveIv _ _ _ -> False
+  PwDerivePub _ _ -> False
+jobFunctionCoherent JobGenKeyPair (WorkCall _) = False
+jobFunctionCoherent JobGenKeyPair (WorkKey _ pw _) = case pw of
+  PwGenerateKey _ -> False
+  PwGenerateKeyIv _ _ -> False
+  PwGeneratePair _ _ -> True
+  PwEncaps _ _ _ -> False
+  PwDecaps _ -> False
+  PwBlobOut _ -> False
+  PwUnwrap _ -> False
+  PwUnwrapRaw _ -> False
+  PwUnwrapPad8 _ -> False
+  PwUnwrapTail _ _ _ -> False
+  PwDerive _ _ -> False
+  PwDeriveIv _ _ _ -> False
+  PwDerivePub _ _ -> False
 
 -- | Poll a job. A wrong-function poll is refused with the job
 -- untouched; a correct-function poll on a pending job counts down,
@@ -1173,7 +1244,8 @@ completeJob env table func jid del release =
         -- the held shape flows to the finishers, collapsing only at
         -- 'encodeResult'.
         JobReady h | isBytesLike h -> case jbWork job of
-          WorkCall res _ -> callComplete env table jid job del res h release
+          WorkCall w -> callComplete env table jid job del
+            (callWorkReservation w) h release
           WorkKey _ pw _ -> keyComplete env table jid job del pw h release
         -- A held non-bytes result is a data-shape failure, not a
         -- transition decision: the shape is read here, the failure
@@ -1621,7 +1693,9 @@ tombstoneBytes job =
 -- | Retained bytes of a job's planned work: the reservation plus
 -- the effect (call work), plus key-template bytes (key work).
 workBytes :: AsyncWork -> Int
-workBytes (WorkCall res (EffectCrypto fx)) = reservationBytes res + effectBytes fx
+workBytes (WorkCall w) = case callWorkEffect w of
+  EffectCrypto fx ->
+    reservationBytes (callWorkReservation w) + effectBytes fx
 workBytes (WorkKey res pw fx) =
   reservationBytes res + pendingWorkBytes pw + effectBytes fx
 

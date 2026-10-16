@@ -33,6 +33,7 @@ import StormBudget (stormScaleBudget)
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Model (Model (..), SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Codec (encodeInitInput)
+import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Outcome
   ( DeltaOp (..)
   , EffectRequest (..)
@@ -291,10 +292,13 @@ startDigestJob gen input cap ticks = do
         [RegionBytes "async" (IntentBuffer maxOutputBytes)]
   case planCall defaultRules m req of
     Execute res eff -> do
+      cw <- case checkedCallWork sid res eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("digest pair must check: " ++ show mm)
       let jr = JobRequest
             { jrSession = sid
             , jrFunction = JobDigest
-            , jrWork = WorkCall res eff
+            , jrWork = WorkCall cw
             , jrTicks = ticks
             , jrCapacity = cap
             }
@@ -1393,10 +1397,13 @@ caseSeededValidates = do
   (res, eff) <- case planCall defaultRules m req of
     Execute r e -> pure (r, e)
     other -> assertFailure ("digest did not plan execute: " ++ show other)
+  cw <- case checkedCallWork sid res eff of
+    Right c -> pure c
+    Left mm -> assertFailure ("digest pair must check: " ++ show mm)
   let badReq = JobRequest
         { jrSession = sid
         , jrFunction = JobDigest
-        , jrWork = WorkCall res eff
+        , jrWork = WorkCall cw
         , jrTicks = 0
         , jrCapacity = 0
         }

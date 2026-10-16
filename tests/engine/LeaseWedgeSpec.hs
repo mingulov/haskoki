@@ -59,6 +59,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
+import Haskoki.CallWork (mkFixtureCallWork)
 import Haskoki.Operation (CryptoEffect (..))
 import Haskoki.Outcome (EffectRequest (..), Reservation (..))
 import Haskoki.Registry (MechanismId (..))
@@ -71,7 +72,7 @@ import Haskoki.Runtime.Async
   , beginDetach
   , enableAsyncSession
   , newAsyncTable
-  , startJob
+  , startFixtureJob
   )
 import Haskoki.Types (SessionId (..))
 
@@ -88,9 +89,9 @@ digestRequest :: SessionId -> Int -> JobRequest
 digestRequest sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobDigest
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "lease-wedge" [] Nothing Nothing)
-      (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+      (EffectCrypto (FxDigest (MechanismId 0x250) "abc")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -115,7 +116,7 @@ caseBeginNeverWedges = do
   enableAsyncSession table sid1
   jids <- mapM
     (\_ -> do
-      ej <- startJob table (digestRequest sid1 2)
+      ej <- startFixtureJob table (digestRequest sid1 2)
       case ej of
         Left deny -> assertFailure ("job submit refused: " ++ show deny)
         Right j -> pure j

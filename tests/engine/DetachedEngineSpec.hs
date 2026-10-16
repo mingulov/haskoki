@@ -32,6 +32,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Engine.Backend
   ( BackendEnv
   , CryptoBackend (releaseResource)
@@ -356,10 +357,13 @@ startPlannedCall gen jfunc fid input cap ticks = do
         [RegionBytes "async" (IntentBuffer maxOutputBytes)]
   case planCall defaultRules m req of
     Execute res eff -> do
+      cw <- case checkedCallWork sid res eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("call pair must check: " ++ show mm)
       let jr = JobRequest
             { jrSession = sid
             , jrFunction = jfunc
-            , jrWork = WorkCall res eff
+            , jrWork = WorkCall cw
             , jrTicks = ticks
             , jrCapacity = cap
             }

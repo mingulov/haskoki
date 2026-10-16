@@ -30,6 +30,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.CallWork (mkFixtureCallWork)
 import Haskoki.Engine.Backend (BackendError (..), EngineResult (..), CryptoBackend (..), ResourceSaveability (..), UnsaveableReason (..))
 import Haskoki.Engine.Driver (drainReleases)
 import Haskoki.FFI.Async (AsyncCtx (..), asyncLiveHandles)
@@ -178,12 +179,12 @@ assertCapacity8 :: StdInstance -> Assertion
 assertCapacity8 std = do
   let table = siAsyncTable std
       sid = SessionId 919
-      req = JobRequest sid JobSign (WorkCall (Reservation "T-N02" [] Nothing Nothing)
-              (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "abc"))) 2 64
+      req = JobRequest sid JobSign (WorkCall (mkFixtureCallWork sid (Reservation "T-N02" [] Nothing Nothing)
+              (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "abc")))) 2 64
   enableAsyncSession table sid
-  accepted <- replicateM 8 (startJob table req)
+  accepted <- replicateM 8 (startFixtureJob table req)
   assertEqual "eight Standard jobs admitted" 8 (length [j | Right j <- accepted])
-  assertEqual "ninth Standard job refused (private limit is 32)" (Left StartOverCapacity) =<< startJob table req
+  assertEqual "ninth Standard job refused (private limit is 32)" (Left StartOverCapacity) =<< startFixtureJob table req
   assertEqual "refusal allocates no job" (8, 0, 8) =<< tableStats table
 
 counted :: (String -> IO ()) -> StdAcquisition

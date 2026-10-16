@@ -135,6 +135,7 @@ import Haskoki.Request
   , Request (..)
   )
 import Haskoki.Rules (defaultRules)
+import Haskoki.CallWork (checkedCallWork, mkFixtureCallWork)
 import Haskoki.Runtime.Async
   ( CompleteOutcome (..)
   , Completion (..)
@@ -153,6 +154,7 @@ import Haskoki.Runtime.Async
   , isAsyncSession
   , newAsyncTable
   , pollJob
+  , startFixtureJob
   , startJob
   , tableStats
   , asyncTableId
@@ -320,10 +322,13 @@ caseDigestShaped = withBackend $ \be -> do
   table <- newAsyncTable 4
   enableAsyncSession table (ssId st)
   (res, eff) <- planDigestJob env st
+  cw <- case checkedCallWork (ssId st) res eff of
+    Right c -> pure c
+    Left mm -> assertFailure ("digest pair must check: " ++ show mm)
   let req = JobRequest
         { jrSession = ssId st
         , jrFunction = JobDigest
-        , jrWork = WorkCall res eff
+        , jrWork = WorkCall cw
         , jrTicks = 1
         , jrCapacity = 32
         }
@@ -363,14 +368,14 @@ caseHmacSign = withBackend $ \be -> do
       req = JobRequest
         { jrSession = ssId st
         , jrFunction = JobSign
-        , jrWork = WorkCall
+        , jrWork = WorkCall (mkFixtureCallWork (ssId st)
             (Reservation "async-hmac-sign" [] Nothing Nothing)
             (EffectCrypto (FxSign (MechanismId 0x251)
-              (Just (ObjectId 7)) BS.empty "Hi There"))
+              (Just (ObjectId 7)) BS.empty "Hi There")))
         , jrTicks = 1
         , jrCapacity = 32
         }
-  Right j0 <- startJob table req
+  Right j0 <- startFixtureJob table req
   runs <- newIORef (0 :: Int)
   let run fx = do
         modifyIORef' runs (+ 1)
@@ -402,6 +407,9 @@ caseCallMismatchEngine = withBackend $ \be -> do
   table <- newAsyncTable 4
   enableAsyncSession table (ssId st)
   (res, eff) <- planDigestJob env st
+  cwGood <- case checkedCallWork (ssId st) res eff of
+    Right c -> pure c
+    Left mm -> assertFailure ("digest pair must check: " ++ show mm)
   let submit work = startJob table JobRequest
         { jrSession = ssId st
         , jrFunction = JobDigest
@@ -413,7 +421,7 @@ caseCallMismatchEngine = withBackend $ \be -> do
   let run fx = do
         modifyIORef' runs (+ 1)
         runEffect be (const Nothing) fx
-  control <- submit (WorkCall res eff)
+  control <- submit (WorkCall cwGood)
   j0 <- case control of
     Right j -> pure j
     Left deny -> assertFailure ("coherent submit refused: " ++ show deny)
@@ -423,7 +431,7 @@ caseCallMismatchEngine = withBackend $ \be -> do
   assertEqual "control ran once" 1 nRuns
   before <- tableStats table
   let bad fx = do
-        r <- submit (WorkCall res (EffectCrypto fx))
+        r <- submit (WorkCall (mkFixtureCallWork (ssId st) res (EffectCrypto fx)))
         assertEqual ("refused: " ++ show fx) (Left StartIncompatibleWork) r
   -- Sign, verdict, message, feed, and allocation shapes against a
   -- digest reservation (the verdict and allocation shapes trip the
@@ -439,7 +447,7 @@ caseCallMismatchEngine = withBackend $ \be -> do
   assertEqual "refusals consume nothing" before after
   nRuns2 <- readIORef runs
   assertEqual "refusals ran nothing" 1 nRuns2
-  control2 <- submit (WorkCall res eff)
+  control2 <- submit (WorkCall cwGood)
   case control2 of
     Right _ -> pure ()
     Left deny -> assertFailure ("second coherent submit refused: " ++ show deny)

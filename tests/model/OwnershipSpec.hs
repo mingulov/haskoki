@@ -166,6 +166,7 @@ import Haskoki.Request
   , Request (..)
   )
 import Haskoki.Rules (defaultRules)
+import Haskoki.CallWork (checkedCallWork, mkFixtureCallWork)
 import Haskoki.Runtime.Async
   ( AsyncTable
   , AsyncWork (..)
@@ -197,6 +198,7 @@ import Haskoki.Runtime.Async
   , pollJob
   , reapEligibility
   , reapJob
+  , startFixtureJob
   , startJob
   , tableSaltFor
   , tableStats
@@ -428,9 +430,9 @@ signRequest :: SessionId -> Int -> JobRequest
 signRequest sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobSign
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "async-sign-test" [] Nothing Nothing)
-      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello"))
+      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -468,7 +470,7 @@ caseThrowingRunner :: IO ()
 caseThrowingRunner = do
   (table, env) <- mkTable
   runs <- newIORef 0
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   let boom _ = throwIO (userError "runner boom")
   _ <- try (pollJob boom env table JobSign j0)
     :: IO (Either SomeException PollOutcome)
@@ -485,7 +487,7 @@ caseKilledRunner :: IO ()
 caseKilledRunner = do
   (table, env) <- mkTable
   runs <- newIORef 0
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   entered <- newEmptyMVar
   release <- newEmptyMVar
   let gated _ = do
@@ -545,7 +547,7 @@ caseInterruptedDelivery :: IO ()
 caseInterruptedDelivery = do
   (table, env) <- mkTable
   runs <- newIORef 0
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   p <- pollJob (countingRunner runs) env table JobSign j0
   assertEqual "drive ready" PollReady p
   writes <- newIORef ([] :: [ByteString])
@@ -608,10 +610,13 @@ caseDrainBeforeWrite = do
         [RegionBytes "digest" (IntentBuffer 64)]
   j0 <- case planCall defaultRules m4 finReq of
     Execute resF eff -> do
+      cwF <- case checkedCallWork sid resF eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("final pair must check: " ++ show mm)
       let jr = JobRequest
             { jrSession = sid
             , jrFunction = JobDigest
-            , jrWork = WorkCall resF eff
+            , jrWork = WorkCall cwF
             , jrTicks = 1
             , jrCapacity = 64
             }
@@ -651,7 +656,7 @@ caseFailingSink :: IO ()
 caseFailingSink = do
   (table, env) <- mkTable
   runs <- newIORef 0
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   p <- pollJob (countingRunner runs) env table JobSign j0
   assertEqual "drive ready" PollReady p
   let flaky = Delivery
@@ -778,7 +783,7 @@ caseKillDuringBlockedSink :: IO ()
 caseKillDuringBlockedSink = do
   (table, env) <- mkTable
   runs <- newIORef 0
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   p <- pollJob (countingRunner runs) env table JobSign j0
   assertEqual "drive ready" PollReady p
   entered <- newEmptyMVar
@@ -858,10 +863,14 @@ caseFaultedPublishDrains = do
         [RegionBytes "digest" (IntentBuffer 64)]
   j0 <- case planCall defaultRules m4 finReq of
     Execute resF eff -> do
+      let resD = resF { resDeps = [] }
+      cwF <- case checkedCallWork sid resD eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("final pair must check: " ++ show mm)
       let jr = JobRequest
             { jrSession = sid
             , jrFunction = JobDigest
-            , jrWork = WorkCall resF { resDeps = [] } eff
+            , jrWork = WorkCall cwF
             , jrTicks = 1
             , jrCapacity = 64
             }
@@ -1011,9 +1020,9 @@ caseTombstoneCensus = do
   table <- newAsyncTable 2
   _env <- newEnv defaultRules
   enableAsyncSession table sid1
-  Right j0 <- startJob table (signRequest sid1 1)
-  Right j1 <- startJob table (signRequest sid1 1)
-  rFull <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
+  Right j1 <- startFixtureJob table (signRequest sid1 1)
+  rFull <- startFixtureJob table (signRequest sid1 1)
   case rFull of
     Left StartOverCapacity -> pure ()
     other -> assertFailure ("expected over-capacity, got " ++ show other)
@@ -1024,9 +1033,9 @@ caseTombstoneCensus = do
   (live, tomb, _) <- tableStats table
   assertEqual "no live left" 0 live
   assertEqual "two tombstones retained" 2 tomb
-  Right j2 <- startJob table (signRequest sid1 1)
-  Right _j3 <- startJob table (signRequest sid1 1)
-  rFull2 <- startJob table (signRequest sid1 1)
+  Right j2 <- startFixtureJob table (signRequest sid1 1)
+  Right _j3 <- startFixtureJob table (signRequest sid1 1)
+  rFull2 <- startFixtureJob table (signRequest sid1 1)
   case rFull2 of
     Left StartOverCapacity -> pure ()
     other -> assertFailure ("expected over-capacity, got " ++ show other)
@@ -1046,7 +1055,7 @@ caseCancelAfterDetach :: IO ()
 caseCancelAfterDetach = do
   (table, env) <- mkTable
   runs <- newIORef 0
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   mLease <- beginDetach table j0
   case mLease of
     Nothing -> assertFailure "detach found no job"
@@ -1962,7 +1971,7 @@ caseHandleKeyCodec = do
 caseHandleRetireThenUse :: IO ()
 caseHandleRetireThenUse = do
   ctx <- mkM3Ctx
-  Right j0 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right j0 <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
   h <- allocJobHandle ctx j0
   m <- resolveJobHandle ctx h
   assertEqual "live resolves" (Just j0) m
@@ -1982,7 +1991,7 @@ caseHandleRetireThenUse = do
 caseHandleResolveThenClose :: IO ()
 caseHandleResolveThenClose = do
   ctx <- mkM3Ctx
-  Right j0 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right j0 <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
   h <- allocJobHandle ctx j0
   m <- resolveJobHandle ctx h
   assertEqual "live resolves" (Just j0) m
@@ -2007,7 +2016,7 @@ caseHandleResolveThenClose = do
 caseHandleResolveRetire :: IO ()
 caseHandleResolveRetire = do
   ctx <- mkM3Ctx
-  Right j0 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right j0 <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
   h <- allocJobHandle ctx j0
   entered <- replicateM 4 newEmptyMVar
   dones <- replicateM 4 newEmptyMVar
@@ -2037,10 +2046,10 @@ caseHandleResolveRetire = do
 caseHandleAdmissionStorm :: IO ()
 caseHandleAdmissionStorm = do
   ctx <- mkM3Ctx
-  Right ja <- startJob (acTable ctx) (signRequest sid1 1000000)
-  Right jb <- startJob (acTable ctx) (signRequest sid1 1000000)
-  Right jc <- startJob (acTable ctx) (signRequest sid1 1000000)
-  Right jd <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right ja <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
+  Right jb <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
+  Right jc <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
+  Right jd <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
   dones <- replicateM 4 newEmptyMVar
   let worker jid done = forkIO $ do
         r <- try $ replicateM_ 200 $ do
@@ -2072,8 +2081,8 @@ caseHandleAdmissionStorm = do
 caseHandleKillStorm :: IO ()
 caseHandleKillStorm = do
   ctx <- mkM3Ctx
-  Right ja <- startJob (acTable ctx) (signRequest sid1 1000000)
-  Right jb <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right ja <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
+  Right jb <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
   recorded <- newIORef ([] :: [StablePtr JobHandle])
   entered <- replicateM 2 newEmptyMVar
   dones <- replicateM 2 newEmptyMVar
@@ -2136,10 +2145,10 @@ caseHandleKillStorm = do
 caseHandleCloseRace :: IO ()
 caseHandleCloseRace = do
   ctx <- mkM3Ctx
-  Right j0 <- startJob (acTable ctx) (signRequest sid1 1000000)
-  Right j1 <- startJob (acTable ctx) (signRequest sid1 1000000)
-  Right j2 <- startJob (acTable ctx) (signRequest sid1 1000000)
-  Right j3 <- startJob (acTable ctx) (signRequest sid1 1000000)
+  Right j0 <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
+  Right j1 <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
+  Right j2 <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
+  Right j3 <- startFixtureJob (acTable ctx) (signRequest sid1 1000000)
   handles <- mapM (allocJobHandle ctx) [j0, j1, j2, j3]
   entered <- replicateM 4 newEmptyMVar
   dones <- replicateM 4 newEmptyMVar
@@ -2173,8 +2182,8 @@ caseHandleForeignStale = do
   ctxB <- mkM3Ctx
   assertBool "table identities distinct"
     (asyncTableId (acTable ctxA) /= asyncTableId (acTable ctxB))
-  Right jA <- startJob (acTable ctxA) (signRequest sid1 1000000)
-  Right jB <- startJob (acTable ctxB) (signRequest sid1 1000000)
+  Right jA <- startFixtureJob (acTable ctxA) (signRequest sid1 1000000)
+  Right jB <- startFixtureJob (acTable ctxB) (signRequest sid1 1000000)
   assertEqual "same numeric job id" jA jB
   hA <- allocJobHandle ctxA jA
   hB <- allocJobHandle ctxB jB
@@ -2209,8 +2218,8 @@ caseHandleSaltStable :: IO ()
 caseHandleSaltStable = do
   ctxA <- mkM3Ctx
   ctxB <- mkM3Ctx
-  Right jA <- startJob (acTable ctxA) (signRequest sid1 1000000)
-  Right jB <- startJob (acTable ctxB) (signRequest sid1 1000000)
+  Right jA <- startFixtureJob (acTable ctxA) (signRequest sid1 1000000)
+  Right jB <- startFixtureJob (acTable ctxB) (signRequest sid1 1000000)
   assertEqual "same numeric job id" jA jB
   hA1 <- allocJobHandle ctxA jA
   freeJobHandle ctxA hA1
@@ -2269,9 +2278,9 @@ digestHandRequest :: SessionId -> Int -> JobRequest
 digestHandRequest sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobDigest
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "m5-claim-test" [] Nothing Nothing)
-      (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+      (EffectCrypto (FxDigest (MechanismId 0x250) "abc")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -2371,9 +2380,9 @@ caseScopedRetireExactlyOnce = do
   let tidA = asyncTableId tableA
       tidB = asyncTableId tableB
   assertBool "table identities distinct" (tidA /= tidB)
-  Right s0 <- startJob tableS (digestHandRequest sid 1)
+  Right s0 <- startFixtureJob tableS (digestHandRequest sid 1)
   DetachOk pid1 <- detachJob dc tableS s0 JobDigest
-  Right s1 <- startJob tableS (digestHandRequest sid 1)
+  Right s1 <- startFixtureJob tableS (digestHandRequest sid 1)
   DetachOk pid2 <- detachJob dc tableS s1 JobDigest
   let joinOn table pid = joinJob dc env table JoinRequest
         { jqPid = pid
@@ -2417,7 +2426,7 @@ caseRivalRefusalPreservesOwner = do
   enableAsyncSession tableA sid
   enableAsyncSession tableB sid
   enableAsyncSession tableS sid
-  Right s0 <- startJob tableS (digestHandRequest sid 1)
+  Right s0 <- startFixtureJob tableS (digestHandRequest sid 1)
   DetachOk pid <- detachJob dc tableS s0 JobDigest
   let joinOn table = joinJob dc env table JoinRequest
         { jqPid = pid
@@ -2608,7 +2617,7 @@ caseCancelWhileWaitingForLease = do
         putMVar entered ()
         takeMVar release
         pure (GotBytes cannedSig)
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   polled <- newEmptyMVar
   _ <- forkIO (pollJob gated env table JobSign j0 >>= putMVar polled)
   takeMVar entered

@@ -25,6 +25,7 @@ import System.Mem.Weak (Weak, deRefWeak, mkWeak)
 
 import OwnershipCounters (assertZero, counted)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.CallWork (checkedCallWork, mkFixtureCallWork)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -128,6 +129,7 @@ import Haskoki.Runtime.Async
   , retainedBytes
   , sessionJobs
   , snapshotJob
+  , startFixtureJob
   , startJob
   , tableStats
   )
@@ -194,7 +196,16 @@ spec = testGroup "Attached async"
   , testCase "lease snapshots: queued arbitration keeps epochs and writes exact" (counted "m7-attached-async" "lease-snapshots-queued-arbitration-keeps-epochs-and-writes-exact" (caseLeaseSnapshotQueue))
   , testCase "incoherent call submit refused without consuming an id" (counted "m7-attached-async" "incoherent-call-submit-refused-without-consuming-an-id" (caseCallMismatchRefused))
   , testCase "call submit with a mismatched session refused" (counted "m7-attached-async" "call-submit-with-a-mismatched-session-refused" (caseCallSessionRefused))
-  , testCase "legacy unstepped submits still admitted" (counted "m7-attached-async" "legacy-unstepped-submits-still-admitted" (caseLegacyUnsteppedAdmitted))
+  , testCase "legacy unstepped submits admitted via startFixtureJob" (counted "m7-attached-async" "legacy-unstepped-submits-still-admitted" (caseLegacyUnsteppedAdmitted))
+  , testGroup "checked submission"
+    [ testCase "unstepped work refused without runner sink or id use" (counted "m7-checked-submission" "unstepped-work-refused-without-runner-sink-or-id-use" caseSubmitUnsteppedRefused)
+    , testCase "fixture admission submits the same unstepped work" (counted "m7-checked-submission" "fixture-admission-submits-the-same-unstepped-work" caseFixtureAdmitsUnstepped)
+    , testCase "sign work submitted under digest refuses" (counted "m7-checked-submission" "sign-work-submitted-under-digest-refuses" caseOuterSignUnderDigestRefused)
+    , testCase "digest work submitted under sign refuses" (counted "m7-checked-submission" "digest-work-submitted-under-sign-refuses" caseOuterDigestUnderSignRefused)
+    , testCase "call work submitted under key functions refuses" (counted "m7-checked-submission" "call-work-submitted-under-key-functions-refuses" caseOuterCallUnderKeyRefused)
+    , testCase "key work submitted under call functions refuses" (counted "m7-checked-submission" "key-work-submitted-under-call-functions-refuses" caseOuterKeyUnderCallRefused)
+    , testCase "real planner pairs still submit first try" (counted "m7-checked-submission" "real-planner-pairs-still-submit-first-try" caseRealPlansSubmitFirstTry)
+    ]
   ]
 
 sid1 :: SessionId
@@ -214,9 +225,9 @@ signRequest :: SessionId -> Int -> JobRequest
 signRequest sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobSign
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "async-sign-test" [] Nothing Nothing)
-      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello"))
+      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -316,6 +327,37 @@ realSignPlan = do
     Execute res (EffectCrypto fx) -> pure (sid, res, fx)
     other -> assertFailure ("sign one-shot did not execute: " ++ show other)
 
+realDigestPlan :: IO (SessionId, Reservation, CryptoEffect)
+realDigestPlan = do
+  let m0 = addToken emptyModel (SlotId 0)
+      sid = SessionId 1
+      rid = EngineResourceId 41
+  m1 <- case planCall defaultRules m0
+      (Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []) of
+    Immediate pc -> case publishDelta m0 (pcDelta pc) of
+      Left fault -> assertFailure ("open delta fault: " ++ show fault)
+      Right m' -> pure m'
+    other -> assertFailure ("open failed: " ++ show other)
+  -- A one-shot digest needs an initialized digest slot (without it
+  -- the planner rejects with CKR_OPERATION_NOT_INITIALIZED): init
+  -- plans Execute, the hand Resource answer records the stream,
+  -- publishDelta seats it.
+  m2 <- case planCall defaultRules m1
+      (Request Pkcs11_3_2 F_DigestInit (Just sid) Nothing
+        (encodeInitInput (MechanismId 0x250) [] False BS.empty) []) of
+    Execute resI (EffectCrypto _) ->
+      case finishEffect defaultRules m1 resI (EngineOkResource rid) of
+        Left rej -> assertFailure ("init finish rejected: " ++ show rej)
+        Right pc -> case publishDelta m1 (pcDelta pc) of
+          Left fault -> assertFailure ("init delta fault: " ++ show fault)
+          Right m' -> pure m'
+    other -> assertFailure ("init did not plan execute: " ++ show other)
+  case planCall defaultRules m2
+      (Request Pkcs11_3_2 F_Digest (Just sid) Nothing "abc"
+        [RegionBytes "digest" (IntentBuffer 64)]) of
+    Execute res (EffectCrypto fx) -> pure (sid, res, fx)
+    other -> assertFailure ("digest one-shot did not execute: " ++ show other)
+
 -- | Re-pin a stepped reservation's function/slot pair.
 repin :: (CryptoStep -> CryptoStep) -> Reservation -> Reservation
 repin f res = res { resStep = fmap f (resStep res) }
@@ -340,7 +382,7 @@ caseCallMismatchRefused = do
             r <- startJob table JobRequest
               { jrSession = sid
               , jrFunction = JobSign
-              , jrWork = WorkCall res (EffectCrypto fx)
+              , jrWork = WorkCall (mkFixtureCallWork sid res (EffectCrypto fx))
               , jrTicks = 1
               , jrCapacity = 64
               }
@@ -359,7 +401,7 @@ caseCallMismatchRefused = do
   rSlot <- startJob table JobRequest
     { jrSession = sid
     , jrFunction = JobSign
-    , jrWork = WorkCall wrongSlot (EffectCrypto fxSign)
+    , jrWork = WorkCall (mkFixtureCallWork sid wrongSlot (EffectCrypto fxSign))
     , jrTicks = 1
     , jrCapacity = 64
     }
@@ -368,7 +410,7 @@ caseCallMismatchRefused = do
   rLeg <- startJob table JobRequest
     { jrSession = sid
     , jrFunction = JobSign
-    , jrWork = WorkCall noLeg (EffectCrypto fxSign)
+    , jrWork = WorkCall (mkFixtureCallWork sid noLeg (EffectCrypto fxSign))
     , jrTicks = 1
     , jrCapacity = 64
     }
@@ -376,10 +418,13 @@ caseCallMismatchRefused = do
   after <- tableStats table
   assertEqual "refusals consume nothing" before after
   let (_, _, next0) = before
+  cwGood <- case checkedCallWork sid res (EffectCrypto fxSign) of
+    Right c -> pure c
+    Left mm -> assertFailure ("real pair must check: " ++ show mm)
   goodReal <- startJob table JobRequest
     { jrSession = sid
     , jrFunction = JobSign
-    , jrWork = WorkCall res (EffectCrypto fxSign)
+    , jrWork = WorkCall cwGood
     , jrTicks = 1
     , jrCapacity = 64
     }
@@ -399,7 +444,7 @@ caseCallSessionRefused = do
   r <- startJob table JobRequest
     { jrSession = other
     , jrFunction = JobSign
-    , jrWork = WorkCall res (EffectCrypto fx)
+    , jrWork = WorkCall (mkFixtureCallWork other res (EffectCrypto fx))
     , jrTicks = 1
     , jrCapacity = 64
     }
@@ -407,26 +452,371 @@ caseCallSessionRefused = do
   after <- tableStats table
   assertEqual "refusal consumes nothing" before after
 
--- | Legacy unstepped fixtures still submit: the boundary admits them
--- explicitly without sniffing effect content (even a key-management
--- effect on call work admits here — holdability is the only content
--- check at submit, and it passes).
+-- | Legacy unstepped fixtures still submit through the named
+-- fixture entrypoint (even a key-management effect on call work
+-- admits here — holdability is the only content check, and it
+-- passes).
 caseLegacyUnsteppedAdmitted :: IO ()
 caseLegacyUnsteppedAdmitted = do
   table <- newAsyncTable 8
   enableAsyncSession table sid1
-  r <- startJob table JobRequest
+  -- Normal submit refuses this triple (see the checked-submission subgroup); only the named fixture entrypoint admits it.
+  r <- startFixtureJob table JobRequest
     { jrSession = sid1
     , jrFunction = JobSign
-    , jrWork = WorkCall
+    , jrWork = WorkCall (mkFixtureCallWork sid1
         (Reservation "legacy-blind" [] Nothing Nothing)
-        (EffectCrypto (FxGenerateKey (MechanismId 0x1082) BS.empty "genargs"))
+        (EffectCrypto (FxGenerateKey (MechanismId 0x1082) BS.empty "genargs")))
     , jrTicks = 1
     , jrCapacity = 64
     }
   case r of
     Right _ -> pure ()
     Left deny -> assertFailure ("legacy submit refused: " ++ show deny)
+
+-- ---------------------------------------------------------------------------
+-- Checked submission: sealed executable call work
+-- ---------------------------------------------------------------------------
+
+controlFixtureDrives :: AsyncTable -> Env -> SessionId -> IORef Int -> Capture -> IO ()
+controlFixtureDrives table env sid runs cap = do
+  let del = captureDelivery 64 cap
+  Right jid <- startFixtureJob table (signRequest sid 1)
+  p <- pollJob (countingRunner runs) env table JobSign jid
+  assertEqual "control ready" PollReady p
+  c <- completeJob env table JobSign jid del (\_ -> pure ())
+  case c of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "control delivers the canned bytes" cannedSig bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  assertEqual "control ran once" 1 =<< readIORef runs
+  assertWrites "control wrote one frame" cap [goldenBytes]
+  -- Sizing liveness: a short delivery reports its need, proving the
+  -- 'capNeeded' counter the refusal cases assert empty actually moves.
+  capS <- newCapture
+  let delS = captureDelivery 1 capS
+  Right jidS <- startFixtureJob table (signRequest sid 1)
+  pS <- pollJob (countingRunner runs) env table JobSign jidS
+  assertEqual "sizing control ready" PollReady pS
+  cS <- completeJob env table JobSign jidS delS (\_ -> pure ())
+  case cS of
+    CompleteShort need ->
+      assertEqual "sizing reports the payload need" 64 need
+    other -> assertFailure ("expected short, got " ++ show other)
+  assertEqual "sizing counter moves" [64] =<< readIORef (capNeeded capS)
+  assertWrites "short delivery writes nothing" capS []
+  _ <- cancelJob table jidS
+  pure ()
+
+caseSubmitUnsteppedRefused :: IO ()
+caseSubmitUnsteppedRefused = do
+  (table, env) <- mkTable
+  (sid, res, fxSign) <- realSignPlan
+  assertEqual "plan session is the table session" sid1 sid
+  runs <- newIORef (0 :: Int)
+  cap <- newCapture
+  before <- tableStats table
+  let bad resBad effBad tag = do
+        r <- startJob table JobRequest
+          { jrSession = sid
+          , jrFunction = JobSign
+          , jrWork = WorkCall (mkFixtureCallWork sid resBad effBad)
+          , jrTicks = 1
+          , jrCapacity = 64
+          }
+        assertEqual ("refused: " ++ tag) (Left StartIncompatibleWork) r
+  bad (Reservation "legacy-blind" [] Nothing Nothing)
+    (EffectCrypto (FxGenerateKey (MechanismId 0x1082) BS.empty "genargs"))
+    "unstepped key-mgmt effect"
+  bad (Reservation "legacy-sign" [] Nothing Nothing)
+    (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello"))
+    "unstepped sign effect"
+  bad (Reservation "legacy-digest" [] Nothing Nothing)
+    (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+    "unstepped digest effect"
+  after <- tableStats table
+  assertEqual "refusals consume nothing" before after
+  assertEqual "runner never fired" 0 =<< readIORef runs
+  assertEqual "sink never written" [] =<< writesOf cap
+  assertEqual "sink never sized" [] =<< readIORef (capNeeded cap)
+  cwGood <- case checkedCallWork sid res (EffectCrypto fxSign) of
+    Right c -> pure c
+    Left mm -> assertFailure ("real pair must check: " ++ show mm)
+  let (_, _, next0) = before
+  Right jid <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobSign
+    , jrWork = WorkCall cwGood
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "real pair takes the first id" (JobId next0) jid
+  _ <- cancelJob table jid
+  controlFixtureDrives table env sid runs cap
+
+caseFixtureAdmitsUnstepped :: IO ()
+caseFixtureAdmitsUnstepped = do
+  (table, env) <- mkTable
+  runs <- newIORef (0 :: Int)
+  cap <- newCapture
+  let del = captureDelivery 64 cap
+      req resBad effBad = JobRequest
+        { jrSession = sid1
+        , jrFunction = JobSign
+        , jrWork = WorkCall (mkFixtureCallWork sid1 resBad effBad)
+        , jrTicks = 1
+        , jrCapacity = 64
+        }
+  Right j0 <- startFixtureJob table
+    (req (Reservation "legacy-blind" [] Nothing Nothing)
+      (EffectCrypto (FxGenerateKey (MechanismId 0x1082) BS.empty "genargs")))
+  Right j1 <- startFixtureJob table
+    (req (Reservation "legacy-sign" [] Nothing Nothing)
+      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello")))
+  assertEqual "fixture ids are consecutive" [JobId 0, JobId 1] [j0, j1]
+  p <- pollJob (countingRunner runs) env table JobSign j0
+  assertEqual "fixture ready" PollReady p
+  c <- completeJob env table JobSign j0 del (\_ -> pure ())
+  case c of
+    CompleteDelivered (CompBytes bs) ->
+      assertEqual "fixture delivers the canned bytes" cannedSig bs
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  (live, term, next) <- tableStats table
+  assertEqual "one driven, one live" (1, 1, 2) (live, term, next)
+  _ <- cancelJob table j1
+  assertEqual "entrypoint ran once" 1 =<< readIORef runs
+
+caseOuterSignUnderDigestRefused :: IO ()
+caseOuterSignUnderDigestRefused = do
+  (table, env) <- mkTable
+  (sid, res, fxSign) <- realSignPlan
+  assertEqual "plan session is the table session" sid1 sid
+  runs <- newIORef (0 :: Int)
+  cap <- newCapture
+  before <- tableStats table
+  cwGood <- case checkedCallWork sid res (EffectCrypto fxSign) of
+    Right c -> pure c
+    Left mm -> assertFailure ("real pair must check: " ++ show mm)
+  r <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobDigest
+    , jrWork = WorkCall cwGood
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "sign under digest refused" (Left StartIncompatibleWork) r
+  after <- tableStats table
+  assertEqual "refusal consumes nothing" before after
+  assertEqual "runner never fired" 0 =<< readIORef runs
+  assertEqual "sink never written" [] =<< writesOf cap
+  (dsid, dres, dfx) <- realDigestPlan
+  assertEqual "digest plan session" sid1 dsid
+  cwD <- case checkedCallWork dsid dres (EffectCrypto dfx) of
+    Right c -> pure c
+    Left mm -> assertFailure ("digest pair must check: " ++ show mm)
+  let (_, _, next0) = before
+  Right jid <- startJob table JobRequest
+    { jrSession = dsid
+    , jrFunction = JobDigest
+    , jrWork = WorkCall cwD
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "digest pair takes the first id" (JobId next0) jid
+  _ <- cancelJob table jid
+  controlFixtureDrives table env sid runs cap
+
+caseOuterDigestUnderSignRefused :: IO ()
+caseOuterDigestUnderSignRefused = do
+  (table, env) <- mkTable
+  (sid, res, fx) <- realDigestPlan
+  assertEqual "plan session is the table session" sid1 sid
+  runs <- newIORef (0 :: Int)
+  cap <- newCapture
+  before <- tableStats table
+  cwGood <- case checkedCallWork sid res (EffectCrypto fx) of
+    Right c -> pure c
+    Left mm -> assertFailure ("real pair must check: " ++ show mm)
+  r <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobSign
+    , jrWork = WorkCall cwGood
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "digest under sign refused" (Left StartIncompatibleWork) r
+  after <- tableStats table
+  assertEqual "refusal consumes nothing" before after
+  assertEqual "runner never fired" 0 =<< readIORef runs
+  assertEqual "sink never written" [] =<< writesOf cap
+  (ssid, sres, sfx) <- realSignPlan
+  assertEqual "sign plan session" sid1 ssid
+  cwS <- case checkedCallWork ssid sres (EffectCrypto sfx) of
+    Right c -> pure c
+    Left mm -> assertFailure ("sign pair must check: " ++ show mm)
+  let (_, _, next0) = before
+  Right jid <- startJob table JobRequest
+    { jrSession = ssid
+    , jrFunction = JobSign
+    , jrWork = WorkCall cwS
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "sign pair takes the first id" (JobId next0) jid
+  _ <- cancelJob table jid
+  controlFixtureDrives table env sid runs cap
+
+caseOuterCallUnderKeyRefused :: IO ()
+caseOuterCallUnderKeyRefused = do
+  (env, m0, st) <- openEnvSession
+  table <- newAsyncTable 8
+  let sid = ssId st
+  enableAsyncSession table sid
+  (psid, res, fxSign) <- realSignPlan
+  -- The plan pins its own session: enable it too, so the inner
+  -- session check passes and only the outer gate fires.
+  enableAsyncSession table psid
+  runs <- newIORef (0 :: Int)
+  cap <- newCapture
+  before <- tableStats table
+  cwGood <- case checkedCallWork psid res (EffectCrypto fxSign) of
+    Right c -> pure c
+    Left mm -> assertFailure ("real pair must check: " ++ show mm)
+  let checkOuter func = do
+        r <- startJob table JobRequest
+          { jrSession = psid
+          , jrFunction = func
+          , jrWork = WorkCall cwGood
+          , jrTicks = 1
+          , jrCapacity = 64
+          }
+        assertEqual ("call under key refused: " ++ show func)
+          (Left StartIncompatibleWork) r
+  mapM_ checkOuter [JobGenKey, JobGenKeyPair]
+  after <- tableStats table
+  assertEqual "refusals consume nothing" before after
+  assertEqual "runner never fired" 0 =<< readIORef runs
+  assertEqual "sink never written" [] =<< writesOf cap
+  (pw, fx) <- case planGenerateKey defaultRules m0 st aesKeyGenMech
+      BS.empty (aesTmpl 32) of
+    KeyEffect pw0 fx0 -> pure (pw0, fx0)
+    other -> assertFailure ("genkey is not an effect: " ++ show other)
+  let (_, _, next0) = before
+  Right jid <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobGenKey
+    , jrWork = WorkKey (keyReservation st "outer-control-genkey") pw fx
+    , jrTicks = 1
+    , jrCapacity = 9
+    }
+  assertEqual "key pair takes the first id" (JobId next0) jid
+  _ <- cancelJob table jid
+  controlFixtureDrives table env sid runs cap
+
+caseOuterKeyUnderCallRefused :: IO ()
+caseOuterKeyUnderCallRefused = do
+  (env, m0, st) <- openEnvSession
+  table <- newAsyncTable 8
+  let sid = ssId st
+  enableAsyncSession table sid
+  runs <- newIORef (0 :: Int)
+  cap <- newCapture
+  (pw1, fx1) <- case planGenerateKey defaultRules m0 st aesKeyGenMech
+      BS.empty (aesTmpl 32) of
+    KeyEffect pw0 fx0 -> pure (pw0, fx0)
+    other -> assertFailure ("genkey is not an effect: " ++ show other)
+  (pwP, fxP) <- case planGenerateKeyPair defaultRules m0 st
+      mlKemKeyPairGenMech kemPubTmpl kemPrivTmpl of
+    KeyEffect pw0 fx0 -> pure (pw0, fx0)
+    other -> assertFailure ("genkeypair is not an effect: " ++ show other)
+  before <- tableStats table
+  let bad func work tag = do
+        r <- startJob table JobRequest
+          { jrSession = sid
+          , jrFunction = func
+          , jrWork = work
+          , jrTicks = 1
+          , jrCapacity = 17
+          }
+        assertEqual ("refused: " ++ tag) (Left StartIncompatibleWork) r
+      key1 = WorkKey (keyReservation st "outer-key-1") pw1 fx1
+      keyP = WorkKey (keyReservation st "outer-key-p") pwP fxP
+  bad JobSign key1 "single key under sign"
+  bad JobDigest key1 "single key under digest"
+  bad JobSign keyP "pair under sign"
+  bad JobGenKey keyP "pair under single-key function"
+  bad JobGenKeyPair key1 "single key under pair function"
+  after <- tableStats table
+  assertEqual "refusals consume nothing" before after
+  assertEqual "runner never fired" 0 =<< readIORef runs
+  assertEqual "sink never written" [] =<< writesOf cap
+  let (_, _, next0) = before
+  Right jid <- startJob table JobRequest
+    { jrSession = sid
+    , jrFunction = JobGenKey
+    , jrWork = key1
+    , jrTicks = 1
+    , jrCapacity = 17
+    }
+  assertEqual "key pair takes the first id" (JobId next0) jid
+  _ <- cancelJob table jid
+  controlFixtureDrives table env sid runs cap
+
+caseRealPlansSubmitFirstTry :: IO ()
+caseRealPlansSubmitFirstTry = do
+  (table, _) <- mkTable
+  (ssid, sres, sfx) <- realSignPlan
+  (dsid, dres, dfx) <- realDigestPlan
+  cwS <- case checkedCallWork ssid sres (EffectCrypto sfx) of
+    Right c -> pure c
+    Left mm -> assertFailure ("sign pair must check: " ++ show mm)
+  cwD <- case checkedCallWork dsid dres (EffectCrypto dfx) of
+    Right c -> pure c
+    Left mm -> assertFailure ("digest pair must check: " ++ show mm)
+  Right jS <- startJob table JobRequest
+    { jrSession = ssid
+    , jrFunction = JobSign
+    , jrWork = WorkCall cwS
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  Right jD <- startJob table JobRequest
+    { jrSession = dsid
+    , jrFunction = JobDigest
+    , jrWork = WorkCall cwD
+    , jrTicks = 1
+    , jrCapacity = 64
+    }
+  assertEqual "call pairs take the first ids" [JobId 0, JobId 1] [jS, jD]
+  (env, m0, st) <- openEnvSession
+  ktable <- newAsyncTable 8
+  let ksid = ssId st
+  enableAsyncSession ktable ksid
+  (pw1, fx1) <- case planGenerateKey defaultRules m0 st aesKeyGenMech
+      BS.empty (aesTmpl 32) of
+    KeyEffect pw0 fx0 -> pure (pw0, fx0)
+    other -> assertFailure ("genkey is not an effect: " ++ show other)
+  (pwP, fxP) <- case planGenerateKeyPair defaultRules m0 st
+      mlKemKeyPairGenMech kemPubTmpl kemPrivTmpl of
+    KeyEffect pw0 fx0 -> pure (pw0, fx0)
+    other -> assertFailure ("genkeypair is not an effect: " ++ show other)
+  Right jK <- startJob ktable JobRequest
+    { jrSession = ksid
+    , jrFunction = JobGenKey
+    , jrWork = WorkKey (keyReservation st "first-try-genkey") pw1 fx1
+    , jrTicks = 1
+    , jrCapacity = 9
+    }
+  Right jKP <- startJob ktable JobRequest
+    { jrSession = ksid
+    , jrFunction = JobGenKeyPair
+    , jrWork = WorkKey (keyReservation st "first-try-genkeypair") pwP fxP
+    , jrTicks = 1
+    , jrCapacity = 17
+    }
+  assertEqual "key pairs take the first ids" [JobId 0, JobId 1] [jK, jKP]
+  _ <- pure (env, table, ktable)
+  pure ()
 
 caseFirstTest :: IO ()
 caseFirstTest = do
@@ -435,7 +825,7 @@ caseFirstTest = do
   let del = captureDelivery 64 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startJob table (signRequest sid1 2)
+  Right j0 <- startFixtureJob table (signRequest sid1 2)
   assertEqual "first job id" (JobId 0) j0
   -- Poll 1 of 2: pending, canaries (zero writes) intact.
   p1 <- pollJob run env table JobSign j0
@@ -482,7 +872,7 @@ caseCancelWins = do
   let del = captureDelivery 64 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startJob table (signRequest sid1 5)
+  Right j0 <- startFixtureJob table (signRequest sid1 5)
   k <- cancelJob table j0
   assertEqual "cancel wins" CancelOk k
   p <- pollJob run env table JobSign j0
@@ -503,7 +893,7 @@ caseCompleteWins = do
   let del = captureDelivery 64 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   p <- pollJob run env table JobSign j0
   assertEqual "drive ready" PollReady p
   c <- completeJob env table JobSign j0 del (\_ -> pure ())
@@ -521,12 +911,12 @@ caseSessionGate :: IO ()
 caseSessionGate = do
   table <- newAsyncTable 8
   let req = signRequest (SessionId 99) 1
-  r <- startJob table req
+  r <- startFixtureJob table req
   assertEqual "sync-only session refused" (Left StartSessionNotAsync) r
   (_, _, nextId) <- tableStats table
   assertEqual "refusal allocates nothing" 0 nextId
   enableAsyncSession table (SessionId 99)
-  r2 <- startJob table req
+  r2 <- startFixtureJob table req
   case r2 of
     Right (JobId 0) -> pure ()
     other -> assertFailure ("expected JobId 0 after enable, got " ++ show other)
@@ -537,7 +927,7 @@ caseDriveError = do
   cap <- newCapture
   let del = captureDelivery 64 cap
   let badRun _ = pure (GotCryptoError (CryptoFailed "boom"))
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   p <- pollJob badRun env table JobSign j0
   case p of
     PollTerminal (TermFailed code _) ->
@@ -552,7 +942,7 @@ caseDriveError = do
   stFinal <- inspectJob table j0
   assertEqual "epoch: fail" (Just 1) (fmap jvEpoch stFinal)
   -- A verdict-shaped answer to a bytes job is a loud failure, not bytes.
-  Right j1 <- startJob table (signRequest sid1 1)
+  Right j1 <- startFixtureJob table (signRequest sid1 1)
   p1 <- pollJob (\_ -> pure (GotValid True)) env table JobSign j1
   case p1 of
     PollTerminal (TermFailed code _) ->
@@ -568,9 +958,9 @@ digestRequest :: SessionId -> Int -> JobRequest
 digestRequest sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobDigest
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "async-digest-test" [] Nothing Nothing)
-      (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+      (EffectCrypto (FxDigest (MechanismId 0x250) "abc")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -630,7 +1020,7 @@ caseWrongFunction = do
   let del = captureDelivery 64 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startJob table (signRequest sid1 2)
+  Right j0 <- startFixtureJob table (signRequest sid1 2)
   -- Poll a sign job with the digest poller: typed refusal, job intact.
   p1 <- pollJob run env table JobDigest j0
   assertEqual "wrong poller refused"
@@ -643,7 +1033,7 @@ caseWrongFunction = do
     (CompleteWrongFunction JobSign JobDigest) c0
   assertWrites "wrong-function paths write nothing" cap []
   -- A wrong poll on the last tick drives nothing.
-  Right j1 <- startJob table (signRequest sid1 1)
+  Right j1 <- startFixtureJob table (signRequest sid1 1)
   p2 <- pollJob run env table JobDigest j1
   assertEqual "wrong poll on last tick refused"
     (PollWrongFunction JobSign JobDigest) p2
@@ -657,7 +1047,7 @@ caseWrongFunction = do
     CompleteDelivered (CompBytes bs) -> assertEqual "bytes" cannedSig bs
     other -> assertFailure ("expected delivery, got " ++ show other)
   -- The reverse direction: a digest job polled with the sign poller.
-  Right j2 <- startJob table (digestRequest sid1 1)
+  Right j2 <- startFixtureJob table (digestRequest sid1 1)
   p4 <- pollJob run env table JobSign j2
   assertEqual "reverse wrong poller refused"
     (PollWrongFunction JobDigest JobSign) p4
@@ -704,10 +1094,13 @@ caseDrainAfterPublish = do
         [RegionBytes "digest" (IntentBuffer 64)]
   j0 <- case planCall defaultRules m4 finReq of
     Execute resF eff -> do
+      cwF <- case checkedCallWork sid resF eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("final pair must check: " ++ show mm)
       let jr = JobRequest
             { jrSession = sid
             , jrFunction = JobDigest
-            , jrWork = WorkCall resF eff
+            , jrWork = WorkCall cwF
             , jrTicks = 1
             , jrCapacity = 64
             }
@@ -890,10 +1283,10 @@ caseCapacity :: IO ()
 caseCapacity = do
   table <- newAsyncTable 2
   enableAsyncSession table sid1
-  Right j0 <- startJob table (signRequest sid1 5)
-  Right j1 <- startJob table (signRequest sid1 5)
+  Right j0 <- startFixtureJob table (signRequest sid1 5)
+  Right j1 <- startFixtureJob table (signRequest sid1 5)
   assertEqual "ids allocate in order" [JobId 0, JobId 1] [j0, j1]
-  r <- startJob table (signRequest sid1 5)
+  r <- startFixtureJob table (signRequest sid1 5)
   assertEqual "third start over capacity" (Left StartOverCapacity) r
   (live, term, nextId) <- tableStats table
   assertEqual "live count" 2 live
@@ -901,7 +1294,7 @@ caseCapacity = do
   assertEqual "refusal consumes no id" 2 nextId
   -- Terminal jobs free live capacity but keep their tombstones.
   CancelOk <- cancelJob table j0
-  Right j2 <- startJob table (signRequest sid1 5)
+  Right j2 <- startFixtureJob table (signRequest sid1 5)
   assertEqual "post-cancel id" (JobId 2) j2
   (live2, term2, nextId2) <- tableStats table
   assertEqual "live after recycle" 2 live2
@@ -916,14 +1309,14 @@ caseBadCapacity = do
   enableAsyncSession table sid1
   let bad0 = (signRequest sid1 1) { jrCapacity = 0 }
       badHuge = (signRequest sid1 1) { jrCapacity = maxOutputBytes + 1 }
-  r0 <- startJob table bad0
+  r0 <- startFixtureJob table bad0
   assertEqual "zero capacity refused" (Left StartBadCapacity) r0
-  rHuge <- startJob table badHuge
+  rHuge <- startFixtureJob table badHuge
   assertEqual "over-bound capacity refused" (Left StartBadCapacity) rHuge
   (_, _, nextId) <- tableStats table
   assertEqual "bad-capacity refusals allocate nothing" 0 nextId
   let okEdge = (signRequest sid1 1) { jrCapacity = maxOutputBytes }
-  Right j0 <- startJob table okEdge
+  Right j0 <- startFixtureJob table okEdge
   assertEqual "bound edge accepted" (JobId 0) j0
 
 caseReap :: IO ()
@@ -933,7 +1326,7 @@ caseReap = do
   let del = captureDelivery 64 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startJob table (signRequest sid1 5)
+  Right j0 <- startFixtureJob table (signRequest sid1 5)
   rLive <- reapJob table j0
   assertEqual "live job not reaped" ReapLive rLive
   p <- pollJob run env table JobSign j0
@@ -1025,18 +1418,18 @@ caseSyncStaysSync = do
   runs <- newIORef 0
   let run = countingRunner runs
       storm = do
-            Right d0 <- startJob table (digestRequest (ssId stA) 3)
-            Right d1 <- startJob table (digestRequest (ssId stA) 1)
-            Right d2 <- startJob table (digestRequest (ssId stA) 1)
-            Right d3 <- startJob table (digestRequest (ssId stA) 1)
-            rFull <- startJob table (digestRequest (ssId stA) 1)
+            Right d0 <- startFixtureJob table (digestRequest (ssId stA) 3)
+            Right d1 <- startFixtureJob table (digestRequest (ssId stA) 1)
+            Right d2 <- startFixtureJob table (digestRequest (ssId stA) 1)
+            Right d3 <- startFixtureJob table (digestRequest (ssId stA) 1)
+            rFull <- startFixtureJob table (digestRequest (ssId stA) 1)
             assertEqual "storm over-capacity" (Left StartOverCapacity) rFull
             PollPending 2 <- pollJob run env table JobDigest d0
             PollReady <- pollJob run env table JobDigest d1
             CancelOk <- cancelJob table d2
             CompleteDelivered _ <- completeJob env table JobDigest d1 del (\_ -> pure ())
             PollTerminal TermCanceled <- pollJob run env table JobDigest d2
-            Right d4 <- startJob table (digestRequest (ssId stA) 1)
+            Right d4 <- startFixtureJob table (digestRequest (ssId stA) 1)
             CancelOk <- cancelJob table d4
             PollReady <- pollJob run env table JobDigest d3
             CompleteDelivered _ <- completeJob env table JobDigest d3 del (\_ -> pure ())
@@ -1069,9 +1462,9 @@ pinnedSignRequest :: SessionState -> Int -> Word64 -> JobRequest
 pinnedSignRequest st ticks cap = JobRequest
   { jrSession = ssId st
   , jrFunction = JobSign
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork (ssId st)
       (keyReservation st "async-sign-pinned")
-      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello"))
+      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello")))
   , jrTicks = ticks
   , jrCapacity = cap
   }
@@ -1089,7 +1482,7 @@ caseShortBuffer = do
       roomy = captureDelivery 64 cap
       need = 64
   assertEqual "golden frame length" 69 (frameLen goldenBytes)
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   PollReady <- pollJob run env table JobSign j0
   -- Short delivery buffer: sizing reported, result held, nothing written.
   cShort <- completeJob env table JobSign j0 tiny (\_ -> pure ())
@@ -1110,7 +1503,7 @@ caseShortBuffer = do
   nRuns <- readIORef runs
   assertEqual "effect ran once across retries" 1 nRuns
   -- Attached capacity binds too: an under-declared job sizes forever.
-  Right j1 <- startJob table ((signRequest sid1 1) { jrCapacity = 9 })
+  Right j1 <- startFixtureJob table ((signRequest sid1 1) { jrCapacity = 9 })
   PollReady <- pollJob run env table JobSign j1
   cAttached <- completeJob env table JobSign j1 roomy (\_ -> pure ())
   assertEqual "attached cap binds" (CompleteShort need) cAttached
@@ -1125,7 +1518,7 @@ caseDriveStale = do
   let del = captureDelivery 69 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startJob table (pinnedSignRequest st 1 69)
+  Right j0 <- startFixtureJob table (pinnedSignRequest st 1 69)
   -- Invalidate the pinned revision before the drive.
   invalidateSession env (ssId st)
   p <- pollJob run env table JobSign j0
@@ -1155,7 +1548,7 @@ caseCompleteStale = do
   let del = captureDelivery 69 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startJob table (pinnedSignRequest st 1 69)
+  Right j0 <- startFixtureJob table (pinnedSignRequest st 1 69)
   PollReady <- pollJob run env table JobSign j0
   -- The model moves between drive and complete: the commit must fail.
   invalidateSession env (ssId st)
@@ -1257,7 +1650,7 @@ caseCancelDuringDrive = do
         putMVar entered ()
         takeMVar release
         pure (GotBytes cannedSig)
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   polled <- newEmptyMVar
   _ <- forkIO (pollJob gated env table JobSign j0 >>= putMVar polled)
   takeMVar entered
@@ -1284,7 +1677,7 @@ caseConcurrentWinner = do
   let del = captureDelivery 64 cap
   runs <- newIORef 0
   let run = countingRunner runs
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   PollReady <- pollJob run env table JobSign j0
   doneC <- newEmptyMVar
   doneK <- newEmptyMVar
@@ -1318,7 +1711,7 @@ retentionCap = maxRetainedTombstones
 deliverOneDigest
   :: AsyncTable -> Env -> (CryptoEffect -> IO CryptoResult) -> Delivery -> Int -> IO ()
 deliverOneDigest table env run del _ = do
-  eJid <- startJob table (digestRequest sid1 1)
+  eJid <- startFixtureJob table (digestRequest sid1 1)
   jid <- case eJid of
     Right j -> pure j
     Left deny -> assertFailure ("digest start denied: " ++ show deny)
@@ -1364,7 +1757,7 @@ caseRetentionBound = do
 -- | Start and immediately cancel one job (a cheap terminal record).
 cancelOneJob :: AsyncTable -> Int -> IO ()
 cancelOneJob table _ = do
-  eJid <- startJob table (signRequest sid1 5)
+  eJid <- startFixtureJob table (signRequest sid1 5)
   jid <- case eJid of
     Right j -> pure j
     Left deny -> assertFailure ("fill start denied: " ++ show deny)
@@ -1387,7 +1780,7 @@ caseCappedSemantics = do
   assertZero "live_jobs" "fill leaves no live jobs" live0
   assertEqual "store is at the retention cap" retentionCap term0
   -- Delivery: exact bytes, exactly once, winner observable.
-  Right jd <- startJob table (digestRequest sid1 1)
+  Right jd <- startFixtureJob table (digestRequest sid1 1)
   pD <- pollJob run env table JobDigest jd
   assertEqual "capped poll ready" PollReady pD
   cD <- completeJob env table JobDigest jd del (\_ -> pure ())
@@ -1405,7 +1798,7 @@ caseCappedSemantics = do
   -- Retry: short sizes without delivering, roomy retry delivers once
   -- without re-running the effect.
   runsBefore <- readIORef runs
-  Right jr <- startJob table (digestRequest sid1 1)
+  Right jr <- startFixtureJob table (digestRequest sid1 1)
   pR <- pollJob run env table JobDigest jr
   assertEqual "retry poll ready" PollReady pR
   cShort <- completeJob env table JobDigest jr tiny (\_ -> pure ())
@@ -1419,7 +1812,7 @@ caseCappedSemantics = do
   runsAfter <- readIORef runs
   assertEqual "capped retry runs the effect once" (runsBefore + 1) runsAfter
   -- Cancel: wins on live, terminal observes, re-cancel observes.
-  Right jc <- startJob table (signRequest sid1 5)
+  Right jc <- startFixtureJob table (signRequest sid1 5)
   k <- cancelJob table jc
   assertEqual "capped cancel wins" CancelOk k
   pC <- pollJob run env table JobSign jc
@@ -1453,9 +1846,9 @@ bigDigestRequest :: SessionId -> Int -> ByteString -> JobRequest
 bigDigestRequest sid ticks input = JobRequest
   { jrSession = sid
   , jrFunction = JobDigest
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "async-digest-test" [] Nothing Nothing)
-      (EffectCrypto (FxDigest (MechanismId 0x250) input))
+      (EffectCrypto (FxDigest (MechanismId 0x250) input)))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -1467,7 +1860,7 @@ deliverOneBigDigest
   :: AsyncTable -> Env -> (CryptoEffect -> IO CryptoResult) -> Delivery -> Int -> Int -> IO ()
 deliverOneBigDigest table env run del size i = do
   let input = BS.replicate size (fromIntegral i)
-  eJid <- startJob table (bigDigestRequest sid1 1 input)
+  eJid <- startFixtureJob table (bigDigestRequest sid1 1 input)
   jid <- case eJid of
     Right j -> pure j
     Left deny -> assertFailure ("big digest start denied: " ++ show deny)
@@ -1562,7 +1955,7 @@ caseByteBudgetHeadroom = do
 -- request: a cheap terminal record that retains its full work.
 cancelOneRequest :: AsyncTable -> JobRequest -> IO ()
 cancelOneRequest table req = do
-  eJid <- startJob table req
+  eJid <- startFixtureJob table req
   jid <- case eJid of
     Right j -> pure j
     Left deny -> assertFailure ("field probe start denied: " ++ show deny)
@@ -1593,9 +1986,9 @@ caseByteAccountingFields = do
       fxReq fx = JobRequest
         { jrSession = sid1
         , jrFunction = JobSign
-        , jrWork = WorkCall
+        , jrWork = WorkCall (mkFixtureCallWork sid1
             (Reservation "field-probe" [] Nothing Nothing)
-            (EffectCrypto fx)
+            (EffectCrypto fx))
         , jrTicks = 1
         , jrCapacity = 64
         }
@@ -1644,7 +2037,7 @@ caseByteAccountingFields = do
   -- 256 covers the 128-byte delivery), so only the payload varies.
   let roomySign = (signRequest sid1 1) { jrCapacity = 256 }
       deliverSign t e run d want = do
-        ej <- startJob t roomySign
+        ej <- startFixtureJob t roomySign
         jid <- case ej of
           Left deny -> assertFailure ("completion probe denied: " ++ show deny)
           Right j -> pure j
@@ -1686,10 +2079,10 @@ caseByteAccountingFields = do
       snapReq ops = JobRequest
         { jrSession = sid1
         , jrFunction = JobSign
-        , jrWork = WorkCall
+        , jrWork = WorkCall (mkFixtureCallWork sid1
             (Reservation "field-probe" [] Nothing (Just (CryptoStep
               F_Sign SlotSign "" (IntentBuffer 0) ops (snapSession ops))))
-            (EffectCrypto base)
+            (EffectCrypto base))
         , jrTicks = 1
         , jrCapacity = 64
         }
@@ -1727,7 +2120,7 @@ caseByteEvictionSemantics = do
   let del = captureDelivery 64 cap
       tiny = captureDelivery 8 cap
   -- Delivery: exact bytes, exactly once, winner observable.
-  Right jd <- startJob table (digestRequest sid1 1)
+  Right jd <- startFixtureJob table (digestRequest sid1 1)
   pD <- pollJob run env table JobDigest jd
   assertEqual "byte-capped poll ready" PollReady pD
   cD <- completeJob env table JobDigest jd del (\_ -> pure ())
@@ -1746,7 +2139,7 @@ caseByteEvictionSemantics = do
   -- Retry: short sizes without delivering, roomy retry delivers once
   -- without re-running the effect.
   runsBefore <- readIORef runs
-  Right jr <- startJob table (digestRequest sid1 1)
+  Right jr <- startFixtureJob table (digestRequest sid1 1)
   pR <- pollJob run env table JobDigest jr
   assertEqual "retry poll ready" PollReady pR
   cShort <- completeJob env table JobDigest jr tiny (\_ -> pure ())
@@ -1762,7 +2155,7 @@ caseByteEvictionSemantics = do
   assertEqual "byte-capped retry runs the effect once"
     (runsBefore + 1) runsAfter
   -- Cancel: wins on live, terminal observes, re-cancel observes.
-  Right jc <- startJob table (signRequest sid1 5)
+  Right jc <- startFixtureJob table (signRequest sid1 5)
   k <- cancelJob table jc
   assertEqual "byte-capped cancel wins" CancelOk k
   pC <- pollJob run env table JobSign jc
@@ -1899,11 +2292,11 @@ caseCipherSlicesIndependent = do
   let snapReq = JobRequest
         { jrSession = sid1
         , jrFunction = JobDigest
-        , jrWork = WorkCall
+        , jrWork = WorkCall (mkFixtureCallWork sid1
             (Reservation "tail-snap" [] Nothing (Just (CryptoStep
               F_Encrypt SlotEncrypt "tail" (IntentBuffer 0) opsE
               (st { ssOps = opsE }))))
-            (EffectCrypto (FxCipher DirEncrypt (MechanismId 0x251) Nothing BS.empty "tail"))
+            (EffectCrypto (FxCipher DirEncrypt (MechanismId 0x251) Nothing BS.empty "tail")))
         , jrTicks = 1
         , jrCapacity = 64
         }
@@ -1931,7 +2324,7 @@ submitCanceledBig :: AsyncTable -> Int -> Word8 -> IO (Weak ())
 submitCanceledBig table size fill = do
   let input = BS.replicate size fill
   w <- mkWeak input () Nothing
-  eJid <- startJob table (bigDigestRequest sid1 5 input)
+  eJid <- startFixtureJob table (bigDigestRequest sid1 5 input)
   jid <- case eJid of
     Right j -> pure j
     Left deny -> assertFailure ("oversized start denied: " ++ show deny)
@@ -2113,13 +2506,13 @@ caseDisableIdempotent = do
   -- job still drives and delivers; only new starts refuse.
   enableAsyncSession table sid2
   enabledSessionCount table >>= assertEqual "two enabled sessions" 2
-  Right j0 <- startJob table (signRequest sid1 1)
-  Right j1 <- startJob table (signRequest sid2 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
+  Right j1 <- startFixtureJob table (signRequest sid2 1)
   disableAsyncSession table sid2
   disableAsyncSession table sid2
   enabledSessionCount table >>= assertEqual "disable is idempotent" 1
   isAsyncSession table sid2 >>= assertEqual "withdrawn reads sync" False
-  Left deny <- startJob table (signRequest sid2 1)
+  Left deny <- startFixtureJob table (signRequest sid2 1)
   assertEqual "withdrawn session refuses starts" StartSessionNotAsync deny
   (live, _, _) <- tableStats table
   assertEqual "refusal allocates nothing" 2 live
@@ -2132,7 +2525,7 @@ caseDisableIdempotent = do
   -- Re-enabling admits starts again.
   enableAsyncSession table sid2
   enabledSessionCount table >>= assertEqual "re-enable counts" 2
-  Right _ <- startJob table (signRequest sid2 1)
+  Right _ <- startFixtureJob table (signRequest sid2 1)
   PollReady <- pollJob run env table JobSign j0
   c0 <- completeJob env table JobSign j0 del (\_ -> pure ())
   case c0 of
@@ -2163,7 +2556,7 @@ caseLeaseSnapshotQueue = do
         putMVar enteredE ()
         takeMVar releaseE
         pure (GotBytes cannedSig)
-  Right jE <- startJob table (signRequest sid1 1)
+  Right jE <- startFixtureJob table (signRequest sid1 1)
   snapPending <- snapshotJob table jE
   assertEqual "pending schedule" (Just (Just 1))
     (fmap jobSnapshotTicks snapPending)
@@ -2207,7 +2600,7 @@ caseLeaseSnapshotQueue = do
         putMVar entered ()
         takeMVar release
         pure (GotBytes cannedSig)
-  Right j0 <- startJob table (signRequest sid1 1)
+  Right j0 <- startFixtureJob table (signRequest sid1 1)
   polled <- newEmptyMVar
   _ <- forkIO (pollJob gated env table JobSign j0 >>= putMVar polled)
   takeMVar entered

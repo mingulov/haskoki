@@ -21,11 +21,9 @@ import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.CallWork
   ( CallFamily (..)
   , WorkMismatch (..)
-  , admitLegacyUnstepped
   , callFunctionEffect
   , callFunctionFamily
   , callFunctionSlot
-  , callPairCompatible
   , callWorkEffect
   , callWorkReservation
   , callWorkSession
@@ -158,7 +156,7 @@ spec = testGroup "model transitions"
   , testCase "runFinisher finishing-leg set is pinned" caseFinisherCoverage
   , testCase "call-work slot table matches the finisher legs" caseCallSlotPin
   , testCase "call-work effect matrix refuses cross-family pairs" caseCallEffectMatrix
-  , testCase "legacy unstepped pairs pin the checked/compatible split" caseCallLegacySplit
+  , testCase "legacy unstepped pairs pin the checked/fixture split" caseCallLegacySplit
   , testCase "planned digest dialogue checks coherently" caseCoherentDigest
   , testCase "planned sign dialogue checks coherently" caseCoherentSign
   , testCase "seeded planner emissions check coherently" caseCoherentEmissions
@@ -688,8 +686,7 @@ caseCallSlotPin = do
 -- | The full cross product: every accepted triple checks, and every
 -- other combination — wrong effect, wrong slot, wrong session, or a
 -- function with no finishing leg — refuses with its exact typed
--- mismatch. 'callPairCompatible' agrees with checked construction on
--- every stepped case.
+-- mismatch.
 caseCallEffectMatrix :: IO ()
 caseCallEffectMatrix = do
   mapM_ checkAccept acceptRows
@@ -707,8 +704,6 @@ caseCallEffectMatrix = do
           let eff = EffectCrypto fx
           assertBool ("accepts" ++ ctx fid fx)
             (isRight (checkedCallWork h1Sid res eff))
-          assertEqual ("compatible" ++ ctx fid fx)
-            True (callPairCompatible h1Sid res eff)
           assertEqual ("slot pins" ++ ctx fid fx)
             (Just slot) (callFunctionSlot fid)
           assertEqual ("effect pins" ++ ctx fid fx)
@@ -721,8 +716,6 @@ caseCallEffectMatrix = do
           let eff = EffectCrypto fx
           assertEqual ("refuses" ++ ctx fid fx)
             (Left (WorkEffectMismatch fid fx)) (checkedCallWork h1Sid res eff)
-          assertEqual ("incompatible" ++ ctx fid fx)
-            False (callPairCompatible h1Sid res eff)
           assertEqual ("effect refuses" ++ ctx fid fx)
             False (callFunctionEffect fid fx)
     checkWrongSlot (fid, slot, fxs) =
@@ -734,8 +727,6 @@ caseCallEffectMatrix = do
               eff = EffectCrypto fx
           assertEqual ("wrong slot refuses" ++ ctx fid fx)
             (Left (WorkFunctionSlotMismatch fid s)) (checkedCallWork h1Sid res eff)
-          assertEqual ("wrong slot incompatible" ++ ctx fid fx)
-            False (callPairCompatible h1Sid res eff)
     checkWrongSession (fid, slot, fxs) = mapM_ check fxs
       where
         res = h1Res fid slot
@@ -746,8 +737,6 @@ caseCallEffectMatrix = do
           assertEqual ("wrong session refuses" ++ ctx fid fx)
             (Left (WorkSessionMismatch h1SidOther h1Sid))
             (checkedCallWork h1SidOther res eff)
-          assertEqual ("wrong session incompatible" ++ ctx fid fx)
-            False (callPairCompatible h1SidOther res eff)
     checkNoLeg fid =
       mapM_ check [s | s <- [minBound .. maxBound]]
       where
@@ -757,18 +746,13 @@ caseCallEffectMatrix = do
               eff = EffectCrypto fx
           assertEqual ("legless refuses" ++ ctx fid fx)
             (Left (WorkFunctionSlotMismatch fid s)) (checkedCallWork h1Sid res eff)
-          assertEqual ("legless incompatible" ++ ctx fid fx)
-            False (callPairCompatible h1Sid res eff)
           assertEqual ("legless slot is Nothing" ++ ctx fid fx)
             Nothing (callFunctionSlot fid)
           assertEqual ("legless effect refuses" ++ ctx fid fx)
             False (callFunctionEffect fid fx)
 
--- | The explicit legacy split: unstepped reservations predate pinned
--- steps, so checked construction refuses them ('WorkUnstepped')
--- while the injected-boundary predicate still admits them — without
--- ever sniffing the effect content (key-management effects admit
--- exactly like call effects here).
+-- Twin pin with 'caseFixtureConstructsUnstepped' below: both assert
+-- the same fixture-constructor read-backs; keep them in sync.
 caseCallLegacySplit :: IO ()
 caseCallLegacySplit = mapM_ check allReps
   where
@@ -778,13 +762,16 @@ caseCallLegacySplit = mapM_ check allReps
           ctx = " (" ++ show fx ++ ")"
       assertEqual ("checked refuses unstepped" ++ ctx)
         (Left WorkUnstepped) (checkedCallWork h1Sid res eff)
-      assertEqual ("compatible admits unstepped" ++ ctx)
-        True (callPairCompatible h1Sid res eff)
-      assertBool ("legacy admission names unstepped" ++ ctx)
-        (admitLegacyUnstepped res)
+      let cw = mkFixtureCallWork h1Sid res eff
+      assertEqual ("fixture session reads back" ++ ctx)
+        h1Sid (callWorkSession cw)
+      assertEqual ("fixture reservation reads back" ++ ctx)
+        res (callWorkReservation cw)
+      assertEqual ("fixture effect reads back" ++ ctx)
+        eff (callWorkEffect cw)
 
--- Twin pin with 'caseCallLegacySplit' (rewritten at seal time): both
--- assert the same fixture-constructor read-backs; keep them in sync.
+-- Twin pin with 'caseCallLegacySplit' above: both assert the same
+-- fixture-constructor read-backs; keep them in sync.
 caseFixtureConstructsUnstepped :: IO ()
 caseFixtureConstructsUnstepped = mapM_ check allReps
   where
@@ -845,7 +832,6 @@ assertCoherent sid want pr = case pr of
     assertEqual "planned effect" want fx
     assertBool ("checks: " ++ show (resOperation res))
       (isRight (checkedCallWork sid res (EffectCrypto fx)))
-    assertEqual "compatible" True (callPairCompatible sid res (EffectCrypto fx))
     pure res
   other -> fail ("expected Execute, got: " ++ show other)
 
@@ -928,8 +914,6 @@ assertEmission fid slot want outcome = do
       let res = h1Res fid slot
       assertBool ("checks: " ++ show fid)
         (isRight (checkedCallWork h1Sid res (EffectCrypto fx)))
-      assertEqual ("compatible: " ++ show fid)
-        True (callPairCompatible h1Sid res (EffectCrypto fx))
       pure fx
     fxs -> fail ("expected one effect for " ++ show fid ++ ", got: " ++ show fxs)
 
@@ -1187,8 +1171,6 @@ caseCoherentMessage = do
         True (callFunctionEffect fid fx)
       assertBool ("checks " ++ show fid)
         (isRight (checkedCallWork h1Sid res (EffectCrypto fx)))
-      assertEqual ("compatible " ++ show fid)
-        True (callPairCompatible h1Sid res (EffectCrypto fx))
 
 -- | Two seated tokens, one token object each, and a worn
 -- slot-0 auth (one SO strike short of nothing: attempts and

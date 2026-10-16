@@ -15,6 +15,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import Haskoki.CallWork (mkFixtureCallWork)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Outcome (EffectRequest (..), Reservation (..))
 import Haskoki.Registry (MechanismId (..))
@@ -50,9 +51,9 @@ signReq :: SessionId -> Int -> JobRequest
 signReq sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobSign
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "events-test" [] Nothing Nothing)
-      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello"))
+      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -145,7 +146,7 @@ caseRemoveQuiesce = do
   enableAsyncSession at sid1
   registerSessionSlot reg sid1 (SlotId 0)
   _ <- insertToken reg (SlotId 0)
-  eJid <- startJob at (signReq sid1 100)
+  eJid <- startFixtureJob at (signReq sid1 100)
   jid <- case eJid of
     Left deny -> assertFailure ("start must succeed: " ++ show deny)
     Right j -> pure j

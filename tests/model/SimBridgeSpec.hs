@@ -24,6 +24,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Ctl (CtlExit (..), runCtl)
+import Haskoki.CallWork (mkFixtureCallWork)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Outcome (EffectRequest (..), Reservation (..))
 import Haskoki.Registry (MechanismId (..))
@@ -44,7 +45,7 @@ import Haskoki.Runtime.Async
   , inspectJob
   , newAsyncTable
   , pollJob
-  , startJob
+  , startFixtureJob
   )
 import Haskoki.Runtime.Config
   ( Config (..)
@@ -116,9 +117,9 @@ bridgeRequest :: SessionId -> MechanismId -> Int -> JobRequest
 bridgeRequest sid mech ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobSign
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "bridge" [] Nothing Nothing)
-      (EffectCrypto (FxSign mech Nothing BS.empty "hello"))
+      (EffectCrypto (FxSign mech Nothing BS.empty "hello")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -144,7 +145,7 @@ caseAdvanceCompletes = do
   (st, table, env) <- mkBridge defaultConfig
   let sid = SessionId 1
   enableAsyncSession table sid
-  eJid <- startJob table (bridgeRequest sid (MechanismId 0x1) 5)
+  eJid <- startFixtureJob table (bridgeRequest sid (MechanismId 0x1) 5)
   jid <- case eJid of
     Left deny -> assertFailure ("start refused: " ++ show deny)
     Right j -> pure j
@@ -170,7 +171,7 @@ boostLeft sched enabled mech ticks adv = do
   (st, table, _) <- mkBridge (defaultConfig { cfgSim = SimCfg enabled sched [] 0 0 })
   let sid = SessionId 1
   enableAsyncSession table sid
-  eJid <- startJob table (bridgeRequest sid mech ticks)
+  eJid <- startFixtureJob table (bridgeRequest sid mech ticks)
   jid <- case eJid of
     Left deny -> assertFailure ("start refused: " ++ show deny)
     Right j -> pure j

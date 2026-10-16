@@ -6,11 +6,10 @@ validated as a triple before anything runs it. 'checkedCallWork'
 is the only constructor: it validates step presence, step/session
 identity, the function/slot family, and effect compatibility, in
 that order, reporting the first failure as a typed 'WorkMismatch'.
-'callPairCompatible' is the total Bool form for injected
-boundaries (async submit, detach rejoin): stepped triples must
-check fully, while legacy unstepped triples admit explicitly
-('admitLegacyUnstepped') without ever sniffing the effect
-content. Normal submission never content-fallbacks: a missing
+Hand-built fixtures predate pinned steps: they construct through
+'mkFixtureCallWork' and submit through the fixture entrypoint
+('Haskoki.Runtime.Async.startFixtureJob'), never through normal
+submission. Normal submission never content-fallbacks: a missing
 step is a hard 'WorkUnstepped', never a guessed coherence.
 
 This is a pure leaf over the domain types ('Haskoki.Outcome',
@@ -25,8 +24,6 @@ module Haskoki.CallWork
   ( CallWork
   , WorkMismatch (..)
   , checkedCallWork
-  , callPairCompatible
-  , admitLegacyUnstepped
   , callFunctionSlot
   , callFunctionEffect
   , callWorkSession
@@ -37,8 +34,6 @@ module Haskoki.CallWork
   , callFunctionFamily
   , callWorkFamily
   ) where
-
-import Data.Either (isRight)
 
 import Haskoki.Model (SessionState (..))
 import Haskoki.Operation.Effect (CryptoEffect (..))
@@ -53,9 +48,9 @@ import Haskoki.Types (SessionId)
 -- effect compatibility.
 data WorkMismatch
   = -- | The reservation pins no step: nothing to validate the
-    -- triple against. Normal submission refuses; injected
-    -- boundaries admit legacy fixtures explicitly
-    -- ('admitLegacyUnstepped').
+    -- triple against. Normal submission refuses; hand-built
+    -- fixtures construct through 'mkFixtureCallWork' and submit
+    -- through the fixture entrypoint.
     WorkUnstepped
   | -- | The step's session disagrees with the submitting session:
     -- @(want, got)@, the submitting session first.
@@ -305,29 +300,6 @@ checkedCallWork sid res eff = case resStep res of
       | not (callFunctionEffect (csFunction step) fx) ->
           Left (WorkEffectMismatch (csFunction step) fx)
       | otherwise -> Right (CallWork sid res eff)
-
--- | Whether a (submitting session, reservation, effect) triple may
--- execute at an injected boundary (async submit, detach rejoin):
--- stepped triples must check fully; legacy unstepped triples
--- admit explicitly ('admitLegacyUnstepped') without sniffing the
--- effect. Total: every triple takes exactly one verdict, and no
--- verdict accepts by default.
-callPairCompatible :: SessionId -> Reservation -> EffectRequest -> Bool
-callPairCompatible sid res eff
-  | admitLegacyUnstepped res = True
-  | otherwise = isRight (checkedCallWork sid res eff)
-
--- | INTERNAL: the explicit legacy admission behind
--- 'callPairCompatible'. Unstepped reservations predate pinned
--- steps (hand-built fixtures); injected boundaries admit them
--- AS-IS — the effect family is never guessed from a missing
--- step, so there is no content fallback to drift. Normal
--- submission never calls this: planner-produced pairs always
--- carry steps, and a missing step there is 'WorkUnstepped'.
-admitLegacyUnstepped :: Reservation -> Bool
-admitLegacyUnstepped res = case resStep res of
-  Nothing -> True
-  Just _ -> False
 
 -- | INTERNAL TEST-ONLY: build call work without checking. Hand-built
 -- fixtures predate pinned steps; they construct here and submit
