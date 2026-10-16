@@ -1142,9 +1142,9 @@ pollJob run env table func jid = withJobLock table jid PollUnknown $ \job ->
 -- | The pre-execution refusal for a finisher-incoherent key
 -- pair, if any. Call work checks at submit instead
 -- ('callWorkAdmissible', before any id is consumed), so every
--- tabled call job already coheres by drive time; key work
--- refuses here through 'keyPairCompatible' before any effect
--- runs. Both 'Show' instances redact secrets.
+-- call job tabled through normal submission already coheres by
+-- drive time; key work refuses here through 'keyPairCompatible'
+-- before any effect runs. Both 'Show' instances redact secrets.
 pairRefusal :: AsyncWork -> Maybe String
 pairRefusal (WorkKey _ pw fx)
   | not (keyPairCompatible pw fx) =

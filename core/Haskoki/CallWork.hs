@@ -3,13 +3,15 @@
 A 'CallWork' is one executable call unit — the submitting session,
 the guarding reservation, and the effect the runner executes —
 validated as a triple before anything runs it. 'checkedCallWork'
-is the only constructor: it validates step presence, step/session
-identity, the function/slot family, and effect compatibility, in
-that order, reporting the first failure as a typed 'WorkMismatch'.
+is the only checked constructor: it validates step presence,
+step/session identity, the function/slot family, and effect
+compatibility, in that order, reporting the first failure as a
+typed 'WorkMismatch'.
 Hand-built fixtures predate pinned steps: they construct through
-'mkFixtureCallWork' and submit through the fixture entrypoint
-('Haskoki.Runtime.Async.startFixtureJob'), never through normal
-submission. Normal submission never content-fallbacks: a missing
+the unchecked test-only 'mkFixtureCallWork' and submit through
+the fixture entrypoint ('Haskoki.Runtime.Async.startFixtureJob'),
+never through normal submission. Normal submission never
+content-fallbacks: a missing
 step is a hard 'WorkUnstepped', never a guessed coherence.
 
 This is a pure leaf over the domain types ('Haskoki.Outcome',
@@ -63,9 +65,10 @@ data WorkMismatch
     WorkEffectMismatch !FunctionId !CryptoEffect
   deriving (Eq, Show)
 
--- | Checked call work: the constructor is private, so values only
--- ever come from 'checkedCallWork'. Read through the accessors
--- below; the record fields stay internal.
+-- | Checked call work: the constructor is private, so checked
+-- values only ever come from 'checkedCallWork', while
+-- 'mkFixtureCallWork' builds unchecked test-only values. Read
+-- through the accessors below; the record fields stay internal.
 data CallWork = CallWork
   { cwSession :: !SessionId
   , cwReservation :: !Reservation

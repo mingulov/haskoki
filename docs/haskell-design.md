@@ -73,10 +73,11 @@ calls — is recorded in the
 The seal is pinned by [`scripts/check-sealed-callwork.py`](../scripts/check-sealed-callwork.py):
 shipped code reaches the fixture names only at their definitions
 and quoted Haddock references, and no production match inspects
-the raw pair. The scan permits exactly one `WorkCall` wildcard
-shape, the closed 1-ary `WorkCall _)`, which binds nothing: the
-two outer-function refusal arms over key functions use that form
-(see `src/Haskoki/Runtime/Async.hs`).
+the raw pair. The abstract type seals the value; gate 3 is a
+textual backstop against direct construction (`WorkCall (`),
+while the closed 1-ary `WorkCall _)` wildcard, which binds
+nothing, stays permitted for the two outer-function refusal arms
+over key functions (see `src/Haskoki/Runtime/Async.hs`).
 
 ## Public Haskell surface
 
