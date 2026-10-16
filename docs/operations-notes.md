@@ -606,9 +606,12 @@ after the snapshot comparison and before the backup (no `-wal` or
 taken, the journal is still cold on re-read; see
 `clearColdJournalOwned` in
 `src/Haskoki/Runtime/Storage/SQLite.hs`). A journal that vanished
-between the plan and the clear counts as already cleared. Every
-outcome after a clear reports `cold-journal-removed: yes` in the
-receipt and on stdout, including failures
+between the plan and the clear counts as already cleared. The line
+is printed to stdout and flushed the moment the journal is cleared,
+so a run killed after the clear still leaves its record in the
+operator's log; every outcome after a clear then repeats
+`cold-journal-removed: yes` in the receipt and at the end of stdout,
+including failures
 (`caseMigrateClearsColdJournal`, `caseKilledSmallMigrationClears`,
 `caseMigrateReportsClearOnFailure` in
 `tests/storage/PreflightSpec.hs`). A store that changed after the
