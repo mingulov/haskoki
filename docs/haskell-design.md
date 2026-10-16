@@ -90,12 +90,12 @@ component is not the package public API at all.
 | `Haskoki.Ctl` | Control tool and scenario-runner surface | Internal; absent from the foreign library | Owns its in-memory model only | One command at a time |
 | `Haskoki.FFI.Standard`, `Haskoki.FFI.Instance` | Serving entries: admission, async delivery, instance lifecycle | Internal | The instance owns sessions, jobs, and stores; callers own native buffers per the entry contract | Entries serialize on the C state lock except the documented lock-free waits; callbacks hold that lock as their lease |
 | `Haskoki.FFI.Async`, `Haskoki.FFI.Exports` | Private proof APIs: standalone caller-owned async contexts/stores and routed-crypto contexts | Internal (standalone proof contexts; serving instead borrows `AsyncCtx` views sharing its backend/table) | The caller owns each standalone context and closes it explicitly (`haskoki_hs_async_close`, `haskoki_hs_async_store_close`, `haskoki_hs_crypto_close`); the store box outlives contexts opened on it | Direct Haskell calls take no C state lock; `AsyncCtx` carries its table and leases; `CryptoCtx` has no retirement lease, so callers must not use it after close |
-| `Haskoki.FFI.Decode`, `Haskoki.FFI.Encode`, `Haskoki.FFI.NativeParams`, `Haskoki.FFI.MessageParams`, `Haskoki.FFI.KeyOutputs`, `Haskoki.FFI.Notify` | Marshalling, parameter frames, callback plumbing | Internal (`MessageParams`, `KeyOutputs` absent from the foreign library) | Borrowed views; no retained state | Same lock discipline as the serving entries |
+| `Haskoki.FFI.Decode`, `Haskoki.FFI.Encode`, `Haskoki.FFI.NativeParams`, `Haskoki.FFI.MessageParams`, `Haskoki.FFI.KeyOutputs`, `Haskoki.FFI.Notify` | Marshalling, parameter frames, callback plumbing | Internal (`KeyOutputs` absent from the foreign library) | Borrowed views; no retained state | Same lock discipline as the serving entries |
 | `Haskoki.Runtime`, `Haskoki.Runtime.Config`, `Haskoki.Runtime.Catalog` | Umbrella re-export, config parsing, token catalog admission | Internal (`Haskoki.Runtime` absent from the foreign library) | Parsing borrows; the instance owns the admitted catalog | Parsing runs single-threaded at open |
 | `Haskoki.Runtime.Lifecycle` | Provider intervals: initialize/finalize, close obligations | Internal | The instance owns the interval | Finalize runs under the state lock with zero open sessions |
 | `Haskoki.Runtime.Async` | Attached job tables | Internal | The instance owns tables and retained bytes | STM coordination; attached terminal tombstones bounded (4096 records, 64 MiB); the just-committed job is always retained; no background reaper |
-| `Haskoki.Runtime.Detached` | Persistent async records | Internal | The store owns terminal records | Detached terminal records stay stored; separate from attached-table retention |
-| `Haskoki.Runtime.Storage`, `Haskoki.Runtime.Storage.Memory`, `Haskoki.Runtime.Storage.SQLite` | Store interface and its two backends | Internal | The store handle owns token/object rows; single-writer | Commits serialize; quarantine refuses until an authoritative reload clears it |
+| `Haskoki.Runtime.Detached` | Persistent async records | Internal | The store owns terminal records | Detached terminal records stay stored; separate from attached-table retention. Attachment claims go through the store handle's shared claim authority (per token): detach contexts are views over it, so one persistent id has at most one live binding across every context on the handle, and a context retires only the tables it joined through |
+| `Haskoki.Runtime.Storage`, `Haskoki.Runtime.Storage.Memory`, `Haskoki.Runtime.Storage.SQLite` | Store interface and its two backends | Internal | The store handle owns token/object rows; single-writer. Each open handle also owns one detached-job claim authority, which lives only in this process, is never saved to disk, and starts empty on reopen | Commits serialize; quarantine refuses until an authoritative reload clears it |
 | `Haskoki.Runtime.SlotEvents` | Public slot-flag service | Internal | The interval owns the slot service | One flag has one consumer; close discards flags and wakes waiters |
 | `Haskoki.Runtime.Events` | Private edge-queue proofs | Internal | The queue owns pending events and the finalized flag | Finalize only marks finalized; waits drain queued events before reporting it |
 | `Haskoki.Runtime.Control` | Serving presence controls (`token.insert`/`token.remove`) | Internal | Mutations publish through the model | Runs under the state lock with the retirement order in `docs/operations-notes.md` |
@@ -198,15 +198,16 @@ The [B3 inventory](b3-docs-inventory.md) lists the module sets read from
 | Main library `exposed-modules` | 30 | `haskoki.cabal:161-191` |
 | Main library `other-modules` | 2 | `Haskoki.FFI.OpenSSL4.Raw`, `Haskoki.Runtime.Attach` |
 | `haskoki-core` (`private` component) | 67 | `haskoki.cabal:81-148` |
-| Foreign library `other-modules` | 26 | `haskoki.cabal:250-276` |
+| Foreign library `other-modules` | 27 | `haskoki.cabal:250-277` |
 
 Two facts from that survey matter here: the `Haskoki.PKCS11` facade
 (`initialize`, `finalize`, `getInfo`, `getSlotList`) always answers
-`CKR_GENERAL_ERROR` and is not the serving path, and 7 library-exposed
+`CKR_GENERAL_ERROR` and is not the serving path, and 6 library-exposed
 modules are absent from the foreign library while flib-only
 `Haskoki.FFI.Types` has zero in-tree importers. See gaps D1 and D4 in the
 inventory for the H3 follow-ups. Freshness: at this tree the library
-still exposes 30 modules and the foreign library still bundles 25,
+still exposes 30 modules and the foreign library bundles 27 (it now
+also carries `Haskoki.FFI.MessageParams` and `Haskoki.Runtime.Attach`),
 while `haskoki-core` grew to 68 with `Haskoki.CallWork`; the facade
 names are now deprecated (see `src/Haskoki/PKCS11.hs`) and the
 supported-path answer to D4 is the Public Haskell surface section

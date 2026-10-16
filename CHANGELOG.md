@@ -40,6 +40,30 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   `CKR_KEY_HANDLE_INVALID` (0x60) instead of `CKR_OBJECT_HANDLE_INVALID`
   (0x82). Wrap, unwrap and KEM key resolution still return 0x82.
 
+### Changed
+
+- Detached-job attachment claims are now exclusive across detach
+  contexts. Claim state moved out of each context into one claim
+  authority per open store handle (per token), so two contexts over one
+  store can no longer both join the same persistent id: the second join
+  is refused with `CKR_OPERATION_ACTIVE`, and a context that loses a
+  join race cannot retire or cancel the winner. The authority lives
+  only in the process, is never written to disk, and starts empty when
+  the store is reopened.
+- `Haskoki.Runtime.Storage`: `Store` has a new strict field
+  `storeClaims :: !ClaimAuthority`, exported without its constructor,
+  plus the read-only inspectors `claimCensus` and `markCensus`. A
+  `Store` can no longer be built from scratch outside the library;
+  record-update wrappers of the memory and SQLite stores keep working
+  and share the wrapped handle's authority.
+- `Haskoki.Runtime.Detached`: `markJobOpaque` takes the job's table,
+  and marks are keyed by table and job. A mark is no longer consumed
+  by a refused detach; it clears on a successful detach, or when a
+  context that marked or served the table retires it. `detachStats`
+  and `inspectAttachment` report the store handle's shared state for
+  the context's token. `retireLiveTable` and `retireLiveTableFor`
+  retire only tables the context joined through.
+
 ### Fixed
 
 - A hang in hosts that load the provider with at least 2 RTS
@@ -56,6 +80,10 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   `O_CLOEXEC` atomically. A child process started while a store was
   being opened could inherit the descriptor and keep the store locked
   after it was closed.
+- A detach no longer resets a persistent id to idle when a join of
+  that id (through any context) landed between the durable insert and
+  the idle record; a third join used to be able to start a second live
+  job.
 
 ## [0.4.0.0] - Unreleased
 

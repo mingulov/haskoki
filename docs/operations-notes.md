@@ -451,12 +451,20 @@ Attachment state for persistent detached jobs lives in one claim
 authority per open store handle, keyed by token and persistent id
 (`Haskoki.Runtime.Attach`), not in each detach context. Claims are
 exclusive across contexts over one handle: a context that loses a
-race cannot retire or cancel the winner, and a cross-token join still
-answers unknown. Retiring a context retires only the tables it served.
-Retiring a table that context never served only refuses later claims
-from that context; it never changes shared state. Opaque marks are
-keyed by table and job, apply only to non-terminal jobs, and clear on
-a successful detach or on retirement of the serving table.
+race cannot retire or cancel the winner, and a cross-token join of a
+live (queued or ready) row answers unknown. Below, a context has
+served a table when it took a join claim through that table, even a
+claim that later rolled back. Retiring a context retires only the
+tables it served. Retiring a table that context never served refuses
+later claims from that context; apart from opaque marks (below), it
+never changes shared state.
+
+Opaque marks are keyed by table and job and apply only to
+non-terminal jobs. A mark clears on a successful detach of its job,
+or when its table is retired through a context that served the table
+or marked a job on it, whether the retire is scoped to that table or
+covers the whole context. So once every context that marked or
+served a table has retired it, the table holds no marks.
 `markJobOpaque` stays exported as a documented fault-injection API.
 
 Documented boundaries:
@@ -464,13 +472,19 @@ Documented boundaries:
 - Closing a store while attachments are live is not supported.
   Reopening is covered once the owner is fully retired; a reopened
   handle starts with an empty authority. There is no exactly-once
-  claim across process death.
+  claim across process death: an id that was live at the close can be
+  joined again after the reopen, so its job can run a second time.
 - A stale foreign active claim is not reclaimed: a claim held by
   another context that never retires stays held, and this context
   does not take it over.
-- When a context retires a table it never served, that table's
-  opaque marks stay in the shared authority until the serving context
-  retires the table.
+- A context that served a table retires it for every context when it
+  retires: a whole-context retire also covers tables whose claims
+  through this context rolled back, and it cancels any other
+  context's active binding on that shared table.
+- When a table is retired only through contexts that neither served
+  it nor marked a job on it, its opaque marks stay in the shared
+  authority until a context that did retires it, or the store handle
+  closes.
 
 ## Async expiry/GC
 
