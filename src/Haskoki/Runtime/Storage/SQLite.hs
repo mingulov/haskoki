@@ -82,7 +82,7 @@ import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
 import System.Posix.Files (deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, removeLink, setFdSize, setFileMode)
-import System.Posix.IO (FdOption (..), OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdWrite, openFd, setFdOption)
+import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdWrite, openFd)
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (Fd, ProcessID)
 
@@ -309,6 +309,17 @@ procRootFromEnv = do
 -- Ownership
 -- ---------------------------------------------------------------------------
 
+-- | Flags for every lock and guard fd: close-on-exec is requested
+-- at creation (@O_CLOEXEC@), never set afterwards. A separate
+-- @fcntl(F_SETFD)@ after the open leaves a window in which a
+-- concurrent fork+exec (another thread, or the host application
+-- spawning a child) inherits the fd; the child then keeps the open
+-- file description, and with it the @flock(2)@ lock, alive after
+-- our close, so the next open is wrongly refused as a second
+-- writer.
+guardFlags :: OpenFileFlags
+guardFlags = defaultFileFlags { cloexec = True }
+
 -- | Take single-writer ownership via an O_EXCL sidecar lock carrying
 -- our pid. An existing lock owned by a live pid fails explicitly;
 -- a lock whose owner liveness is unknowable fails closed; a lock
@@ -329,7 +340,7 @@ takeOwnership dbPath lockPath procRoot attempts
   | otherwise = mask_ $ do
       pid <- getProcessID
       eFd <- tryIOError (openFd lockPath WriteOnly
-        defaultFileFlags { creat = Just 0o600, exclusive = True })
+        guardFlags { creat = Just 0o600, exclusive = True })
       case eFd of
         Right fd -> claimFresh dbPath lockPath procRoot attempts fd pid
         Left _ -> inspectLock dbPath lockPath procRoot pid attempts
@@ -343,7 +354,6 @@ takeOwnership dbPath lockPath procRoot attempts
 -- double-close it (possibly after the number is recycled).
 claimFresh :: FilePath -> FilePath -> FilePath -> Int -> Fd -> ProcessID -> IO (Either StoreError Fd)
 claimFresh dbPath lockPath procRoot attempts fd pid = do
-  _ <- tryIOError (setFdOption fd CloseOnExec True)
   locked <- tryFlock fd `onException` closeQuietFd fd
   if not locked
     then do
@@ -466,7 +476,7 @@ pidLiveness procRoot ownerPid = do
 -- writer while the new owner lives.
 confirmTakeover :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
 confirmTakeover dbPath lockPath procRoot pid attempts = do
-  eFd <- tryIOError (openFd lockPath ReadWrite defaultFileFlags)
+  eFd <- tryIOError (openFd lockPath ReadWrite guardFlags)
   case eFd of
     Left e
       | isDoesNotExistError e -> takeOwnership dbPath lockPath procRoot (attempts - 1)
@@ -476,7 +486,6 @@ confirmTakeover dbPath lockPath procRoot pid attempts = do
     -- this fd, so a cancellation during the retry cannot
     -- double-close it after the number is recycled.
     Right fd -> do
-      _ <- tryIOError (setFdOption fd CloseOnExec True)
       locked <- tryFlock fd `onException` closeQuietFd fd
       if not locked
         then do
@@ -523,7 +532,6 @@ closeQuietFd fd = do
 -- 'claimFresh').
 takeDbGuard :: FilePath -> Fd -> IO (Either StoreError Fd)
 takeDbGuard dbPath fd = do
-  _ <- tryIOError (setFdOption fd CloseOnExec True)
   locked <- tryFlock fd `onException` closeQuietFd fd
   if locked
     then pure (Right fd)
@@ -546,7 +554,7 @@ ensureDbGuard dbPath = mask_ (go (3 :: Int))
     go n
       | n <= 0 = pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
       | otherwise = do
-          eFd <- tryIOError (openFd dbPath ReadOnly defaultFileFlags)
+          eFd <- tryIOError (openFd dbPath ReadOnly guardFlags)
           case eFd of
             Right fd -> do
               eGuard <- takeDbGuard dbPath fd
@@ -554,7 +562,7 @@ ensureDbGuard dbPath = mask_ (go (3 :: Int))
             Left e
               | isDoesNotExistError e -> do
                   eCr <- tryIOError (openFd dbPath WriteOnly
-                    defaultFileFlags { creat = Just 0o600, exclusive = True })
+                    guardFlags { creat = Just 0o600, exclusive = True })
                   case eCr of
                     Right fd -> do
                       eGuard <- takeDbGuard dbPath fd

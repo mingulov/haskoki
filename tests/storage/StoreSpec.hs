@@ -51,12 +51,12 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
+import System.Directory (listDirectory, createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Error (catchIOError, isAlreadyExistsError)
-import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, setFileMode)
+import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, readSymbolicLink, setFileMode)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
 import System.Posix.Process (exitImmediately, getParentProcessID, getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
@@ -210,12 +210,60 @@ makeTempDir prefix = do
               else ioError (userError ("makeTempDir: cannot create " ++ dir ++ ": " ++ show e))
 
 -- | Both backends run the shared contract, plus sqlite-only cases.
+-- | Every fd the open store holds on its database and sidecar lock
+-- carries FD_CLOEXEC. Without it a concurrent fork+exec (any thread,
+-- or the host application spawning a child) inherits the fd and keeps
+-- the flock alive past 'storeClose'. Reads the live fd table, so it
+-- checks the store's real fds, not a copy of the flags.
+testHeldFdsCloexec :: IO ()
+testHeldFdsCloexec = do
+  dir <- makeTempDir "haskoki-cloexec"
+  let path = dir </> "store.db"
+  bracket_ (pure ()) (removeDirectoryRecursive dir) $ do
+    st <- either (assertFailure . show) pure =<< openSQLiteStore path
+    fds <- listDirectory "/proc/self/fd"
+    held <- fmap concat $ mapM (\n -> do
+      tgt <- readSymbolicLink ("/proc/self/fd" </> n) `catchIOError` \_ -> pure ""
+      pure [n | tgt == path || tgt == path ++ ".lock"]) fds
+    flagsOf <- mapM (\n -> do
+      info <- readFile ("/proc/self/fdinfo" </> n)
+      let fl = [w | l <- lines info, ("flags:" : w : _) <- [words l]]
+      case fl of
+        [w] -> pure (n, read ("0o" ++ w) :: Int)
+        _ -> assertFailure ("no flags in fdinfo of fd " ++ n)) held
+    storeClose st
+    assertBool ("expected the lock and guard fds, found " ++ show (length held)) (length held >= 2)
+    let o_cloexec = 0o2000000 :: Int
+    assertEqual "fds lacking close-on-exec" []
+      [n | (n, fl) <- flagsOf, fl `div` o_cloexec `mod` 2 == (0 :: Int)]
+
+-- | Source gate for the two-step open: a deterministic test cannot
+-- observe the fork window, so pin the shape that closes it. Every
+-- 'openFd' in the SQLite backend must take the shared close-on-exec
+-- flags, and no later 'setFdOption' may reappear.
+testOpenFdSourceGate :: IO ()
+testOpenFdSourceGate = do
+  body <- readFile "src/Haskoki/Runtime/Storage/SQLite.hs"
+  let ls = zip [1 :: Int ..] (lines body)
+      code = [(n, l) | (n, l) <- ls, not ("--" `isPrefixOf` dropWhile isSpace l)]
+      calls = [n | (n, l) <- code, "openFd " `isInfixOf` l, not ("import " `isPrefixOf` l)]
+      nextTwo n = unwords [l | (m, l) <- ls, m == n || m == n + 1]
+      bad = [n | n <- calls, not ("guardFlags" `isInfixOf` nextTwo n)]
+  assertBool "found the backend's openFd calls" (length calls >= 4)
+  assertEqual "openFd calls not using guardFlags (line numbers)" [] bad
+  assertBool "guardFlags requests cloexec at creation"
+    (any (\(_, l) -> "guardFlags = " `isInfixOf` l && "cloexec = True" `isInfixOf` l) code)
+  assertEqual "setFdOption reintroduced (line numbers)" []
+    [n | (n, l) <- code, "setFdOption" `isInfixOf` l]
+
 spec :: TestTree
 spec = testGroup "store contract"
   [ contractSpec "memory" memoryOpener
   , contractSpec "sqlite" sqliteOpener
   , testGroup "sqlite-only"
-      [ testCase "garbage file is rejected without rewrite" testGarbageRejected
+      [ testCase "held lock and guard fds are close-on-exec" testHeldFdsCloexec
+      , testCase "lock fds are opened close-on-exec, never set afterwards" testOpenFdSourceGate
+      , testCase "garbage file is rejected without rewrite" testGarbageRejected
       , testCase "future schema version rejected without rewrite" testFutureVersionRejected
       , testCase "version-1 database migrates explicitly" testV1Migrates
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
