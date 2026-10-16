@@ -150,14 +150,17 @@ checkSelected path cfgPath asyncHome cfg = do
   where
     -- A cold journal whose plan is otherwise openable is not a
     -- refusal: the serving open takes the store and the next write
-    -- reuses the file. Any other retry outcome keeps the cold
-    -- refusal.
+    -- reuses the file. An identity refusal takes precedence over the
+    -- cold-journal message (migrate reports it too). Any other retry
+    -- outcome keeps the cold refusal.
     coldOkOrRefusal cold = do
       r2 <- trySync (checkStoreOpenAllowCold path cfg)
         :: IO (Either SomeException (Either StoreError StoreOpenPlan))
       pure $ case r2 of
         Right (Right plan) | planVerdict plan == VerdictOpenable ->
           (0, renderPlan plan ++ "journal: cold (harmless; reused by the next write)\n", "")
+        Right (Right plan) | VerdictIdentityRefused ir <- planVerdict plan ->
+          (1, renderPlan plan, line ("store-identity-refused", renderIdentityRefusal ir))
         _ -> (1, "", line (renderStoreRefusal cold))
 
 migrateUsage :: String

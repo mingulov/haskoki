@@ -126,6 +126,7 @@ spec = testGroup "Store commands"
   , testCase "migrate: after a clear, a failed transaction stays honest about the store" caseMigrateClearTxnFailedHonest
   , testCase "migrate: the clearing is on stdout before the backup verifies" caseMigrateClearRecordedAtClearTime
   , testCase "migrate: a backup that fails its read-back is removed" caseMigrateBackupReadbackFailureRemoved
+  , testCase "check: with a cold journal, an identity refusal takes precedence" caseCheckColdJournalIdentityRefused
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -1538,3 +1539,28 @@ caseMigrateBackupReadbackFailureRemoved = withScratch "ctl-migrate" $ \dir -> do
   assertBool "tag" ("migrate-backup-failed:" `isPrefixOf` err)
   assertBool "names the read-back" ("cannot read back the backup" `isInfixOf` err)
   listDirectory backups >>= assertEqual "unreadable backup removed" []
+
+-- A cold journal must not hide an identity refusal: on a current
+-- store with a drifted catalog, check reports the identity refusal
+-- (like migrate does), with the plan on stdout.
+caseCheckColdJournalIdentityRefused :: IO ()
+caseCheckColdJournalIdentityRefused = withScratch "ctl-check" $ \dir -> do
+  let store = dir </> "store.sqlite"; journal = store ++ "-journal"; backups = dir </> "backups"
+  createDirectory backups
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  openReconciled store cfg >>= either (assertFailure . show) closeAcquired
+  BS.writeFile journal (BS.replicate 512 0)
+  drift <- writeStoreConfig (dir </> "d.toml") store ["haskoki-demo", "haskoki-ops-renamed"] fixtureSo fixtureUser
+  dbBefore <- BS.readFile store
+  jBefore <- BS.readFile journal
+  r <- check store drift
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "identity refusal takes precedence" ("store-identity-refused:" `isPrefixOf` ceErr r)
+  assertBool "plan printed" ("verdict: identity-refused" `isInfixOf` ceOut r)
+  m <- migrateCli store drift backups
+  assertEqual "migrate refuses" 1 (ceCode m)
+  assertBool "migrate agrees" ("store-identity-refused:" `isPrefixOf` ceErr m)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
+  listDirectory backups >>= assertEqual "no backup" []
