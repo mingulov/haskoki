@@ -534,6 +534,7 @@ test-suite haskoki-engine-tests
     bytestring  >= 0.10 && < 0.13,
     containers  >= 0.6  && < 0.9,
     directory   >= 1.3  && < 1.4,
+    ghc-heap    >= 9.10 && < 9.15,
     haskoki,
     haskoki:haskoki-core,
     stm         >= 2.5  && < 2.6,

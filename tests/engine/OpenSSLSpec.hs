@@ -16,6 +16,7 @@ totality, and shim-hygiene assertions.
 module OpenSSLSpec (spec) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (evaluate)
 import Control.Monad (replicateM_)
 import Data.Bits ((.&.), shiftL, xor)
 import qualified Data.ByteString as BS
@@ -28,6 +29,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Data.Word (Word32)
+import GHC.Exts.Heap (Box, GenClosure (..), asBox, getBoxedClosureData)
 import Haskoki.Engine.Backend
   ( AeadSpec (..)
   , BackendCaps (..)
@@ -63,7 +65,7 @@ import Haskoki.Engine.Backend
   )
 import Haskoki.Der (dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, integerToBE, mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomerySpkiFields, rsaSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
 import Haskoki.Engine.Driver (cipherSpecFor, runEffect)
-import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
+import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..), ossl4StaticCaps)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Recipe.Cipher (encodeCtrParams)
 import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
@@ -137,6 +139,8 @@ spec = testGroup "openssl4 engine"
   , testCase "unsupported algs rejected without fallback" caseUnsupported
   , testCase "guard runs before any native call" caseGuardBeforeNative
   , testCase "capability report is exactly the supported set" caseCaps
+  , testCase "capability report is published fully evaluated" caseCapsEvaluated
+  , testCase "static capability table is a normal-form CAF" caseStaticCapsEvaluated
   , testCase "private contexts are isolated" caseIsolation
   , testCase "shim has no pkcs11 provider or global cleanup" caseShimHygiene
   , testCase "invalid inputs fail typed, never crash" caseInvalidInputs
@@ -5170,6 +5174,50 @@ caseGuardBeforeNative = do
   case closed of
     EngineFail (BackendInvalidState _ _) -> pure ()
     other -> assertFailure ("expected InvalidState, got: " ++ show other)
+
+-- | Regression for the whole-process model-test stall: GHC's RTS
+-- (seen on 9.10.3, 9.12.4 and 9.14.1; a GHC #26324 variant) can
+-- orphan a string-literal CAF black hole when two threads
+-- dup-evaluate the same lazily black-holed thunk, deadlocking every
+-- thread that needs it. Concurrent opens used to evaluate the
+-- capability tables' shared thunks in parallel (and concurrent
+-- capability readers could too), so the report must reach callers
+-- with no thunk left in it.
+caseCapsEvaluated :: IO ()
+caseCapsEvaluated = withBackend $ \env -> do
+  caps <- evaluate =<< queryCapabilities env
+  lz <- lazyClosures caps
+  assertBool ("published capability report holds " ++ show (length lz)
+              ++ " lazy closures, e.g. " ++ show (take 5 lz)) (null lz)
+
+-- | The open-independent capability table is a CAF (evaluated once,
+-- by one thread, while others wait on its black hole) that publishes
+-- only normal form: no thunk of it is ever shared between threads.
+caseStaticCapsEvaluated :: IO ()
+caseStaticCapsEvaluated = do
+  caps <- evaluate ossl4StaticCaps
+  lz <- lazyClosures caps
+  assertBool ("static capability table holds " ++ show (length lz)
+              ++ " lazy closures after WHNF, e.g. " ++ show (take 5 lz)) (null lz)
+
+-- | Lazy heap objects reachable from a value (unevaluated thunks,
+-- partial applications of thunks, black holes under evaluation),
+-- named by closure constructor. Follows constructor fields and
+-- evaluated indirections; functions and byte arrays are values.
+lazyClosures :: a -> IO [String]
+lazyClosures x = go (asBox x)
+  where
+    go :: Box -> IO [String]
+    go b = do
+      c <- getBoxedClosureData b
+      case c of
+        ConstrClosure {ptrArgs = ps} -> concat <$> mapM go ps
+        IndClosure {indirectee = i} -> go i
+        BlackholeClosure {indirectee = i} -> go i
+        FunClosure {} -> pure []
+        PAPClosure {} -> pure []
+        ArrWordsClosure {} -> pure []
+        other -> pure [takeWhile (/= ' ') (show other)]
 
 caseCaps :: IO ()
 caseCaps = withBackend $ \env -> do

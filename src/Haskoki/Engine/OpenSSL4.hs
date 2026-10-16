@@ -51,6 +51,12 @@ implemented here):
   ownership transfer is an explicit masked step, never GC timing.
 -}
 {-# LANGUAGE TypeFamilies #-}
+-- No full laziness: it floats constant subexpressions (capability
+-- name lists, note tables) out of 'ossl4Caps' and 'probeCaps' into
+-- shared top-level thunks that concurrent opens then dup-evaluate,
+-- which GHC's RTS can turn into a whole-process deadlock (see
+-- 'normalCaps'). Shared tables here are explicit, normalized CAFs.
+{-# OPTIONS_GHC -fno-full-laziness #-}
 module Haskoki.Engine.OpenSSL4
   ( OpenSSL4 (..)
   , withBorrowedRegistry
@@ -64,10 +70,12 @@ module Haskoki.Engine.OpenSSL4
   , digestInitGated
   , digestFinalGated
   , generateKeyECGated
+    -- * TEST-ONLY capability tables
+  , ossl4StaticCaps
   ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, putMVar, readMVar, takeMVar, withMVar)
-import Control.Exception (bracket_, mask, mask_, onException, uninterruptibleMask_)
+import Control.Exception (bracket_, evaluate, mask, mask_, onException, uninterruptibleMask_)
 import Control.Monad (filterM)
 import Data.Bits (xor, (.|.))
 import qualified Data.ByteString as BS
@@ -136,6 +144,10 @@ openBackendGated gate propq =
 openBackendWith :: IO (Ptr Raw.OsslEnv) -> (Ptr Raw.OsslEnv -> String -> IO Int)
   -> String -> IO (EngineResult (BackendEnv OpenSSL4))
 openBackendWith newEnv loadProv propq = mask $ \restore -> do
+  -- The shared capability table is normalized by whichever open
+  -- reaches it first, exclusively (CAF black hole); every other
+  -- open waits, then only reads evaluated data.
+  _ <- restore (evaluate ossl4StaticCaps)
   envp <- newEnv
   if envp == nullPtr
     then pure (EngineFail (BackendNative "open" (-1) "OSSL_LIB_CTX_new failed"))
@@ -1075,9 +1087,21 @@ generateKeyECGated gate be ec =
 -- fixed-length set ('t16DigestAlgs'); every other family keeps its
 -- original shape.
 ossl4Caps :: String -> String -> BackendCaps
-ossl4Caps version propq = BackendCaps
+ossl4Caps version propq = normalCaps ossl4StaticCaps
+  { bcVersion = version
+  , bcParamNotes = Map.insert "provider" ("default only; propquery " ++ propq)
+      (bcParamNotes ossl4StaticCaps)
+  }
+
+-- | The open-independent part of 'ossl4Caps': every set and note
+-- that does not depend on the provider version or property query.
+-- A CAF, so exactly one thread evaluates it while any other waits
+-- on its black hole; 'normalCaps' makes that evaluation complete, so
+-- no thunk of the shared table ever reaches a second thread.
+ossl4StaticCaps :: BackendCaps
+ossl4StaticCaps = normalCaps BackendCaps
   { bcName = "openssl4"
-  , bcVersion = version
+  , bcVersion = ""
   , bcDigests = DigestCaps { dcAlgs = Set.fromList t16DigestAlgs, dcMultipart = True, dcXof = True }
   , bcCiphers = CipherCaps { ccCiphers = Set.fromList t16CipherSpecs, ccAead = Set.fromList ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CCM", "AES-192-CCM", "AES-256-CCM", "ChaCha20-Poly1305"] }
   , bcMacs = MacCaps { mcSpecs = Set.insert "POLY1305" (osslMacSpecs t16DigestAlgs) }
@@ -1085,8 +1109,7 @@ ossl4Caps version propq = BackendCaps
   , bcKems = KemCaps { kcAlgs = Set.fromList t16MlkemSets }
   , bcKdfs = KdfCaps { kcKdfs = Set.fromList ["ECDH", "ECDH-COFACTOR", "DH"] }
   , bcParamNotes = Map.fromList
-      ([ ("provider", "default only; propquery " ++ propq)
-       ] ++ osslCipherNotes t16CipherSpecs
+      (osslCipherNotes t16CipherSpecs
          ++ osslMacNotes t16DigestAlgs ++
        [ ("RSA-PSS", "salt 0..64; hash/MGF any probed fixed-width digest")
        , ("RSA-OAEP", "label free; hash/MGF any probed fixed-width digest; input bound k-2*hLen-2")
@@ -1097,6 +1120,36 @@ ossl4Caps version propq = BackendCaps
          ++ osslMldsaNotes t16MldsaLevels ++ osslSlhdsaNotes t16SlhdsaSets ++ osslMlkemNotes t16MlkemSets
       )
   }
+{-# NOINLINE ossl4StaticCaps #-}
+
+-- | Fully evaluate a capability record (every name, set element and
+-- note) and return it.
+--
+-- Why: GHC's RTS (seen on 9.10.3, 9.12.4 and 9.14.1) can orphan the
+-- black hole of a string literal CAF when two threads dup-evaluate
+-- the same lazily black-holed thunk and that thunk's evaluation enters
+-- the literal: the literal's owner loses the continuation that
+-- would update it, and every thread needing it deadlocks
+-- (a variant of GHC #26324 that its released fixes do not cover).
+-- Capability records are shared by every concurrent open and every
+-- capability reader, so a record that leaves here holds no thunk
+-- for two threads to race on.
+normalCaps :: BackendCaps -> BackendCaps
+normalCaps c =
+  strs [bcName c, bcVersion c]
+    `seq` Set.foldr (\spec r -> maybe () (`seq` ()) (rc2BitsOf spec) `seq` r) () (ccCiphers (bcCiphers c))
+    `seq` strs (Set.toList (ccAead (bcCiphers c)))
+    `seq` strs (Set.toList (mcSpecs (bcMacs c)))
+    `seq` strs (Set.toList (scSpecs (bcSigs c)))
+    `seq` strs (Set.toList (scCurves (bcSigs c)))
+    `seq` strs (Set.toList (kcKdfs (bcKdfs c)))
+    `seq` Map.foldrWithKey (\k v r -> str k `seq` str v `seq` r) () (bcParamNotes c)
+    `seq` c
+  where
+    -- Digest, PQC and KEM sets hold nullary constructors: a set
+    -- element is already in normal form.
+    str = foldr seq ()
+    strs = foldr (\x r -> str x `seq` r) ()
 
 -- | The ECDSA curve set: the NIST prime curves.
 -- | The ECDSA curve set: every covered curve (deliberately
@@ -1401,7 +1454,7 @@ probeCaps env = do
   let base = osslCaps env
       rsaAlgs = filter (`elem` mdAlgs) t16RsaAlgs
       dsaAlgs = filter (`elem` mdAlgs) t16DsaAlgs
-  pure base
+  pure $! normalCaps base
     { bcDigests = (bcDigests base)
         { dcAlgs = Set.fromList mdAlgs
         , dcXof = shake128Ok && shake256Ok
