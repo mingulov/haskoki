@@ -49,6 +49,22 @@ Use `$HASKOKI_MODULE` as your application's PKCS#11 library and pass
 runtime into that process; the [remoting examples](try-it.md#try-another-process)
 show two ways to move it to another process.
 
+### Upgrading a v0.4 token store
+
+A store written by v0.4 or earlier needs one migration to schema 3 before
+v0.5 serves it. Rehearse on a copy first (see Upgrade, backup and recovery
+in [operations-notes.md](operations-notes.md#upgrade-backup-and-recovery)):
+
+```sh
+mkdir -p /tmp/rehearsal /tmp/rehearsal/backups
+cp "$PWD/token.sqlite" /tmp/rehearsal/token.sqlite
+sed "s#^path = .*#path = \"/tmp/rehearsal/token.sqlite\"#" "$PWD/backend.toml" > /tmp/rehearsal/backend.toml
+haskoki-ctl store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehearsal/backend.toml
+haskoki-ctl store migrate --path /tmp/rehearsal/token.sqlite \
+  --config /tmp/rehearsal/backend.toml --backup-dir /tmp/rehearsal/backups
+haskoki-ctl store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehearsal/backend.toml
+```
+
 ## Token provisioning and state
 
 The default token is slot 0, label `haskoki-demo`, with public fixture PINs:
@@ -66,9 +82,10 @@ other read/write session — public, user, or context — changes the user
 PIN, with the old PIN as the authentication, so no login is required;
 read-only sessions refuse). New PINs keep the 4..32 policy; a refused call
 changes nothing. Changed PINs persist across restarts; a relabel takes
-effect at once, and the next open reconciles the catalog against the new
-durable label (update the catalog entry to match before restarting — the
-refusal names the label). Slot 0 keeps `haskoki-demo`: the catalog
+effect at once, and the next open refuses until the catalog entry carries
+the new label; `haskoki-ctl store check --path token.sqlite --config
+backend.toml` names the token and both labels. Slot 0 keeps
+`haskoki-demo`: the catalog
 anchors slot 0 to that label, so slot-0 relabels refuse in-band and only
 other slots relabel.
 Wrong guesses commit per-role retries before the return code is observed,

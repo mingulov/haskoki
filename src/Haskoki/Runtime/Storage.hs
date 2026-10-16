@@ -847,8 +847,8 @@ checkSlotUnique currentToks delta =
 -- stored tokens at open. Matches proceed; new identities seed;
 -- every ambiguous identity-changing reconfiguration REFUSES with
 -- an 'IdentityRefusal' carrying an actionable message
--- ('renderIdentityRefusal'). There are no automatic migrations in
--- this phase: a reorder, an insertion that shifts slots, a
+-- ('renderIdentityRefusal'). There are no automatic migrations:
+-- a reorder, an insertion that shifts slots, a
 -- removal, or a label change reopens refused, with the durable
 -- bytes untouched, until the operator either restores the
 -- matching catalog or performs the explicit slot move
@@ -1001,23 +1001,25 @@ renderIdentityRefusal r = case r of
       ++ ") has no catalog entry: the durable token is authoritative and "
       ++ "is never pruned automatically, so its objects and auth state "
       ++ "stay exactly as stored. Restore its [tokens] entry (with its "
-      ++ "pinned token_ids value) and reopen; removal-by-config is not "
-      ++ "supported in this phase."
+      ++ "pinned token_ids value) and reopen; "
+      ++ "a token cannot be removed by editing the catalog."
   RefuseLabelChanged tid slot durableLabel desiredLabel ->
     "stored token " ++ show tid ++ " at " ++ show slot ++ " is labeled \""
       ++ durableLabel ++ "\" but the catalog says \"" ++ desiredLabel
       ++ "\": the durable label is authoritative and labels never "
       ++ "identify a token, so the catalog is not renamed silently. "
-      ++ "Restore the durable label in [tokens] and reopen; relabeling "
-      ++ "is not supported in this phase."
+      ++ "Restore the durable label in [tokens] and reopen. "
+      ++ "There is no relabel command; an in-band C_InitToken relabel "
+      ++ "changes the durable label, so update the catalog to match."
   RefuseSlotChanged tid durableSlot desiredSlot label ->
     "stored token " ++ show tid ++ " (\"" ++ label ++ "\") sits at "
       ++ show durableSlot ++ " but the catalog seats it at " ++ show desiredSlot
       ++ ": slot assignment is separate from token identity and never "
       ++ "moves automatically, so the wrong credential cannot silently "
       ++ "reach this token's objects. Either restore the durable slot "
-      ++ "in [tokens], or move the token explicitly (planSlotMoves, "
-      ++ "committed before reopening) and then reopen with the new layout."
+      ++ "in [tokens], or move the token with the Haskell library "
+      ++ "operation planSlotMoves (committed before reopening; there is "
+      ++ "no installed command for it) and then reopen with the new layout."
 
 -- | Why an explicit slot move cannot run. Every constructor
 -- renders through 'renderSlotMoveRefusal'.

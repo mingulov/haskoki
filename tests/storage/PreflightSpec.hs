@@ -35,7 +35,7 @@ import Test.Tasty.HUnit (HUnitFailure, assertBool, assertEqual, assertFailure, t
 import Haskoki.Ctl (CtlExit (..), runCtl)
 import Haskoki.FFI.Standard (StdStoreError (..))
 import Haskoki.Runtime.Storage
-  (CommitResult (..), CredentialRecord (..), IdentityRefusal (..), StoreDelta (..), StoreError (..), TokenRecord (..), Store (..), emptyDelta)
+  (CommitResult (..), CredentialRecord (..), IdentityRefusal (..), StoreDelta (..), StoreError (..), TokenRecord (..), Store (..), emptyDelta, renderIdentityRefusal)
 import Haskoki.Types (SlotId (..), TokenId (..))
 import Haskoki.Runtime.Catalog (asyncHomeConfig, asyncHomeEntry, homeCatalogEntry, identityCatalog)
 import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..), loadConfigFile)
@@ -99,6 +99,7 @@ spec = testGroup "Store preflight"
       , testCase "check rides out a kernel lock released a moment later" casePlanTransientLockFree
       , testCase "store-full has its own refusal tag" caseStoreFullTag
       , testCase "the redaction check matches PINs at digit boundaries" caseNoPinsDigitBoundary
+      , testCase "refusal prose names no relabel command and no phase" caseRefusalProse
       ]
   , testGroup "owned migration"
       [ testCase "schema 1 migrates: table, rows, marker; nothing else moves" caseOwnedMigratesV1
@@ -591,6 +592,15 @@ caseStoreFullTag :: IO ()
 caseStoreFullTag = do
   assertEqual "store-full" "store-full" (fst (renderStoreRefusal (StoreFull "disk full")))
   assertEqual "io" "store-unreadable" (fst (renderStoreRefusal (StoreIO "x")))
+
+caseRefusalProse :: IO ()
+caseRefusalProse = do
+  let label = renderIdentityRefusal (RefuseLabelChanged (TokenId 2) (SlotId 1) "a" "b")
+      removed = renderIdentityRefusal (RefuseStoredUnconfigured (TokenId 2) (SlotId 1) "a")
+      moved = renderIdentityRefusal (RefuseSlotChanged (TokenId 2) (SlotId 1) (SlotId 2) "a")
+  mapM_ (\m -> assertBool "no phase wording" (not ("in this phase" `isInfixOf` m))) [label, removed, moved]
+  assertBool "relabel: no command exists" ("no relabel command" `isInfixOf` label)
+  assertBool "move: library operation, no command" ("Haskell library" `isInfixOf` moved && "planSlotMoves" `isInfixOf` moved)
 
 v1Tokens :: [TokenRecord]
 v1Tokens = [fixtureToken 1 0 "haskoki-demo", fixtureToken 2 1 "haskoki-ops"]

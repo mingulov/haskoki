@@ -33,7 +33,8 @@ The separate private test API uses context/job tokens, completion version
 
 Configuration currently has 44 accepted keys. Unknown keys and sections
 are rejected. `haskoki-ctl` provides `config check`, `capabilities`,
-`scenario run`, `store inspect`, and `store reset`. Native async does not
+`scenario run`, `store inspect`, `store check`, `store migrate`, and
+`store reset`. Native async does not
 consult the scenario runner's `async.enabled` or `async.pending_polls`.
 
 ## Construction and linearization
