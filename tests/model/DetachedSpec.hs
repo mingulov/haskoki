@@ -10,6 +10,7 @@ module DetachedSpec (spec) where
 
 import Control.Concurrent
   ( MVar
+  , ThreadId
   , forkIO
   , killThread
   , newEmptyMVar
@@ -197,6 +198,12 @@ spec = testGroup "Detached jobs"
   , testCase "retiring one table leaves another table's opaque marks" (counted "m5-detached-jobs" "retiring-one-table-leaves-another-table-s-opaque-marks" (caseOpaqueRetireKeepsOther))
   , testCase "opaque marks are shared across contexts on one store" (counted "m5-detached-jobs" "opaque-marks-are-shared-across-contexts-on-one-store" (caseOpaqueSharedAcrossContexts))
   , testCase "a marked terminal job answers DetachAlready" (counted "m5-detached-jobs" "a-marked-terminal-job-answers-detachalready" (caseOpaqueTerminalAlready))
+  , testCase "a cancelled parked claim frees the id for the other context" (counted "m5-detached-jobs" "a-cancelled-parked-claim-frees-the-id-for-the-other-context" (caseCancelledClaimFreesId))
+  , testCase "a non-owner scoped retire spares the owner's claim and active" (counted "m5-detached-jobs" "a-non-owner-scoped-retire-spares-the-owner-s-claim-and-active" (caseNonOwnerRetireSparesOwner))
+  , testCase "another token's context cannot join or retire this token's id" (counted "m5-detached-jobs" "another-token-s-context-cannot-join-or-retire-this-token-s-id" (caseCrossTokenIsolated))
+  , testCase "retire all, reopen: canceled stay canceled, an idle id joins once" (counted "m5-detached-jobs" "retire-all-reopen-canceled-stay-canceled-an-idle-id-joins-once" (caseReopenAfterRetire))
+  , testCase "job-id exhaustion refuses detach and keeps the live job" (counted "m5-detached-jobs" "job-id-exhaustion-refuses-detach-and-keeps-the-live-job" (caseIdExhaustion))
+  , testCase "an opaque mark raced into a detach does not outlive its success" (counted "m5-detached-jobs" "an-opaque-mark-raced-into-a-detach-does-not-outlive-its-success" (caseOpaqueClearedAfterDetach))
   ]
 
 tokHome :: TokenId
@@ -2117,7 +2124,8 @@ caseRetiredTableRefusesLateClaim = do
 -- is the generation's own table, table B a fresh sibling with
 -- the source session async-enabled.
 data TwoCtx = TwoCtx
-  { tcStore :: !Store
+  { tcWorld :: !MemoryWorld
+  , tcStore :: !Store
   , tcGen :: !LiveGen
   , tcDcA :: !DetachCtx
   , tcDcB :: !DetachCtx
@@ -2126,14 +2134,15 @@ data TwoCtx = TwoCtx
 
 mkTwoCtx :: IO TwoCtx
 mkTwoCtx = do
-  (_world, store) <- mkWorld
+  (world, store) <- mkWorld
   gen <- openLiveGen
   dcA <- mkDetached store
   dcB <- mkDetached store
   tableB <- newAsyncTable 8
   enableAsyncSession tableB (ssId (lgSession gen))
   pure TwoCtx
-    { tcStore = store
+    { tcWorld = world
+    , tcStore = store
     , tcGen = gen
     , tcDcA = dcA
     , tcDcB = dcB
@@ -2483,4 +2492,389 @@ caseRetireRacesPreClaimJoin = do
   assertEqual "no start in the retired table" (0, 0, 0) stats
   av <- inspectAttachment dc pid
   assertEqual "record stays idle" (Just AvIdle) av
+  storeClose store
+
+-- ---------------------------------------------------------------------------
+-- Boundary cases of the shared claim authority
+-- ---------------------------------------------------------------------------
+
+-- | The counters every boundary case checks: both tables' stats
+-- and the store handle's commit count.
+data Snap = Snap
+  { snA :: !(Int, Int, Int)
+  , snB :: !(Int, Int, Int)
+  , snCommits :: !Int
+  } deriving (Eq, Show)
+
+snapTwo :: TwoCtx -> IO Snap
+snapTwo tc = do
+  a <- tableStats (lgTable (tcGen tc))
+  b <- tableStats (tcTableB tc)
+  c <- ssCommits <$> storeStats (tcStore tc)
+  pure (Snap a b c)
+
+-- | Park a context's join in its transfer window (claimed and
+-- started, pre-commit). The hook stays armed until the caller
+-- clears it.
+parkJoin
+  :: DetachCtx -> Env -> AsyncTable -> JoinRequest
+  -> IO (MVar (Either SomeException JoinOutcome), MVar (), ThreadId)
+parkJoin dc env table req = do
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  done <- newEmptyMVar
+  setJoinTestHook dc (putMVar entered () >> takeMVar proceed)
+  tid <- forkIO $ do
+    r <- try (joinJob dc env table req)
+    putMVar done r
+  mEntered <- timeout 10000000 (takeMVar entered)
+  case mEntered of
+    Nothing -> assertFailure "joiner never entered the transfer window"
+    Just () -> pure (done, proceed, tid)
+
+-- A joiner parked in its transfer window is killed: its claim
+-- rolls back in the shared authority, so the other context joins
+-- the same id exactly once and delivers exactly once, with the
+-- cancelled side writing nothing durable and its table left
+-- with no live job.
+caseCancelledClaimFreesId :: IO ()
+caseCancelledClaimFreesId = do
+  tc <- mkTwoCtx
+  let gen = tcGen tc
+      tableA = lgTable gen
+      tableB = tcTableB tc
+      sid = ssId (lgSession gen)
+      dcA = tcDcA tc
+      dcB = tcDcB tc
+  runs <- newIORef 0
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dcA tableA j0 JobDigest
+  before <- snapTwo tc
+  (done, _proceed, joinerTid) <-
+    parkJoin dcA (lgEnv gen) tableA (digestJoin pid sid)
+  parked <- snapTwo tc
+  let (liveP, _, _) = snA parked
+  assertEqual "claimed job started in A" 1 liveP
+  assertEqual "table B untouched while parked" (snB before) (snB parked)
+  assertEqual "nothing durable while parked" (snCommits before) (snCommits parked)
+  killThread joinerTid
+  r <- joinBounded "killed joiner" done
+  case r of
+    Left e -> case fromException e of
+      Just ThreadKilled -> pure ()
+      _ -> assertFailure ("expected ThreadKilled, got " ++ show e)
+    Right out -> assertFailure ("kill swallowed, join returned " ++ show out)
+  setJoinTestHook dcA (pure ())
+  after <- snapTwo tc
+  let (liveA, termA, _) = snA after
+  assertEqual "no live orphan in A, one retired tombstone" (0, 1) (liveA, termA)
+  assertEqual "table B untouched" (snB before) (snB after)
+  assertEqual "cancelled side wrote nothing durable"
+    (snCommits before) (snCommits after)
+  avMid <- inspectAttachment dcB pid
+  assertEqual "claim rolled back to idle" (Just AvIdle) avMid
+  outB <- joinJob dcB (lgEnv gen) tableB (digestJoin pid sid)
+  jB <- case outB of
+    JoinOk j -> pure j
+    other -> assertFailure ("context B must join after the kill: " ++ show other)
+  statsB <- tableStats tableB
+  assertEqual "exactly one start in B" (1, 0, 1) statsB
+  p <- pollJob (countingRunner runs) (lgEnv gen) tableB JobDigest jB
+  assertEqual "winner ready" PollReady p
+  deliverOnce dcB gen tableB jB
+  nRuns <- readIORef runs
+  assertEqual "exactly one engine run" 1 nRuns
+  durableState (tcStore tc) pid >>= assertEqual "record delivered" JobDelivered
+  late <- joinJob dcA (lgEnv gen) tableA (digestJoin pid sid)
+  assertEqual "a delivered id never rejoins" (JoinTerminal JobDelivered) late
+  storeClose (tcStore tc)
+
+-- A context that does not own table B retires it (scoped and
+-- whole-context) while B's claim is parked and again once B is
+-- active: nothing of B's changes, B's join commits, and the
+-- non-owner is itself refused on B's table afterwards.
+caseNonOwnerRetireSparesOwner :: IO ()
+caseNonOwnerRetireSparesOwner = do
+  tc <- mkTwoCtx
+  let gen = tcGen tc
+      tableA = lgTable gen
+      tableB = tcTableB tc
+      tidA = asyncTableId tableA
+      tidB = asyncTableId tableB
+      sid = ssId (lgSession gen)
+      dcA = tcDcA tc
+      dcB = tcDcB tc
+  runs <- newIORef 0
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dcA tableA j0 JobDigest
+  before <- snapTwo tc
+  (done, proceed, _) <-
+    parkJoin dcB (lgEnv gen) tableB (digestJoin pid sid)
+  parked <- snapTwo tc
+  rScoped <- retireLiveTableFor dcA tidB
+  rWhole <- retireLiveTable dcA
+  rOwnTable <- retireLiveTableFor dcA tidA
+  afterRetire <- snapTwo tc
+  avParked <- inspectAttachment dcA pid
+  putMVar proceed ()
+  assertEqual "non-owner scoped retire finds nothing" [] rScoped
+  assertEqual "non-owner whole retire finds nothing" [] rWhole
+  assertEqual "a table nobody claimed through retires nothing" [] rOwnTable
+  assertEqual "the parked claim and its tables are untouched" parked afterRetire
+  assertEqual "claim projects to idle while parked" (Just AvIdle) avParked
+  rB <- joinBounded "parked owner" done
+  jB <- case rB of
+    Right (JoinOk j) -> pure j
+    other -> assertFailure ("owner's join must still commit: " ++ show other)
+  setJoinTestHook dcB (pure ())
+  snapActive <- snapTwo tc
+  assertEqual "owner's start stands" (1, 0, 1) (snB snapActive)
+  assertEqual "table A started nothing" (snA before) (snA snapActive)
+  rActive <- retireLiveTableFor dcA tidB
+  assertEqual "non-owner retire of an active finds nothing" [] rActive
+  snapEnd <- snapTwo tc
+  assertEqual "active retire changed nothing" snapActive snapEnd
+  avB <- inspectAttachment dcA pid
+  assertEqual "binding stands" (Just (AvActive jB)) avB
+  revB <- inspectReverse dcA tidB jB
+  assertEqual "reverse entry stands" (Just pid) revB
+  lateA <- joinJob dcA (lgEnv gen) tableB (digestJoin pid sid)
+  assertEqual "the non-owner is refused on that table"
+    (JoinAlreadyAttached joinPolicyName) lateA
+  snapLate <- snapTwo tc
+  assertEqual "refusal started and wrote nothing" snapEnd snapLate
+  p <- pollJob (countingRunner runs) (lgEnv gen) tableB JobDigest jB
+  assertEqual "owner ready" PollReady p
+  deliverOnce dcB gen tableB jB
+  nRuns <- readIORef runs
+  assertEqual "exactly one engine run" 1 nRuns
+  storeClose (tcStore tc)
+
+-- A context homed to another token sees none of this token's
+-- claims: its join of this token's active id is unknown, its
+-- retirements find nothing, and the first token's binding,
+-- reverse entry and durable row are unchanged until it delivers.
+caseCrossTokenIsolated :: IO ()
+caseCrossTokenIsolated = do
+  tc <- mkTwoCtx
+  tok2 <- seatSecondToken (tcStore tc)
+  dcT2 <- mkDetachedFor (tcStore tc) (trId tok2)
+  let gen = tcGen tc
+      tableA = lgTable gen
+      tableB = tcTableB tc
+      tidA = asyncTableId tableA
+      sid = ssId (lgSession gen)
+      dcT1 = tcDcA tc
+  runs <- newIORef 0
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dcT1 tableA j0 JobDigest
+  JoinOk jA <- joinJob dcT1 (lgEnv gen) tableA (digestJoin pid sid)
+  before <- snapTwo tc
+  out <- joinJob dcT2 (lgEnv gen) tableB (digestJoin pid sid)
+  assertEqual "other token's join is unknown" JoinUnknown out
+  rWhole <- retireLiveTable dcT2
+  rScoped <- retireLiveTableFor dcT2 tidA
+  assertEqual "other token retires nothing (whole)" [] rWhole
+  assertEqual "other token retires nothing (scoped)" [] rScoped
+  after <- snapTwo tc
+  assertEqual "nothing changed in either table or the store" before after
+  avT2 <- inspectAttachment dcT2 pid
+  assertEqual "other token sees no attachment" Nothing avT2
+  avT1 <- inspectAttachment dcT1 pid
+  assertEqual "first token's binding stands" (Just (AvActive jA)) avT1
+  revT1 <- inspectReverse dcT1 tidA jA
+  assertEqual "first token's reverse entry stands" (Just pid) revT1
+  durableState (tcStore tc) pid >>= assertEqual "row stays queued" JobQueued
+  p <- pollJob (countingRunner runs) (lgEnv gen) tableA JobDigest jA
+  assertEqual "first token ready" PollReady p
+  deliverOnce dcT1 gen tableA jA
+  nRuns <- readIORef runs
+  assertEqual "exactly one engine run" 1 nRuns
+  durableState (tcStore tc) pid >>= assertEqual "record delivered" JobDelivered
+  storeClose (tcStore tc)
+
+-- Retire everything (both contexts), restart, and a fresh
+-- context on a fresh generation: the retired actives stay
+-- canceled for good, while an id nobody joined joins exactly
+-- once (a second fresh context is refused) and delivers once.
+caseReopenAfterRetire :: IO ()
+caseReopenAfterRetire = do
+  tc <- mkTwoCtx
+  let gen = tcGen tc
+      tableA = lgTable gen
+      tableB = tcTableB tc
+      sid = ssId (lgSession gen)
+      dcA = tcDcA tc
+      dcB = tcDcB tc
+  jA0 <- startDigestJob gen "abc" 32 1
+  jB0 <- startDigestJob gen "def" 32 1
+  jC0 <- startDigestJob gen "ghi" 32 1
+  DetachOk pidA <- detachJob dcA tableA jA0 JobDigest
+  DetachOk pidB <- detachJob dcB tableA jB0 JobDigest
+  DetachOk pidC <- detachJob dcA tableA jC0 JobDigest
+  JoinOk _ <- joinJob dcA (lgEnv gen) tableA (digestJoin pidA sid)
+  JoinOk _ <- joinJob dcB (lgEnv gen) tableB (digestJoin pidB sid)
+  retA <- retireLiveTable dcA
+  retB <- retireLiveTable dcB
+  assertEqual "A retired its one active" [(pidA, Nothing)] retA
+  assertEqual "B retired its one active" [(pidB, Nothing)] retB
+  durableState (tcStore tc) pidC >>= assertEqual "idle id still queued" JobQueued
+  store2 <- reopenWorld (tcWorld tc) (tcStore tc)
+  gen2 <- openLiveGen
+  tableX <- newAsyncTable 8
+  let sid2 = ssId (lgSession gen2)
+      table2 = lgTable gen2
+  enableAsyncSession tableX sid2
+  dcX <- mkDetached store2
+  dcY <- mkDetached store2
+  commits0 <- ssCommits <$> storeStats store2
+  stats0 <- tableStats table2
+  outA <- joinJob dcX (lgEnv gen2) table2 (digestJoin pidA sid2)
+  outB <- joinJob dcX (lgEnv gen2) table2 (digestJoin pidB sid2)
+  assertEqual "retired A stays canceled" (JoinTerminal JobCanceled) outA
+  assertEqual "retired B stays canceled" (JoinTerminal JobCanceled) outB
+  stats1 <- tableStats table2
+  commits1 <- ssCommits <$> storeStats store2
+  assertEqual "refusals start nothing" stats0 stats1
+  assertEqual "refusals write nothing" commits0 commits1
+  outC <- joinJob dcX (lgEnv gen2) table2 (digestJoin pidC sid2)
+  jC <- case outC of
+    JoinOk j -> pure j
+    other -> assertFailure ("fresh context must join the idle id: " ++ show other)
+  commits2 <- ssCommits <$> storeStats store2
+  outC2 <- joinJob dcY (lgEnv gen2) tableX (digestJoin pidC sid2)
+  assertEqual "a second fresh context is refused"
+    (JoinAlreadyAttached joinPolicyName) outC2
+  statsX <- tableStats tableX
+  assertEqual "loser table started nothing" (0, 0, 0) statsX
+  commits3 <- ssCommits <$> storeStats store2
+  assertEqual "loser wrote nothing durable" commits2 commits3
+  statsW <- tableStats table2
+  assertEqual "one start in the winner's table" (1, 0, 1) statsW
+  runs <- newIORef 0
+  p <- pollJob (countingRunner runs) (lgEnv gen2) table2 JobDigest jC
+  assertEqual "winner ready" PollReady p
+  deliverOnce dcX gen2 table2 jC
+  nRuns <- readIORef runs
+  assertEqual "exactly one engine run" 1 nRuns
+  durableState store2 pidC >>= assertEqual "record delivered" JobDelivered
+  storeClose store2
+
+-- The job-id counter at its last value: detach refuses with
+-- 'StoreFull', writes nothing, keeps the live job pollable and
+-- leaves no authority entry. One below the last value the final
+-- id is issued and the next detach is the one that refuses.
+caseIdExhaustion :: IO ()
+caseIdExhaustion = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dc <- mkDetached store
+  let table = lgTable gen
+      setMark w = do
+        res <- storeCommit store emptyDelta
+          { sdPutMeta = [(jobIdCounterKey, encodeHexWord64 w)] }
+        case res of
+          Committed -> pure ()
+          other -> assertFailure ("counter seed failed: " ++ show other)
+      expectFull what out = case out of
+        DetachStore (StoreFull _) -> pure ()
+        other -> assertFailure (what ++ ": expected StoreFull, got " ++ show other)
+  runs <- newIORef 0
+  j0 <- startDigestJob gen "abc" 32 2
+  setMark maxBound
+  commits0 <- ssCommits <$> storeStats store
+  stats0 <- tableStats table
+  out <- detachJob dc table j0 JobDigest
+  expectFull "at maxBound" out
+  commits1 <- ssCommits <$> storeStats store
+  stats1 <- tableStats table
+  assertEqual "refusal wrote nothing" commits0 commits1
+  assertEqual "refusal changed no table state" stats0 stats1
+  loadCounter store >>= assertEqual "mark untouched"
+    (Just (encodeHexWord64 maxBound))
+  loadJobs store >>= assertEqual "no record" 0 . length
+  detachStats dc >>= assertEqual "no authority entry" (0, 0, 0)
+  p <- pollJob (countingRunner runs) (lgEnv gen) table JobDigest j0
+  assertEqual "live job preserved" (PollPending 1) p
+  -- One below the last value: that id is issued, the next refuses.
+  setMark (maxBound - 1)
+  j1 <- startDigestJob gen "def" 32 2
+  j2 <- startDigestJob gen "ghi" 32 2
+  DetachOk pidLast <- detachJob dc table j1 JobDigest
+  assertEqual "the last id is issued" (maxBound - 1) pidLast
+  commits2 <- ssCommits <$> storeStats store
+  stats2 <- tableStats table
+  out2 <- detachJob dc table j2 JobDigest
+  expectFull "after the last id" out2
+  commits3 <- ssCommits <$> storeStats store
+  stats3 <- tableStats table
+  assertEqual "second refusal wrote nothing" commits2 commits3
+  assertEqual "second refusal changed no table state" stats2 stats3
+  detachStats dc >>= assertEqual "only the issued id has an entry" (0, 1, 0)
+  jobs <- loadJobs store
+  assertEqual "only the issued record" [maxBound - 1] (map jrPersistentId jobs)
+  p2 <- pollJob (countingRunner runs) (lgEnv gen) table JobDigest j2
+  assertEqual "second live job preserved" (PollPending 1) p2
+  storeClose store
+
+-- A mark that arrives while a detach is already committing (it
+-- missed the check) does not outlive the successful detach: the
+-- detach still succeeds, the live job is revoked, and the table's
+-- bookkeeping shows exactly the one durable record. A mark
+-- raised during a failing commit, by contrast, is kept and
+-- refuses the retry.
+caseOpaqueClearedAfterDetach :: IO ()
+caseOpaqueClearedAfterDetach = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dcRef <- newIORef Nothing
+  failNext <- newIORef False
+  target <- newIORef Nothing
+  let table = lgTable gen
+      racing = store
+        { storeCommit = \delta -> do
+            mDc <- readIORef dcRef
+            mJid <- readIORef target
+            case (mDc, mJid, null (sdPutJobs delta)) of
+              (Just dc, Just jid, False) -> do
+                markJobOpaque dc table jid "raced in"
+                fl <- readIORef failNext
+                if fl
+                  then do
+                    writeIORef failNext False
+                    pure (NotCommitted (StoreIO "scripted insert failure"))
+                  else storeCommit store delta
+              _ -> storeCommit store delta
+        }
+  dc <- mkDetached racing
+  writeIORef dcRef (Just dc)
+  runs <- newIORef 0
+  jFail <- startDigestJob gen "abc" 32 2
+  jOk <- startDigestJob gen "def" 32 2
+  -- A mark raised during a failing insert is kept.
+  writeIORef target (Just jFail)
+  writeIORef failNext True
+  outFail <- detachJob dc table jFail JobDigest
+  case outFail of
+    DetachStore _ -> pure ()
+    other -> assertFailure ("expected DetachStore, got " ++ show other)
+  again <- detachJob dc table jFail JobDigest
+  assertEqual "the kept mark refuses the retry"
+    (DetachUnsaveable "raced in") again
+  p <- pollJob (countingRunner runs) (lgEnv gen) table JobDigest jFail
+  assertEqual "live job preserved" (PollPending 1) p
+  -- A mark raised during a succeeding insert does not survive it.
+  writeIORef target (Just jOk)
+  commits0 <- ssCommits <$> storeStats store
+  out <- detachJob dc table jOk JobDigest
+  pid <- case out of
+    DetachOk x -> pure x
+    other -> assertFailure ("detach must succeed: " ++ show other)
+  commits1 <- ssCommits <$> storeStats store
+  assertEqual "one insertion commit past the reservation" 2 (commits1 - commits0)
+  jobs <- loadJobs store
+  assertEqual "exactly the one record" [pid] (map jrPersistentId jobs)
+  detachStats dc >>= assertEqual "one idle entry" (0, 1, 0)
+  next <- detachJob dc table jOk JobDigest
+  assertEqual "the revoked job is unknown, not unsaveable" DetachUnknown next
   storeClose store
