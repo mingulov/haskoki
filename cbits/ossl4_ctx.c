@@ -61,6 +61,45 @@ struct hsk_ossl4_env {
     size_t nprov;
 };
 
+/* --- derive seams (test configuration only) --------------------------------
+ * The test configuration routes the BN export in the finite-field DH peer
+ * pack, the second (output) derive, and the output decrypt, encrypt, and
+ * sign calls through seams, so the tests can force the faults that no
+ * provider produces on demand. The shipped module calls the OpenSSL
+ * functions directly. */
+#ifdef HSK_OSSL4_TEST_HOOKS
+static int hsk_seam_bn2nativepad(const BIGNUM *a, unsigned char *to, int n);
+static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l);
+static int hsk_seam_pkey_decrypt(EVP_PKEY_CTX *c, unsigned char *o, size_t *l,
+                                 const unsigned char *in, size_t inlen);
+static int hsk_seam_pkey_encrypt(EVP_PKEY_CTX *c, unsigned char *o, size_t *l,
+                                 const unsigned char *in, size_t inlen);
+static int hsk_seam_pkey_sign(EVP_PKEY_CTX *c, unsigned char *s, size_t *l,
+                              const unsigned char *t, size_t tlen);
+static int hsk_seam_digest_sign(EVP_MD_CTX *c, unsigned char *s, size_t *l,
+                                const unsigned char *t, size_t tlen);
+static void hsk_seam_note(int which, void *p, size_t n);
+#define HSK_BN2NATIVEPAD(a, to, n) hsk_seam_bn2nativepad((a), (to), (n))
+#define HSK_PKEY_DERIVE_OUT(c, k, l) hsk_seam_pkey_derive((c), (k), (l))
+#define HSK_PKEY_DECRYPT_OUT(c, o, l, i, n) \
+    hsk_seam_pkey_decrypt((c), (o), (l), (i), (n))
+#define HSK_PKEY_ENCRYPT_OUT(c, o, l, i, n) \
+    hsk_seam_pkey_encrypt((c), (o), (l), (i), (n))
+#define HSK_PKEY_SIGN_OUT(c, s, l, t, n) \
+    hsk_seam_pkey_sign((c), (s), (l), (t), (n))
+#define HSK_DIGEST_SIGN_OUT(c, s, l, t, n) \
+    hsk_seam_digest_sign((c), (s), (l), (t), (n))
+#define HSK_SEAM_NOTE(w, p, n) hsk_seam_note((w), (p), (n))
+#else
+#define HSK_BN2NATIVEPAD(a, to, n) BN_bn2nativepad((a), (to), (n))
+#define HSK_PKEY_DERIVE_OUT(c, k, l) EVP_PKEY_derive((c), (k), (l))
+#define HSK_PKEY_DECRYPT_OUT(c, o, l, i, n) EVP_PKEY_decrypt((c), (o), (l), (i), (n))
+#define HSK_PKEY_ENCRYPT_OUT(c, o, l, i, n) EVP_PKEY_encrypt((c), (o), (l), (i), (n))
+#define HSK_PKEY_SIGN_OUT(c, s, l, t, n) EVP_PKEY_sign((c), (s), (l), (t), (n))
+#define HSK_DIGEST_SIGN_OUT(c, s, l, t, n) EVP_DigestSign((c), (s), (l), (t), (n))
+#define HSK_SEAM_NOTE(w, p, n) ((void)0)
+#endif
+
 #ifdef HSK_OSSL4_TEST_HOOKS
 #include <stdio.h>
 
@@ -2016,6 +2055,7 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *der = NULL;
     size_t derlen = 0;
+    size_t alloc = 0;
     unsigned char *trunc = NULL; /* SEC1 truncation buffer, if any */
     size_t trunclen = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
@@ -2053,13 +2093,15 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         if (EVP_PKEY_sign_init(pctx) <= 0 ||
             EVP_PKEY_sign(pctx, NULL, &derlen, msg, msglen) <= 0)
             goto end;
-        der = OPENSSL_malloc(derlen);
+        alloc = derlen;
+        der = OPENSSL_malloc(alloc);
         if (der == NULL) {
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (EVP_PKEY_sign(pctx, der, &derlen, msg, msglen) <= 0) {
-            OPENSSL_clear_free(der, derlen);
+        HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PKEY_SIGN, der, alloc);
+        if (HSK_PKEY_SIGN_OUT(pctx, der, &derlen, msg, msglen) <= 0) {
+            OPENSSL_clear_free(der, alloc);
             der = NULL;
             goto end;
         }
@@ -2072,13 +2114,15 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         if (!EVP_DigestSign(mctx, NULL, &derlen, msg, msglen))
             goto end;
-        der = OPENSSL_malloc(derlen);
+        alloc = derlen;
+        der = OPENSSL_malloc(alloc);
         if (der == NULL) {
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (!EVP_DigestSign(mctx, der, &derlen, msg, msglen)) {
-            OPENSSL_clear_free(der, derlen);
+        HSK_SEAM_NOTE(HSK_OSSL4_SEAM_DIGEST_SIGN, der, alloc);
+        if (!HSK_DIGEST_SIGN_OUT(mctx, der, &derlen, msg, msglen)) {
+            OPENSSL_clear_free(der, alloc);
             der = NULL;
             goto end;
         }
@@ -2130,7 +2174,7 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
 
 end:
     if (der != NULL)
-        OPENSSL_clear_free(der, derlen);
+        OPENSSL_clear_free(der, alloc);
     if (trunc != NULL)
         OPENSSL_clear_free(trunc, trunclen);
     EVP_PKEY_CTX_free(pctx);
@@ -2359,6 +2403,7 @@ long hsk_ossl4_dsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *der = NULL;
     size_t derlen = 0;
+    size_t alloc = 0;
     unsigned char *trunc = NULL; /* FIPS truncation buffer, if any */
     size_t trunclen = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
@@ -2404,13 +2449,15 @@ long hsk_ossl4_dsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         if (EVP_PKEY_sign_init(pctx) <= 0 ||
             EVP_PKEY_sign(pctx, NULL, &derlen, msg, msglen) <= 0)
             goto end;
-        der = OPENSSL_malloc(derlen);
+        alloc = derlen;
+        der = OPENSSL_malloc(alloc);
         if (der == NULL) {
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (EVP_PKEY_sign(pctx, der, &derlen, msg, msglen) <= 0) {
-            OPENSSL_clear_free(der, derlen);
+        HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PKEY_SIGN, der, alloc);
+        if (HSK_PKEY_SIGN_OUT(pctx, der, &derlen, msg, msglen) <= 0) {
+            OPENSSL_clear_free(der, alloc);
             der = NULL;
             goto end;
         }
@@ -2423,13 +2470,15 @@ long hsk_ossl4_dsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         if (!EVP_DigestSign(mctx, NULL, &derlen, msg, msglen))
             goto end;
-        der = OPENSSL_malloc(derlen);
+        alloc = derlen;
+        der = OPENSSL_malloc(alloc);
         if (der == NULL) {
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (!EVP_DigestSign(mctx, der, &derlen, msg, msglen)) {
-            OPENSSL_clear_free(der, derlen);
+        HSK_SEAM_NOTE(HSK_OSSL4_SEAM_DIGEST_SIGN, der, alloc);
+        if (!HSK_DIGEST_SIGN_OUT(mctx, der, &derlen, msg, msglen)) {
+            OPENSSL_clear_free(der, alloc);
             der = NULL;
             goto end;
         }
@@ -2476,7 +2525,7 @@ long hsk_ossl4_dsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
 
 end:
     if (der != NULL)
-        OPENSSL_clear_free(der, derlen);
+        OPENSSL_clear_free(der, alloc);
     if (trunc != NULL)
         OPENSSL_clear_free(trunc, trunclen);
     EVP_PKEY_CTX_free(pctx);
@@ -2799,6 +2848,7 @@ long hsk_ossl4_eddsa_sign(OSSL_LIB_CTX *ctx, const char *curvename,
     EVP_MD_CTX *mctx = NULL;
     unsigned char *sig = NULL;
     size_t siglen = 0;
+    size_t alloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
     int nid;
 
@@ -2828,13 +2878,15 @@ long hsk_ossl4_eddsa_sign(OSSL_LIB_CTX *ctx, const char *curvename,
         goto end;
     if (!EVP_DigestSign(mctx, NULL, &siglen, msg, msglen))
         goto end;
-    sig = OPENSSL_malloc(siglen);
+    alloc = siglen;
+    sig = OPENSSL_malloc(alloc);
     if (sig == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (!EVP_DigestSign(mctx, sig, &siglen, msg, msglen)) {
-        OPENSSL_clear_free(sig, siglen);
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_DIGEST_SIGN, sig, alloc);
+    if (!HSK_DIGEST_SIGN_OUT(mctx, sig, &siglen, msg, msglen)) {
+        OPENSSL_clear_free(sig, alloc);
         sig = NULL;
         goto end;
     }
@@ -2844,7 +2896,7 @@ long hsk_ossl4_eddsa_sign(OSSL_LIB_CTX *ctx, const char *curvename,
 
 end:
     if (sig != NULL)
-        OPENSSL_clear_free(sig, siglen);
+        OPENSSL_clear_free(sig, alloc);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
     return rc;
@@ -3066,6 +3118,7 @@ long hsk_ossl4_mldsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
     EVP_MD_CTX *mctx = NULL;
     unsigned char *sig = NULL;
     size_t siglen = 0;
+    size_t alloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || propq == NULL || out == NULL ||
@@ -3117,13 +3170,15 @@ long hsk_ossl4_mldsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
     }
     if (!EVP_DigestSign(mctx, NULL, &siglen, msg, msglen))
         goto end;
-    sig = OPENSSL_malloc(siglen);
+    alloc = siglen;
+    sig = OPENSSL_malloc(alloc);
     if (sig == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (!EVP_DigestSign(mctx, sig, &siglen, msg, msglen)) {
-        OPENSSL_clear_free(sig, siglen);
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_DIGEST_SIGN, sig, alloc);
+    if (!HSK_DIGEST_SIGN_OUT(mctx, sig, &siglen, msg, msglen)) {
+        OPENSSL_clear_free(sig, alloc);
         sig = NULL;
         goto end;
     }
@@ -3133,7 +3188,7 @@ long hsk_ossl4_mldsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
 
 end:
     if (sig != NULL)
-        OPENSSL_clear_free(sig, siglen);
+        OPENSSL_clear_free(sig, alloc);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
     return rc;
@@ -3325,6 +3380,7 @@ long hsk_ossl4_slhdsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
     EVP_MD_CTX *mctx = NULL;
     unsigned char *sig = NULL;
     size_t siglen = 0;
+    size_t alloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || propq == NULL || out == NULL ||
@@ -3376,13 +3432,15 @@ long hsk_ossl4_slhdsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
     }
     if (!EVP_DigestSign(mctx, NULL, &siglen, msg, msglen))
         goto end;
-    sig = OPENSSL_malloc(siglen);
+    alloc = siglen;
+    sig = OPENSSL_malloc(alloc);
     if (sig == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (!EVP_DigestSign(mctx, sig, &siglen, msg, msglen)) {
-        OPENSSL_clear_free(sig, siglen);
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_DIGEST_SIGN, sig, alloc);
+    if (!HSK_DIGEST_SIGN_OUT(mctx, sig, &siglen, msg, msglen)) {
+        OPENSSL_clear_free(sig, alloc);
         sig = NULL;
         goto end;
     }
@@ -3392,7 +3450,7 @@ long hsk_ossl4_slhdsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
 
 end:
     if (sig != NULL)
-        OPENSSL_clear_free(sig, siglen);
+        OPENSSL_clear_free(sig, alloc);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
     return rc;
@@ -3837,24 +3895,6 @@ end:
     EVP_PKEY_CTX_free(pctx);
     return rc;
 }
-
-/* --- derive seams (test configuration only) --------------------------------
- * The test configuration routes the BN export in the finite-field DH peer
- * pack and the second (output) derive through seams, so the tests can force
- * the faults that no provider produces on demand. The shipped module calls
- * the OpenSSL functions directly. */
-#ifdef HSK_OSSL4_TEST_HOOKS
-static int hsk_seam_bn2nativepad(const BIGNUM *a, unsigned char *to, int n);
-static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l);
-static void hsk_seam_note(int which, void *p, size_t n);
-#define HSK_BN2NATIVEPAD(a, to, n) hsk_seam_bn2nativepad((a), (to), (n))
-#define HSK_PKEY_DERIVE_OUT(c, k, l) hsk_seam_pkey_derive((c), (k), (l))
-#define HSK_SEAM_NOTE(w, p, n) hsk_seam_note((w), (p), (n))
-#else
-#define HSK_BN2NATIVEPAD(a, to, n) BN_bn2nativepad((a), (to), (n))
-#define HSK_PKEY_DERIVE_OUT(c, k, l) EVP_PKEY_derive((c), (k), (l))
-#define HSK_SEAM_NOTE(w, p, n) ((void)0)
-#endif
 
 /* --- ECDH agreement ------------------------------------------- */
 
@@ -4395,6 +4435,7 @@ long hsk_ossl4_rsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *buf = NULL;
     size_t buflen = 0;
+    size_t alloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || propq == NULL || out == NULL ||
@@ -4415,13 +4456,15 @@ long hsk_ossl4_rsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         if (!EVP_DigestSign(mctx, NULL, &buflen, msg, msglen))
             goto end;
-        buf = OPENSSL_malloc(buflen);
+        alloc = buflen;
+        buf = OPENSSL_malloc(alloc);
         if (buf == NULL) {
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (!EVP_DigestSign(mctx, buf, &buflen, msg, msglen)) {
-            OPENSSL_clear_free(buf, buflen);
+        HSK_SEAM_NOTE(HSK_OSSL4_SEAM_DIGEST_SIGN, buf, alloc);
+        if (!HSK_DIGEST_SIGN_OUT(mctx, buf, &buflen, msg, msglen)) {
+            OPENSSL_clear_free(buf, alloc);
             buf = NULL;
             goto end;
         }
@@ -4435,13 +4478,15 @@ long hsk_ossl4_rsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) <= 0 ||
             EVP_PKEY_sign(pctx, NULL, &buflen, msg, msglen) <= 0)
             goto end;
-        buf = OPENSSL_malloc(buflen);
+        alloc = buflen;
+        buf = OPENSSL_malloc(alloc);
         if (buf == NULL) {
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (EVP_PKEY_sign(pctx, buf, &buflen, msg, msglen) <= 0) {
-            OPENSSL_clear_free(buf, buflen);
+        HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PKEY_SIGN, buf, alloc);
+        if (HSK_PKEY_SIGN_OUT(pctx, buf, &buflen, msg, msglen) <= 0) {
+            OPENSSL_clear_free(buf, alloc);
             buf = NULL;
             goto end;
         }
@@ -4452,7 +4497,7 @@ long hsk_ossl4_rsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
 
 end:
     if (buf != NULL)
-        OPENSSL_clear_free(buf, buflen);
+        OPENSSL_clear_free(buf, alloc);
     EVP_PKEY_CTX_free(pctx);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
@@ -4551,6 +4596,7 @@ long hsk_ossl4_rsa_pss_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *buf = NULL;
     size_t buflen = 0;
+    size_t alloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || mdname == NULL || mgfname == NULL || propq == NULL ||
@@ -4571,13 +4617,15 @@ long hsk_ossl4_rsa_pss_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     }
     if (!EVP_DigestSign(mctx, NULL, &buflen, msg, msglen))
         goto end;
-    buf = OPENSSL_malloc(buflen);
+    alloc = buflen;
+    buf = OPENSSL_malloc(alloc);
     if (buf == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (!EVP_DigestSign(mctx, buf, &buflen, msg, msglen)) {
-        OPENSSL_clear_free(buf, buflen);
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_DIGEST_SIGN, buf, alloc);
+    if (!HSK_DIGEST_SIGN_OUT(mctx, buf, &buflen, msg, msglen)) {
+        OPENSSL_clear_free(buf, alloc);
         buf = NULL;
         goto end;
     }
@@ -4587,7 +4635,7 @@ long hsk_ossl4_rsa_pss_sign(OSSL_LIB_CTX *ctx, const char *mdname,
 
 end:
     if (buf != NULL)
-        OPENSSL_clear_free(buf, buflen);
+        OPENSSL_clear_free(buf, alloc);
     EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
     return rc;
@@ -4656,6 +4704,7 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_MD *md = NULL;
     unsigned char *buf = NULL;
     size_t buflen = 0;
+    size_t alloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || mdname == NULL || propq == NULL || out == NULL ||
@@ -4669,7 +4718,7 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         sctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
         if (sctx == NULL)
             goto end;
-        if (!EVP_PKEY_sign_init(sctx))
+        if (EVP_PKEY_sign_init(sctx) <= 0)
             goto end;
         md = EVP_MD_fetch(ctx, mdname, propq);
         if (md == NULL)
@@ -4678,15 +4727,17 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         if (!EVP_PKEY_CTX_set_rsa_padding(sctx, RSA_X931_PADDING))
             goto end;
-        if (!EVP_PKEY_sign(sctx, NULL, &buflen, msg, msglen))
+        if (EVP_PKEY_sign(sctx, NULL, &buflen, msg, msglen) <= 0)
             goto end;
-        buf = OPENSSL_malloc(buflen);
+        alloc = buflen;
+        buf = OPENSSL_malloc(alloc);
         if (buf == NULL) {
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (!EVP_PKEY_sign(sctx, buf, &buflen, msg, msglen)) {
-            OPENSSL_clear_free(buf, buflen);
+        HSK_SEAM_NOTE(HSK_OSSL4_SEAM_PKEY_SIGN, buf, alloc);
+        if (HSK_PKEY_SIGN_OUT(sctx, buf, &buflen, msg, msglen) <= 0) {
+            OPENSSL_clear_free(buf, alloc);
             buf = NULL;
             goto end;
         }
@@ -4700,13 +4751,15 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         if (!EVP_DigestSign(mctx, NULL, &buflen, msg, msglen))
             goto end;
-        buf = OPENSSL_malloc(buflen);
+        alloc = buflen;
+        buf = OPENSSL_malloc(alloc);
         if (buf == NULL) {
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (!EVP_DigestSign(mctx, buf, &buflen, msg, msglen)) {
-            OPENSSL_clear_free(buf, buflen);
+        HSK_SEAM_NOTE(HSK_OSSL4_SEAM_DIGEST_SIGN, buf, alloc);
+        if (!HSK_DIGEST_SIGN_OUT(mctx, buf, &buflen, msg, msglen)) {
+            OPENSSL_clear_free(buf, alloc);
             buf = NULL;
             goto end;
         }
@@ -4717,7 +4770,7 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
 
 end:
     if (buf != NULL)
-        OPENSSL_clear_free(buf, buflen);
+        OPENSSL_clear_free(buf, alloc);
     EVP_MD_free(md);
     EVP_PKEY_CTX_free(sctx);
     EVP_MD_CTX_free(mctx);
@@ -4837,6 +4890,7 @@ long hsk_ossl4_rsa_oaep_encrypt(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *buf = NULL;
     size_t buflen = 0;
+    size_t alloc = 0;
     size_t hlen;
     size_t k;
     int ksize;
@@ -4877,13 +4931,15 @@ long hsk_ossl4_rsa_oaep_encrypt(OSSL_LIB_CTX *ctx, const char *mdname,
         !hsk_ossl4_oaep_params(pctx, md, mgfmd, label, labellen) ||
         EVP_PKEY_encrypt(pctx, NULL, &buflen, in, inlen) <= 0)
         goto end;
-    buf = OPENSSL_malloc(buflen);
+    alloc = buflen;
+    buf = OPENSSL_malloc(alloc);
     if (buf == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (EVP_PKEY_encrypt(pctx, buf, &buflen, in, inlen) <= 0) {
-        OPENSSL_clear_free(buf, buflen);
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_ENCRYPT, buf, alloc);
+    if (HSK_PKEY_ENCRYPT_OUT(pctx, buf, &buflen, in, inlen) <= 0) {
+        OPENSSL_clear_free(buf, alloc);
         buf = NULL;
         goto end;
     }
@@ -4893,7 +4949,7 @@ long hsk_ossl4_rsa_oaep_encrypt(OSSL_LIB_CTX *ctx, const char *mdname,
 
 end:
     if (buf != NULL)
-        OPENSSL_clear_free(buf, buflen);
+        OPENSSL_clear_free(buf, alloc);
     EVP_PKEY_CTX_free(pctx);
     EVP_MD_free(mgfmd);
     EVP_MD_free(md);
@@ -4911,6 +4967,7 @@ long hsk_ossl4_rsa_pkcs1_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *buf = NULL;
     size_t buflen = 0;
+    size_t alloc = 0;
     size_t k;
     int ksize;
     long rc = HSK_OSSL4_ERR_NATIVE;
@@ -4940,13 +4997,15 @@ long hsk_ossl4_rsa_pkcs1_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
         EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) <= 0 ||
         EVP_PKEY_encrypt(pctx, NULL, &buflen, in, inlen) <= 0)
         goto end;
-    buf = OPENSSL_malloc(buflen);
+    alloc = buflen;
+    buf = OPENSSL_malloc(alloc);
     if (buf == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (EVP_PKEY_encrypt(pctx, buf, &buflen, in, inlen) <= 0) {
-        OPENSSL_clear_free(buf, buflen);
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_ENCRYPT, buf, alloc);
+    if (HSK_PKEY_ENCRYPT_OUT(pctx, buf, &buflen, in, inlen) <= 0) {
+        OPENSSL_clear_free(buf, alloc);
         buf = NULL;
         goto end;
     }
@@ -4956,7 +5015,7 @@ long hsk_ossl4_rsa_pkcs1_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
 
 end:
     if (buf != NULL)
-        OPENSSL_clear_free(buf, buflen);
+        OPENSSL_clear_free(buf, alloc);
     EVP_PKEY_CTX_free(pctx);
     EVP_PKEY_free(pkey);
     return rc;
@@ -4974,6 +5033,7 @@ long hsk_ossl4_rsa_pkcs1_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
     unsigned char *msg = NULL;
     unsigned char *outbuf = NULL;
     size_t emlen = 0;
+    size_t alloc = 0;
     size_t k;
     size_t mlen;
     int ksize;
@@ -5018,12 +5078,14 @@ long hsk_ossl4_rsa_pkcs1_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
         rc = HSK_OSSL4_ERR_AUTHFAIL;
         goto end;
     }
-    em = OPENSSL_malloc(emlen);
+    alloc = emlen;
+    em = OPENSSL_malloc(alloc);
     if (em == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (EVP_PKEY_decrypt(pctx, em, &emlen, in, inlen) <= 0 ||
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_OAEP, em, alloc);
+    if (HSK_PKEY_DECRYPT_OUT(pctx, em, &emlen, in, inlen) <= 0 ||
         emlen != k) {
         rc = HSK_OSSL4_ERR_AUTHFAIL;
         goto end;
@@ -5068,7 +5130,7 @@ end:
     if (msg != NULL)
         OPENSSL_clear_free(msg, k);
     if (em != NULL)
-        OPENSSL_clear_free(em, emlen);
+        OPENSSL_clear_free(em, alloc);
     EVP_PKEY_CTX_free(pctx);
     EVP_PKEY_free(pkey);
     return rc;
@@ -5368,6 +5430,7 @@ long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *buf = NULL;
     size_t buflen = 0;
+    size_t alloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || mdname == NULL || mgfname == NULL || propq == NULL ||
@@ -5402,13 +5465,17 @@ long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
         rc = hsk_ossl4_oaep_fail();
         goto end;
     }
-    buf = OPENSSL_malloc(buflen > 0 ? buflen : 1);
+    /* The output call may write buflen even on failure; the cleanse below
+     * uses the allocation size, never the reported length. */
+    alloc = buflen > 0 ? buflen : 1;
+    buf = OPENSSL_malloc(alloc);
     if (buf == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (EVP_PKEY_decrypt(pctx, buf, &buflen, in, inlen) <= 0) {
-        OPENSSL_clear_free(buf, buflen > 0 ? buflen : 1);
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_OAEP, buf, alloc);
+    if (HSK_PKEY_DECRYPT_OUT(pctx, buf, &buflen, in, inlen) <= 0) {
+        OPENSSL_clear_free(buf, alloc);
         buf = NULL;
         rc = hsk_ossl4_oaep_fail();
         goto end;
@@ -5419,7 +5486,7 @@ long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
 
 end:
     if (buf != NULL)
-        OPENSSL_clear_free(buf, buflen > 0 ? buflen : 1);
+        OPENSSL_clear_free(buf, alloc);
     EVP_PKEY_CTX_free(pctx);
     EVP_MD_free(mgfmd);
     EVP_MD_free(md);
@@ -5834,13 +5901,25 @@ typedef struct {
     int derive_armed;
     long derive_delta;
     int derive_succeed;
+    int decrypt_armed;
+    long decrypt_delta;
+    int decrypt_realfirst;
+    int encrypt_armed;
+    long encrypt_delta;
+    int pkey_sign_armed;
+    long pkey_sign_delta;
+    int digest_sign_armed;
+    long digest_sign_delta;
+    int digest_sign_succeed;
     long fired;
-    void *ptr[2];
-    size_t alloc[2];
+    void *ptr[6];
+    size_t alloc[6];
 } hsk_seam_state_t;
 
 static hsk_seam_state_t hsk_seam = { PTHREAD_MUTEX_INITIALIZER, 0, 0, 0, 0,
-                                     0, 0, { NULL, NULL }, { 0, 0 } };
+                                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                     { NULL, NULL, NULL, NULL, NULL, NULL },
+                                     { 0, 0, 0, 0, 0, 0 } };
 
 void hsk_ossl4_test_seam_reset(void)
 {
@@ -5850,9 +5929,21 @@ void hsk_ossl4_test_seam_reset(void)
     hsk_seam.derive_armed = 0;
     hsk_seam.derive_delta = 0;
     hsk_seam.derive_succeed = 0;
+    hsk_seam.decrypt_armed = 0;
+    hsk_seam.decrypt_delta = 0;
+    hsk_seam.decrypt_realfirst = 0;
+    hsk_seam.encrypt_armed = 0;
+    hsk_seam.encrypt_delta = 0;
+    hsk_seam.pkey_sign_armed = 0;
+    hsk_seam.pkey_sign_delta = 0;
+    hsk_seam.digest_sign_armed = 0;
+    hsk_seam.digest_sign_delta = 0;
+    hsk_seam.digest_sign_succeed = 0;
     hsk_seam.fired = 0;
-    hsk_seam.ptr[0] = hsk_seam.ptr[1] = NULL;
-    hsk_seam.alloc[0] = hsk_seam.alloc[1] = 0;
+    hsk_seam.ptr[0] = hsk_seam.ptr[1] = hsk_seam.ptr[2] = NULL;
+    hsk_seam.ptr[3] = hsk_seam.ptr[4] = hsk_seam.ptr[5] = NULL;
+    hsk_seam.alloc[0] = hsk_seam.alloc[1] = hsk_seam.alloc[2] = 0;
+    hsk_seam.alloc[3] = hsk_seam.alloc[4] = hsk_seam.alloc[5] = 0;
     pthread_mutex_unlock(&hsk_seam.mu);
 }
 
@@ -5870,6 +5961,40 @@ void hsk_ossl4_test_seam_arm_derive(long delta, int succeed)
     hsk_seam.derive_armed = 1;
     hsk_seam.derive_delta = delta;
     hsk_seam.derive_succeed = succeed;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_decrypt(long delta, int realfirst)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.decrypt_armed = 1;
+    hsk_seam.decrypt_delta = delta;
+    hsk_seam.decrypt_realfirst = realfirst;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_encrypt(long delta)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.encrypt_armed = 1;
+    hsk_seam.encrypt_delta = delta;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_pkey_sign(long delta)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.pkey_sign_armed = 1;
+    hsk_seam.pkey_sign_delta = delta;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_digest_sign(long delta, int succeed)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.digest_sign_armed = 1;
+    hsk_seam.digest_sign_delta = delta;
+    hsk_seam.digest_sign_succeed = succeed;
     pthread_mutex_unlock(&hsk_seam.mu);
 }
 
@@ -5894,7 +6019,7 @@ long hsk_ossl4_test_seam_fired(void)
 int hsk_ossl4_test_seam_target(int which, void **ptr, size_t *alloc)
 {
     int r = 0;
-    if (which < 0 || which > 1)
+    if (which < 0 || which > 5)
         return 0;
     pthread_mutex_lock(&hsk_seam.mu);
     if (hsk_seam.ptr[which] != NULL) {
@@ -5955,9 +6080,114 @@ static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l)
     }
 }
 
+static int hsk_seam_pkey_decrypt(EVP_PKEY_CTX *c, unsigned char *o, size_t *l,
+                                 const unsigned char *in, size_t inlen)
+{
+    int armed, realfirst;
+    long delta;
+    pthread_mutex_lock(&hsk_seam.mu);
+    armed = hsk_seam.decrypt_armed;
+    delta = hsk_seam.decrypt_delta;
+    realfirst = hsk_seam.decrypt_realfirst;
+    if (armed) {
+        hsk_seam.decrypt_armed = 0;
+        hsk_seam.fired++;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (!armed)
+        return EVP_PKEY_decrypt(c, o, l, in, inlen);
+    if (realfirst) {
+        /* The real call runs first, so provider state matches the
+         * unarmed run; the seam then reports failure with a changed
+         * length either way. */
+        EVP_PKEY_decrypt(c, o, l, in, inlen);
+        *l = (size_t)((long)*l + delta);
+        return 0;
+    }
+    /* A provider that wrote the plaintext, then reported failure
+     * with a changed length. */
+    memset(o, 0x5A, *l);
+    *l = (size_t)((long)*l + delta);
+    return 0;
+}
+
+static int hsk_seam_pkey_encrypt(EVP_PKEY_CTX *c, unsigned char *o, size_t *l,
+                                 const unsigned char *in, size_t inlen)
+{
+    int armed;
+    long delta;
+    pthread_mutex_lock(&hsk_seam.mu);
+    armed = hsk_seam.encrypt_armed;
+    delta = hsk_seam.encrypt_delta;
+    if (armed) {
+        hsk_seam.encrypt_armed = 0;
+        hsk_seam.fired++;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (!armed)
+        return EVP_PKEY_encrypt(c, o, l, in, inlen);
+    /* A provider that wrote the ciphertext, then reported failure
+     * with a changed length. */
+    memset(o, 0x5A, *l);
+    *l = (size_t)((long)*l + delta);
+    return 0;
+}
+
+static int hsk_seam_pkey_sign(EVP_PKEY_CTX *c, unsigned char *s, size_t *l,
+                              const unsigned char *t, size_t tlen)
+{
+    int armed;
+    long delta;
+    pthread_mutex_lock(&hsk_seam.mu);
+    armed = hsk_seam.pkey_sign_armed;
+    delta = hsk_seam.pkey_sign_delta;
+    if (armed) {
+        hsk_seam.pkey_sign_armed = 0;
+        hsk_seam.fired++;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (!armed)
+        return EVP_PKEY_sign(c, s, l, t, tlen);
+    /* A provider that wrote the signature, then reported failure
+     * with a changed length. The -1 return pins the <= 0 checks at
+     * the call sites (a bare ! would misread it as success). */
+    memset(s, 0x5A, *l);
+    *l = (size_t)((long)*l + delta);
+    return -1;
+}
+
+static int hsk_seam_digest_sign(EVP_MD_CTX *c, unsigned char *s, size_t *l,
+                                const unsigned char *t, size_t tlen)
+{
+    int armed, succeed;
+    long delta;
+    pthread_mutex_lock(&hsk_seam.mu);
+    armed = hsk_seam.digest_sign_armed;
+    delta = hsk_seam.digest_sign_delta;
+    succeed = hsk_seam.digest_sign_succeed;
+    if (armed) {
+        hsk_seam.digest_sign_armed = 0;
+        hsk_seam.fired++;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (!armed)
+        return EVP_DigestSign(c, s, l, t, tlen);
+    if (succeed) {
+        int r = EVP_DigestSign(c, s, l, t, tlen);
+        if (r > 0)
+            *l = (size_t)((long)*l + delta);
+        return r;
+    }
+    /* A provider that wrote the signature, then reported failure
+     * with a changed length. */
+    memset(s, 0x5A, *l);
+    *l = (size_t)((long)*l + delta);
+    return 0;
+}
+
 static void hsk_seam_note(int which, void *p, size_t n)
 {
-    if (which < 0 || which > 1)
+    if (which < 0 || which > 5)
         return;
     pthread_mutex_lock(&hsk_seam.mu);
     hsk_seam.ptr[which] = p;

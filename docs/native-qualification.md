@@ -32,12 +32,17 @@ Evidence:
 - Mutation proof: a common stanza carrying the define, imported by the
   foreign library. The earlier gate passed on the stale module. The current
   gate fails statically; with the static rule removed it rebuilds and fails
-  on the 32 exported hook symbols. The revert passes.
+  on the 36 exported hook symbols. The revert passes.
 - `nm "$(cabal list-bin exe:haskoki-ctl)" | grep -c hsk_ossl4_` prints 0.
+- `scripts/make-release.sh` refuses a release tree whose `lib/libhaskoki.so`
+  or `bin/haskoki-ctl` contains a `hsk_ossl4_test_` or `*_gated` symbol. The
+  operator tool links the test-configured Haskell library, whose test-only
+  code is purely additive (no `#else` branch in either `#ifdef` file), so the
+  C hook absence is the property the release proves.
 
 ## 2. Symbol and behavior inventory
 
-`tests/c/ossl4_test_symbols.txt` is the byte-sorted list of 32 names. The
+`tests/c/ossl4_test_symbols.txt` is the byte-sorted list of 36 names. The
 shipped library must contain none of them (gated by
 `scripts/test-ossl4-bounds.sh`); the test library contains all of them.
 
@@ -46,7 +51,7 @@ shipped library must contain none of them (gated by
 | `hsk_ossl4_{digest,digest_init,digest_init_sized,digest_sized,digest_final,digest_xof,env_load,env_new,free}_gated` | 9 | absent | present | Wrappers of the production entry points bound to a test gate. They consume an armed allocation fault (failing without allocating), let `env_load` stop at an armed checkpoint, attribute the handles they create to the gate, and count each creation and each real destroy or free in the gate's outstanding counters. |
 | gate and counter functions: `test_gate_{new,free,park,parked,poll,release,arm_alloc_fail,arm_checkpoint,note_buf,note_digest,note_env,buf_outstanding,digest_outstanding,env_outstanding}`, `test_digest_doublefree`, `test_env_doublefree` | 16 | absent | present | Rendezvous and fault-arming points for the ownership cases, and three independent outstanding counters (buffers, digest handles, env handles). The two `doublefree` entries are read-only: they return the number of repeat frees the digest and env live-sets have counted. |
 | `hsk_ossl4_test_live_acknowledge` | 1 | absent | present | Acknowledges an expected repeat free so the exit-time check does not fail the process. |
-| seam functions: `test_seam_{reset,arm_bn_fail,arm_derive,bn_calls,fired,target}` | 6 | absent | present | Arm and observe the forced BN-conversion and derive-length paths (section 4). |
+| seam functions: `test_seam_{reset,arm_bn_fail,arm_decrypt,arm_derive,arm_digest_sign,arm_encrypt,arm_pkey_sign,bn_calls,fired,target}` | 10 | absent | present | Arm and observe the forced BN-conversion, derive-length, decrypt-length, encrypt-length and sign-length paths (section 4). |
 
 Destruction behavior:
 
@@ -83,12 +88,31 @@ no-op) in production:
 |---|---|---|
 | `HSK_BN2NATIVEPAD` | `BN_bn2nativepad` | DH public key packing (named and explicit group paths: y, then p, g, y, and q). |
 | `HSK_PKEY_DERIVE_OUT` | `EVP_PKEY_derive` | The second (output) derive in the ECDH, XDH and DH derives. |
-| `HSK_SEAM_NOTE` | no-op | Records the PACK and SECRET buffers (`HSK_OSSL4_SEAM_PACK`, `HSK_OSSL4_SEAM_SECRET`) so the harness can check extent and canaries. |
+| `HSK_PKEY_DECRYPT_OUT` | `EVP_PKEY_decrypt` | The output decrypt in the OAEP and PKCS#1 decrypts. |
+| `HSK_PKEY_ENCRYPT_OUT` | `EVP_PKEY_encrypt` | The output encrypt in the OAEP and PKCS#1 encrypts. |
+| `HSK_PKEY_SIGN_OUT` | `EVP_PKEY_sign` | The output sign in the raw RSA, X9.31 prehash, ECDSA raw and DSA raw signs. |
+| `HSK_DIGEST_SIGN_OUT` | `EVP_DigestSign` | The output sign in the hash RSA, PSS, X9.31 digested, ECDSA hash, DSA hash, EdDSA, ML-DSA and SLH-DSA signs. |
+| `HSK_SEAM_NOTE` | no-op | Records the PACK, SECRET, OAEP, ENCRYPT, PKEY_SIGN and DIGEST_SIGN buffers (`HSK_OSSL4_SEAM_PACK`, `HSK_OSSL4_SEAM_SECRET`, `HSK_OSSL4_SEAM_OAEP`, `HSK_OSSL4_SEAM_ENCRYPT`, `HSK_OSSL4_SEAM_PKEY_SIGN`, `HSK_OSSL4_SEAM_DIGEST_SIGN`) so the harness can check extent and canaries. |
 
-Forced paths: a BN conversion that fails after the buffer is allocated, and a
+Forced paths: a BN conversion that fails after the buffer is allocated, a
 derive that reports a length different from the allocation (shorter or
-longer), each with the derive both failing and succeeding. The harness checks
-the exact extent, canary bytes around the allocation, and exact free counts.
+longer), each with the derive both failing and succeeding, a decrypt,
+encrypt, PKEY sign or DigestSign that reports failure with a moved length
+(shorter or longer), a decrypt that performs the real call and then
+reports failure (so provider state matches the unarmed run), and a
+DigestSign that performs the real call and then reports a shortened
+length. The PKEY-sign seam reports failure as -1, pinning the <= 0
+checks. The harness checks the exact extent, canary bytes around the
+allocation, and exact free counts. Every helper with a failure-path
+cleanse owns its pair: ECDSA and DSA in both the raw and hash branches,
+EdDSA, ML-DSA-44, SLH-DSA-SHA2-128s, RSA raw and hash, PSS, X9.31 prehash
+and digested, OAEP and PKCS#1 encrypt, and OAEP and PKCS#1 decrypt (the
+PKCS#1 pair uses the real-call-first decrypt mode). The ECDSA/DSA
+hash-raw ok-shrink cases reach the shared end block with a diverged
+length after the DER parse fails. The live check drains OpenSSL's
+per-thread error state around the measurement: provider calls raise
+soft errors whose file/func/data strings would otherwise move the
+count without any shim leak.
 
 Success-path extent change (production behavior): after a successful derive,
 a reported length above the allocation fails closed and the whole allocation
@@ -104,7 +128,7 @@ tail was left as the derive wrote it. The KAT and consumer suites
 builds are the same flags without the sanitizers). It first probes for
 libcrypto, compile, run and LeakSanitizer. It then runs each variant's case
 list in both memory modes, `track` (the tracking allocator) and `plain`
-(OpenSSL's default allocator): 132 runs. `address-reuse` and
+(OpenSSL's default allocator): 268 runs. `address-reuse` and
 `canary-selftest` run in `track` mode only, because they test the tracker
 itself. It runs seven negative controls:
 
@@ -129,7 +153,10 @@ the evidence upload carries. Both the qualify and report jobs then run
 `check-qualification-wiring.py --verify-sanitizer` against the requested
 revision. It requires gate `pass`, the requested sha, a clean tree, source
 hashes equal to the checkout, and the exact case and negative-control sets.
-An open gate fails there as well.
+An open gate fails there as well. The workflow also syntax-checks the harness
+inside the toolchain image against the pinned OpenSSL 4 headers (toolchain
+job, read-only mount, pinned include directory asserted first); the wiring
+gate pins that placement and refuses a runner-side compile.
 
 Evidence limits:
 
@@ -139,7 +166,9 @@ Evidence limits:
   Haskell side.
 - The harness is not the shipped object: the sanitizer runs cover the same
   source in a different build.
-- One compiler, GCC 15.2.0, and one toolchain image ID.
+- One compiler, GCC 15.2.0, and one toolchain source. The image ID in a
+  receipt identifies which build produced it: CI-built and locally-built
+  images differ there while sharing the toolchain source.
 - The seam and copy-fault cases run in both memory modes. In `track` mode
   the tracker's canaries sit inside the ASan block and freed blocks are held
   back, so ASan cannot see a short over-read or a use-after-free of those
@@ -169,14 +198,6 @@ an earlier single run on the same host measured 0.97 (31623102 against
 
 ## 7. Open items
 
-- Workflow: the static job's `-fsyntax-only` compile of the harness runs on
-  the hosted runner, where `/opt/openssl-4.0.2` does not exist, so it checks
-  against the runner's OpenSSL headers. The driver step compiles the harness
-  against the pinned headers in the image.
-- Release time: `scripts/make-release.sh` should check with `nm` that
-  `bin/haskoki-ctl` and `lib/libhaskoki.so` in the release tree contain no
-  `hsk_ossl4_test_` or `*_gated` symbol. That check belongs to the release
-  work and is not done here.
 - In CI the checkout's git directory is mounted with it, so the driver
   measures the commit and cleanliness itself (`sha_source` `measured`). A
   worktree mounted into a container has no usable git directory; there the

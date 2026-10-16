@@ -60,6 +60,52 @@ fail() {
   exit 1
 }
 
+# No test hooks in one shipped ELF: the check fails closed. A missing
+# nm, an unreadable file, an nm failure, or a listing without the
+# expected anchor (a stripped or foreign ELF) fails the release: plain
+# nm reads only .symtab, which a strip step would remove while leaving
+# the dynamic symbols behind, so shared objects are examined with both
+# nm and nm -D, and a listing that cannot prove itself real (non-empty,
+# carrying the anchor) never passes vacuously.
+check_no_hooks() { # file anchor-ere
+  CHK_F=$1; CHK_ANCHOR=$2
+  command -v nm >/dev/null 2>&1 || fail "nm not found (binutils required for the hook check)"
+  [ -r "$CHK_F" ] || fail "cannot read $CHK_F for the hook check"
+  CHK_ERR="${TMPDIR:-/tmp}/hsk-nm-$$.err"
+  CHK_SYMS=$(nm "$CHK_F" 2>"$CHK_ERR") \
+    || fail "nm failed on $CHK_F ($(cat "$CHK_ERR" 2>/dev/null))"
+  rm -f "$CHK_ERR"
+  case "$CHK_F" in
+    *.so|*.so.*)
+      CHK_DSYMS=$(nm -D "$CHK_F" 2>"$CHK_ERR") \
+        || fail "nm -D failed on $CHK_F ($(cat "$CHK_ERR" 2>/dev/null))"
+      rm -f "$CHK_ERR"
+      ;;
+    *) CHK_DSYMS="" ;;
+  esac
+  CHK_ALL="$CHK_SYMS
+$CHK_DSYMS"
+  [ -n "$CHK_SYMS" ] || fail "empty nm listing for $CHK_F (stripped or foreign ELF?)"
+  printf '%s\n' "$CHK_ALL" | grep -Eq -- "$CHK_ANCHOR" \
+    || fail "anchor '$CHK_ANCHOR' missing from nm listing of $CHK_F (stripped or foreign ELF?)"
+  CHK_HOOKS=$(printf '%s\n' "$CHK_ALL" | grep -E 'hsk_ossl4_test_|_gated' || true)
+  [ -z "$CHK_HOOKS" ] || { echo "$CHK_HOOKS"; fail "test-hook symbols in shipped $CHK_F"; }
+}
+
+# Negative-control seam (drives the same function as the release gate,
+# without building): --check-hooks-only <file> <anchor-ere> ...
+if [ "${1:-}" = "--check-hooks-only" ]; then
+  shift
+  [ $# -ge 2 ] || { echo "usage: $0 --check-hooks-only <file> <anchor-ere> ..." >&2; exit 2; }
+  while [ $# -ge 2 ]; do
+    check_no_hooks "$1" "$2"
+    shift 2
+  done
+  [ $# -eq 0 ] || { echo "usage: $0 --check-hooks-only <file> <anchor-ere> ..." >&2; exit 2; }
+  echo "PASS: make-release.sh --check-hooks-only (no test-hook symbols)"
+  exit 0
+fi
+
 cabal build all || fail "cabal build all failed"
 
 SO_LIST=$(find dist-newstyle -name 'libhaskoki*.so' 2>/dev/null | sort)
@@ -109,6 +155,14 @@ if grep -i -E "libcrypto|libssl" "$OUT/closure/ldd-libhaskoki.txt"; then
   fail "dynamic libcrypto/libssl in module closure (must be static pinned)"
 fi
 echo "STATIC: no dynamic libcrypto/libssl in module closure"
+
+# No test hooks in the shipped ELF pair: the operator tool links the
+# test-configured Haskell library (whose test-only code is purely
+# additive), so prove the C hooks never reach the release tree. Either
+# file gaining a hook symbol fails the release here, at build time.
+check_no_hooks "$OUT/lib/libhaskoki.so" 'C_GetFunctionList'
+check_no_hooks "$OUT/bin/haskoki-ctl" 'main|hs_main'
+echo "STATIC: shipped module and operator tool contain no test-hook symbol"
 
 # Bundle every libHS* the module needs (GHC RTS closure, explicit).
 BUNDLED=0

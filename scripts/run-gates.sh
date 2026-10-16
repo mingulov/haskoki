@@ -81,6 +81,8 @@ python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
 python3 scripts/check-actions-pinned.py --self-test
 # V1: release-evidence runner fixtures (fake docker/timeout/build only).
 python3 scripts/test-release-evidence.py
+# Release nm gate: the hook check refuses a hooked tree and fails closed.
+python3 scripts/test-release-nm-gate.py
 # WP03: ownership-matrix driver controls (fake binaries, no build).
 python3 scripts/test-ownership-matrix-controls.py
 echo "=== forced build + cabal test all (pinned container) ==="

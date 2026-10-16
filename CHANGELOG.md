@@ -130,6 +130,17 @@ record: symbol separation, sanitizer runs, evidence limits) and
   succeeded, and that copy could be wrapped. Such a copy now fails with
   `CKR_TEMPLATE_INCONSISTENT`. A copy that sets `CKA_EXTRACTABLE` false,
   or leaves it out, still succeeds.
+- A failed RSA-OAEP decrypt cleansed the output buffer with the length
+  the failing OpenSSL call reported instead of the allocation size.
+  The failure path now cleanses the recorded allocation. The same
+  failure-path shape is fixed in the sibling helpers: RSA decrypt
+  (PKCS#1 v1.5, whose buffer holds the raw RSA-decrypted block) and
+  RSA encrypt (OAEP and PKCS#1 v1.5), and the RSA, RSA-PSS, RSA X9.31,
+  ECDSA, DSA, EdDSA, ML-DSA and SLH-DSA sign helpers. A provider that
+  grew the reported length could make the cleanse overrun the
+  allocation; one that shrank it left scratch bytes uncleansed.
+  Return values are unchanged: padding failures still answer the
+  uniform verdict.
 
 ## [0.4.0.0] - Unreleased
 

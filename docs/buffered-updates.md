@@ -16,8 +16,10 @@ Every number below belongs to this one run and this one host.
   case. The JSON's `ghc` field says `9.10`: the benchmark then recorded only
   the major version, and now records the full one.
 - benchmark source: `bench/BufferedUpdates.hs` as git blob
-  `e2904ef4d034d73814b13b9c0f9e9ffd3167cf14`. The commit the run was built
-  at was rebased afterwards, so its ID is not cited.
+  `e2904ef4d034d73814b13b9c0f9e9ffd3167cf14`. That blob is the exact
+  source the measured run was built from; the file at HEAD is newer.
+  The commit the run was built at was rebased afterwards, so its ID is
+  not cited.
 - the run held the shared build lock, so no other lane holding that lock
   ran during it; other processes were not excluded, which the load
   averages above record

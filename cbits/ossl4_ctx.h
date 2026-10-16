@@ -894,16 +894,38 @@ long hsk_ossl4_test_env_doublefree(void);
 long hsk_ossl4_test_live_acknowledge(void);
 
 /* Derive seams: forced faults for the BN export in the finite-field DH peer
- * pack and for the second (output) derive of the three key agreements.
- * `which` selects the buffer a derive noted last. */
+ * pack, for the second (output) derive of the three key agreements, for
+ * the output decrypt, encrypt, and sign paths. `which` selects the buffer
+ * noted last. */
 #define HSK_OSSL4_SEAM_PACK 0   /* dh_derive peer pack buffer (pbuf, total) */
 #define HSK_OSSL4_SEAM_SECRET 1 /* derive secret buffer (secret, secretalloc) */
+#define HSK_OSSL4_SEAM_OAEP 2   /* decrypt output buffer (buf, alloc) */
+#define HSK_OSSL4_SEAM_ENCRYPT 3 /* encrypt output buffer (buf, alloc) */
+#define HSK_OSSL4_SEAM_PKEY_SIGN 4 /* PKEY sign output buffer (buf, alloc) */
+#define HSK_OSSL4_SEAM_DIGEST_SIGN 5 /* DigestSign output buffer (buf, alloc) */
 void hsk_ossl4_test_seam_reset(void);
 /* The nth BN_bn2nativepad call since this arm fails (1-based). */
 void hsk_ossl4_test_seam_arm_bn_fail(int nth);
 /* The next second derive reports *len += delta; succeed 0 fails it after
  * writing 0x5A over the whole buffer, succeed 1 lets it succeed. */
 void hsk_ossl4_test_seam_arm_derive(long delta, int succeed);
+/* The next output decrypt reports *len += delta and fails: realfirst 0
+ * fails without calling the provider (after writing 0x5A over the whole
+ * buffer), realfirst 1 performs the real call first, so provider state
+ * matches the unarmed run, and then reports failure. */
+void hsk_ossl4_test_seam_arm_decrypt(long delta, int realfirst);
+/* The next output encrypt fails after writing 0x5A over the whole
+ * buffer and reporting *len += delta. */
+void hsk_ossl4_test_seam_arm_encrypt(long delta);
+/* The next PKEY sign fails with -1 after writing 0x5A over the whole
+ * buffer and reporting *len += delta (the negative return pins the
+ * <= 0 checks: EVP_PKEY_sign answers -1/-2 on error or when the
+ * operation is unsupported). */
+void hsk_ossl4_test_seam_arm_pkey_sign(long delta);
+/* The next DigestSign reports *len += delta; succeed 0 fails it after
+ * writing 0x5A over the whole buffer, succeed 1 lets the real call
+ * run and moves the reported length (mirrors arm_derive). */
+void hsk_ossl4_test_seam_arm_digest_sign(long delta, int succeed);
 long hsk_ossl4_test_seam_bn_calls(void);
 long hsk_ossl4_test_seam_fired(void);
 /* The last allocation noted for `which`: returns 1 and fills *ptr and

@@ -219,6 +219,7 @@ jobs:
           python3 scripts/check-seed-honesty.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
+          python3 scripts/test-release-nm-gate.py
           python3 scripts/test-demo-shards.py
           python3 scripts/publish-coverage.py --check
       - name: Build and test
@@ -231,8 +232,9 @@ jobs:
           # workspace is compiled here and no warning can be hidden
           # by a skipped rebuild. pipefail fails the step on a build
           # error; grep exit 1 (no match) is the pass case, any
-          # other grep exit (2 = error) fails the step too.
-          cabal build all --enable-tests 2>&1 | tee haskell-build.log
+          # other grep exit (2 = error) fails the step too. Benchmarks
+          # build here as well, so the warning scan covers them.
+          cabal build all --enable-tests --enable-benchmarks 2>&1 | tee haskell-build.log
           rc=0
           grep -F 'warning: [GHC-' haskell-build.log || rc=$?
           if [ "$rc" -eq 0 ]; then
@@ -243,6 +245,16 @@ jobs:
             exit "$rc"
           fi
           cabal test all 2>&1 | tee haskell-test.log
+      - name: Benchmark self-test
+        run: |
+          set -euo pipefail
+          # The benchmark binary comes from the exact build above
+          # (dist-newstyle persists in the mounted workspace).
+          BENCH_BIN=$(cabal list-bin bench:buffered-updates) \
+            || { echo "benchmark binary not found"; exit 2; }
+          test -x "$BENCH_BIN" \
+            || { echo "benchmark binary not executable: $BENCH_BIN"; exit 2; }
+          "$BENCH_BIN" --self-test
       - name: Collect executed test trees
         run: |
           set -euo pipefail
