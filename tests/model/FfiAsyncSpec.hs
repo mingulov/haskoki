@@ -77,7 +77,7 @@ import Foreign.StablePtr
   )
 import Foreign.Storable (peek, poke)
 import GHC.Clock (getMonotonicTimeNSec)
-import GHC.Conc (ThreadStatus (..), threadStatus)
+import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Directory
   ( createDirectory
   , getTemporaryDirectory
@@ -294,6 +294,11 @@ spec = testGroup "FFI acquisition"
       , testCase "unknown registry key refuses before dereference" (counted "m3-standalone-ownership" "unknown-registry-key-refuses-before-dereference" (caseUnknownKeyRefusesBeforeDereference))
       , testCase "hook-only registry key refuses after its hook" (counted "m3-standalone-ownership" "hook-only-registry-key-refuses-after-its-hook" (caseHookOnlyRefusesAfterHook))
       , testCase "close of an unknown key nulls the slot only" (counted "m3-standalone-ownership" "close-of-an-unknown-key-nulls-the-slot-only" (caseCloseUnknownNullsSlotOnly))
+      , testCase "close with a throwing retire resumes on retry" (counted "m3-standalone-ownership" "close-with-a-throwing-retire-resumes-on-retry" (caseCloseTailThrowResumesOnRetry))
+      , testCase "close with a throwing free resumes on retry" (counted "m3-standalone-ownership" "close-with-a-throwing-free-resumes-on-retry" (caseCloseTailFreeThrowResumesOnRetry))
+      , testCase "store throw in retirement still closes and keeps the record joinable" (counted "m3-standalone-ownership" "store-throw-in-retirement-still-closes-and-keeps-the-record-joinable" (caseStoreThrowInRetirementStillCloses))
+      , testCase "value-level close killed in a lease wait resumes" (counted "m3-standalone-ownership" "value-level-close-killed-in-a-lease-wait-resumes" (caseValueCloseKilledInLeaseWaitResumes))
+      , testCase "block wait rejects other block reasons" (counted "m3-standalone-ownership" "block-wait-rejects-other-block-reasons" (caseBlockWaitRejectsOtherReasons))
       ]
   ]
 
@@ -669,17 +674,25 @@ rvBad = CULong 0x07
 nullJob :: StablePtr JobHandle
 nullJob = castPtrToStablePtr nullPtr
 
--- | Wait until a thread parks (a status barrier, never timing):
--- the closer provably blocks in its gate wait before the release.
-awaitBlocked :: ThreadId -> IO ()
-awaitBlocked tid = go (200 :: Int)
+-- | Wait until a thread parks in its gate wait (a status
+-- barrier, never timing): the closer provably blocks with the
+-- expected block reason before the release, and any other block
+-- reason keeps polling.
+awaitBlocked :: BlockReason -> ThreadId -> IO ()
+awaitBlocked = awaitBlockedFor 10000
+
+-- | 'awaitBlocked' with an explicit millisecond budget, so the
+-- reason-rejection probe bounds its own wait.
+awaitBlockedFor :: Int -> BlockReason -> ThreadId -> IO ()
+awaitBlockedFor budget want tid = go budget
   where
     go n
-      | n <= 0 = assertFailure "closer never blocked in its gate wait"
+      | n <= 0 = assertFailure
+          ("closer never blocked with " ++ show want ++ " in its gate wait")
       | otherwise = do
           st <- threadStatus tid
           case st of
-            ThreadBlocked _ -> pure ()
+            ThreadBlocked got | got == want -> pure ()
             _ -> threadDelay 1000 >> go (n - 1)
 
 -- | Close waits for an entered caller: a join admitted through
@@ -725,7 +738,7 @@ caseCloseWaitsForEntered = do
     closerTid <- forkIO $ do
       r <- try (haskokiAsyncClose pSlot)
       putMVar closedDone (r :: Either SomeException ())
-    awaitBlocked closerTid
+    awaitBlocked BlockedOnSTM closerTid
     preRel <- tryTakeMVar closedDone
     case preRel of
       Nothing -> pure ()
@@ -1138,7 +1151,7 @@ caseCloseKillRetryCompletes = do
     closerTid <- forkIO $ do
       r <- try (haskokiAsyncClose pSlot)
       putMVar closedDone (r :: Either SomeException ())
-    awaitBlocked closerTid
+    awaitBlocked BlockedOnSTM closerTid
     killThread closerTid
     mClosed <- timeout 10000000 (takeMVar closedDone)
     case mClosed of
@@ -2105,12 +2118,17 @@ caseCloserKilledInStoreWait = do
       closerTid <- forkIO $ do
         r <- try (haskokiAsyncClose pSlot)
         putMVar closedDone (r :: Either SomeException ())
-      awaitBlocked closerTid
+      awaitBlocked BlockedOnMVar closerTid
       gateBefore <- inspectTableGate (acTable ctx)
       assertEqual "first closer holds the claim" (0, True) gateBefore
-      haskokiAsyncClose pSlot
+      closeBefore <- inspectTableClose (acTable ctx)
+      assertEqual "first closer started teardown"
+        (TableClosing TeardownStarted CloserActive) closeBefore
+      within10s "second closer returns" (haskokiAsyncClose pSlot)
       gateAfterSecond <- inspectTableGate (acTable ctx)
       assertEqual "second closer changes nothing" gateBefore gateAfterSecond
+      closeAfterSecond <- inspectTableClose (acTable ctx)
+      assertEqual "second closer leaves the phase" closeBefore closeAfterSecond
       midSlot <- peek pSlot
       assertBool "slot still set" (not (isNull midSlot))
       -- The kill goes from a forked thread: the throw only
@@ -2122,9 +2140,11 @@ caseCloserKilledInStoreWait = do
         Nothing -> do
           -- The release lets the parked pair unwind on its own (the
           -- sibling commits, the closer runs to its pending kill),
-          -- so join the sibling and fail without joining the closer.
+          -- so join both before failing: the closer must never
+          -- write into the slot after its frame returns.
           putMVar hold ()
           _ <- within10s "sibling joins after release" (takeMVar sibDone)
+          _ <- within10s "closer joins after release" (takeMVar closedDone)
           assertFailure "kill not delivered within 2 s"
         Just (Right ()) -> pure ()
         Just (Left e) -> assertFailure ("closer leaked: " ++ show e)
@@ -2193,6 +2213,7 @@ caseCloserKilledInLeaseWait = do
   h <- allocJobHandle ctx j0
   sp <- newStablePtr ctx
   registerFixtureCtx sp (acTable ctx)
+  (counting, readCounts) <- countingAcquisition
   entered <- newEmptyMVar
   proceed <- newEmptyMVar
   alloca $ \pSlot -> do
@@ -2208,12 +2229,17 @@ caseCloserKilledInLeaseWait = do
       closerTid <- forkIO $ do
         r <- try (haskokiAsyncClose pSlot)
         putMVar closedDone (r :: Either SomeException ())
-      awaitBlocked closerTid
+      awaitBlocked BlockedOnMVar closerTid
       gateBefore <- inspectTableGate (acTable ctx)
       assertEqual "first closer holds the claim" (0, True) gateBefore
-      haskokiAsyncClose pSlot
+      closeBefore <- inspectTableClose (acTable ctx)
+      assertEqual "first closer started teardown"
+        (TableClosing TeardownStarted CloserActive) closeBefore
+      within10s "second closer returns" (haskokiAsyncClose pSlot)
       gateAfterSecond <- inspectTableGate (acTable ctx)
       assertEqual "second closer changes nothing" gateBefore gateAfterSecond
+      closeAfterSecond <- inspectTableClose (acTable ctx)
+      assertEqual "second closer leaves the phase" closeBefore closeAfterSecond
       midSlot <- peek pSlot
       assertBool "slot still set" (not (isNull midSlot))
       -- The kill goes from a forked thread: the throw only
@@ -2225,6 +2251,7 @@ caseCloserKilledInLeaseWait = do
         Nothing -> do
           putMVar proceed ()
           _ <- within10s "sibling joins after release" (takeMVar sibDone)
+          _ <- within10s "closer joins after release" (takeMVar closedDone)
           assertFailure "kill not delivered within 2 s"
         Just (Right ()) -> pure ()
         Just (Left e) -> assertFailure ("closer leaked: " ++ show e)
@@ -2246,7 +2273,7 @@ caseCloserKilledInLeaseWait = do
       case sibRes of
         Right () -> pure ()
         Left e -> assertFailure ("sibling failed: " ++ show e)
-      haskokiAsyncClose pSlot
+      closeCtxSlotWith counting pSlot
       after <- peek pSlot
       assertBool "retry nulled the slot" (isNull after)
       gateAfter <- inspectTableGate (acTable ctx)
@@ -2257,6 +2284,10 @@ caseCloserKilledInLeaseWait = do
       assertZero "live_jobs" "no live jobs" liveAfter
       assertEqual "one terminal job" 1 termAfter
       assertEqual "one job minted" 1 nextAfter
+      c <- readCounts
+      assertEqual "backend closed once on the retry" 1 (acBackendCloses c)
+      assertEqual "retired once on the retry" 1 (acRetirements c)
+      assertEqual "context freed once on the retry" 1 (acCtxFrees c)
       mStale <- resolveJobHandle ctx h
       assertEqual "handle retired" Nothing mStale
       cout <- cancelJob (acTable ctx) j0
@@ -2297,12 +2328,17 @@ caseCloserKilledInBackendGateWait = withOwnGate $ \g -> do
         closerTid <- forkIO $ do
           r <- try (haskokiAsyncClose pSlot)
           putMVar closedDone (r :: Either SomeException ())
-        awaitBlocked closerTid
+        awaitBlocked BlockedOnMVar closerTid
         gateBefore <- inspectTableGate (acTable ctx)
         assertEqual "first closer holds the claim" (0, True) gateBefore
-        haskokiAsyncClose pSlot
+        closeBefore <- inspectTableClose (acTable ctx)
+        assertEqual "first closer started teardown"
+          (TableClosing TeardownStarted CloserActive) closeBefore
+        within10s "second closer returns" (haskokiAsyncClose pSlot)
         gateAfterSecond <- inspectTableGate (acTable ctx)
         assertEqual "second closer changes nothing" gateBefore gateAfterSecond
+        closeAfterSecond <- inspectTableClose (acTable ctx)
+        assertEqual "second closer leaves the phase" closeBefore closeAfterSecond
         midSlot <- peek pSlot
         assertBool "slot still set" (not (isNull midSlot))
         -- The kill goes from a forked thread: the throw only
@@ -2314,6 +2350,7 @@ caseCloserKilledInBackendGateWait = withOwnGate $ \g -> do
           Nothing -> do
             c_ownGateRelease g 0
             _ <- within10s "sibling joins after release" (takeMVar sibDone)
+            _ <- within10s "closer joins after release" (takeMVar closedDone)
             assertFailure "kill not delivered within 2 s"
           Just (Right ()) -> pure ()
           Just (Left e) -> assertFailure ("closer leaked: " ++ show e)
@@ -2657,3 +2694,338 @@ caseCloseUnknownNullsSlotOnly = do
       (freeStablePtr spUnknown >> mapM_ freeStablePtr colliders
         >> freeStablePtr spExport >> mapM_ freeStablePtr colliders2
         >> asyncCloseCtx ctx)
+
+-- | A throw in the pointer tail leaves a resumable gate: the first
+-- close runs its drain, then its retire throws, so the slot stays
+-- set with teardown started and no closer; the retry re-runs the
+-- idempotent drain, retires and frees exactly once, and nulls the
+-- slot. Before the tail ran first, the throw stranded a closed gate
+-- with a live entry and pointer no retry could reclaim.
+caseCloseTailThrowResumesOnRetry :: IO ()
+caseCloseTailThrowResumesOnRetry = do
+  store <- mkFfiStore
+  dc <- mkFfiDetached store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  h <- allocJobHandle ctx j0
+  sp <- newStablePtr ctx
+  registerFixtureCtx sp (acTable ctx)
+  (counting, readCounts) <- countingAcquisition
+  armed <- newIORef True
+  let throwing = counting
+        { aaRetireCtx = \sp' -> do
+            fire <- atomicModifyIORef' armed (\on -> (False, on))
+            if fire
+              then throwIO (userError "injected retire throw")
+              else aaRetireCtx counting sp'
+        }
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    r <- try (closeCtxSlotWith throwing pSlot) :: IO (Either SomeException ())
+    case r of
+      Left _ -> pure ()
+      Right () -> assertFailure "throwing retire returned normally"
+    mid <- peek pSlot
+    assertBool "slot still set after the throw" (not (isNull mid))
+    closeMid <- inspectTableClose (acTable ctx)
+    assertEqual "gate resumable after the throw"
+      (TableClosing TeardownStarted CloserAbsent) closeMid
+    closeCtxSlotWith throwing pSlot
+    after <- peek pSlot
+    assertBool "retry nulled the slot" (isNull after)
+    closeAfter <- inspectTableClose (acTable ctx)
+    assertEqual "retry closed the gate" TableClosed closeAfter
+    gateAfter <- inspectTableGate (acTable ctx)
+    assertEqual "closed, no borrowers" (0, True) gateAfter
+    nLive <- asyncLiveHandles ctx
+    assertZero "live_handles" "retry drained the handle" nLive
+    (liveAfter, termAfter, nextAfter) <- tableStats (acTable ctx)
+    assertZero "live_jobs" "no live jobs" liveAfter
+    assertEqual "one terminal job" 1 termAfter
+    assertEqual "one job minted" 1 nextAfter
+    c <- readCounts
+    assertEqual "retired once on the retry" 1 (acRetirements c)
+    assertEqual "context freed once on the retry" 1 (acCtxFrees c)
+    assertEqual "backend close ran on both attempts" 2 (acBackendCloses c)
+    mStale <- resolveJobHandle ctx h
+    assertEqual "handle retired" Nothing mStale
+    cout <- cancelJob (acTable ctx) j0
+    case cout of
+      CancelAlready TermCanceled -> pure ()
+      other -> assertFailure ("job not canceled, got " ++ show other)
+    haskokiAsyncClose pSlot
+    after2 <- peek pSlot
+    assertBool "slot stays nulled" (isNull after2)
+
+-- | A throw in the pointer free leaves a resumable gate: the
+-- first close retires, then its free throws, so the slot stays
+-- set with teardown started and no closer; the retry re-retires
+-- (a quiet second tombstone), frees exactly once, and nulls the
+-- slot.
+caseCloseTailFreeThrowResumesOnRetry :: IO ()
+caseCloseTailFreeThrowResumesOnRetry = do
+  store <- mkFfiStore
+  dc <- mkFfiDetached store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  h <- allocJobHandle ctx j0
+  sp <- newStablePtr ctx
+  registerFixtureCtx sp (acTable ctx)
+  (counting, readCounts) <- countingAcquisition
+  armed <- newIORef True
+  let throwing = counting
+        { aaFreeCtxPtr = \sp' -> do
+            fire <- atomicModifyIORef' armed (\on -> (False, on))
+            if fire
+              then throwIO (userError "injected free throw")
+              else aaFreeCtxPtr counting sp'
+        }
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    r <- try (closeCtxSlotWith throwing pSlot) :: IO (Either SomeException ())
+    case r of
+      Left _ -> pure ()
+      Right () -> assertFailure "throwing free returned normally"
+    mid <- peek pSlot
+    assertBool "slot still set after the throw" (not (isNull mid))
+    closeMid <- inspectTableClose (acTable ctx)
+    assertEqual "gate resumable after the throw"
+      (TableClosing TeardownStarted CloserAbsent) closeMid
+    closeCtxSlotWith throwing pSlot
+    after <- peek pSlot
+    assertBool "retry nulled the slot" (isNull after)
+    closeAfter <- inspectTableClose (acTable ctx)
+    assertEqual "retry closed the gate" TableClosed closeAfter
+    gateAfter <- inspectTableGate (acTable ctx)
+    assertEqual "closed, no borrowers" (0, True) gateAfter
+    nLive <- asyncLiveHandles ctx
+    assertZero "live_handles" "retry drained the handle" nLive
+    (liveAfter, termAfter, nextAfter) <- tableStats (acTable ctx)
+    assertZero "live_jobs" "no live jobs" liveAfter
+    assertEqual "one terminal job" 1 termAfter
+    assertEqual "one job minted" 1 nextAfter
+    c <- readCounts
+    assertEqual "retired on both attempts" 2 (acRetirements c)
+    assertEqual "context freed once on the retry" 1 (acCtxFrees c)
+    assertEqual "backend close ran on both attempts" 2 (acBackendCloses c)
+    mStale <- resolveJobHandle ctx h
+    assertEqual "handle retired" Nothing mStale
+    cout <- cancelJob (acTable ctx) j0
+    case cout of
+      CancelAlready TermCanceled -> pure ()
+      other -> assertFailure ("job not canceled, got " ++ show other)
+    haskokiAsyncClose pSlot
+    after2 <- peek pSlot
+    assertBool "slot stays nulled" (isNull after2)
+
+-- | A value-level close killed while the drain waits on a job
+-- lease resumes and closes: the sibling holds a detach lease on
+-- the one live job, the closer parks in the cancel behind it, and
+-- after the kill and the release the retry cancels the job,
+-- drains its handle and marks the table closed. A further close
+-- is a silent no-op. This pins the resume path through the
+-- value-level close, which carries no pointer steps.
+caseValueCloseKilledInLeaseWaitResumes :: IO ()
+caseValueCloseKilledInLeaseWaitResumes = do
+  store <- mkFfiStore
+  dc <- mkFfiDetached store
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  h <- allocJobHandle ctx j0
+  entered <- newEmptyMVar
+  proceed <- newEmptyMVar
+  sibDone <- newEmptyMVar
+  _ <- forkIO $ do
+    r <- try (withDetachLease (acTable ctx) j0
+      (\_ -> putMVar entered () >> takeMVar proceed))
+    putMVar sibDone (r :: Either SomeException ())
+  (do
+    within10s "sibling takes the lease" (takeMVar entered)
+    closedDone <- newEmptyMVar
+    closerTid <- forkIO $ do
+      r <- try (asyncCloseCtx ctx)
+      putMVar closedDone (r :: Either SomeException ())
+    awaitBlocked BlockedOnMVar closerTid
+    closeBefore <- inspectTableClose (acTable ctx)
+    assertEqual "first closer holds the claim"
+      (TableClosing TeardownStarted CloserActive) closeBefore
+    within10s "second value close returns" (asyncCloseCtx ctx)
+    closeAfterSecond <- inspectTableClose (acTable ctx)
+    assertEqual "second closer changes nothing" closeBefore closeAfterSecond
+    -- The kill goes from a forked thread: the throw only queues
+    -- against a parked closer, and the issuer would wedge behind
+    -- an undeliverable kill instead of reaching the join.
+    _ <- forkIO (killThread closerTid)
+    mClosed <- timeout 2000000 (takeMVar closedDone)
+    case mClosed of
+      Nothing -> do
+        putMVar proceed ()
+        _ <- within10s "sibling joins after release" (takeMVar sibDone)
+        _ <- within10s "closer joins after release" (takeMVar closedDone)
+        assertFailure "kill not delivered within 2 s"
+      Just (Left e)
+        | fromException e == Just ThreadKilled -> pure ()
+        | otherwise -> assertFailure ("closer leaked: " ++ show e)
+      Just (Right ()) ->
+        assertFailure "kill swallowed: value close returned normally"
+    gateMid <- inspectTableGate (acTable ctx)
+    assertEqual "stays closing with no closer" (0, True) gateMid
+    closeMid <- inspectTableClose (acTable ctx)
+    assertEqual "teardown started, closer absent"
+      (TableClosing TeardownStarted CloserAbsent) closeMid
+    (liveMid, _, _) <- tableStats (acTable ctx)
+    assertEqual "the cancel never ran" 1 liveMid
+    nLiveMid <- asyncLiveHandles ctx
+    assertEqual "the handle is still live" 1 nLiveMid
+    putMVar proceed ()
+    sibRes <- within10s "sibling joins" (takeMVar sibDone)
+    case sibRes of
+      Right () -> pure ()
+      Left e -> assertFailure ("sibling failed: " ++ show e)
+    asyncCloseCtx ctx
+    closeAfter <- inspectTableClose (acTable ctx)
+    assertEqual "retry closed the gate" TableClosed closeAfter
+    gateAfter <- inspectTableGate (acTable ctx)
+    assertEqual "closed, no borrowers" (0, True) gateAfter
+    nLive <- asyncLiveHandles ctx
+    assertZero "live_handles" "retry drained the handle" nLive
+    (liveAfter, termAfter, nextAfter) <- tableStats (acTable ctx)
+    assertZero "live_jobs" "no live jobs" liveAfter
+    assertEqual "one terminal job" 1 termAfter
+    assertEqual "one job minted" 1 nextAfter
+    mStale <- resolveJobHandle ctx h
+    assertEqual "handle retired" Nothing mStale
+    cout <- cancelJob (acTable ctx) j0
+    case cout of
+      CancelAlready TermCanceled -> pure ()
+      other -> assertFailure ("job not canceled, got " ++ show other)
+    asyncCloseCtx ctx
+    closeAgain <- inspectTableClose (acTable ctx)
+    assertEqual "close after teardown is a silent no-op" TableClosed closeAgain)
+    `finally` (tryPutMVar proceed () >> pure ())
+
+-- | The block wait rejects other block reasons: a thread parked on
+-- an MVar never satisfies a wait for an STM park, so the bounded
+-- wait fails instead of returning early on the wrong reason.
+caseBlockWaitRejectsOtherReasons :: IO ()
+caseBlockWaitRejectsOtherReasons = do
+  mv <- newEmptyMVar
+  parked <- forkIO (takeMVar mv)
+  (do
+    awaitBlockedFor 10000 BlockedOnMVar parked
+    r <- try (awaitBlockedFor 200 BlockedOnSTM parked) :: IO (Either SomeException ())
+    case r of
+      Left _ -> pure ()
+      Right () -> assertFailure "wait returned on the wrong block reason")
+    `finally` killThread parked
+
+-- | A Store throw during retirement still closes and keeps the
+-- record joinable: the job load throws instead of answering Left,
+-- so retirement marks the joined attachment terminal in memory
+-- while the durable row stands untouched. The close completes;
+-- then a fresh box and context over the same world rejoin the job
+-- exactly once. Before the throw mapped onto the failed-load arm,
+-- every close attempt died at the same point and held the context.
+caseStoreThrowInRetirementStillCloses :: IO ()
+caseStoreThrowInRetirementStillCloses = do
+  (world, plain) <- mkFfiStoreWith noFaults
+  armed <- newIORef False
+  let throwing = plain
+        { storeLoadJobs = do
+            on <- readIORef armed
+            if on
+              then throwIO (userError "injected load throw")
+              else storeLoadJobs plain
+        }
+  dc <- mkFfiDetached throwing
+  ctx <- mkFfiGen dc
+  j0 <- startFfiDigest ctx "abc" 32 1
+  eDet <- detachJob dc (acTable ctx) j0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("detach failed: " ++ show other)
+  eJoin <- joinJob dc (acEnv ctx) (acTable ctx) JoinRequest
+    { jqPid = pid
+    , jqFunction = JobDigest
+    , jqSession = acSession ctx
+    , jqCapacity = 32
+    }
+  jB <- case eJoin of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  h <- allocJobHandle ctx jB
+  sp <- newStablePtr ctx
+  registerFixtureCtx sp (acTable ctx)
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    writeIORef armed True
+    haskokiAsyncClose pSlot
+    writeIORef armed False
+    after <- peek pSlot
+    assertBool "close completed" (isNull after)
+    gateAfter <- inspectTableGate (acTable ctx)
+    assertEqual "closed, no borrowers" (0, True) gateAfter
+    av <- inspectAttachment dc pid
+    assertEqual "attachment terminal in memory" (Just (AvTerminal JobCanceled)) av
+    jobs <- loadFfiJobs throwing
+    case jobs of
+      [rec] -> do
+        assertEqual "durable record id" pid (jrPersistentId rec)
+        assertEqual "durable record untouched" JobQueued (jrState rec)
+      other -> assertFailure ("expected one row, got " ++ show other)
+    nLive <- asyncLiveHandles ctx
+    assertZero "live_handles" "close drained the handle" nLive
+    (liveAfter, termAfter, nextAfter) <- tableStats (acTable ctx)
+    assertZero "live_jobs" "no live jobs" liveAfter
+    assertEqual "one terminal job" 1 termAfter
+    assertEqual "two jobs minted" 2 nextAfter
+    mStale <- resolveJobHandle ctx h
+    assertEqual "handle retired" Nothing mStale
+  storeClose throwing
+  (tracked, opened) <- trackOpened (memoryStoreSteps world asyncAcquisition)
+  (acq, readCounts) <- countingAcquisitionOver tracked
+  (do
+    eBox <- openStoreBoxWith acq nullPtr
+    box <- case eBox of
+      Right b -> pure b
+      Left _ -> assertFailure "box reopen failed"
+    eCtx <- openAsyncCtxOnWith acq defaultConfig box
+    spCtx <- case eCtx of
+      Right s -> pure s
+      Left _ -> assertFailure "context reopen failed"
+    ctx2 <- deRefStablePtr spCtx
+    dc2 <- case acDetach ctx2 of
+      Just d -> pure d
+      Nothing -> assertFailure "reopened context has no detach view"
+    initFfiDigestSession (acEnv ctx2) (acSession ctx2)
+    let rejoin = joinJob dc2 (acEnv ctx2) (acTable ctx2) JoinRequest
+          { jqPid = pid
+          , jqFunction = JobDigest
+          , jqSession = acSession ctx2
+          , jqCapacity = 32
+          }
+    eJoin2 <- rejoin
+    j2 <- case eJoin2 of
+      JoinOk j -> pure j
+      other -> assertFailure ("rejoin failed: " ++ show other)
+    eJoin3 <- rejoin
+    case eJoin3 of
+      JoinAlreadyAttached _ -> pure ()
+      other -> assertFailure ("second rejoin not refused: " ++ show other)
+    av2 <- inspectAttachment dc2 pid
+    assertEqual "rejoined attachment active" (Just (AvActive j2)) av2
+    alloca $ \pCtx -> do
+      poke pCtx spCtx
+      closeCtxSlotWith acq pCtx
+      afterCtx <- peek pCtx
+      assertBool "context slot nulled" (isNull afterCtx)
+    alloca $ \pBox -> do
+      poke pBox box
+      closeStoreBoxSlotWith acq pBox
+      afterBox <- peek pBox
+      assertBool "box slot nulled" (isNull afterBox)
+    c <- readCounts
+    (refused, why) <- memoryReopenRefused world
+    assertBalanced ("memory world reopen: " ++ why) c
+    assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused)
+    `finally` releaseOpened opened

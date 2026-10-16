@@ -112,7 +112,16 @@ import Control.Concurrent.STM
   , readTVarIO
   , writeTVar
   )
-import Control.Exception (mask, mask_, onException)
+import Control.Exception
+  ( SomeAsyncException
+  , displayException
+  , fromException
+  , mask
+  , mask_
+  , onException
+  , throwIO
+  , try
+  )
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -1558,7 +1567,10 @@ markResolved dc table jid st = do
 -- instance owns exactly one table and one detach context);
 -- callers sharing one context across tables retire with
 -- 'retireLiveTableFor' so a closing table never cancels a
--- sibling's attachments.
+-- sibling's attachments. A synchronous Store throw during the
+-- durable marks reports like a failed load: the attachments
+-- still resolve canceled in memory, each carrying the throw as
+-- its mark error.
 retireLiveTable :: DetachCtx -> IO [(Word64, Maybe StoreError)]
 retireLiveTable dc = do
   retireMatching dc Nothing
@@ -1582,7 +1594,9 @@ retireLiveTable dc = do
 -- durable jobs stand untouched and joinable). The retiring
 -- table's opaque marks drop with it whenever this context served
 -- or marked it (see 'retireMatching'); sibling tables' marks
--- stay.
+-- stay. A synchronous Store throw during the durable marks
+-- reports like a failed load: the attachments still resolve
+-- canceled in memory, each carrying the throw as its mark error.
 retireLiveTableFor
   :: DetachCtx -> AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireLiveTableFor dc tid = retireMatching dc (Just tid)
@@ -1652,12 +1666,25 @@ retireMatching dc mTid = do
   if null actives
     then pure []
     else do
-      eJobs <- storeLoadJobs (dcStore dc)
-      case eJobs of
-        Left err -> do
-          mapM_ (\pid -> setTerminal dc pid JobCanceled) actives
-          pure [(pid, Just err) | pid <- actives]
-        Right jobs -> mapM (retireOne jobs) actives
+      r <- try (do
+        eJobs <- storeLoadJobs (dcStore dc)
+        case eJobs of
+          Left err -> do
+            mapM_ (\pid -> setTerminal dc pid JobCanceled) actives
+            pure [(pid, Just err) | pid <- actives]
+          Right jobs -> mapM (retireOne jobs) actives)
+      case r of
+        Right out -> pure out
+        Left e -> case (fromException e :: Maybe SomeAsyncException) of
+          Just _ -> throwIO e
+          -- A synchronous Store throw reports like a failed load:
+          -- the attachments still resolve canceled in memory, each
+          -- carrying the throw as its mark error, so retirement
+          -- never fails a close.
+          Nothing -> do
+            mapM_ (\pid -> setTerminal dc pid JobCanceled) actives
+            let err = StoreIO (displayException e)
+            pure [(pid, Just err) | pid <- actives]
   where
     -- | Roll one retired claim back to what it replaced.
     rollbackClaimed

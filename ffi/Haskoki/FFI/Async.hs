@@ -1358,7 +1358,7 @@ closeCtxSlotWith acq pSlot = do
                 then do
                   c <- deRefStablePtr sp
                   closeClaimedCtx acq c
-                  transferCtxClose table
+                  transferCtxClose table (Just sp)
                     (aaRetireCtx acq sp
                       >> aaFreeCtxPtr acq sp
                       >> poke pSlot (castPtrToStablePtr nullPtr))
@@ -1388,19 +1388,34 @@ asyncCloseCtx ctx = mask_ $ do
   if first
     then do
       closeClaimedCtx asyncAcquisition ctx
-      transferCtxClose (acTable ctx) (pure ())
+      transferCtxClose (acTable ctx) Nothing (pure ())
     else pure ()
 
 -- | The one context-close transfer, shared by the slot close and
--- the value-level close: mark the table closed, then run the
--- pointer tail (retire, free, null the slot; the value-level
--- close passes no pointer steps). The transfer holds no lock,
+-- the value-level close: run the pointer tail first (retire,
+-- free, null the slot; the value-level close passes no pointer
+-- steps), then mark the table closed. The transfer holds no lock,
 -- takes no MVar and touches no Store, so it runs
 -- uninterruptibly: no kill can split the drained table from its
--- closed mark.
-transferCtxClose :: AsyncTable -> IO () -> IO ()
-transferCtxClose table after =
-  uninterruptibleMask_ (finishTableClose table >> after)
+-- closed mark. A synchronous throw in the tail releases the
+-- claim instead of publishing the closed mark, so the gate stays
+-- resumable and the retry re-runs the tail; the throw propagates
+-- to the caller. The slot close passes its pointer so the throw
+-- arm can re-register the entry the tail may have retired: a
+-- retry keys off the registry, and without the entry it would
+-- reclaim the slot while leaking the pointer. The re-register
+-- runs through the production step, never injected, so the throw
+-- arm stays total; a throwing tail step must report before
+-- running its effect.
+transferCtxClose
+  :: AsyncTable -> Maybe (StablePtr AsyncCtx) -> IO () -> IO ()
+transferCtxClose table mSp after = uninterruptibleMask_ $
+  (after >> finishTableClose table)
+    `onException` (compensate >> releaseTableClose table)
+  where
+    compensate = case mSp of
+      Nothing -> pure ()
+      Just sp -> registerOwnedCtx sp table
 
 -- | Await admitted borrowers, mark teardown started, then drain
 -- one claimed context. Runs only on the winning close claim (see
