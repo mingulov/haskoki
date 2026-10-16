@@ -35,12 +35,15 @@ import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import Data.List (intercalate)
 import Data.Word (Word8)
+import Foreign.C.Error (Errno (..), eNOTSUP, eOPNOTSUPP, ePERM, eXDEV)
 import Foreign.Ptr (castPtr)
+import GHC.IO.Exception (ioe_errno)
 import System.IO.Error (isAlreadyExistsError, tryIOError)
 import System.Posix.Files
   ( createLink, deviceID, fileAccess, fileID, getFileStatus, getSymbolicLinkStatus, isDirectory
   , isSymbolicLink, removeLink )
 import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, fdWriteBuf, openFd)
+import System.Posix.Process (getProcessID)
 import System.Posix.Time (epochTime)
 import System.Posix.Types (Fd)
 import System.Posix.Unistd (fileSynchronise)
@@ -235,6 +238,9 @@ data MigrateHooks = MigrateHooks
   , mhAfterCreate :: FilePath -> IO ()
     -- ^ after a backup or receipt file is created, before its bytes
     -- are written (a failure here is a failure after the create)
+  , mhLink :: FilePath -> FilePath -> IO ()
+    -- ^ move the receipt temporary into place (default: 'createLink');
+    -- a seam so tests can fail the link with a chosen errno
   , mhSQLite :: MigrationHooks
   }
 
@@ -245,6 +251,7 @@ noMigrateHooks = MigrateHooks
   , mhClock = truncate . toRational <$> epochTime
   , mhDigest = sha256Hex
   , mhAfterCreate = \_ -> pure ()
+  , mhLink = createLink
   , mhSQLite = noMigrationHooks
   }
 
@@ -332,7 +339,7 @@ migrateStoreWith hooks path cfg backupDir =
                     , mrFrozen = map crToken freeze, mrPreserved = sopCredentialTokens plan
                     , mrBackup = bak, mrBackupBytes = nBytes, mrBackupSha256 = sha
                     , mrReceipt = bak ++ ".receipt", mrEpoch = now, mrCompleted = done }
-              w <- writeReceipt (mhAfterCreate hooks) (mrReceipt rc) (BC8.pack (renderReceipt rc)) backupDir
+              w <- writeReceipt (mhAfterCreate hooks) (mhLink hooks) (mrReceipt rc) (BC8.pack (renderReceipt rc)) backupDir
               pure $ case w of
                 Written -> Right (Migrated rc)
                 NameTaken -> Left (MigrateReceiptFailed bak (mrReceipt rc ++ " appeared during the migration"))
@@ -391,8 +398,10 @@ data ExclusiveWrite = Written | NameTaken | WriteFailed !String
 -- | Create a NEW file (O_EXCL, 0600, 'guardFlags'), write all bytes,
 -- fsync it and its directory. Never overwrites: an existing name is
 -- 'NameTaken'. Any failure after the create, or an asynchronous
--- exception (re-thrown), removes the file: the create and the cleanup
--- run masked, only the writing is interruptible.
+-- exception (re-thrown), removes the file. The create, the
+-- descriptor release and the cleanup run masked -- the release is
+-- registered before the write is unmasked, so no window leaks the
+-- descriptor; only the byte writing is interruptible.
 writeExclusive :: (FilePath -> IO ()) -> FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
 writeExclusive afterCreate path bytes dir = mask $ \restore -> do
   eFd <- tryIOError (openFd path WriteOnly guardFlags { creat = Just 0o600, exclusive = True })
@@ -401,7 +410,7 @@ writeExclusive afterCreate path bytes dir = mask $ \restore -> do
       | isAlreadyExistsError e -> pure NameTaken
       | otherwise -> pure (WriteFailed ("cannot create " ++ path ++ ": " ++ show e))
     Right fd -> do
-      r <- try (restore ((fill fd `finally` closeFd fd) >> syncDir dir))
+      r <- try (((restore (fill fd) `finally` closeFd fd) >> syncDir dir))
       case r of
         Right () -> pure Written
         Left e -> do
@@ -424,27 +433,66 @@ syncDir :: FilePath -> IO ()
 syncDir dir = bracket (openFd dir ReadOnly guardFlags) closeFd fileSynchronise
 
 -- | Write a receipt so that its name never holds a truncated file: the
--- bytes go to a new temporary (written and fsynced by 'writeExclusive'),
--- which is then moved into place by link(2) plus unlink (unlike
--- rename(2), link never replaces an existing name), and the directory
--- is fsynced.
-writeReceipt :: (FilePath -> IO ()) -> FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
-writeReceipt afterCreate final bytes dir = mask $ \restore -> do
-  let tmp = final ++ ".tmp"
-  w <- restore (writeExclusive afterCreate tmp bytes dir)
-  case w of
-    NameTaken -> pure (WriteFailed ("the temporary receipt name is taken: " ++ tmp))
-    WriteFailed why -> pure (WriteFailed why)
-    Written -> do
-      eLink <- tryIOError (createLink tmp final)
-      _ <- tryIOError (removeLink tmp)
-      eSync <- tryIOError (syncDir dir)
-      pure $ case (eLink, eSync) of
-        (Left e, _)
-          | isAlreadyExistsError e -> NameTaken
-          | otherwise -> WriteFailed ("cannot move " ++ tmp ++ " to " ++ final ++ ": " ++ show e)
-        (Right (), Left e) -> WriteFailed ("cannot sync " ++ dir ++ ": " ++ show e)
-        (Right (), Right ()) -> Written
+-- bytes go to a new temporary with a unique name (the final name plus
+-- the process id and a per-attempt counter, so a stale temporary from
+-- a crashed run is ignored, never fatal), written and fsynced by
+-- 'writeExclusive'; it is then moved into place by link(2) plus unlink
+-- (unlike rename(2), link never replaces an existing name), and the
+-- directory is fsynced. Our temporary is removed on every path after
+-- its write. On filesystems without hard links (the link fails with
+-- EPERM, ENOTSUP, EOPNOTSUPP or EXDEV) it falls back to an O_EXCL
+-- create-and-write of the final name, which still never overwrites;
+-- any other link failure stays a receipt failure.
+writeReceipt :: (FilePath -> IO ()) -> (FilePath -> FilePath -> IO ()) -> FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
+writeReceipt afterCreate link final bytes dir = mask $ \restore -> do
+  pid <- getProcessID
+  attempt restore pid 0
+  where
+    attempt restore pid nonce
+      | nonce > maxReceiptTmpAttempts =
+          pure (WriteFailed ("cannot find a free temporary receipt name for " ++ final))
+      | otherwise = do
+          let tmp = final ++ ".tmp." ++ show pid ++ "." ++ show nonce
+          w <- restore (writeExclusive afterCreate tmp bytes dir)
+          case w of
+            NameTaken -> attempt restore pid (nonce + 1)
+            WriteFailed why -> pure (WriteFailed why)
+            Written -> do
+              eLink <- tryIOError (link tmp final)
+              case eLink of
+                Right () -> do
+                  _ <- tryIOError (removeLink tmp)
+                  eSync <- tryIOError (syncDir dir)
+                  pure $ case eSync of
+                    Left e -> WriteFailed ("cannot sync " ++ dir ++ ": " ++ show e)
+                    Right () -> Written
+                Left e
+                  | isAlreadyExistsError e -> do
+                      _ <- tryIOError (removeLink tmp)
+                      _ <- tryIOError (syncDir dir)
+                      pure NameTaken
+                  | isLinkUnsupported e -> do
+                      _ <- tryIOError (removeLink tmp)
+                      restore (writeExclusive afterCreate final bytes dir)
+                  | otherwise -> do
+                      _ <- tryIOError (removeLink tmp)
+                      _ <- tryIOError (syncDir dir)
+                      pure (WriteFailed ("cannot move " ++ tmp ++ " to " ++ final ++ ": " ++ show e))
+
+-- | How many unique temporary receipt names are tried before the
+-- receipt write gives up (a stale temporary only costs one attempt).
+maxReceiptTmpAttempts :: Int
+maxReceiptTmpAttempts = 128
+
+-- | Errnos that mean the filesystem cannot make hard links at all, as
+-- opposed to a conflict on this name (EEXIST, handled before this) or
+-- any other failure: EPERM, ENOTSUP, EOPNOTSUPP, EXDEV. Only these
+-- take the receipt's direct-write fallback; anything else, including
+-- a missing errno, fails closed with no fallback.
+isLinkUnsupported :: IOException -> Bool
+isLinkUnsupported e = case ioe_errno e of
+  Just n -> Errno n `elem` [ePERM, eNOTSUP, eOPNOTSUPP, eXDEV]
+  Nothing -> False
 
 -- | Hash, then copy the owned store into the first free candidate
 -- name, then verify by byte readback and by a read-only snapshot

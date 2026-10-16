@@ -16,6 +16,7 @@ import Data.Bits ((.&.))
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, stripPrefix)
 import qualified Database.SQLite3 as S
+import Foreign.C.Error (eACCES, eNOTSUP, eOPNOTSUPP, ePERM, eXDEV, errnoToIOError)
 import Foreign.C.Types (CInt (..))
 import qualified Data.Text as T
 import System.Directory (createDirectory, doesFileExist, listDirectory, removeFile, renameFile)
@@ -131,6 +132,11 @@ spec = testGroup "Store preflight"
       , testCase "an interrupted backup write leaves no file" caseMigrateInterruptedWriteLeavesNoFile
       , testCase "a failed read-back after commit is reported with the backup" caseMigrateVerifyFails
       , testCase "a receipt name taken after the backup is never overwritten" caseMigrateReceiptFails
+      , testCase "a stale receipt temporary from a crash is ignored, not fatal" caseMigrateStaleReceiptTmpIgnored
+      , testCase "repeated interrupted backup writes leave no file" caseMigrateInterruptedWriteRepeated
+      , testCase "a link failure for want of hard links falls back to a direct receipt write" caseMigrateReceiptLinkFallback
+      , testCase "the link fallback never overwrites a taken receipt name" caseMigrateReceiptLinkFallbackNeverOverwrites
+      , testCase "any other link failure stays a receipt failure" caseMigrateReceiptLinkOtherFails
       , testCase "a failed transaction keeps the store and the backup" caseMigrateTxnFailureKeepsStore
       , testCase "appended catalog tokens are left to the next open" caseMigrateLeavesSeedsToOpen
       , testCase "naming: candidate backup names" caseBackupCandidates
@@ -1185,6 +1191,129 @@ caseMigrateReceiptFails = withScratch "migrate" $ \dir -> do
   listBackups backups >>= assertEqual "backup and the squatted name only"
     ["store.sqlite.pre-migrate.schema2.1700000000.bak", "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt"]
   roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "committed" ["3"]
+
+-- A crash between the receipt's temporary write and its move leaves
+-- a stale <receipt>.tmp behind; the next migration ignores it (the
+-- temporary name is unique per attempt) instead of refusing after
+-- the commit.
+caseMigrateStaleReceiptTmpIgnored :: IO ()
+caseMigrateStaleReceiptTmpIgnored = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+      receipt = bak ++ ".receipt"
+      stale = receipt ++ ".tmp"
+  createDirectory backups
+  writeFile stale "stale temporary from a crashed run"
+  cfg <- loadConfigOrFail cfgPath
+  r <- migrateStoreWith fixedClock store cfg backups
+  rc <- case r of
+    Right (Migrated got) -> pure got
+    other -> assertFailure ("stale temporary was fatal: " ++ show other)
+  assertEqual "backup" bak (mrBackup rc)
+  assertEqual "receipt" receipt (mrReceipt rc)
+  readFile stale >>= assertEqual "stale temporary left alone" "stale temporary from a crashed run"
+  readFile receipt >>= assertBool "receipt written" . ("haskoki-store-migration-receipt: 1" `isPrefixOf`)
+  listBackups backups >>= assertEqual "backup, receipt and the stale file only"
+    [ "store.sqlite.pre-migrate.schema2.1700000000.bak"
+    , "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt"
+    , "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt.tmp" ]
+
+-- Repeated asynchronous interruptions of the backup write never
+-- leave a file behind: the descriptor release is registered before
+-- the write is unmasked.
+caseMigrateInterruptedWriteRepeated :: IO ()
+caseMigrateInterruptedWriteRepeated = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  before <- captureState store
+  let killed = fixedClock { mhAfterCreate = \_ -> throwIO ThreadKilled }
+      once = do
+        r <- try (migrateStoreWith killed store cfg backups)
+        case r of
+          Left ThreadKilled -> pure ()
+          Left other -> assertFailure ("wrong exception: " ++ show other)
+          Right other -> assertFailure ("not interrupted: " ++ show other)
+        listBackups backups >>= assertEqual "no file left" []
+  sequence_ (replicate 20 once)
+  assertUnchanged "interrupted backups" before store
+
+-- Backup directories on filesystems without hard links (vfat, some
+-- FUSE/NFS) fail the receipt's link(2) with EPERM, ENOTSUP,
+-- EOPNOTSUPP or EXDEV; the receipt then falls back to an O_EXCL
+-- create-and-write of the final name.
+caseMigrateReceiptLinkFallback :: IO ()
+caseMigrateReceiptLinkFallback = mapM_ one
+  [ ("EPERM", ePERM)
+  , ("ENOTSUP", eNOTSUP)
+  , ("EOPNOTSUPP", eOPNOTSUPP)
+  , ("EXDEV", eXDEV) ]
+  where
+    one (name, errno) = withScratch "migrate" $ \dir -> do
+      (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+      let backups = dir </> "backups"
+          bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+          receipt = bak ++ ".receipt"
+      createDirectory backups
+      cfg <- loadConfigOrFail cfgPath
+      let noLinks = fixedClock { mhLink = \_ _ -> ioError (errnoToIOError "link" errno Nothing Nothing) }
+      r <- migrateStoreWith noLinks store cfg backups
+      rc <- case r of
+        Right (Migrated got) -> pure got
+        other -> assertFailure (name ++ ": no fallback: " ++ show other)
+      assertEqual (name ++ ": receipt") receipt (mrReceipt rc)
+      readFile receipt >>= assertBool (name ++ ": receipt written") . ("haskoki-store-migration-receipt: 1" `isPrefixOf`)
+      listBackups backups >>= assertEqual (name ++ ": backup and receipt only, no temporary left")
+        [ "store.sqlite.pre-migrate.schema2.1700000000.bak"
+        , "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt" ]
+
+-- The link fallback still never overwrites: when the final receipt
+-- name appears mid-migration on a link-less filesystem, the receipt
+-- is reported unwritten and the other file is untouched.
+caseMigrateReceiptLinkFallbackNeverOverwrites :: IO ()
+caseMigrateReceiptLinkFallbackNeverOverwrites = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+      receipt = bak ++ ".receipt"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  let squat = fixedClock
+        { mhAfterBackup = writeFile receipt "not ours"
+        , mhLink = \_ _ -> ioError (errnoToIOError "link" ePERM Nothing Nothing) }
+  r <- migrateStoreWith squat store cfg backups
+  case r of
+    Left err@(MigrateReceiptFailed b why) -> do
+      assertEqual "backup" bak b
+      assertEqual "tag" "migrate-receipt-failed" (fst (renderMigrateError err))
+      assertBool "the direct write refused the taken name"
+        ("appeared during the migration" `isInfixOf` why)
+    other -> assertFailure ("wrong result: " ++ show other)
+  readFile receipt >>= assertEqual "existing receipt untouched" "not ours"
+  listBackups backups >>= assertEqual "backup and the squatted name only"
+    [ "store.sqlite.pre-migrate.schema2.1700000000.bak"
+    , "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt" ]
+
+-- Any other link failure (here EACCES) stays a receipt failure: no
+-- fallback, the migration is reported committed-but-unreceipted.
+caseMigrateReceiptLinkOtherFails :: IO ()
+caseMigrateReceiptLinkOtherFails = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  let badLink = fixedClock { mhLink = \_ _ -> ioError (errnoToIOError "link" eACCES Nothing Nothing) }
+  r <- migrateStoreWith badLink store cfg backups
+  case r of
+    Left err@(MigrateReceiptFailed b _) -> do
+      assertEqual "backup" bak b
+      assertEqual "tag" "migrate-receipt-failed" (fst (renderMigrateError err))
+    other -> assertFailure ("wrong result: " ++ show other)
+  listBackups backups >>= assertEqual "backup only, no temporary left"
+    ["store.sqlite.pre-migrate.schema2.1700000000.bak"]
 
 caseMigrateTxnFailureKeepsStore :: IO ()
 caseMigrateTxnFailureKeepsStore = withScratch "migrate" $ \dir -> do
