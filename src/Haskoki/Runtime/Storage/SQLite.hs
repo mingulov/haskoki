@@ -270,8 +270,10 @@ openSQLiteStoreWith path limits inj = openSQLiteStoreWithHooks path limits inj n
 -- ('SQLiteTestHooks'); the storage suites use it to stimulate
 -- real statement failures on the store's own connection. The path
 -- is resolved once up front: every sidecar and every open below
--- derives from the real file. A dangling symlink refuses: no store
--- is ever created at a link target.
+-- derives from the real file. A store path whose own final component
+-- is a dangling symlink refuses: no store is created at that link's
+-- target. A missing store under a symlinked parent directory is
+-- created at the resolved path, as before.
 openSQLiteStoreWithHooks
   :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
   -> IO (Either StoreError Store)
