@@ -73,6 +73,12 @@
 # build-free control suite and defaults to the committed table. Exit
 # codes: 0 when the aggregate passes; 1 when the aggregate fails; 2 on
 # a setup refusal ("JOURNEY-SETUP: <reason>").
+#
+# --build-native compiles the three host binaries the legs need
+# (token_fixture plus the AEAD and certlink consumers) into a new
+# directory with the host cc. It exits 0 on success, 2 on a usage
+# refusal, and 1 with BUILD-NATIVE-FAIL when cc is missing or a
+# compile fails.
 set -eu
 
 refuse() {
@@ -210,6 +216,68 @@ check_native_dir() {
     fi
 }
 
+check_build_native_dest() {
+    case "$1" in
+        /*) : ;;
+        *) refuse 'native dest not absolute'; return 2 ;;
+    esac
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        refuse 'native dest exists'
+        return 2
+    fi
+}
+
+run_build_native() {
+    _dest=$1
+    check_build_native_dest "$_dest" || return 2
+    _src=$(find_src_root) || return 2
+    if ! command -v cc >/dev/null 2>&1; then
+        printf 'BUILD-NATIVE-FAIL: cc missing\n' >&2
+        return 1
+    fi
+    # The fixture includes only the pinned vendor headers, never
+    # provider-generated artifacts (the independence guard of
+    # scripts/test-consumers.sh:107).
+    if [ ! -f "$_src/tests/journeys/native/token_fixture.c" ]; then
+        printf 'BUILD-NATIVE-FAIL: fixture source missing\n' >&2
+        return 1
+    fi
+    if grep -nE 'abi_generated|abi_stubs|abi-inventory' \
+        "$_src/tests/journeys/native/token_fixture.c"; then
+        printf 'BUILD-NATIVE-FAIL: fixture independence violated\n' >&2
+        return 1
+    fi
+    if ! mkdir -p "$_dest"; then
+        printf 'BUILD-NATIVE-FAIL: cannot create %s\n' "$_dest" >&2
+        return 1
+    fi
+    if ! (CDPATH= cd -- "$_src" && cc -std=c11 -Wall -Wextra -Werror \
+        -Ispec/vendor \
+        -o "$_dest/token_fixture" \
+        tests/journeys/native/token_fixture.c -ldl); then
+        printf 'BUILD-NATIVE-FAIL: token_fixture did not compile\n' >&2
+        return 1
+    fi
+    # The consumer lines duplicate scripts/test-consumers.sh:146-149;
+    # the width matrix leaf does not apply to journey fixtures.
+    for _c in consumer_aead consumer_certlink; do
+        if ! (CDPATH= cd -- "$_src" && cc -std=c11 -O2 -g -Wall -Wextra -Werror \
+            -Ispec/vendor \
+            -o "$_dest/$_c" "tests/c/$_c.c" -ldl -lpthread); then
+            printf 'BUILD-NATIVE-FAIL: %s did not compile\n' "$_c" >&2
+            return 1
+        fi
+    done
+    for _b in token_fixture consumer_aead consumer_certlink; do
+        if [ ! -f "$_dest/$_b" ] || [ ! -x "$_dest/$_b" ]; then
+            printf 'BUILD-NATIVE-FAIL: %s missing or not executable\n' "$_b" >&2
+            return 1
+        fi
+    done
+    printf 'BUILD-NATIVE: %s/token_fixture %s/consumer_aead %s/consumer_certlink\n' \
+        "$_dest" "$_dest" "$_dest"
+}
+
 check_out() {
     case "$1" in
         /*) : ;;
@@ -315,7 +383,7 @@ run_selftest() {
     _tmp=$(mktemp -d "${TMPDIR:-/tmp}/journeys-driver-check.XXXXXX")
     trap 'rm -rf "$_tmp"' EXIT INT TERM
     _pass=0
-    _total=16
+    _total=18
     _fake="$_tmp/fake"
     mkdir -p "$_fake/lib" "$_fake/closure" "$_fake/bin"
     : > "$_fake/lib/libhaskoki.so"
@@ -594,6 +662,32 @@ SYN_EOF
             _pass=$((_pass + 1))
         fi
     fi
+    if check_build_native_dest "$_tmp" 2>"$_tmp/c17"; then
+        printf 'FAIL: control 17 accepted an existing native dest\n'
+    else
+        _rc=$?
+        if [ "$_rc" -ne 2 ]; then
+            printf 'FAIL: control 17 exit %s, want 2\n' "$_rc"
+        elif ! grep -q 'native dest exists' "$_tmp/c17" 2>/dev/null; then
+            printf 'FAIL: control 17 reason mismatch\n'
+        else
+            printf 'ok: control 17 existing native dest refused\n'
+            _pass=$((_pass + 1))
+        fi
+    fi
+    if check_build_native_dest 'relative/native' 2>"$_tmp/c18"; then
+        printf 'FAIL: control 18 accepted a relative native dest\n'
+    else
+        _rc=$?
+        if [ "$_rc" -ne 2 ]; then
+            printf 'FAIL: control 18 exit %s, want 2\n' "$_rc"
+        elif ! grep -q 'native dest not absolute' "$_tmp/c18" 2>/dev/null; then
+            printf 'FAIL: control 18 reason mismatch\n'
+        else
+            printf 'ok: control 18 relative native dest refused\n'
+            _pass=$((_pass + 1))
+        fi
+    fi
     if [ "$_pass" -eq "$_total" ]; then
         printf 'SELF-TEST: PASS %s/%s\n' "$_pass" "$_total"
         return 0
@@ -662,8 +756,11 @@ if [ "$SELFTEST" -eq 1 ]; then
 fi
 
 if [ -n "$BUILD_NATIVE" ]; then
-    refuse 'build-native unavailable'
-    exit 2
+    if run_build_native "$BUILD_NATIVE"; then
+        exit 0
+    else
+        exit "$?"
+    fi
 fi
 
 SRC_ROOT=$(find_src_root) || exit 2

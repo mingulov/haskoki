@@ -1,10 +1,14 @@
 # Certificate-linked application journey
 
-One persistent certificate/key identity path: generate, link under
-one `CKA_ID`, select by that ID, restart, refuse the wrong
-identity, and finish with a real application reading the linked
-identity. The native half runs in `tests/c/consumer_certlink.c`
-(run by `scripts/test-consumers.sh` in direct mode and by
+Metadata and `CKA_ID` linkage of a fixture certificate to a
+separately generated key: link under one `CKA_ID`, select by that
+ID, restart, refuse the wrong identity, and finish with a real
+application reading the linked identity. The certificate
+(RSA-2048) does not belong to the key; what the native half proves
+is metadata round trip plus `CKA_ID` linkage, never
+certificate/key correspondence. The native half runs in
+`tests/c/consumer_certlink.c` (run by
+`scripts/test-consumers.sh` in direct mode and by
 `scripts/test-proxy-parity.sh` in both modes); the application half
 is a Java KeyStore plus application-signing leg.
 
@@ -21,6 +25,8 @@ Memory interval — link, readback, and use:
   pair mints with link ID bytes `{0x01, 0x01}` in its keygen
   templates (the same identity shape the CLI journeys persist);
   the certificate takes that ID after creation.
+- The generated private key reports the public half's curve
+  parameters (`CKA_EC_PARAMS` equal on both halves).
 - Find-by-ID returns exactly the three linked handles (order
   unclaimed; asserted as a set); find-by-absent-ID returns none.
 - `CKA_VALUE` reads back the DER bytes; `CKA_SUBJECT` reads back

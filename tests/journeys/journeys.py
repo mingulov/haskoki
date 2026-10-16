@@ -33,7 +33,11 @@ validated structurally by --self-test.
 with a standalone SPKI file. `issue-cert` mints a per-run ephemeral
 CA leaf over a token SPKI with the openssl CLI, then runs the same
 comparison. The `probes` block of the leg table pins the Java probe
-bytes the engine requires before any leg that compiles them.
+bytes the engine requires before any leg that compiles them. Two
+leg helpers keep multi-step legs to one argv: `decrypt-staged`
+stages a plaintext file into the run and then runs its tool argv,
+and `store-owned-refusal` holds the store in a fixture child while
+its tool argv attempts init-token.
 
 Failure lines look like `JR-<RULE>: <leg>: <detail>`, sorted by leg
 then rule, followed by `JOURNEYS: PASS n/n` or `JOURNEYS: FAIL k/n`
@@ -2189,6 +2193,164 @@ def cmd_issue_cert(args):
     return report_spki(cert_bytes, key_bytes)
 
 
+def cmd_decrypt_staged(args):
+    """Stage a plaintext file into the run, then run the tool argv.
+
+    The engine judges byte equality between run files only, so the
+    source-tree plaintext must exist under the run before the tool
+    runs. Prints JOURNEY-DECRYPT staged, then replaces this process
+    with the tool, whose exit becomes the leg's exit. Any staging
+    problem, an empty tool argv, or a missing tool exits 1, never a
+    pass.
+    """
+    rel = args.plaintext_run
+    if not is_run_relative(rel):
+        print("JOURNEY-DECRYPT-FAIL: staged path is not run-relative: "
+              f"{rel!r}")
+        return 1
+    tool_argv = list(args.tool_argv or [])
+    if tool_argv[:1] == ["--"]:
+        tool_argv.pop(0)
+    if not tool_argv:
+        print("JOURNEY-DECRYPT-FAIL: no tool argv")
+        return 1
+    try:
+        data = Path(args.plaintext_src).read_bytes()
+    except OSError as exc:
+        print("JOURNEY-DECRYPT-FAIL: cannot read "
+              f"{args.plaintext_src}: {exc}")
+        return 1
+    dest = Path(args.run) / rel
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    except OSError as exc:
+        print(f"JOURNEY-DECRYPT-FAIL: cannot stage {rel}: {exc}")
+        return 1
+    print(f"JOURNEY-DECRYPT staged {rel} ({len(data)} bytes)",
+          flush=True)
+    try:
+        os.execvp(tool_argv[0], tool_argv)
+    except OSError as exc:
+        print("JOURNEY-DECRYPT-FAIL: cannot run "
+              f"{tool_argv[0]}: {exc}")
+        return 1
+    return 1
+
+
+def _stop_holder(proc):
+    """Best-effort holder shutdown; never raises."""
+    if proc is None:
+        return
+    try:
+        if proc.stdin is not None:
+            proc.stdin.close()
+    except (BrokenPipeError, OSError, ValueError):
+        pass
+    if proc.poll() is not None:
+        return
+    with contextlib.suppress(OSError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            proc.kill()
+        with contextlib.suppress(subprocess.SubprocessError, OSError):
+            proc.wait(timeout=5)
+
+
+def cmd_store_owned_refusal(args):
+    """Hold the store in a fixture child while a tool argv runs.
+
+    Starts token_fixture hold, waits up to 30 s for its ready file,
+    runs the tool argv (whose init-token attempt must exit 1 while
+    the store is held), closes the holder's stdin, and requires the
+    holder to exit 0. Holder and tool output pass through to the leg
+    log untouched, so the aggregate judges the refusal markers
+    itself. Prints JOURNEY-STORE-OWNED-REFUSED on success; every
+    failed step prints JOURNEY-STORE-OWNED-FAIL and exits 1.
+    """
+    tool_argv = list(args.tool_argv or [])
+    if tool_argv[:1] == ["--"]:
+        tool_argv.pop(0)
+    if not tool_argv:
+        print("JOURNEY-STORE-OWNED-FAIL: no tool argv")
+        return 1
+    run_dir = Path(args.run)
+    ready = run_dir / "ready"
+    try:
+        ready.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"JOURNEY-STORE-OWNED-FAIL: cannot clear {ready}: {exc}")
+        return 1
+    fixture = Path(args.native) / "token_fixture"
+    if not fixture.is_file() or not os.access(fixture, os.X_OK):
+        print(f"JOURNEY-STORE-OWNED-FAIL: holder missing: {fixture}")
+        return 1
+    try:
+        holder = subprocess.Popen(
+            [str(fixture), args.module, "hold", str(ready)],
+            stdin=subprocess.PIPE, stdout=None,
+            stderr=subprocess.STDOUT)
+    except OSError as exc:
+        print("JOURNEY-STORE-OWNED-FAIL: cannot start the holder: "
+              f"{exc}")
+        return 1
+    deadline = time.monotonic() + 30
+    seen = False
+    early = None
+    while time.monotonic() < deadline:
+        if ready.exists():
+            seen = True
+            break
+        early = holder.poll()
+        if early is not None:
+            break
+        time.sleep(0.05)
+    if not seen:
+        _stop_holder(holder)
+        if early is not None:
+            print("JOURNEY-STORE-OWNED-FAIL: holder exited "
+                  f"{early} before ready")
+        else:
+            print("JOURNEY-STORE-OWNED-FAIL: holder never "
+                  "signalled ready")
+        return 1
+    print("JOURNEY-STORE-OWNED holder ready", flush=True)
+    try:
+        tool = subprocess.run(tool_argv)
+    except OSError as exc:
+        _stop_holder(holder)
+        print("JOURNEY-STORE-OWNED-FAIL: cannot run "
+              f"{tool_argv[0]}: {exc}")
+        return 1
+    if tool.returncode != 1:
+        _stop_holder(holder)
+        print("JOURNEY-STORE-OWNED-FAIL: init-token exit "
+              f"{tool.returncode}, want 1")
+        return 1
+    print("JOURNEY-STORE-OWNED init-token refused exit=1", flush=True)
+    try:
+        if holder.stdin is not None:
+            holder.stdin.close()
+    except (BrokenPipeError, OSError, ValueError):
+        pass
+    try:
+        holder.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        _stop_holder(holder)
+        print("JOURNEY-STORE-OWNED-FAIL: holder did not release")
+        return 1
+    if holder.returncode != 0:
+        print("JOURNEY-STORE-OWNED-FAIL: holder exit "
+              f"{holder.returncode}, want 0")
+        return 1
+    print("JOURNEY-STORE-OWNED holder exit=0", flush=True)
+    print("JOURNEY-STORE-OWNED-REFUSED")
+    return 0
+
+
 # ------------------------------------------------------------------
 # Self-test: a synthetic five-leg fixture run plus one mutation per
 # rule, plus live run-path checks over tiny synthetic legs, bundles
@@ -2286,6 +2448,12 @@ FIXTURE_LEGS = {
             "runtime_version": "OpenSSL 3.5.5",
         },
         "runner": {
+            "package": None,
+            "package_version": None,
+            "runtime_argv": None,
+            "runtime_version": None,
+        },
+        "native": {
             "package": None,
             "package_version": None,
             "runtime_argv": None,
@@ -2407,6 +2575,9 @@ FIXTURE_CLIENTS = {
                 "runtime_version": "OpenSSL 3.5.5",
                 "compile_target": None},
     "runner": {"name": "runner", "package": None,
+               "package_version": None, "runtime_version": None,
+               "compile_target": None},
+    "native": {"name": "native", "package": None,
                "package_version": None, "runtime_version": None,
                "compile_target": None},
 }
@@ -2905,6 +3076,135 @@ def mut_setup_stage_pass(root):
     mutate_record(root, SUCCESS_LEG, update)
 
 
+def append_named_leg(root, row, log_text, exit_code, status,
+                     files=None):
+    """Append one leg under its committed row name to a fixture copy.
+
+    The row carries the committed table's name, client and refusal
+    shape; the record claims the given status honestly. Extra run
+    files map run-relative paths to bytes.
+    """
+    root = Path(root)
+    table = json.loads((root / "legs.json").read_text(encoding="utf-8"))
+    table["legs"].append(row)
+    write_json(root / "legs.json", table)
+    name = row["name"]
+    (root / "logs" / f"{name}.log").write_text(log_text,
+                                               encoding="utf-8")
+    config_bytes = (f"# substituted config for {name}\n"
+                    "module = '/opt/fixture/lib/libhaskoki.so'\n"
+                    ).encode("utf-8")
+    config_rel = f"cfg/{name}.toml"
+    (root / config_rel).write_bytes(config_bytes)
+    client_name = row["client"]
+    record = {
+        "name": name,
+        "command": list(row["argv"]),
+        "timeout_seconds": row.get("timeout_seconds", 60),
+        "classification": ("native-consumer"
+                           if client_name == "native"
+                           else "independent-client"),
+        "env_overrides": {"HASKOKI_CONFIG": config_rel},
+        "log": f"logs/{name}.log",
+        "exit_code": exit_code,
+        "status": status,
+        "elapsed_seconds": 0.5,
+        "journey": "self-test-fixture",
+        "client": dict(FIXTURE_CLIENTS[client_name]),
+        "module": {"path": "/opt/fixture/lib/libhaskoki.so",
+                   "sha256": FIXTURE_MODULE_SHA},
+        "config": {"file": config_rel,
+                   "sha256": hashlib.sha256(config_bytes).hexdigest()},
+        "expect": {"status": status, "exit": row["expect"]["exit"],
+                   "markers": list(row["expect"].get("markers") or [])},
+        "source": {"sha": FIXTURE_SOURCE_SHA, "dirty": False},
+        "artifact": {"kind": "bundle", "haskoki_version": "0.5.0.0",
+                     "bundle_sha256": FIXTURE_BUNDLE_SHA,
+                     "image_id": None,
+                     "toolchain_record_sha256": FIXTURE_TOOLCHAIN_SHA},
+        "phase": row["phase"],
+        "failure_stage": None,
+        "verifies": None,
+        "unchanged": None,
+        "started_utc_ns": FIXTURE_T0 + 500,
+        "ended_utc_ns": FIXTURE_T0 + 510,
+    }
+    if "expect_refusal" in row:
+        record["expect_refusal"] = dict(row["expect_refusal"])
+    write_json(root / "records" / f"{name}.json", record)
+    for rel, data in (files or {}).items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+
+def mut_store_owned_expects_session_exists(root):
+    row = {
+        "name": "opensc-refuse-init-token-store-owned",
+        "profiles": ["portfolio"],
+        "phase": "module",
+        "client": "opensc",
+        "store": "shared-store",
+        "argv": ["pkcs11-tool", "--module", "@MODULE@",
+                 "--init-token"],
+        "env": {},
+        "timeout_seconds": 60,
+        "expect": {"exit": 0, "markers": []},
+        "expect_refusal": {"rv": "CKR_SESSION_EXISTS",
+                           "markers": []},
+        "depends_on": [],
+    }
+    log = ("Main C_Initialize(NULL) rv:CKR_GENERAL_ERROR\n"
+           "error: PKCS11 function C_Initialize failed: "
+           "rv = CKR_GENERAL_ERROR (0x5)\n"
+           "Aborting.\n")
+    append_named_leg(root, row, log, 0, "fail")
+
+
+def mut_native_expects_general_error(root):
+    row = {
+        "name": "native-init-token-session-exists",
+        "profiles": ["portfolio"],
+        "phase": "module",
+        "client": "native",
+        "store": "native-store",
+        "argv": ["@NATIVE@/token_fixture", "@MODULE@",
+                 "init-busy"],
+        "env": {},
+        "timeout_seconds": 60,
+        "expect": {"exit": 0,
+                   "markers": ["FIXTURE init-busy unchanged"]},
+        "expect_refusal": {"rv": "CKR_GENERAL_ERROR"},
+        "depends_on": [],
+    }
+    log = ('FIXTURE init-busy rv="CKR_SESSION_EXISTS"\n'
+           "FIXTURE init-busy unchanged\n")
+    append_named_leg(root, row, log, 0, "fail")
+
+
+def mut_decrypt_output_differs(root):
+    row = {
+        "name": "opensc-decrypt",
+        "profiles": ["portfolio"],
+        "phase": "module",
+        "client": "opensc",
+        "store": "shared-store",
+        "argv": ["python3", "@SRC@/tests/journeys/journeys.py",
+                 "decrypt-staged"],
+        "env": {},
+        "timeout_seconds": 60,
+        "expect": {"exit": 0,
+                   "markers": ["JOURNEY-DECRYPT staged"],
+                   "files": [{"path": "out/rsa.dec", "op": "equal",
+                              "other": "out/message.txt"}]},
+        "depends_on": [],
+    }
+    log = "JOURNEY-DECRYPT staged out/message.txt (42 bytes)\n"
+    append_named_leg(root, row, log, 0, "fail",
+                     files={"out/rsa.dec": b"d" * 42,
+                            "out/message.txt": b"m" * 42})
+
+
 SELF_TEST_CASES = [
     ("clean run", set(), None,
      (0, "JOURNEYS: PASS 5/5", None)),
@@ -3003,6 +3303,14 @@ SELF_TEST_CASES = [
      {JR_TIMEOUT}, mut_timeout_stage_fail_zero, None),
     ("pass status with a setup stage",
      {JR_SETUP, JR_SELF_REPORT}, mut_setup_stage_pass, None),
+    ("store-owned leg expecting CKR_SESSION_EXISTS",
+     {JR_REFUSAL_UNREACHED},
+     mut_store_owned_expects_session_exists, None),
+    ("same-instance leg expecting CKR_GENERAL_ERROR",
+     {JR_REFUSAL_UNREACHED},
+     mut_native_expects_general_error, None),
+    ("decrypt output differs from the staged plaintext",
+     {JR_FILE}, mut_decrypt_output_differs, None),
 ]
 
 
@@ -3080,6 +3388,46 @@ def structural_checks():
         return
     yield ("committed leg table validates",
            validate_legs_table(committed))
+    yield ("committed table carries the busy-split rows",
+           committed_busy_rows_problems(committed))
+
+
+def committed_busy_rows_problems(table):
+    """Problems when the committed rows miss the split busy shapes.
+
+    The store-owned leg must expect CKR_GENERAL_ERROR, the
+    same-instance leg CKR_SESSION_EXISTS, and the decrypt leg an
+    equal file assertion. Subset assertions: later rows never disturb
+    them.
+    """
+    rows = table.get("legs")
+    if not isinstance(rows, list):
+        return [(RUN_LEG, "committed legs is not a list")]
+    by_name = {row.get("name"): row for row in rows
+               if isinstance(row, dict)}
+    want = (("opensc-refuse-init-token-store-owned",
+             "CKR_GENERAL_ERROR"),
+            ("native-init-token-session-exists",
+             "CKR_SESSION_EXISTS"))
+    for name, rv in want:
+        row = by_name.get(name)
+        if not isinstance(row, dict):
+            return [(RUN_LEG, f"committed table lacks {name}")]
+        refusal = row.get("expect_refusal")
+        if not isinstance(refusal, dict) or refusal.get("rv") != rv:
+            return [(RUN_LEG,
+                     f"committed {name} lacks refusal {rv}")]
+    row = by_name.get("opensc-decrypt")
+    if not isinstance(row, dict):
+        return [(RUN_LEG, "committed table lacks opensc-decrypt")]
+    expect = row.get("expect")
+    files = expect.get("files") if isinstance(expect, dict) else None
+    if not isinstance(files, list) or not any(
+            isinstance(entry, dict) and entry.get("op") == "equal"
+            for entry in files):
+        return [(RUN_LEG,
+                 "committed opensc-decrypt lacks an equal assertion")]
+    return []
 
 
 RUN_CHECK_PROFILE = "portfolio"
@@ -3820,6 +4168,142 @@ def check_spki_v1_match(tmp):
     return None
 
 
+def helper_cli(*argv, timeout=120):
+    """Run this engine's CLI over argv; used by the helper checks."""
+    return subprocess.run(
+        [sys.executable, "-I", str(Path(__file__).resolve()),
+         *argv],
+        capture_output=True, text=True, timeout=timeout)
+
+
+def check_decrypt_staged(tmp):
+    tmp = Path(tmp)
+    src = tmp / "message.txt"
+    run = tmp / "run"
+    try:
+        (run / "out").mkdir(parents=True)
+    except OSError as exc:
+        return f"cannot create the run out dir: {exc}"
+    try:
+        src.write_bytes(b"stage me exactly")
+    except OSError as exc:
+        return f"cannot write the plaintext fixture: {exc}"
+    tool = tmp / "fake-decrypt.sh"
+    try:
+        tool.write_text("#!/bin/sh\nprintf 'tool saw: %s\\n' \"$*\"\n",
+                        encoding="utf-8")
+        tool.chmod(0o755)
+    except OSError as exc:
+        return f"cannot write the stub tool: {exc}"
+    proc = helper_cli("decrypt-staged", "--run", str(run),
+                      "--plaintext-src", str(src),
+                      "--plaintext-run", "out/message.txt",
+                      "--", str(tool), "--decrypt")
+    combined = ((proc.stdout or "") + "\n"
+                + (proc.stderr or "")).strip()
+    if proc.returncode != 0:
+        return (f"decrypt-staged exited {proc.returncode}: "
+                f"{combined[:160]}")
+    if "JOURNEY-DECRYPT staged" not in combined:
+        return "decrypt-staged lacks its staging marker"
+    if "tool saw: --decrypt" not in combined:
+        return "decrypt-staged did not run the tool argv"
+    try:
+        staged = (run / "out" / "message.txt").read_bytes()
+    except OSError as exc:
+        return f"staged plaintext unreadable: {exc}"
+    if staged != b"stage me exactly":
+        return "staged plaintext bytes differ"
+    missing = helper_cli("decrypt-staged", "--run", str(run),
+                         "--plaintext-src", str(src),
+                         "--plaintext-run", "out/message.txt",
+                         "--", str(tmp / "no-such-tool"))
+    if missing.returncode == 0:
+        return "decrypt-staged passed with a missing tool"
+    return None
+
+
+def _write_stub(path, text):
+    try:
+        path.write_text(text, encoding="utf-8")
+        path.chmod(0o755)
+    except OSError as exc:
+        return f"cannot write {path.name}: {exc}"
+    return None
+
+
+def check_store_owned_refusal(tmp):
+    tmp = Path(tmp)
+    native = tmp / "native"
+    try:
+        native.mkdir()
+    except OSError as exc:
+        return f"cannot create the native dir: {exc}"
+    problem = _write_stub(
+        native / "token_fixture",
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "ready=$3\n"
+        "printf 'FIXTURE hold ready\\n'\n"
+        "printf 'ready\\n' >\"$ready\"\n"
+        "cat >/dev/null\n"
+        "printf 'FIXTURE hold released\\n'\n")
+    if problem is not None:
+        return problem
+    tool = tmp / "fake-init-token.sh"
+    problem = _write_stub(
+        tool,
+        "#!/bin/sh\n"
+        "printf 'error: PKCS11 function C_Initialize failed: "
+        "rv = CKR_GENERAL_ERROR (0x5)\\n'\n"
+        "exit 1\n")
+    if problem is not None:
+        return problem
+
+    def attempt(native_dir, *tool_argv):
+        run = tmp / f"run-{attempt.count}"
+        attempt.count += 1
+        run.mkdir(parents=True, exist_ok=True)
+        proc = helper_cli("store-owned-refusal",
+                          "--module", "/fake/x.so",
+                          "--native", str(native_dir),
+                          "--run", str(run),
+                          "--", *[str(part) for part in tool_argv])
+        combined = ((proc.stdout or "") + "\n"
+                    + (proc.stderr or "")).strip()
+        return proc.returncode, combined
+    attempt.count = 0
+
+    rc, combined = attempt(native, tool, "--init-token")
+    if rc != 0:
+        return (f"store-owned-refusal exited {rc}: "
+                f"{combined[:200]}")
+    for marker in ("FIXTURE hold released", "C_Initialize failed",
+                   "JOURNEY-STORE-OWNED-REFUSED"):
+        if marker not in combined:
+            return f"store-owned-refusal lacks {marker}"
+    ok_tool = tmp / "fake-ok.sh"
+    problem = _write_stub(ok_tool, "#!/bin/sh\nexit 0\n")
+    if problem is not None:
+        return problem
+    rc, _combined = attempt(native, ok_tool)
+    if rc == 0:
+        return "store-owned-refusal passed when the tool succeeded"
+    rc, _combined = attempt(native, tmp / "no-such-tool")
+    if rc == 0:
+        return "store-owned-refusal passed with a missing tool"
+    early = tmp / "native-early"
+    early.mkdir(exist_ok=True)
+    problem = _write_stub(early / "token_fixture",
+                          "#!/bin/sh\nexit 3\n")
+    if problem is not None:
+        return problem
+    rc, _combined = attempt(early, tool, "--init-token")
+    if rc == 0:
+        return "store-owned-refusal passed when the holder died early"
+    return None
+
+
 def check_issue_cert(tmp):
     tmp = Path(tmp)
     pub = tmp / "issue-pub.der"
@@ -3898,6 +4382,10 @@ def run_path_checks():
            check_spki_v1_match)
     yield ("issue-cert over the pinned EC SPKI",
            check_issue_cert)
+    yield ("decrypt-staged stages the plaintext then runs the tool",
+           check_decrypt_staged)
+    yield ("store-owned refusal holds the store while the tool fails",
+           check_store_owned_refusal)
 
 
 def self_test():
@@ -3985,6 +4473,20 @@ def build_parser():
     issue.add_argument("--pub", required=True)
     issue.add_argument("--out-dir", required=True)
     issue.add_argument("--cn", required=True)
+    staged = sub.add_parser(
+        "decrypt-staged",
+        help="stage a plaintext file, then run a tool")
+    staged.add_argument("--run", required=True)
+    staged.add_argument("--plaintext-src", required=True)
+    staged.add_argument("--plaintext-run", required=True)
+    staged.add_argument("tool_argv", nargs=argparse.REMAINDER)
+    owned = sub.add_parser(
+        "store-owned-refusal",
+        help="hold the store while a tool attempts init-token")
+    owned.add_argument("--module", required=True)
+    owned.add_argument("--native", required=True)
+    owned.add_argument("--run", required=True)
+    owned.add_argument("tool_argv", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -4000,6 +4502,10 @@ def main(argv=None):
         return cmd_spki_match(args)
     if args.command == "issue-cert":
         return cmd_issue_cert(args)
+    if args.command == "decrypt-staged":
+        return cmd_decrypt_staged(args)
+    if args.command == "store-owned-refusal":
+        return cmd_store_owned_refusal(args)
     build_parser().print_usage(sys.stderr)
     return 2
 

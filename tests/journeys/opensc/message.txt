@@ -1,0 +1,1 @@
+Haskoki journey message for sign and verify

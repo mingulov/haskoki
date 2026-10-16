@@ -62,7 +62,10 @@ extra-source-files:
   tests/journeys/java/*.java
   tests/journeys/keystore/*.toml
   tests/journeys/keystore/*.cfg
+  tests/journeys/native/*.c
+  tests/journeys/native/*.toml
   tests/journeys/opensc/*.toml
+  tests/journeys/opensc/*.txt
   tests/journeys/sunpkcs11/*.toml
   tests/journeys/sunpkcs11/*.cfg
   scripts/test-client-journeys.sh

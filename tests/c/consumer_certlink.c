@@ -1,13 +1,19 @@
-/* tests/c/consumer_certlink.c — certificate-linked identity journey.
+/* tests/c/consumer_certlink.c — metadata and CKA_ID linkage of a fixture
+ * certificate to a separately generated key.
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
- * libhaskoki shared module and drives the linked certificate/key
- * identity through the pinned 3.2 headers:
- *   - the real fixture DER (tests/fixtures/cert-selfsigned.der,
- *     SHA-256 pinned, no embedded synthetic bytes) becomes an X.509
- *     certificate object with DER-derived subject and serial bytes;
- *     an EC P-256 pair mints with the same CKA_ID, and the
- *     certificate takes that ID after creation
+ * libhaskoki shared module and drives the linkage of a fixture
+ * certificate to a separately generated key through the pinned 3.2
+ * headers. The certificate (RSA-2048, tests/fixtures/cert-selfsigned.der,
+ * SHA-256 pinned, no embedded synthetic bytes) does not belong to the
+ * key: what these legs prove is metadata round trip plus CKA_ID
+ * linkage, never certificate/key correspondence:
+ *   - the real fixture DER becomes an X.509 certificate object with
+ *     DER-derived subject and serial bytes; an EC P-256 pair mints
+ *     with the same CKA_ID, and the certificate takes that ID after
+ *     creation
+ *   - the generated private key reports the public half's curve
+ *     parameters (CKA_EC_PARAMS equal on both halves)
  *   - find-by-ID returns exactly the three linked handles;
  *     find-by-absent-ID returns none; VALUE and SUBJECT read back
  *     the stored bytes; the untyped CKA_HASH_OF_CERTIFICATE reads
