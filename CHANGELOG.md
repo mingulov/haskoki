@@ -49,9 +49,9 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   on 9.10.3, 9.12.4 and 9.14.1) could leave a string literal's
   black hole without an owner, blocking every thread that needed it.
   Capability tables are now fully evaluated before they are published.
-  The default of 1 capability is not exposed. Releases up to 0.4.0.0
-  are affected; until upgrading, run with a single capability or
-  serialize the first open.
+  The default of 1 capability is not exposed.
+  0.4.0.0 is affected (earlier releases not checked); until upgrading,
+  run with a single capability or serialize the first open.
 - Store lock and guard file descriptors are now opened with
   `O_CLOEXEC` atomically. A child process started while a store was
   being opened could inherit the descriptor and keep the store locked

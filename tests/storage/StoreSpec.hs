@@ -51,10 +51,10 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (listDirectory, createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
+import System.Directory (canonicalizePath, createDirectory, doesDirectoryExist, doesFileExist, listDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeDirectory, takeExtension, (</>))
 import System.IO.Error (catchIOError, isAlreadyExistsError)
 import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, readSymbolicLink, setFileMode)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
@@ -209,53 +209,99 @@ makeTempDir prefix = do
               then tryNames base stem (n + 1)
               else ioError (userError ("makeTempDir: cannot create " ++ dir ++ ": " ++ show e))
 
--- | Both backends run the shared contract, plus sqlite-only cases.
 -- | Every fd the open store holds on its database and sidecar lock
 -- carries FD_CLOEXEC. Without it a concurrent fork+exec (any thread,
 -- or the host application spawning a child) inherits the fd and keeps
--- the flock alive past 'storeClose'. Reads the live fd table, so it
--- checks the store's real fds, not a copy of the flags.
+-- the flock alive past 'storeClose'. Reads the live fd table (Linux
+-- @\/proc@, like the backend itself; skipped with a note elsewhere),
+-- so it checks the store's real fds, not a copy of the flags.
+-- Expected set: one sidecar lock fd, plus on the database path the
+-- guard fd and SQLite's own main-database fd.
 testHeldFdsCloexec :: IO ()
 testHeldFdsCloexec = do
-  dir <- makeTempDir "haskoki-cloexec"
-  let path = dir </> "store.db"
-  bracket_ (pure ()) (removeDirectoryRecursive dir) $ do
-    st <- either (assertFailure . show) pure =<< openSQLiteStore path
-    fds <- listDirectory "/proc/self/fd"
-    held <- fmap concat $ mapM (\n -> do
-      tgt <- readSymbolicLink ("/proc/self/fd" </> n) `catchIOError` \_ -> pure ""
-      pure [n | tgt == path || tgt == path ++ ".lock"]) fds
-    flagsOf <- mapM (\n -> do
-      info <- readFile ("/proc/self/fdinfo" </> n)
-      let fl = [w | l <- lines info, ("flags:" : w : _) <- [words l]]
-      case fl of
-        [w] -> pure (n, read ("0o" ++ w) :: Int)
-        _ -> assertFailure ("no flags in fdinfo of fd " ++ n)) held
-    storeClose st
-    assertBool ("expected the lock and guard fds, found " ++ show (length held)) (length held >= 2)
-    let o_cloexec = 0o2000000 :: Int
-    assertEqual "fds lacking close-on-exec" []
-      [n | (n, fl) <- flagsOf, fl `div` o_cloexec `mod` 2 == (0 :: Int)]
+  haveProc <- doesDirectoryExist "/proc/self/fd"
+  if not haveProc
+    then putStrLn "SKIP: /proc/self/fd unavailable; cannot inspect fd flags"
+    else do
+      dir <- makeTempDir "haskoki-cloexec"
+      bracket_ (pure ()) (removeDirectoryRecursive dir) $ do
+        realDir <- canonicalizePath dir
+        let path = realDir </> "store.db"
+        bracket (either (assertFailure . show) pure =<< openSQLiteStore (dir </> "store.db"))
+                storeClose $ \_ -> do
+          fds <- listDirectory "/proc/self/fd"
+          held <- fmap concat $ mapM (\n -> do
+            tgt <- readSymbolicLink ("/proc/self/fd" </> n) `catchIOError` \_ -> pure ""
+            pure [(n, tgt) | tgt == path || tgt == path ++ ".lock"]) fds
+          flagsOf <- mapM (\(n, tgt) -> do
+            info <- readFile ("/proc/self/fdinfo" </> n)
+            let fl = [w | l <- lines info, ("flags:" : w : _) <- [words l]]
+            case fl of
+              [w] -> pure (n, tgt, read ("0o" ++ w) :: Int)
+              _ -> assertFailure ("no flags in fdinfo of fd " ++ n)) held
+          let count t = length [() | (_, g) <- held, g == t]
+          assertEqual "sidecar lock fds held" 1 (count (path ++ ".lock"))
+          assertEqual "database fds held (guard + SQLite main)" 2 (count path)
+          let o_cloexec = 0o2000000 :: Int
+          assertEqual "fds lacking close-on-exec" []
+            [(n, tgt) | (n, tgt, fl) <- flagsOf, fl `div` o_cloexec `mod` 2 == (0 :: Int)]
 
--- | Source gate for the two-step open: a deterministic test cannot
--- observe the fork window, so pin the shape that closes it. Every
--- 'openFd' in the SQLite backend must take the shared close-on-exec
--- flags, and no later 'setFdOption' may reappear.
+-- | Source gate for the two-step open. A deterministic test cannot
+-- observe the fork window, so this is a best-effort tripwire that
+-- pins the shape that closes it (it is textual and line-based: it
+-- does not parse block comments or follow indirection). Rules:
+--   1. every 'openFd' in the SQLite backend takes @guardFlags@
+--      (on its own or the next line), and @guardFlags@ sets
+--      @cloexec = True@;
+--   2. no @setFdOption@, @F_SETFD@ or @cloexec = False@ in code
+--      under src\/ or ffi\/ (a later close-on-exec step, or an
+--      opt-out, reopens the window).
+-- If a legitimate refactor trips it, update the rule here.
 testOpenFdSourceGate :: IO ()
 testOpenFdSourceGate = do
-  body <- readFile "src/Haskoki/Runtime/Storage/SQLite.hs"
-  let ls = zip [1 :: Int ..] (lines body)
-      code = [(n, l) | (n, l) <- ls, not ("--" `isPrefixOf` dropWhile isSpace l)]
-      calls = [n | (n, l) <- code, "openFd " `isInfixOf` l, not ("import " `isPrefixOf` l)]
+  root <- findPackageRoot "."
+  let backend = root </> "src/Haskoki/Runtime/Storage/SQLite.hs"
+  body <- readFile backend
+  files <- sourceFilesUnder [root </> "src", root </> "ffi"]
+  let stripComment l = go l
+        where go ('-' : '-' : _) = ""
+              go (c : cs) = c : go cs
+              go [] = []
+      codeLines txt = [(n, stripComment l, l) | (n, l) <- zip [1 :: Int ..] (lines txt)
+                      , not ("--" `isPrefixOf` dropWhile isSpace l)
+                      , not ("//" `isPrefixOf` dropWhile isSpace l)]
+      ls = zip [1 :: Int ..] (lines body)
+      code = codeLines body
+      calls = [n | (n, c, _) <- code, "openFd " `isInfixOf` c, not ("import " `isPrefixOf` c)]
       nextTwo n = unwords [l | (m, l) <- ls, m == n || m == n + 1]
-      bad = [n | n <- calls, not ("guardFlags" `isInfixOf` nextTwo n)]
-  assertBool "found the backend's openFd calls" (length calls >= 4)
-  assertEqual "openFd calls not using guardFlags (line numbers)" [] bad
-  assertBool "guardFlags requests cloexec at creation"
-    (any (\(_, l) -> "guardFlags = " `isInfixOf` l && "cloexec = True" `isInfixOf` l) code)
-  assertEqual "setFdOption reintroduced (line numbers)" []
-    [n | (n, l) <- code, "setFdOption" `isInfixOf` l]
+      bad = [(n, l) | n <- calls, let l = nextTwo n, not ("guardFlags" `isInfixOf` l)]
+  assertBool "rule 1: found the backend's openFd calls (gate may need updating)" (length calls >= 4)
+  assertEqual "rule 1: openFd call not using guardFlags (line, text)" [] bad
+  assertBool "rule 1: guardFlags must be defined with cloexec = True on one line"
+    (any (\(_, c, _) -> "guardFlags = " `isInfixOf` c && "cloexec = True" `isInfixOf` c) code)
+  forbidden <- fmap concat $ mapM (\f -> do
+    txt <- readFile f
+    pure [(f, n, l) | (n, c, l) <- codeLines txt
+         , any (`isInfixOf` c) ["setFdOption", "F_SETFD", "cloexec = False"]]) files
+  assertEqual "rule 2: setFdOption / F_SETFD / cloexec = False (file, line, text)" [] forbidden
+  where
+    findPackageRoot d = do
+      ok <- doesFileExist (d </> "haskoki.cabal")
+      if ok then pure d
+        else if length d > 40 then assertFailure "haskoki.cabal not found above the working directory; run the suite from the package tree"
+        else findPackageRoot (d </> "..")
+    sourceFilesUnder = fmap concat . mapM walk
+    walk d = do
+      isDir <- doesDirectoryExist d
+      if not isDir then pure [] else do
+        es <- listDirectory d
+        fmap concat $ mapM (\e -> do
+          let f = d </> e
+          sub <- doesDirectoryExist f
+          if sub then walk f
+            else pure [f | takeExtension f `elem` [".hs", ".c", ".h"]]) es
 
+-- | Both backends run the shared contract, plus sqlite-only cases.
 spec :: TestTree
 spec = testGroup "store contract"
   [ contractSpec "memory" memoryOpener
