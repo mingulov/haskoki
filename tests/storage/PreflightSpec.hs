@@ -4,7 +4,7 @@
 released-binary fixtures, refused opens that write nothing, the
 read-only snapshot and plan, the owned migration, and recovery.
 -}
-module PreflightSpec (spec, migrateChildMain) where
+module PreflightSpec (spec, migrateChildMain, migrateChildSmallMain) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
@@ -124,6 +124,9 @@ spec = testGroup "Store preflight"
       , testCase "a live owner refuses before any write" caseMigrateLiveOwner
       , testCase "a hot journal refuses before ownership, both files untouched" caseMigrateHotJournal
       , testCase "a zero-byte journal is ignored" caseMigrateZeroByteJournal
+      , testCase "a cold journal is cleared under exclusive locks, then the migration runs" caseMigrateClearsColdJournal
+      , testCase "a migration with no cold journal records cold-journal-removed: no" caseMigrateReceiptColdJournalNo
+      , testCase "a cold journal while another connection holds RESERVED refuses" caseColdJournalReservedRefuses
       , testCase "a store changed after the plan refuses" caseMigrateStoreChanged
       , testCase "an existing backup name is never overwritten" caseMigrateNeverOverwrites
       , testCase "all 100 backup names taken refuses" caseMigrateBackupNamesExhausted
@@ -148,6 +151,8 @@ spec = testGroup "Store preflight"
           testCase "a killed migration: refused, rolled back by the open, retried" caseKilledMigrationRecovers
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
           testCase "a killed migration: restore with the journal moved aside" caseKilledRestoreMovesJournal
+      , after AllFinish "/death after reservation leaves a gap, never reuse/" $
+          testCase "a killed small migration leaves a cold journal that migrate clears" caseKilledSmallMigrationClears
       , testCase "restore brings back the older credentials and schema" caseRestoreBringsBackOldCredentials
       , testCase "a newer schema is refused by open, check and migrate" caseNewerSchemaRefusedEverywhere
       , testCase "check reports from a read-only directory; migrate cannot own it" caseCheckNeverOwns
@@ -1019,6 +1024,69 @@ caseMigrateZeroByteJournal = withScratch "migrate" $ \dir -> do
     other -> assertFailure ("zero-byte journal blocked the migration: " ++ show other)
   roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "marker" ["3"]
 
+-- A cold journal (nonzero, zeroed header: SQLite itself treats it as
+-- not hot, so the database already reads as committed state) is
+-- cleared under exclusive locks then the migration runs; the receipt
+-- records the clearing.
+caseMigrateClearsColdJournal :: IO ()
+caseMigrateClearsColdJournal = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+      journal = store ++ "-journal"
+  createDirectory backups
+  pre <- BS.readFile store
+  cfg <- loadConfigOrFail cfgPath
+  BS.writeFile journal (BS.replicate 512 0)
+  r <- migrateStoreWith fixedClock store cfg backups
+  rc <- case r of
+    Right (Migrated got) -> pure got
+    other -> assertFailure ("cold journal not cleared: " ++ show other)
+  assertBool "receipt records the clearing" (mrColdJournalRemoved rc)
+  assertEqual "backup" bak (mrBackup rc)
+  BS.readFile bak >>= \b -> assertBool "backup holds the pre-migration bytes" (b == pre)
+  readFile (mrReceipt rc) >>= assertBool "receipt line" . ("cold-journal-removed: yes\n" `isInfixOf`)
+  gone <- not <$> doesFileExist journal
+  assertBool "journal removed" gone
+  roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "migrated" ["3"]
+  r2 <- migrateStoreWith fixedClock store cfg backups
+  assertEqual "second run needs nothing" (Right MigrateNotNeeded) r2
+
+-- Without a cold journal the receipt says so.
+caseMigrateReceiptColdJournalNo :: IO ()
+caseMigrateReceiptColdJournalNo = withScratch "migrate" $ \dir -> do
+  (_, _, _, rc, _) <- migrateFixture "v0.4.0.0" dir
+  assertBool "not removed" (not (mrColdJournalRemoved rc))
+  readFile (mrReceipt rc) >>= assertBool "receipt line" . ("cold-journal-removed: no\n" `isInfixOf`)
+
+-- A cold journal while another connection holds a SQLite RESERVED
+-- lock refuses: the clearing only runs when no other writer is in
+-- the database. Releasing the lock lets the retry clear and migrate.
+caseColdJournalReservedRefuses :: IO ()
+caseColdJournalReservedRefuses = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      journal = store ++ "-journal"
+  createDirectory backups
+  pre <- BS.readFile store
+  cfg <- loadConfigOrFail cfgPath
+  BS.writeFile journal (BS.replicate 512 0)
+  holder <- S.open (T.pack store)
+  S.exec holder "BEGIN IMMEDIATE"
+  r <- migrateStore store cfg backups
+  case r of
+    Left (MigrateStore (StoreJournalCold j)) -> assertEqual "names the journal" journal j
+    other -> assertFailure ("wrong result: " ++ show other)
+  BS.readFile journal >>= \b -> assertBool "journal kept" (b == BS.replicate 512 0)
+  BS.readFile store >>= \b -> assertBool "store unchanged" (b == pre)
+  listBackups backups >>= assertEqual "no backup" []
+  S.exec holder "COMMIT"
+  S.close holder
+  r2 <- migrateStore store cfg backups
+  case r2 of
+    Right (Migrated rc) -> assertBool "retry cleared" (mrColdJournalRemoved rc)
+    other -> assertFailure ("retry: " ++ show other)
+
 caseMigrateStoreChanged :: IO ()
 caseMigrateStoreChanged = withScratch "migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
@@ -1432,19 +1500,37 @@ migrateChildMain store cfgPath backups ready = do
   _ <- migrateStoreWith pause store cfg backups
   exitWith (ExitFailure 3)
 
+-- | Child process for the small kill test: a real migration that
+-- pauses forever just before COMMIT without spilling anything, so the
+-- killed transaction leaves a cold journal (zeroed header, database
+-- unchanged), as a real small migration kill does.
+migrateChildSmallMain :: FilePath -> FilePath -> FilePath -> FilePath -> IO ()
+migrateChildSmallMain store cfgPath backups ready = do
+  cfg <- loadConfigFile cfgPath >>= either (fail . show) pure
+  let pause = noMigrateHooks { mhSQLite = noMigrationHooks { mgBeforeCommit = \_ -> do
+        writeFile ready "paused\n"
+        forever (threadDelay 1000000) } }
+  _ <- migrateStoreWith pause store cfg backups
+  exitWith (ExitFailure 3)
+
 -- | Start a migrate child on a copy of the v0.4.0.0 fixture, wait
 -- until it pauses before COMMIT, SIGKILL it and reap it.
-killMidMigration :: FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
-killMidMigration dir = do
+killPausedMigration :: String -> FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
+killPausedMigration childFlag dir = do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let backups = dir </> "backups"; ready = dir </> "ready"
   createDirectory backups
   pre <- BS.readFile store
   exe <- getExecutablePath
-  (_, _, _, ph) <- createProcess (proc exe ["--migrate-child", store, cfgPath, backups, ready]) { close_fds = True }
+  (_, _, _, ph) <- createProcess (proc exe [childFlag, store, cfgPath, backups, ready]) { close_fds = True }
   waitForFile ready 3000
   getPid ph >>= maybe (assertFailure "migrate child exited early") (signalProcess sigKILL)
   _ <- waitForProcess ph
+  pure (store, cfgPath, backups, pre)
+
+killMidMigration :: FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
+killMidMigration dir = do
+  (store, cfgPath, backups, pre) <- killPausedMigration "--migrate-child" dir
   -- Premise of the killed-migration scenario: the journal carries a
   -- finalized header (SQLite's documented magic), i.e. it is hot and
   -- the next serving open rolls it back. A zeroed header would be a
@@ -1452,6 +1538,19 @@ killMidMigration dir = do
   jMagic <- BS.take 8 <$> BS.readFile (store ++ "-journal")
   assertEqual "the killed transaction left a hot journal"
     (BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]) jMagic
+  pure (store, cfgPath, backups, pre)
+
+-- | Kill a small paused migration: the transaction never spills from
+-- the page cache, so the journal is cold (zeroed header) and the
+-- database is unchanged, as a real small migration kill leaves them.
+killMidMigrationSmall :: FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
+killMidMigrationSmall dir = do
+  (store, cfgPath, backups, pre) <- killPausedMigration "--migrate-child-small" dir
+  jBytes <- BS.readFile (store ++ "-journal")
+  assertBool "the killed small transaction left a journal" (BS.length jBytes > 0)
+  assertEqual "the small journal is cold (zeroed header)"
+    (BS.replicate 8 0) (BS.take 8 jBytes)
+  BS.readFile store >>= \b -> assertBool "the small transaction never spilled" (b == pre)
   pure (store, cfgPath, backups, pre)
 
 caseKilledMigrationRecovers :: IO ()
@@ -1504,6 +1603,34 @@ caseKilledRestoreMovesJournal = withScratch "killed" $ \dir -> do
   BS.readFile store >>= \s -> assertBool "restored bytes" (s == pre)
   kept <- (&&) <$> doesFileExist (aside </> "store.sqlite") <*> doesFileExist (aside </> "store.sqlite-journal")
   assertBool "the moved-aside pair is kept" kept
+
+-- A real killed small migration with no spill leaves a cold journal;
+-- the check names it distinctly, and migrate clears it under
+-- exclusive locks and completes, recording the clearing on stdout
+-- and in the receipt.
+caseKilledSmallMigrationClears :: IO ()
+caseKilledSmallMigrationClears = withScratch "killed" $ \dir -> do
+  (store, cfgPath, backups, pre) <- killMidMigrationSmall dir
+  let journal = store ++ "-journal"
+  c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  assertEqual "check refuses" 1 (ceCode c)
+  assertBool "check names the cold journal" ("store-journal-cold:" `isPrefixOf` ceErr c)
+  assertBool "remedy names store migrate" ("store migrate" `isInfixOf` ceErr c)
+  m <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "migrate clears and migrates" 0 (ceCode m)
+  assertBool "stdout records the clearing" ("cold-journal-removed: yes" `elem` lines (ceOut m))
+  assertBool "done" ("migrate-done" `elem` lines (ceOut m))
+  rcpt <- case [l' | l <- lines (ceOut m), Just l' <- [stripPrefix "receipt: " l]] of
+    [one] -> pure one
+    other -> assertFailure ("expected one receipt line, found " ++ show other)
+  readFile rcpt >>= assertBool "receipt records the clearing" . ("cold-journal-removed: yes" `isInfixOf`)
+  gone <- not <$> doesFileExist journal
+  assertBool "journal removed" gone
+  baks <- filter (".bak" `isSuffixOf`) <$> listDirectory backups
+  assertEqual "the killed run plus the retry each kept a backup" 2 (length baks)
+  mapM_ (\b -> BS.readFile (backups </> b) >>= \bb -> assertBool "backup complete" (bb == pre)) baks
+  ch <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  assertEqual "check ok afterwards" 0 (ceCode ch)
 
 caseRestoreBringsBackOldCredentials :: IO ()
 caseRestoreBringsBackOldCredentials = withScratch "restore" $ \dir -> do

@@ -455,6 +455,11 @@ data StoreError
   | StoreJournalPresent !FilePath
     -- ^ An interrupted write left this rollback journal; read-only
     -- tools refuse rather than recover it (see the recovery guide).
+  | StoreJournalCold !FilePath
+    -- ^ An interrupted migration left this rollback journal cold
+    -- (SQLite itself treats it as not hot, so the database already
+    -- reads as committed state). The check refuses it distinctly;
+    -- only the explicit migration clears it, under exclusive locks.
   deriving (Eq, Show)
 
 -- | Store failures throw as exceptions on the paths with no

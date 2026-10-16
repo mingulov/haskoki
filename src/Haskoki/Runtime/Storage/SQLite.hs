@@ -71,6 +71,7 @@ module Haskoki.Runtime.Storage.SQLite
   , OwnedStoreFile
   , ownedPath
   , withOwnedStoreFile
+  , clearColdJournal
   , SQLiteMigration (..)
   , MigrationHooks (..)
   , noMigrationHooks
@@ -103,6 +104,7 @@ import System.IO (hClose)
 import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWrite, openFd)
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (Fd, ProcessID)
+import System.Posix.Unistd (fileSynchronise)
 
 import Haskoki.Runtime.Attach (ClaimAuthority, newClaimAuthority)
 import Haskoki.Runtime.Storage
@@ -2197,12 +2199,44 @@ fileIdentity st = FileIdentity
   (toInteger (deviceID st)) (toInteger (fileID st)) (toInteger (fileSize st))
   (truncate (toRational (modificationTime st)))
 
--- | A rollback journal SQLite would treat as hot: present and
--- non-empty. (A zero-byte leftover is ignored, as SQLite ignores it.)
-hotJournal :: FilePath -> IO Bool
-hotJournal path = do
-  e <- tryIOError (getSymbolicLinkStatus (path ++ "-journal"))
-  pure (either (const False) (\st -> fileSize st > 0) e)
+-- | What the rollback journal beside a store is: missing (or empty,
+-- which SQLite ignores, as today), cold (SQLite treats it as not
+-- hot), hot (an interrupted write SQLite would roll back), or
+-- unknown (anything else: fail closed).
+data JournalClass = JournalAbsent | JournalCold | JournalHot | JournalUnknown
+  deriving (Eq, Show)
+
+-- | SQLite's rollback-journal magic, the first 8 header bytes of a
+-- hot journal: d9d505f9 20a163d7.
+journalMagic :: ByteString
+journalMagic = BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]
+
+-- | Classify the rollback journal beside a store by its size and its
+-- first 8 bytes: hot carries the journal magic, cold is all zero,
+-- anything else -- including a short file or an unreadable one -- is
+-- unknown and fails closed. An empty journal reads as absent, as
+-- SQLite ignores it.
+classifyJournal :: FilePath -> IO JournalClass
+classifyJournal path = do
+  e <- tryIOError (getSymbolicLinkStatus journal)
+  case e of
+    Left _ -> pure JournalAbsent
+    Right st
+      | fileSize st <= 0 -> pure JournalAbsent
+      | otherwise -> do
+          eHead <- tryIOError (readFirst8 journal)
+          pure (case eHead of
+            Right h | h == journalMagic -> JournalHot
+            Right h | h == BS.replicate 8 0 -> JournalCold
+            _ -> JournalUnknown)
+  where
+    journal = path ++ "-journal"
+
+-- | The first 8 bytes of a file (fewer if it is short), read through
+-- a close-on-exec descriptor.
+readFirst8 :: FilePath -> IO ByteString
+readFirst8 p = bracket open hClose (`BS.hGet` 8)
+  where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
 
 -- | A sibling the rollback-journal store never writes itself: a
 -- non-empty @-wal@ or @-shm@ file can only come from foreign tooling
@@ -2223,19 +2257,27 @@ foreignSidecar path = do
         Right st | fileSize st > 0 -> Just p
         _ -> Nothing)
 
--- | A journal or foreign sibling that refuses the snapshot: a hot
--- journal first, else a non-empty @-wal@ or @-shm@ file.
-journalBlocked :: FilePath -> IO (Maybe FilePath)
+-- | A journal or foreign sibling that refuses the snapshot: a hot or
+-- unknown journal, a cold journal (refused distinctly), else a
+-- non-empty @-wal@ or @-shm@ file.
+journalBlocked :: FilePath -> IO (Maybe StoreError)
 journalBlocked path = do
-  hot <- hotJournal path
-  if hot then pure (Just (path ++ "-journal")) else foreignSidecar path
+  cls <- classifyJournal path
+  case cls of
+    JournalHot -> pure (Just (StoreJournalPresent journal))
+    JournalUnknown -> pure (Just (StoreJournalPresent journal))
+    JournalCold -> pure (Just (StoreJournalCold journal))
+    JournalAbsent -> maybe Nothing (Just . StoreJournalPresent) <$> foreignSidecar path
+  where
+    journal = path ++ "-journal"
 
 -- | Read a store WITHOUT writing it: no ownership, no sidecar, a
 -- read-only connection (never creates the file, never recovers a
 -- journal, never migrates). Decodes every record the serving open
 -- decodes, so a corrupt file fails here too; keeps only ids and
--- counts. Refuses a hot journal, a foreign -wal/-shm sibling, and a
--- file that changed while read.
+-- counts. Refuses a hot or unknown journal, a cold journal
+-- (distinctly), a foreign -wal/-shm sibling, and a file that changed
+-- while read.
 readStoreSnapshot :: FilePath -> IO (Either StoreError StoreSnapshot)
 readStoreSnapshot path = do
   eSt0 <- tryIOError (getFileStatus path)
@@ -2246,7 +2288,7 @@ readStoreSnapshot path = do
       | otherwise -> do
           blocked <- journalBlocked path
           case blocked of
-            Just j -> pure (Left (StoreJournalPresent j))
+            Just err -> pure (Left err)
             Nothing -> do
               eDb <- trySQLite (S.open2 (T.pack path) [S.SQLOpenReadOnly] S.SQLVFSDefault)
               case eDb of
@@ -2258,7 +2300,7 @@ readStoreSnapshot path = do
                   pure $ case (r, eSt1, blocked1) of
                     (Left err, _, _) -> Left err
                     (_, Left _, _) -> Left (StoreIO (path ++ ": vanished while read"))
-                    (Right mk, Right st1, Just j) -> Left (StoreJournalPresent j)
+                    (Right _, Right _, Just err) -> Left err
                     (Right mk, Right st1, Nothing)
                       | fileIdentity st0 /= fileIdentity st1 ->
                           Left (StoreIO (path ++ ": changed while read; retry with the owner stopped"))
@@ -2346,6 +2388,7 @@ kernelLockHeld path = mask_ $ do
       held <- attempt fd 0 `finally` closeQuietFd fd
       pure (Right held)
   where
+    attempt :: Fd -> Int -> IO Bool
     attempt fd n = do
       ok <- (== 0) <$> c_flock (fromIntegral fd) (lockSh .|. lockNb)
       if ok || n >= 4 then pure (not ok) else threadDelay 5000 >> attempt fd (n + 1)
@@ -2413,6 +2456,71 @@ withOwnedStoreFile path act = mask $ \restore -> do
                 r <- restore (act (OwnedStoreFile path dbFd)) `onException` release
                 release
                 pure (Right r)
+
+-- | Remove a cold rollback journal, only when every guard holds: the
+-- owner probe passes, this call holds single-writer ownership (the
+-- sidecar plus the database kernel guard), a plain connection takes a
+-- SQLite RESERVED lock (@BEGIN IMMEDIATE@ fails while any other
+-- connection writes), and the re-read journal is still cold. Removing
+-- it cannot change what SQLite reads: the zeroed magic already makes
+-- SQLite treat the journal as not hot. Anything else refuses, fail
+-- closed: a live owner reports live, a busy database or a changed
+-- journal reports the cold journal again.
+clearColdJournal :: FilePath -> IO (Either StoreError ())
+clearColdJournal path = do
+  owner <- probeOwner path
+  case owner of
+    OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
+    _ -> do
+      owned <- withOwnedStoreFile path clearOwned
+      pure (either Left id owned)
+  where
+    journal = path ++ "-journal"
+    clearOwned _owned = do
+      eDb <- trySQLite (S.open (T.pack path))
+      case eDb of
+        Left err -> pure (Left err)
+        Right db -> do
+          r <- clearWith db `onException` (rollbackQuiet db >> closeQuiet db)
+          closeQuiet db
+          pure r
+    clearWith db = do
+      eBegin <- tryBegin db
+      case eBegin of
+        Left err
+          | S.sqlError err == S.ErrorBusy -> pure (Left (StoreJournalCold journal))
+          | S.sqlError err == S.ErrorFull -> pure (Left (StoreFull (show err)))
+          | otherwise -> pure (Left (StoreIO (show err)))
+        Right () -> do
+          cls <- classifyJournal path
+          case cls of
+            JournalCold -> do
+              eRm <- tryIOError (removeLink journal)
+              case eRm of
+                Left e -> do
+                  rollbackQuiet db
+                  pure (Left (StoreIO ("cannot remove the cold journal " ++ journal ++ ": " ++ show e)))
+                Right () -> do
+                  eSync <- tryIOError (syncParentDir journal)
+                  eCommit <- trySQLite (S.exec db "COMMIT")
+                  pure (case (eCommit, eSync) of
+                    (Left err, _) -> Left err
+                    (Right (), Left e) -> Left (StoreIO ("cannot sync the store directory: " ++ show e))
+                    (Right (), Right ()) -> Right ())
+            _ -> do
+              rollbackQuiet db
+              pure (Left (StoreJournalCold journal))
+    tryBegin :: S.Database -> IO (Either S.SQLError ())
+    tryBegin db = try (S.exec db "BEGIN IMMEDIATE")
+
+-- | fsync the directory holding a path, so an unlink in it is durable.
+syncParentDir :: FilePath -> IO ()
+syncParentDir p = bracket (openFd (parentDir p) ReadOnly guardFlags) closeFd fileSynchronise
+  where
+    parentDir q = case dropWhile (/= '/') (reverse q) of
+      [] -> "."
+      [_] -> "/"
+      (_ : rest) -> reverse rest
 
 -- | Migrate an owned store to 'sqliteSchemaVersion' in ONE
 -- transaction: re-read the marker (it must still be 'smFrom'),

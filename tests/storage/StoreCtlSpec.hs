@@ -45,6 +45,7 @@ spec = testGroup "Store commands"
   , testCase "check: a missing store is refused, nothing created" caseCheckMissing
   , testCase "check: another store's config is refused" caseCheckConfigMismatch
   , testCase "check: a hot journal is refused" caseCheckJournal
+  , testCase "check: a cold journal names store migrate" caseCheckJournalCold
   , testCase "check: a newer schema is refused" caseCheckUnsupported
   , testCase "check: usage errors exit 2" caseCheckUsage
   , testCase "check: no output carries a PIN" caseCheckNoPins
@@ -59,6 +60,7 @@ spec = testGroup "Store commands"
   , testCase "migrate: a drifted catalog refuses (exit 1), nothing written" caseMigrateCliRefusesDrift
   , testCase "migrate: a live owner refuses (exit 1)" caseMigrateCliLive
   , testCase "migrate: a hot journal refuses (exit 1), both files untouched" caseMigrateCliJournal
+  , testCase "migrate: a hot journal header refuses (exit 1), both files untouched" caseMigrateCliJournalHot
   , testCase "migrate: a -wal file refuses (exit 1), everything untouched" caseMigrateCliWal
   , testCase "migrate: a -shm file refuses (exit 1), everything untouched" caseMigrateCliShm
   , testCase "migrate: --async-home as a flag value is a usage error" caseMigrateCliAsyncHomeValue
@@ -204,6 +206,21 @@ caseCheckJournal = withScratch "ctl-check" $ \dir -> do
   r <- check store cfgPath
   assertEqual "exit 1" 1 (ceCode r)
   assertBool "tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+
+-- A cold journal (nonzero, zeroed header: SQLite itself treats it as
+-- not hot) is a distinct refusal whose remedy names store migrate.
+caseCheckJournalCold :: IO ()
+caseCheckJournalCold = withScratch "ctl-check" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  dbBytes <- BS.readFile store
+  BS.writeFile (store ++ "-journal") (BS.replicate 512 0)
+  jBytes <- BS.readFile (store ++ "-journal")
+  r <- check store cfgPath
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-journal-cold:" `isPrefixOf` ceErr r)
+  assertBool "remedy names store migrate" ("store migrate" `isInfixOf` ceErr r)
+  BS.readFile (store ++ "-journal") >>= \b -> assertBool "journal untouched" (b == jBytes)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
 
 caseCheckUnsupported :: IO ()
 caseCheckUnsupported = withScratch "ctl-check" $ \dir -> do
@@ -403,6 +420,24 @@ caseMigrateCliJournal = withScratch "ctl-migrate" $ \dir -> do
   createDirectory backups
   dbBytes <- BS.readFile store
   BS.writeFile (store ++ "-journal") "interrupted"
+  jBytes <- BS.readFile (store ++ "-journal")
+  r <- migrateCli store cfgPath backups
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+  BS.readFile (store ++ "-journal") >>= \b -> assertBool "journal untouched" (b == jBytes)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- A hot journal header (SQLite's magic) stays refused: only a cold
+-- journal is ever cleared.
+caseMigrateCliJournalHot :: IO ()
+caseMigrateCliJournalHot = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  dbBytes <- BS.readFile store
+  BS.writeFile (store ++ "-journal")
+    (BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7] <> BS.replicate 504 0)
   jBytes <- BS.readFile (store ++ "-journal")
   r <- migrateCli store cfgPath backups
   assertEqual "exit 1" 1 (ceCode r)

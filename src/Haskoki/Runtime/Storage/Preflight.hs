@@ -57,8 +57,8 @@ import Haskoki.Runtime.Storage
   , reconcileIdentities, renderIdentityRefusal, tokensWithoutCredentials )
 import Haskoki.Runtime.Storage.SQLite
   ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
-  , guardFlags, migrateOwned, noMigrationHooks, probeOwner, readFileCloexec, readStoreSnapshot
-  , sqliteSchemaVersion, withOwnedStoreFile )
+  , clearColdJournal, guardFlags, migrateOwned, noMigrationHooks, probeOwner, readFileCloexec
+  , readStoreSnapshot, sqliteSchemaVersion, withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
 -- | SHA-256 of a byte string as 64 lowercase hex digits, computed by
@@ -209,6 +209,11 @@ renderStoreRefusal e = case e of
     ++ "; do not delete it. Start the serving haskoki once (its open rolls the write back),"
     ++ " or restore a backup with the store and journal moved aside together;"
     ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
+  StoreJournalCold j -> ("store-journal-cold", "an interrupted migration left a cold journal " ++ j
+    ++ " (SQLite treats it as not hot: the database already reads as committed state);"
+    ++ " run haskoki-ctl store migrate to clear it under exclusive locks,"
+    ++ " or restore a backup with the store and journal moved aside together;"
+    ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
   StoreNeedsMigration f t -> ("store-migration-required", "schema " ++ show f
     ++ " needs haskoki-ctl store migrate to reach schema " ++ show t)
   StoreSchemaVersion want found -> ("store-unsupported-version", "store schema " ++ found
@@ -264,6 +269,7 @@ data MigrationReceipt = MigrationReceipt
   , mrReceipt :: !FilePath
   , mrEpoch :: !Integer      -- ^ the clock reading in the backup name
   , mrCompleted :: !Integer  -- ^ read after the commit and its read-back
+  , mrColdJournalRemoved :: !Bool  -- ^ a cold journal was cleared before migrating
   } deriving (Eq, Show)
 
 data MigrateOutcome = MigrateNotNeeded | Migrated !MigrationReceipt deriving (Eq, Show)
@@ -295,24 +301,39 @@ infixl 1 >>?
 
 -- | The explicit migration (AC-05). Refusals before ownership write
 -- nothing: config selection, backup-dir safety, a live owner or hot
--- journal (via the read-only check), identity drift. Under ownership:
--- a fresh snapshot must equal the planned one, then a new verified
--- backup, then ONE transaction, then a read-back check, then a
--- non-overwriting receipt.
+-- journal (via the read-only check), identity drift. A cold journal
+-- is cleared once under exclusive locks and the plan is taken afresh.
+-- Under ownership: a fresh snapshot must equal the planned one, then
+-- a new verified backup, then ONE transaction, then a read-back
+-- check, then a non-overwriting receipt.
 migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
 migrateStoreWith hooks path cfg backupDir =
   (first MigrateConfig <$> configSelectsStore path cfg) >>? \() ->
   checkBackupDir path backupDir >>? \() ->
-  (first MigrateStore <$> checkStoreOpen path cfg) >>? \plan ->
-  case planVerdict plan of
-    VerdictIdentityRefused r -> pure (Left (MigrateIdentityRefused r))
-    VerdictOpenable -> pure (Right MigrateNotNeeded)
-    VerdictMigrationRequired ->
-      pure (traverse freezeOne (rowless plan)) >>? \freeze -> do
-        mhAfterPlan hooks
-        owned <- withOwnedStoreFile path (\o -> underOwnership o plan freeze)
-        pure (either (Left . MigrateStore) id owned)
+  attempt False
   where
+    -- A cold journal is cleared at most once; a journal that is still
+    -- cold afterwards, or any other refusal, is reported, never
+    -- retried.
+    attempt :: Bool -> IO (Either MigrateError MigrateOutcome)
+    attempt cleared = do
+      ePlan <- first MigrateStore <$> checkStoreOpen path cfg
+      case ePlan of
+        Left (MigrateStore (StoreJournalCold _))
+          | not cleared -> do
+              eClear <- first MigrateStore <$> clearColdJournal path
+              case eClear of
+                Left err -> pure (Left err)
+                Right () -> attempt True
+        Left err -> pure (Left err)
+        Right plan -> case planVerdict plan of
+          VerdictIdentityRefused r -> pure (Left (MigrateIdentityRefused r))
+          VerdictOpenable -> pure (Right MigrateNotNeeded)
+          VerdictMigrationRequired ->
+            pure (traverse freezeOne (rowless plan)) >>? \freeze -> do
+              mhAfterPlan hooks
+              owned <- withOwnedStoreFile path (\o -> underOwnership cleared o plan freeze)
+              pure (either (Left . MigrateStore) id owned)
     rowless plan =
       [t | t <- snapTokens (sopSnapshot plan), trId t `elem` sopAbsentCredentials plan]
     -- Unreachable after an accepted reconciliation (every stored
@@ -320,9 +341,9 @@ migrateStoreWith hooks path cfg backupDir =
     freezeOne t = maybe
       (Left (MigrateIdentityRefused (RefuseStoredUnconfigured (trId t) (trSlot t) (trLabel t))))
       Right (catalogCredential cfg (trId t))
-    underOwnership :: OwnedStoreFile -> StoreOpenPlan -> [CredentialRecord]
+    underOwnership :: Bool -> OwnedStoreFile -> StoreOpenPlan -> [CredentialRecord]
                    -> IO (Either MigrateError MigrateOutcome)
-    underOwnership o plan freeze =
+    underOwnership cleared o plan freeze =
       (first MigrateStore <$> readStoreSnapshot path) >>? \snap ->
       if snap /= sopSnapshot plan then pure (Left MigrateStoreChanged) else do
       now <- mhClock hooks
@@ -338,7 +359,8 @@ migrateStoreWith hooks path cfg backupDir =
                     { mrStore = path, mrFrom = sopSchema plan, mrTo = sqliteSchemaVersion
                     , mrFrozen = map crToken freeze, mrPreserved = sopCredentialTokens plan
                     , mrBackup = bak, mrBackupBytes = nBytes, mrBackupSha256 = sha
-                    , mrReceipt = bak ++ ".receipt", mrEpoch = now, mrCompleted = done }
+                    , mrReceipt = bak ++ ".receipt", mrEpoch = now, mrCompleted = done
+                    , mrColdJournalRemoved = cleared }
               w <- writeReceipt (mhAfterCreate hooks) (mhLink hooks) (mrReceipt rc) (BC8.pack (renderReceipt rc)) backupDir
               pure $ case w of
                 Written -> Right (Migrated rc)
@@ -541,6 +563,7 @@ renderReceipt rc = unlines
   , "backup-sha256: " ++ mrBackupSha256 rc
   , "backup-epoch-seconds: " ++ show (mrEpoch rc)
   , "completed-epoch-seconds: " ++ show (mrCompleted rc)
+  , "cold-journal-removed: " ++ if mrColdJournalRemoved rc then "yes" else "no"
   ]
   where ids [] = "none"; ids ts = unwords (map tokenSerial ts)
 
