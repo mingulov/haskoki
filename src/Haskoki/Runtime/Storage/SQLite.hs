@@ -280,9 +280,10 @@ openSQLiteStoreWithHooks path0 limits inj hooks = do
   if not sawLink
     then openSQLiteStoreResolved path limits inj hooks
     else do
-      -- A link that resolves to a missing target is dangling (a
-      -- moved store, an unmounted volume): refuse before taking
-      -- ownership, so neither the target nor its lock is created.
+      -- A final-component link that resolves to a missing target
+      -- is dangling (a moved store, an unmounted volume): refuse
+      -- before taking ownership, so neither the target nor its lock
+      -- is created.
       -- Only a proven-missing target refuses; anything else takes
       -- the normal path and fails closed downstream.
       eSt <- lstatOpt path
@@ -2437,11 +2438,14 @@ anySidecarExists path = do
 resolveStorePath :: FilePath -> IO FilePath
 resolveStorePath p = fst <$> resolveStorePathTracked p
 
--- | Like 'resolveStorePath', also reporting whether any path
--- component was a symlink. The serving open refuses to create a
--- store when the walk crossed a link and the resolved target is
--- missing (a dangling link means a moved store or an unmounted
--- volume, never a fresh one).
+-- | Like 'resolveStorePath', also reporting whether the store
+-- path's own final component was a symlink. The serving open
+-- refuses to create a store when the final component is a link and
+-- the resolved target is missing (a dangling link means a moved
+-- store or an unmounted volume, never a fresh one). A link in an
+-- ancestor directory with no store yet is a fresh store, created at
+-- the resolved path. A chain's later hops also occur with no
+-- components remaining, so they still count as the final link.
 resolveStorePathTracked :: FilePath -> IO (FilePath, Bool)
 resolveStorePathTracked p
   | null p = pure (p, False)
@@ -2465,10 +2469,17 @@ resolveStorePathTracked p
             Right link
               | n >= 40 -> pure (p, saw)
               | otherwise ->
+                  -- Only a link at the store's own final component
+                  -- counts: no components remain after it (a chain's
+                  -- later hops re-enter here the same way). A link
+                  -- in an ancestor directory leaves the flag down,
+                  -- so a missing store there is created, not
+                  -- refused as dangling.
                   let target = splitPath link
+                      sawFinal = saw || null cs
                   in case link of
-                       ('/' : _) -> follow (target ++ cs) [] True True (n + 1)
-                       _ -> follow (target ++ cs) stack absolute True (n + 1)
+                       ('/' : _) -> follow (target ++ cs) [] True sawFinal (n + 1)
+                       _ -> follow (target ++ cs) stack absolute sawFinal (n + 1)
     popForDotDot :: Bool -> [String] -> [String]
     popForDotDot absolute [] = if absolute then [] else [".."]
     popForDotDot absolute stack

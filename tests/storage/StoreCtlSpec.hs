@@ -116,6 +116,9 @@ spec = testGroup "Store commands"
   , testCase "check: a dangling symlink refuses, creating nothing at the target" caseCheckDanglingLink
   , testCase "migrate: a dangling symlink refuses, creating nothing at the target" caseMigrateDanglingLink
   , testCase "open: a dangling symlink refuses, creating nothing at the target" caseOpenDanglingLink
+  , testCase "check: a missing store under a symlinked parent reports the resolved path" caseCheckMissingUnderSymlinkedDir
+  , testCase "migrate: a missing store under a symlinked parent refuses, writing nothing" caseMigrateMissingUnderSymlinkedDir
+  , testCase "open: a missing store under a symlinked parent is created and served" caseOpenMissingUnderSymlinkedDir
   , testCase "migrate: the backup-dir guard follows a symlink to the real store dir" caseMigrateSymlinkBackupDir
   , testCase "inspect: through a symlink, a live owner at the target reads live" caseInspectSymlinkLive
   , testCase "inspect: through a symlink, an offline store names the target" caseInspectSymlinkOffline
@@ -1297,6 +1300,63 @@ caseOpenDanglingLink = withScratch "ctl-dangling" $ \dir -> do
   lockLeft <- doesFileExist (target ++ ".lock")
   assertBool "nothing created at the target" (not targetLeft)
   assertBool "no lock at the target" (not lockLeft)
+
+-- A missing store under a symlinked parent directory is a missing
+-- store, not a dangling link: check reports it at the resolved path
+-- and creates nothing.
+caseCheckMissingUnderSymlinkedDir :: IO ()
+caseCheckMissingUnderSymlinkedDir = withScratch "ctl-symdir" $ \dir -> do
+  let realDir = dir </> "realdir"; via = dir </> "pd"
+      target = realDir </> "store.sqlite"; path = via </> "store.sqlite"
+  createDirectory realDir
+  createSymbolicLink realDir via
+  cfgPath <- writeStoreConfig (dir </> "c.toml") path fixtureLabels fixtureSo fixtureUser
+  r <- check path cfgPath
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-missing:" `isPrefixOf` ceErr r)
+  assertBool "names the resolved target" (("no store file at " ++ target) `isInfixOf` ceErr r)
+  targetLeft <- doesFileExist target
+  lockLeft <- doesFileExist (target ++ ".lock")
+  assertBool "nothing created at the target" (not targetLeft)
+  assertBool "no lock at the target" (not lockLeft)
+
+-- A missing store under a symlinked parent directory refuses the
+-- migration before ownership: no backup, no lock, nothing created.
+caseMigrateMissingUnderSymlinkedDir :: IO ()
+caseMigrateMissingUnderSymlinkedDir = withScratch "ctl-symdir" $ \dir -> do
+  let realDir = dir </> "realdir"; via = dir </> "pd"
+      target = realDir </> "store.sqlite"; path = via </> "store.sqlite"
+      backups = dir </> "backups"
+  createDirectory realDir
+  createDirectory backups
+  createSymbolicLink realDir via
+  cfgPath <- writeStoreConfig (dir </> "c.toml") path fixtureLabels fixtureSo fixtureUser
+  r <- migrateCli path cfgPath backups
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-unreadable:" `isPrefixOf` ceErr r)
+  assertBool "names the missing target" (("no store file at " ++ target) `isInfixOf` ceErr r)
+  targetLeft <- doesFileExist target
+  lockLeft <- doesFileExist (target ++ ".lock")
+  assertBool "nothing created at the target" (not targetLeft)
+  assertBool "no lock at the target" (not lockLeft)
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- A first start under a symlinked parent directory creates the
+-- store at the resolved path and serves it: the link is in an
+-- ancestor directory, not at the store's own final component.
+caseOpenMissingUnderSymlinkedDir :: IO ()
+caseOpenMissingUnderSymlinkedDir = withScratch "ctl-symdir" $ \dir -> do
+  let realDir = dir </> "realdir"; via = dir </> "pd"
+      target = realDir </> "store.sqlite"; path = via </> "store.sqlite"
+  createDirectory realDir
+  createSymbolicLink realDir via
+  cfgPath <- writeStoreConfig (dir </> "c.toml") path fixtureLabels fixtureSo fixtureUser
+  (ok, note) <- openRelStore cfgPath
+  assertBool ("serving open must create a fresh store under a symlinked parent, but refused: " ++ note) ok
+  targetLeft <- doesFileExist target
+  assertBool "store created at the resolved path" targetLeft
+  roTexts target "SELECT value FROM store_meta WHERE key = 'schema_version'"
+    >>= assertEqual "fresh store serves schema 3" ["3"]
 
 -- The backup-dir guard compares against the resolved store path: a
 -- backup dir beside the real file refuses even when --path names a
