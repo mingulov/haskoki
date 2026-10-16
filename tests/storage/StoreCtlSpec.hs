@@ -12,9 +12,13 @@ import Control.Exception (AsyncException (..), bracket, catch, throwIO, toExcept
 import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
+import GHC.IO.Handle (hDuplicate, hDuplicateTo)
+import System.IO (BufferMode (..), IOMode (..), hClose, hFlush, hGetBuffering, hSetBuffering, openFile, stdout)
+import System.IO.Error (isEOFError)
 import Foreign.C.String (withCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
@@ -25,6 +29,8 @@ import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Posix.Files (createNamedPipe, createSymbolicLink, removeLink)
+import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
+import System.Posix.IO.ByteString (fdRead)
 import System.Posix.User (getEffectiveUserID)
 import System.Process (CreateProcess (..), createProcess, proc, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
@@ -118,6 +124,7 @@ spec = testGroup "Store commands"
   , testCase "migrate: after a clear, backup-exists stays honest about the store" caseMigrateClearBackupExistsHonest
   , testCase "migrate: after a clear, backup-failed stays honest about the store" caseMigrateClearBackupFailedHonest
   , testCase "migrate: after a clear, a failed transaction stays honest about the store" caseMigrateClearTxnFailedHonest
+  , testCase "migrate: the clearing is on stdout before the backup verifies" caseMigrateClearRecordedAtClearTime
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -1452,3 +1459,64 @@ caseMigrateClearTxnFailedHonest = withScratch "ctl-migrate" $ \dir -> do
   assertBool "no store-unchanged claim" (not ("; the store was not changed" `isInfixOf` err))
   assertBool "database unchanged" ("the store database was not changed" `isInfixOf` err)
   assertBool "backup kept" ("Backup kept at" `isInfixOf` err)
+
+-- | Run an action with the process stdout redirected to a file
+-- (block-buffered, so only flushed bytes land there), restoring the
+-- original stdout afterwards.
+withStdoutToFile :: FilePath -> IO a -> IO a
+withStdoutToFile file act = bracket acquire release (const act)
+  where
+    acquire = do
+      hFlush stdout
+      mode <- hGetBuffering stdout
+      backup <- hDuplicate stdout
+      h <- openFile file WriteMode
+      hDuplicateTo h stdout
+      hSetBuffering stdout (BlockBuffering (Just 65536))
+      pure (backup, h, mode)
+    release (backup, h, mode) = do
+      hFlush stdout
+      hDuplicateTo backup stdout
+      hSetBuffering stdout mode
+      hClose backup
+      hClose h
+
+-- | Snapshot a file's current bytes through a fresh POSIX
+-- descriptor. A second System.IO open would fail on GHC's file
+-- lock while the capture handle holds the file for writing; the
+-- raw descriptor takes no lock and reads only flushed bytes (the
+-- snapshot never flushes stdout itself, so an unflushed record
+-- stays invisible).
+snapshotFile :: FilePath -> IO String
+snapshotFile path =
+  bracket (openFd path ReadOnly defaultFileFlags) closeFd drain
+  where
+    drain fd = go []
+      where
+        go acc = do
+          eBs <- try (fdRead fd 65536) :: IO (Either IOError BS.ByteString)
+          case eBs of
+            Left e | isEOFError e -> pure (BC8.unpack (BS.concat (reverse acc)))
+            Left e -> ioError e
+            Right bs -> go (bs : acc)
+
+-- The clearing is recorded on stdout the moment it happens, not
+-- only in the end-of-run output: a hook that runs after the backup
+-- (still mid-run) already sees the flushed line in the captured
+-- stdout. Without the immediate record, a kill after the clear
+-- leaves no trace of it.
+caseMigrateClearRecordedAtClearTime :: IO ()
+caseMigrateClearRecordedAtClearTime = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"; capture = dir </> "stdout.log"
+  createDirectory backups
+  BS.writeFile journal (BS.replicate 512 0)
+  seenRef <- newIORef ""
+  let hooks = noMigrateHooks
+        { mhAfterBackup = snapshotFile capture >>= writeIORef seenRef }
+  (code, out, err) <- withStdoutToFile capture $
+    storeMigrateCommandWith hooks ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  seen <- readIORef seenRef
+  assertEqual ("exit 0; stderr: " ++ err) 0 code
+  assertBool "clearing reported at the end" ("cold-journal-removed: yes" `elem` lines out)
+  assertBool ("clearing already on stdout mid-run; seen: " ++ seen) ("cold-journal-removed: yes" `isInfixOf` seen)

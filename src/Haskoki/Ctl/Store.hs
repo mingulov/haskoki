@@ -221,18 +221,22 @@ renderCheckUnexpectedFailure :: SomeException -> (String, String)
 renderCheckUnexpectedFailure ex =
   ("store-unreadable", "unexpected failure: " ++ exceptionTypeName ex)
 
--- | Run the selected migration over injected hooks. Every outcome
--- after a cold-journal clear carries the clearing line on stdout
--- (a migrated run already carries it in its receipt). The verified
--- backup's path and SHA-256 are printed to stdout the moment
--- verification passes, before the transaction begins, and flushed,
--- so a killed run still leaves its digest in the operator's log
--- (the receipt repeats both lines on success).
+-- | Run the selected migration over injected hooks. The clearing
+-- line is printed to stdout and flushed the moment the cold journal
+-- is cleared (like the backup lines below), so a run killed after
+-- the clear still leaves its record; every outcome after a clear
+-- also carries the line at the end (a migrated run in its receipt),
+-- so operator logs show it twice. The verified backup's path and
+-- SHA-256 are printed to stdout the moment verification passes,
+-- before the transaction begins, and flushed, so a killed run still
+-- leaves its digest in the operator's log (the receipt repeats both
+-- lines on success).
 migrateSelectedWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Int, String, String)
 migrateSelectedWith hooks0 path cfg dir = do
   clearedRef <- newIORef False
   let hooks = hooks0
         { mhOnColdClear = mhOnColdClear hooks0 >> writeIORef clearedRef True
+            >> putStrLn "cold-journal-removed: yes" >> hFlush stdout
         , mhOnBackupVerified = \bak n sha -> do
             mhOnBackupVerified hooks0 bak n sha
             putStrLn ("backup: " ++ bak)
