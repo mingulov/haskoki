@@ -178,7 +178,7 @@
       "phase": "module",
       "client": "opensc",
       "store": "opensc",
-      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--encrypt", "--mechanism", "RSA-PKCS", "--id", "0102", "--input-file", "@SRC@/tests/journeys/opensc/message.txt", "--output-file", "@RUN@/out/rsa.bin"],
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--encrypt", "--mechanism", "RSA-PKCS", "--id", "0102", "--input-file", "@SRC@/tests/journeys/opensc/message.txt", "--output-file", "@RUN@/out/rsa.bin"],
       "timeout_seconds": 120,
       "expect": {"exit": 0},
       "depends_on": ["opensc-create-rsa"]
