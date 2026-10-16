@@ -178,7 +178,7 @@
       "phase": "module",
       "client": "opensc",
       "store": "opensc",
-      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--encrypt", "--mechanism", "RSA-PKCS", "--id", "0102", "--input-file", "@SRC@/tests/journeys/opensc/message.txt", "--output-file", "@RUN@/out/rsa.bin"],
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--encrypt", "--mechanism", "RSA-PKCS-OAEP", "--hash-algorithm", "SHA256", "--mgf", "MGF1-SHA256", "--id", "0102", "--input-file", "@SRC@/tests/journeys/opensc/message.txt", "--output-file", "@RUN@/out/rsa.bin"],
       "timeout_seconds": 120,
       "expect": {"exit": 0},
       "depends_on": ["opensc-create-rsa"]
@@ -189,7 +189,7 @@
       "phase": "module",
       "client": "opensc",
       "store": "opensc",
-      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "decrypt-staged", "--run", "@RUN@", "--plaintext-src", "@SRC@/tests/journeys/opensc/message.txt", "--plaintext-run", "out/message.txt", "--", "pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--decrypt", "--mechanism", "RSA-PKCS", "--id", "0102", "--input-file", "@RUN@/out/rsa.bin", "--output-file", "@RUN@/out/rsa.dec"],
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "decrypt-staged", "--run", "@RUN@", "--plaintext-src", "@SRC@/tests/journeys/opensc/message.txt", "--plaintext-run", "out/message.txt", "--", "pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--decrypt", "--mechanism", "RSA-PKCS-OAEP", "--hash-algorithm", "SHA256", "--mgf", "MGF1-SHA256", "--id", "0102", "--input-file", "@RUN@/out/rsa.bin", "--output-file", "@RUN@/out/rsa.dec"],
       "timeout_seconds": 120,
       "expect": {"exit": 0, "markers": ["JOURNEY-DECRYPT staged"], "files": [{"path": "out/rsa.dec", "op": "equal", "other": "out/message.txt"}]},
       "depends_on": ["opensc-encrypt"]
