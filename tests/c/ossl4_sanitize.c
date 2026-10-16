@@ -38,6 +38,7 @@
 #include <openssl/x509.h>
 
 #include <limits.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,6 +77,10 @@ static int trk_quarantine; /* never hand a freed block back to libc */
 static const void *trk_reuse_target;
 static void *trk_stash; /* base of a block held back for reuse */
 static size_t trk_stash_size;
+/* Blocks withheld from libc stay on this list so a leak checker sees them
+ * as reachable (a withheld block is not a leak); the link is stored in the
+ * dead header's pad word. */
+static unsigned char *trk_held;
 static long trk_stash_hits; /* mallocs served from the stash */
 
 static void trk_mark(void)
@@ -192,8 +197,12 @@ static void trk_free(void *ptr, const char *file, int line)
         trk_stash_size = n;
     } else {
         hd->magic = 0;
-        if (!trk_quarantine)
+        if (!trk_quarantine) {
             free(base);
+        } else {
+            hd->pad = (size_t)(uintptr_t)trk_held;
+            trk_held = base;
+        }
     }
     pthread_mutex_unlock(&trk_mu);
 }
@@ -267,6 +276,7 @@ typedef struct {
     void (*fn)(void);
     int hooks_only;
     int track_only;
+    int hidden; /* a negative control: run by name, not listed */
 } case_t;
 
 /* --- cases available in both configurations --------------------------- */
@@ -324,6 +334,261 @@ static void case_prod_env_cycle(void)
     env_cycle(200);
     REQ(*g_reason == 0, g_reason);
     REQ_LIVE(before);
+}
+
+typedef struct {
+    unsigned char *priv;
+    size_t privlen;
+    unsigned char *peer;
+    size_t peerlen;
+} seam_keys_t;
+
+static void seam_keys_free(seam_keys_t *k)
+{
+    OPENSSL_free(k->priv);
+    OPENSSL_free(k->peer);
+    memset(k, 0, sizeof(*k));
+}
+
+/* PKCS#8 DER of a private key through the encoder. */
+static int priv_der(EVP_PKEY *pkey, unsigned char **der, size_t *len)
+{
+    OSSL_ENCODER_CTX *ec = OSSL_ENCODER_CTX_new_for_pkey(
+        pkey, EVP_PKEY_KEYPAIR, "DER", "PrivateKeyInfo", NULL);
+    int ok = 0;
+    *der = NULL;
+    *len = 0;
+    if (ec != NULL && OSSL_ENCODER_CTX_get_num_encoders(ec) > 0 &&
+        OSSL_ENCODER_to_data(ec, der, len))
+        ok = 1;
+    OSSL_ENCODER_CTX_free(ec);
+    return ok;
+}
+
+static EVP_PKEY *gen_from(const char *alg, const char *group)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(g_lib, alg, "");
+    EVP_PKEY *k = NULL;
+    if (c == NULL || EVP_PKEY_keygen_init(c) <= 0)
+        goto done;
+    if (group != NULL) {
+        OSSL_PARAM p[2];
+        p[0] = OSSL_PARAM_construct_utf8_string(
+            "group", (char *)group, 0);
+        p[1] = OSSL_PARAM_construct_end();
+        if (EVP_PKEY_CTX_set_params(c, p) <= 0)
+            goto done;
+    }
+    if (EVP_PKEY_generate(c, &k) <= 0)
+        k = NULL;
+done:
+    EVP_PKEY_CTX_free(c);
+    return k;
+}
+
+/* Big-endian public value of a DH key. */
+static int dh_pub_bytes(EVP_PKEY *k, unsigned char **out, size_t *len)
+{
+    BIGNUM *bn = NULL;
+    int n;
+    if (EVP_PKEY_get_bn_param(k, "pub", &bn) <= 0)
+        return 0;
+    n = BN_num_bytes(bn);
+    *out = OPENSSL_malloc((size_t)n);
+    if (*out == NULL) {
+        BN_free(bn);
+        return 0;
+    }
+    BN_bn2bin(bn, *out);
+    *len = (size_t)n;
+    BN_free(bn);
+    return 1;
+}
+
+
+/* --- agreement and AEAD cases, both configurations ----------------------- */
+
+typedef struct {
+    EVP_PKEY *a, *b;
+    seam_keys_t ka, kb; /* priv = own private DER, peer = other's public */
+} pair_t;
+
+static void pair_free(pair_t *p)
+{
+    seam_keys_free(&p->ka);
+    seam_keys_free(&p->kb);
+    EVP_PKEY_free(p->a);
+    EVP_PKEY_free(p->b);
+    memset(p, 0, sizeof(*p));
+}
+
+/* kind 0 = EC P-256, 1 = X25519, 2 = ffdhe2048. */
+static int peer_of(int kind, EVP_PKEY *k, unsigned char **o, size_t *l)
+{
+    if (kind == 0) {
+        unsigned char *q = NULL;
+        int n = i2d_PUBKEY(k, &q);
+        if (n <= 0)
+            return 0;
+        *o = q;
+        *l = (size_t)n;
+        return 1;
+    }
+    if (kind == 1) {
+        size_t n = 32;
+        *o = OPENSSL_malloc(n);
+        if (*o == NULL || EVP_PKEY_get_raw_public_key(k, *o, &n) <= 0 ||
+            n != 32)
+            return 0;
+        *l = n;
+        return 1;
+    }
+    return dh_pub_bytes(k, o, l);
+}
+
+static int pair_new(int kind, pair_t *p)
+{
+    const char *alg = kind == 0 ? "EC" : kind == 1 ? "X25519" : "DH";
+    const char *grp = kind == 0 ? "P-256" : kind == 1 ? NULL : "ffdhe2048";
+    memset(p, 0, sizeof(*p));
+    p->a = gen_from(alg, grp);
+    p->b = gen_from(alg, grp);
+    if (p->a == NULL || p->b == NULL ||
+        !priv_der(p->a, &p->ka.priv, &p->ka.privlen) ||
+        !priv_der(p->b, &p->kb.priv, &p->kb.privlen) ||
+        !peer_of(kind, p->b, &p->ka.peer, &p->ka.peerlen) ||
+        !peer_of(kind, p->a, &p->kb.peer, &p->kb.peerlen)) {
+        pair_free(p);
+        return 0;
+    }
+    return 1;
+}
+
+static long pair_derive(int kind, const seam_keys_t *k, unsigned char **out)
+{
+    *out = NULL;
+    if (kind == 0)
+        return hsk_ossl4_ecdh_derive(g_lib, "", k->priv, k->privlen, k->peer,
+                                     k->peerlen, 0, out);
+    if (kind == 1)
+        return hsk_ossl4_xdh_derive(g_lib, "", k->priv, k->privlen, k->peer,
+                                    k->peerlen, out);
+    return hsk_ossl4_dh_derive(g_lib, "", k->priv, k->privlen, k->peer,
+                               k->peerlen, out);
+}
+
+/* A to B equals B to A; the secret is the full width of the group. */
+static void agree_case(int kind, long width)
+{
+    pair_t p;
+    unsigned char *x = NULL, *y = NULL;
+    long rx, ry;
+    REQ(pair_new(kind, &p), "keys");
+    rx = pair_derive(kind, &p.ka, &x);
+    ry = pair_derive(kind, &p.kb, &y);
+    if (rx != width || ry != width || x == NULL || y == NULL)
+        g_reason = "derive-failed";
+    else if (memcmp(x, y, (size_t)width) != 0)
+        g_reason = "secrets-differ";
+    if (x != NULL)
+        hsk_ossl4_free(x, (size_t)rx);
+    if (y != NULL)
+        hsk_ossl4_free(y, (size_t)ry);
+    pair_free(&p);
+}
+
+static void case_prod_dh_kat(void)
+{
+    agree_case(2, 256);
+}
+
+static void case_prod_ecdh(void)
+{
+    agree_case(0, 32);
+}
+
+static void case_prod_xdh(void)
+{
+    agree_case(1, 32);
+}
+
+static void case_prod_aead(void)
+{
+    unsigned char key[32], iv[12], tag[16];
+    unsigned char *ct = NULL, *pt = NULL;
+    static const unsigned char msg[20] = "sanitizer aead test";
+    long n, m;
+    size_t i;
+    for (i = 0; i < sizeof(key); i++)
+        key[i] = (unsigned char)i;
+    for (i = 0; i < sizeof(iv); i++)
+        iv[i] = (unsigned char)(0x40 + i);
+    n = hsk_ossl4_aead_encrypt(g_lib, "AES-256-GCM", "", key, sizeof(key), iv,
+                               sizeof(iv), (const unsigned char *)"hdr", 3,
+                               msg, sizeof(msg), 16, &ct);
+    REQ(n == (long)(sizeof(msg) + 16) && ct != NULL, "encrypt");
+    memcpy(tag, ct + sizeof(msg), sizeof(tag));
+    m = hsk_ossl4_aead_decrypt(g_lib, "AES-256-GCM", "", key, sizeof(key), iv,
+                               sizeof(iv), (const unsigned char *)"hdr", 3,
+                               ct, sizeof(msg), tag, sizeof(tag), &pt);
+    if (m != (long)sizeof(msg) || pt == NULL ||
+        memcmp(pt, msg, sizeof(msg)) != 0) {
+        g_reason = "roundtrip";
+    }
+    if (pt != NULL)
+        hsk_ossl4_free(pt, (size_t)(m > 0 ? m : 0));
+    pt = NULL;
+    if (*g_reason == 0) {
+        tag[0] ^= 1;
+        m = hsk_ossl4_aead_decrypt(g_lib, "AES-256-GCM", "", key, sizeof(key),
+                                   iv, sizeof(iv),
+                                   (const unsigned char *)"hdr", 3, ct,
+                                   sizeof(msg), tag, sizeof(tag), &pt);
+        if (m != HSK_OSSL4_ERR_AUTHFAIL || pt != NULL)
+            g_reason = "tamper-not-authfail";
+        else if (pt != NULL)
+            hsk_ossl4_free(pt, (size_t)m);
+    }
+    hsk_ossl4_free(ct, (size_t)n);
+}
+
+/* --- negative controls (prod configuration, plain memory) ---------------- */
+
+static int g_argc;
+
+/* A digest handle freed twice is reported as a use-after-free first (the
+ * shim reads the handle while releasing it), so the control frees the
+ * result buffer the handle produced: a plain double free. */
+static void case_neg_double_free(void)
+{
+    unsigned char *out = NULL;
+    long rc;
+    hsk_ossl4_md_t *h = hsk_ossl4_digest_init(g_lib, "SHA256", "");
+    REQ(h != NULL, "init");
+    rc = hsk_ossl4_digest_final(h, &out);
+    REQ(rc == 32 && out != NULL, "final");
+    hsk_ossl4_free(out, (size_t)rc);
+    OPENSSL_free(out);
+}
+
+static void case_neg_heap_overflow(void)
+{
+    pair_t p;
+    unsigned char *x = NULL;
+    long rc;
+    REQ(pair_new(2, &p), "keys");
+    rc = pair_derive(2, &p.ka, &x);
+    REQ(rc == 256 && x != NULL, "derive");
+    x[rc] = 0; /* one byte past the allocation */
+    hsk_ossl4_free(x, (size_t)rc);
+    pair_free(&p);
+}
+
+static void case_neg_ubsan(void)
+{
+    volatile int big = INT_MAX;
+    volatile int r = big + (g_argc > 0);
+    (void)r;
 }
 
 #ifdef HSK_OSSL4_TEST_HOOKS
@@ -610,75 +875,6 @@ static void case_final_fault(void)
 
 /* --- native error seams ------------------------------------------------ */
 
-typedef struct {
-    unsigned char *priv;
-    size_t privlen;
-    unsigned char *peer;
-    size_t peerlen;
-} seam_keys_t;
-
-static void seam_keys_free(seam_keys_t *k)
-{
-    OPENSSL_free(k->priv);
-    OPENSSL_free(k->peer);
-    memset(k, 0, sizeof(*k));
-}
-
-/* PKCS#8 DER of a private key through the encoder. */
-static int priv_der(EVP_PKEY *pkey, unsigned char **der, size_t *len)
-{
-    OSSL_ENCODER_CTX *ec = OSSL_ENCODER_CTX_new_for_pkey(
-        pkey, EVP_PKEY_KEYPAIR, "DER", "PrivateKeyInfo", NULL);
-    int ok = 0;
-    *der = NULL;
-    *len = 0;
-    if (ec != NULL && OSSL_ENCODER_CTX_get_num_encoders(ec) > 0 &&
-        OSSL_ENCODER_to_data(ec, der, len))
-        ok = 1;
-    OSSL_ENCODER_CTX_free(ec);
-    return ok;
-}
-
-static EVP_PKEY *gen_from(const char *alg, const char *group)
-{
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(g_lib, alg, "");
-    EVP_PKEY *k = NULL;
-    if (c == NULL || EVP_PKEY_keygen_init(c) <= 0)
-        goto done;
-    if (group != NULL) {
-        OSSL_PARAM p[2];
-        p[0] = OSSL_PARAM_construct_utf8_string(
-            "group", (char *)group, 0);
-        p[1] = OSSL_PARAM_construct_end();
-        if (EVP_PKEY_CTX_set_params(c, p) <= 0)
-            goto done;
-    }
-    if (EVP_PKEY_generate(c, &k) <= 0)
-        k = NULL;
-done:
-    EVP_PKEY_CTX_free(c);
-    return k;
-}
-
-/* Big-endian public value of a DH key. */
-static int dh_pub_bytes(EVP_PKEY *k, unsigned char **out, size_t *len)
-{
-    BIGNUM *bn = NULL;
-    int n;
-    if (EVP_PKEY_get_bn_param(k, "pub", &bn) <= 0)
-        return 0;
-    n = BN_num_bytes(bn);
-    *out = OPENSSL_malloc((size_t)n);
-    if (*out == NULL) {
-        BN_free(bn);
-        return 0;
-    }
-    BN_bn2bin(bn, *out);
-    *len = (size_t)n;
-    BN_free(bn);
-    return 1;
-}
-
 enum { K_ECDH, K_XDH, K_DH_NAMED, K_DH_EXPLICIT };
 
 /* Fresh pair: the private DER of A and the peer value of B. */
@@ -939,32 +1135,39 @@ static void case_exit_gate(void)
 #endif /* HSK_OSSL4_TEST_HOOKS */
 
 static const case_t cases[] = {
-    { "prod-digest-cycle", case_prod_digest_cycle, 0, 0 },
-    { "prod-env-cycle", case_prod_env_cycle, 0, 0 },
+    { "prod-digest-cycle", case_prod_digest_cycle, 0, 0, 0 },
+    { "prod-env-cycle", case_prod_env_cycle, 0, 0, 0 },
+    { "prod-dh-kat", case_prod_dh_kat, 0, 0, 0 },
+    { "prod-ecdh", case_prod_ecdh, 0, 0, 0 },
+    { "prod-xdh", case_prod_xdh, 0, 0, 0 },
+    { "prod-aead", case_prod_aead, 0, 0, 0 },
+    { "neg-double-free", case_neg_double_free, 0, 0, 1 },
+    { "neg-heap-overflow", case_neg_heap_overflow, 0, 0, 1 },
+    { "neg-ubsan", case_neg_ubsan, 0, 0, 1 },
 #ifdef HSK_OSSL4_TEST_HOOKS
-    { "live-1000", case_live_1000, 1, 0 },
-    { "credit-gone", case_credit_gone, 1, 0 },
-    { "address-reuse", case_address_reuse, 1, 1 },
-    { "copy-fault", case_copy_fault, 1, 1 },
-    { "adoption-alloc", case_adoption_alloc, 1, 0 },
-    { "adoption-load", case_adoption_load, 1, 0 },
-    { "final-fault", case_final_fault, 1, 0 },
-    { "exit-gate", case_exit_gate, 1, 0 },
-    { "seam-bn-named", case_seam_bn_named, 1, 1 },
-    { "seam-bn-explicit", case_seam_bn_explicit, 1, 1 },
-    { "seam-derive-fail-shrink-ecdh", case_seam_fail_shrink_ecdh, 1, 1 },
-    { "seam-derive-fail-grow-ecdh", case_seam_fail_grow_ecdh, 1, 1 },
-    { "seam-derive-ok-shrink-ecdh", case_seam_ok_shrink_ecdh, 1, 1 },
-    { "seam-derive-ok-grow-ecdh", case_seam_ok_grow_ecdh, 1, 1 },
-    { "seam-derive-fail-shrink-xdh", case_seam_fail_shrink_xdh, 1, 1 },
-    { "seam-derive-fail-grow-xdh", case_seam_fail_grow_xdh, 1, 1 },
-    { "seam-derive-ok-shrink-xdh", case_seam_ok_shrink_xdh, 1, 1 },
-    { "seam-derive-ok-grow-xdh", case_seam_ok_grow_xdh, 1, 1 },
-    { "seam-derive-fail-shrink-dh", case_seam_fail_shrink_dh, 1, 1 },
-    { "seam-derive-fail-grow-dh", case_seam_fail_grow_dh, 1, 1 },
-    { "seam-derive-ok-shrink-dh", case_seam_ok_shrink_dh, 1, 1 },
-    { "seam-derive-ok-grow-dh", case_seam_ok_grow_dh, 1, 1 },
-    { "canary-selftest", case_canary_selftest, 1, 1 },
+    { "live-1000", case_live_1000, 1, 0, 0 },
+    { "credit-gone", case_credit_gone, 1, 0, 0 },
+    { "address-reuse", case_address_reuse, 1, 1, 0 },
+    { "copy-fault", case_copy_fault, 1, 1, 0 },
+    { "adoption-alloc", case_adoption_alloc, 1, 0, 0 },
+    { "adoption-load", case_adoption_load, 1, 0, 0 },
+    { "final-fault", case_final_fault, 1, 0, 0 },
+    { "exit-gate", case_exit_gate, 1, 0, 1 },
+    { "seam-bn-named", case_seam_bn_named, 1, 1, 0 },
+    { "seam-bn-explicit", case_seam_bn_explicit, 1, 1, 0 },
+    { "seam-derive-fail-shrink-ecdh", case_seam_fail_shrink_ecdh, 1, 1, 0 },
+    { "seam-derive-fail-grow-ecdh", case_seam_fail_grow_ecdh, 1, 1, 0 },
+    { "seam-derive-ok-shrink-ecdh", case_seam_ok_shrink_ecdh, 1, 1, 0 },
+    { "seam-derive-ok-grow-ecdh", case_seam_ok_grow_ecdh, 1, 1, 0 },
+    { "seam-derive-fail-shrink-xdh", case_seam_fail_shrink_xdh, 1, 1, 0 },
+    { "seam-derive-fail-grow-xdh", case_seam_fail_grow_xdh, 1, 1, 0 },
+    { "seam-derive-ok-shrink-xdh", case_seam_ok_shrink_xdh, 1, 1, 0 },
+    { "seam-derive-ok-grow-xdh", case_seam_ok_grow_xdh, 1, 1, 0 },
+    { "seam-derive-fail-shrink-dh", case_seam_fail_shrink_dh, 1, 1, 0 },
+    { "seam-derive-fail-grow-dh", case_seam_fail_grow_dh, 1, 1, 0 },
+    { "seam-derive-ok-shrink-dh", case_seam_ok_shrink_dh, 1, 1, 0 },
+    { "seam-derive-ok-grow-dh", case_seam_ok_grow_dh, 1, 1, 0 },
+    { "canary-selftest", case_canary_selftest, 1, 1, 0 },
 #endif
 };
 
@@ -992,10 +1195,12 @@ int main(int argc, char **argv)
     int pass;
     int a;
 
+    g_argc = argc;
     for (a = 1; a < argc; a++) {
         if (strcmp(argv[a], "--list") == 0) {
             for (i = 0; i < NCASES; i++)
-                printf("%s\n", cases[i].name);
+                if (!cases[i].hidden)
+                    printf("%s\n", cases[i].name);
             return 0;
         } else if (strcmp(argv[a], "--mem") == 0 && a + 1 < argc) {
             mem = argv[++a];

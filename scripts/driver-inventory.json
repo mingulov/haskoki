@@ -20,6 +20,7 @@
     {"name": "test-release-install.sh", "role": "host", "parent": null},
     {"name": "test-demo-image.sh", "role": "host", "parent": null},
     {"name": "test-demo-onboarding.sh", "role": "nested", "parent": "test-demo-image.sh"},
-    {"name": "test-ownership-matrix.sh", "role": "qualification", "parent": null}
+    {"name": "test-ownership-matrix.sh", "role": "qualification", "parent": null},
+    {"name": "test-native-sanitizers.sh", "role": "qualification", "parent": null}
   ]
 }
