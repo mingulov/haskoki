@@ -35,8 +35,7 @@
  *     re-verify zero;
  *   - SO: an SO session creating a private token object refuses with
  *     CKR_USER_NOT_LOGGED_IN (SO administers public objects only);
- *   - matrix: public-RW positive control + refusal cells (DIRECT-ONLY);
- *   - page: removed-session FindObjects precedence (DIRECT-ONLY; Task 5 lands it).
+ *   - matrix: public-RW positive control + refusal cells (DIRECT-ONLY).
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module and drives it through the pinned 3.2 headers.
@@ -636,16 +635,39 @@ int main(int argc, char **argv) {
       rv = f->C_CreateObject(pubrw, pubtok, 5, &h);
       CHECKM(rv == CKR_OK && h != 0, "matrix: public RW creates public token object");
       memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
       rv = f->C_GetAttributeValue(pubrw, h, get, 2);
-      CHECKM(rv == CKR_OK && memcmp(label, "matrix-pub", 10) == 0 &&
-             memcmp(value, "matrix-bytes", 12) == 0, "matrix: public readback matches");
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-pub", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: public readback matches");
       { CK_ATTRIBUTE over[] = { { CKA_LABEL, "matrix-copy", 11 } };
         h2 = 0;
         rv = f->C_CopyObject(pubrw, h, over, 1, &h2);
         CHECKM(rv == CKR_OK && h2 != 0 && h2 != h, "matrix: public RW copies public token object"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(pubrw, h2, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 11 &&
+                 memcmp(label, "matrix-copy", 11) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: public copy readback matches");
       { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-set", 10 } };
         rv = f->C_SetAttributeValue(pubrw, h, set, 1);
         CHECKM(rv == CKR_OK, "matrix: public RW sets label on public token object"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(pubrw, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-set", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: public set readback matches");
       rv = f->C_DestroyObject(pubrw, h);
       CHECKM(rv == CKR_OK, "matrix: public RW destroys public token object");
       rv = f->C_DestroyObject(pubrw, h2);
@@ -656,6 +678,16 @@ int main(int argc, char **argv) {
       h = 0;
       rv = f->C_CreateObject(pubro, pubtok, 5, &h);
       CHECKM(rv == CKR_SESSION_READ_ONLY && h == 0, "matrix: public RO token create refused");
+      /* A keeper for the public-RO set refusal: pubro observes the same
+       * logged-out token state, so the set refuses read-only. */
+      h = 0;
+      rv = f->C_CreateObject(pubrw, pubtok, 5, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: public RO refusal keeper written");
+      { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-roset", 12 } };
+        rv = f->C_SetAttributeValue(pubro, h, set, 1);
+        CHECKM(rv == CKR_SESSION_READ_ONLY, "matrix: public RO set on token object refused"); }
+      rv = f->C_DestroyObject(pubrw, h);
+      CHECKM(rv == CKR_OK, "matrix: public RO refusal keeper destroyed");
       /* 2. USER legs: login, full positive incl. private token, RO cells,
        * user-TRUSTED refusals, logout. */
       rv = f->C_Login(usr, CKU_USER, (CK_UTF8CHAR_PTR)"1234", 4);
