@@ -40,8 +40,8 @@ import Data.Word (Word8)
 import Foreign.C.Error (Errno (..), eNOTSUP, eOPNOTSUPP, ePERM, eXDEV)
 import Foreign.Ptr (castPtr)
 import GHC.IO.Exception (ioe_errno)
-import System.Directory (listDirectory)
 import System.IO.Error (isAlreadyExistsError, tryIOError)
+import System.Posix.Directory (closeDirStream, openDirStream, readDirStream)
 import System.Posix.Files
   ( createLink, deviceID, fileAccess, fileID, getFileStatus, getSymbolicLinkStatus, isDirectory
   , isSymbolicLink, removeLink )
@@ -575,12 +575,23 @@ writeReceipt afterCreate link final bytes dir = mask $ \restore -> do
 -- that do not parse, live owners, unknowable liveness and our own
 -- pid are all left alone. Best-effort: every failure is ignored, so
 -- a sweep that cannot complete only leaves files for the next run.
+-- | Directory entries streamed over a POSIX directory handle (no
+-- @directory@ dependency in the library). Unlike 'listDirectory',
+-- @.@ and @..@ are included; callers filter them.
+listDirEntries :: FilePath -> IO [String]
+listDirEntries dir =
+  bracket (openDirStream dir) closeDirStream $ \s -> collect s []
+  where
+    collect s acc = do
+      e <- readDirStream s
+      if null e then pure (reverse acc) else collect s (e : acc)
+
 sweepStaleReceiptTemps :: FilePath -> Int -> IO ()
 sweepStaleReceiptTemps dir self = do
-  eNames <- tryIOError (listDirectory dir)
+  eNames <- tryIOError (listDirEntries dir)
   case eNames of
     Left _ -> pure ()
-    Right names -> forM_ names $ \name ->
+    Right names -> forM_ (filter (\n -> n /= "." && n /= "..") names) $ \name ->
       case stalePid name of
         Just pid | pid /= self -> do
           dead <- pidIsDead pid
