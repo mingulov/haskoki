@@ -139,9 +139,6 @@
       }
     },
     {
-      "action": "finalize"
-    },
-    {
       "action": "session.open",
       "arguments": {
         "token": "haskoki-demo",
@@ -182,6 +179,9 @@
       "expect": {
         "return": "CKR_OK"
       }
+    },
+    {
+      "action": "finalize"
     }
   ]
 }

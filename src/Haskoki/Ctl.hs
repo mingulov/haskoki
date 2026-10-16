@@ -39,7 +39,7 @@ import qualified Data.ByteString.Char8 as BC8
 import Data.List (intercalate, sort)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import System.IO.Error (tryIOError)
@@ -295,12 +295,13 @@ data RunStep = RunStep
   , rsExpect :: !(Maybe StepExpect)
   } deriving (Eq, Show)
 
--- | Logical session in the owned instance.
+-- | Logical session in the owned instance. 'lsArmed' carries the
+-- arming pair @(mechanism, fixture key)@ once @sign.init@ runs.
 data LogicalSession = LogicalSession
   { lsId :: !SessionId
   , lsAsync :: !Bool
   , lsLoggedIn :: !Bool
-  , lsSignArmed :: !Bool
+  , lsArmed :: !(Maybe (String, String))
   , lsPendingLeft :: !Int
   , lsSignCalls :: !Int
   } deriving (Eq, Show)
@@ -312,11 +313,13 @@ data LogicalSession = LogicalSession
 -- sim is enabled; the @fault.window@ verb replaces it). 'rnOrder'
 -- records session names in opening order, so the @"s1"@ alias
 -- resolves to the first-opened session rather than the first by
--- name.
+-- name. 'rnInitialized' with 'rnFinalized' tracks the instance
+-- lifecycle ('lifecycleRefusal' refuses non-live use).
 data Runner = Runner
   { rnTracer :: !Tracer
   , rnSessions :: !(Map String LogicalSession)
   , rnNextSession :: !Int
+  , rnInitialized :: !Bool
   , rnFinalized :: !Bool
   , rnFault :: !(Maybe (Int, Int))
   , rnOrder :: ![String]
@@ -387,7 +390,7 @@ execScenario cfg sc steps = do
   reg <- newTokenRegistry eq at
   tr <- newTracer (max 8 (tcQueueLimit (cfgTrace cfg))) (\_ -> pure (Right ())) False
   applyTokenScript reg (simScript cfg)
-  let rn0 = Runner tr Map.empty 1 False (seedFault cfg) []
+  let rn0 = Runner tr Map.empty 1 False False (seedFault cfg) []
   eOut <- go rn0 reg tr (zip [0 :: Int ..] steps) []
   case eOut of
     Left err -> pure (CtlExit 1 "" ("scenario-failed: " ++ err ++ "\n"))
@@ -445,6 +448,15 @@ inFault rn i = case rnFault rn of
   Just (s, t) -> s <= i && i < s + t
   Nothing -> False
 
+-- | The lifecycle refusal for a step on a non-live instance: every
+-- verb except @initialize@, @finalize@ and the sim test controls
+-- refuses with @CKR_CRYPTOKI_NOT_INITIALIZED@ before anything else
+-- when the runner is not initialized or already finalized.
+lifecycleRefusal :: Runner -> Maybe StepResult
+lifecycleRefusal rn
+  | rnInitialized rn && not (rnFinalized rn) = Nothing
+  | otherwise = Just (StepReturn "CKR_CRYPTOKI_NOT_INITIALIZED")
+
 -- | Fixture credentials (test-only, from the design §6 fixture set).
 fixtureUserPin, fixtureSoPin :: String
 fixtureUserPin = "1234"
@@ -464,15 +476,27 @@ slotZeroLabel cfg = case tcEntries (cfgTokens cfg) of
 -- values (@""@ when the action has nothing to echo). Unknown verbs
 -- cannot arrive (validated), so the fallback is an internal error,
 -- never code execution. @session.open@ honors @save_as@ (a
--- duplicate name refuses without mutation). Program errors
+-- duplicate name refuses without mutation). Gate order per action:
+-- lifecycle (except @initialize@, @finalize@ and the sim test
+-- controls) -> session resolution -> login (signing ops) ->
+-- armed -> capacity -> fault -> pending. Program errors
 -- (unknown session, unarmed sign) precede device faults: an
 -- in-window step reports @CKR_DEVICE_ERROR@ instead of running,
 -- without consuming any pending poll.
 execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult, String))
-execStep cfg reg tr rn i st = case rsAction st of
+execStep cfg reg tr rn i st
+  | rsAction st `elem` lifecycleGated
+  , Just refusal <- lifecycleRefusal rn = pure (Right (rn, refusal, ""))
+  | otherwise = case rsAction st of
   "initialize" -> do
-    emit tr "C_Initialize" 0 "initialized"
-    pure (Right (rn, StepReturn "CKR_OK", ""))
+    if rnInitialized rn && not (rnFinalized rn)
+      then pure (Right (rn, StepReturn "CKR_CRYPTOKI_ALREADY_INITIALIZED", ""))
+      else do
+        emit tr "C_Initialize" 0 "initialized"
+        let rn' = rn { rnInitialized = True, rnFinalized = False
+                     , rnSessions = Map.empty, rnNextSession = 1
+                     , rnOrder = [], rnFault = seedFault cfg }
+        pure (Right (rn', StepReturn "CKR_OK", ""))
   "fixture.load" -> do
     _ <- insertToken reg (SlotId 0)
     emit tr "C_InitToken" 0 "fixture-loaded"
@@ -500,7 +524,7 @@ execStep cfg reg tr rn i st = case rsAction st of
           else do
             registerSessionSlot reg sid (SlotId 0)
             emit tr "C_OpenSession" 0 ("session=" ++ name)
-            let ls = LogicalSession sid isAsync False False 0 0
+            let ls = LogicalSession sid isAsync False Nothing 0 0
                 rn' = rn { rnSessions = Map.insert name ls (rnSessions rn)
                          , rnNextSession = rnNextSession rn + 1
                          , rnOrder = rnOrder rn ++ [name] }
@@ -520,16 +544,24 @@ execStep cfg reg tr rn i st = case rsAction st of
   "sign.init" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
-      Right (name, ls) -> do
-        emit tr "C_SignInit" 0 ("session=" ++ name)
-        pure (Right (rn { rnSessions = Map.insert name (ls { lsSignArmed = True }) (rnSessions rn) }, StepReturn "CKR_OK", ""))
+      Right (name, ls)
+        | not (lsLoggedIn ls) ->
+            pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
+        | otherwise -> case (lookup "mechanism" (rsArgs st), lookup "fixture_key" (rsArgs st)) of
+            (Just (JStr mech), Just (JStr key)) -> do
+              emit tr "C_SignInit" 0 ("session=" ++ name)
+              let ls' = ls { lsArmed = Just (mech, key) }
+                  detail = "mechanism=" ++ mech ++ " key=" ++ key
+              pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK", detail))
+            _ -> pure (Left "sign.init needs string 'mechanism' and 'fixture_key'")
   "sign" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
-      Right (name, ls) -> do
-        if not (lsSignArmed ls)
-          then pure (Left "sign without sign.init")
-          else case signConsumption st of
+      Right (name, ls)
+        | not (lsLoggedIn ls) ->
+            pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
+        | isNothing (lsArmed ls) -> pure (Left "sign without sign.init")
+        | otherwise -> case signConsumption st of
             Left err -> pure (Left err)
             Right (len, cap)
               | cap == 0 ->
@@ -554,21 +586,24 @@ execStep cfg reg tr rn i st = case rsAction st of
   "async.complete" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
-      Right (name, ls) -> do
-        if inFault rn i
-          then do
-            emit tr "C_Sign" 0x30 ("session=" ++ name)
-            pure (Right (rn, StepReturn "CKR_DEVICE_ERROR", ""))
-          else do
-            let left_ = lsPendingLeft ls
-            -- polls = pending completes before the final OK.
-            if left_ > 0
+      Right (name, ls)
+        | not (lsLoggedIn ls) ->
+            pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
+        | otherwise -> do
+            if inFault rn i
               then do
-                emit tr "C_Sign" 0x204 ("session=" ++ name)
-                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = left_ - 1 }) (rnSessions rn) }, StepReturn "CKR_PENDING", ""))
+                emit tr "C_Sign" 0x30 ("session=" ++ name)
+                pure (Right (rn, StepReturn "CKR_DEVICE_ERROR", ""))
               else do
-                emit tr "C_Sign" 0 ("session=" ++ name)
-                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = 0 }) (rnSessions rn) }, StepReturn "CKR_OK", ""))
+                let left_ = lsPendingLeft ls
+                -- polls = pending completes before the final OK.
+                if left_ > 0
+                  then do
+                    emit tr "C_Sign" 0x204 ("session=" ++ name)
+                    pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = left_ - 1 }) (rnSessions rn) }, StepReturn "CKR_PENDING", ""))
+                  else do
+                    emit tr "C_Sign" 0 ("session=" ++ name)
+                    pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = 0 }) (rnSessions rn) }, StepReturn "CKR_OK", ""))
   "token.remove" -> do
     let tok = fromMaybe (slotZeroLabel cfg) $ case lookup "token" (rsArgs st) of
           Just (JStr t) -> Just t
@@ -590,9 +625,11 @@ execStep cfg reg tr rn i st = case rsAction st of
         pure (Right (rn, StepEvent "token-state-change", ""))
       WaitNoEvent -> pure (Left "expected a slot event, queue empty")
       WaitFinalized -> pure (Left "instance finalized while waiting")
-  "finalize" -> do
-    emit tr "C_Finalize" 0 "finalized"
-    pure (Right (rn { rnFinalized = True }, StepReturn "CKR_OK", ""))
+  "finalize" -> case lifecycleRefusal rn of
+    Just refusal -> pure (Right (rn, refusal, ""))
+    Nothing -> do
+      emit tr "C_Finalize" 0 "finalized"
+      pure (Right (rn { rnFinalized = True }, StepReturn "CKR_OK", ""))
   -- Sim verbs: test-gated like scenario.load (the gate refuses
   -- without mutation when the instance is not test-enabled).
   "token.insert" -> withSimGate $ do
@@ -622,8 +659,16 @@ execStep cfg reg tr rn i st = case rsAction st of
       _ -> pure (Left "fault.window needs integer 'start'/'ticks' in 0..1000000")
   other -> pure (Left ("unknown action (rejected, never executed): " ++ other))
   where
+    -- | Actions the lifecycle gate covers: every verb except
+    -- initialize\/finalize and the sim test controls.
+    lifecycleGated =
+      [ "fixture.load", "session.open", "session.login", "sign.init"
+      , "sign", "async.complete", "token.remove", "slot-event.wait"
+      ]
     -- | Refuse sim verbs without mutation unless test-enabled (the
-    -- scenario.load gating discipline).
+    -- scenario.load gating discipline). These verbs also skip the
+    -- lifecycle gate: they are test controls that run on any
+    -- instance state.
     withSimGate action
       | ccTestEnabled (cfgControl cfg) = action
       | otherwise = pure (Left "test_instance_required (sim verbs need a test-enabled instance)")

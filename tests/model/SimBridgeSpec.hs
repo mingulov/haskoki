@@ -113,6 +113,11 @@ spec = testGroup "Sim bridge"
   , testCase "absent token label refuses the open" caseTokenAbsent
   , testCase "absent token label refuses removal" caseTokenRemoveAbsent
   , testCase "zero capacity answers too-small" caseCapacityZero
+  , testCase "steps before initialize refuse" caseNotInitialized
+  , testCase "repeated initialize answers already-initialized" caseDoubleInitialize
+  , testCase "post-finalize use refuses" casePostFinalize
+  , testCase "signing without login refuses" caseLoginRequired
+  , testCase "armed mechanism and key echo in step lines" caseArmedEcho
   ]
 
 fixture :: FilePath -> FilePath
@@ -908,6 +913,8 @@ caseFirstOpenedAlias = do
     , step "fixture.load" [] Nothing
     , stepSaveAs "session.open" [("asynchronous", JBool True)] "zeta"
     , stepSaveAs "session.open" [("asynchronous", JBool False)] "alpha"
+    , step "session.login"
+        [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")] Nothing
     , step "sign.init"
         [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key"), ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
     , step "sign"
@@ -916,7 +923,7 @@ caseFirstOpenedAlias = do
     ]
   assertEqual ("alias run exit 0: " ++ ceErr r) 0 (ceCode r)
   assertBool "first-opened session signs"
-    ("step[5] sign -> CKR_PENDING" `isInfixOf` ceOut r)
+    ("step[6] sign -> CKR_PENDING" `isInfixOf` ceOut r)
 
 -- | A wrong expectation on 'initialize' fails the run, naming the
 -- step, the action, and the expected vs actual results.
@@ -1051,3 +1058,68 @@ caseCapacityZero = do
   assertEqual ("sized capacity signs: " ++ ceErr r3) 0 (ceCode r3)
   assertBool "consumption echoed"
     (("bytes=1 capacity=256") `isInfixOf` ceOut r3)
+
+-- | Steps before any initialize refuse; expecting OK for one fails
+-- the run.
+caseNotInitialized :: IO ()
+caseNotInitialized = do
+  r <- runTempScenario "noinit"
+    [step "session.open" [] (Just "CKR_CRYPTOKI_NOT_INITIALIZED")]
+  assertEqual ("pre-initialize step refuses: " ++ ceErr r) 0 (ceCode r)
+  r2 <- runTempScenario "noinitok" [step "session.open" [] (Just "CKR_OK")]
+  assertEqual "expecting OK fails" 1 (ceCode r2)
+
+-- | A repeat initialize answers already-initialized; after finalize
+-- a fresh initialize resets the runner.
+caseDoubleInitialize :: IO ()
+caseDoubleInitialize = do
+  r <- runTempScenario "twiceinit"
+    [ step "initialize" [] Nothing
+    , step "initialize" [] (Just "CKR_CRYPTOKI_ALREADY_INITIALIZED")
+    , step "session.open" [] (Just "CKR_OK") ]
+  assertEqual ("repeat answers already-initialized: " ++ ceErr r) 0 (ceCode r)
+  r2 <- runTempScenario "reinit"
+    [ step "initialize" [] Nothing, step "finalize" [] Nothing
+    , step "initialize" [] (Just "CKR_OK")
+    , step "session.open" [] (Just "CKR_OK") ]
+  assertEqual ("re-initialize after finalize resets: " ++ ceErr r2) 0 (ceCode r2)
+
+-- | Steps after finalize refuse, and so does a repeated finalize.
+casePostFinalize :: IO ()
+casePostFinalize = do
+  r <- runTempScenario "postfin"
+    [ step "initialize" [] Nothing, step "finalize" [] Nothing
+    , step "session.open" [] (Just "CKR_CRYPTOKI_NOT_INITIALIZED") ]
+  assertEqual ("post-finalize use refuses: " ++ ceErr r) 0 (ceCode r)
+  r2 <- runTempScenario "twicefin"
+    [ step "initialize" [] Nothing, step "finalize" [] Nothing
+    , step "finalize" [] (Just "CKR_CRYPTOKI_NOT_INITIALIZED") ]
+  assertEqual ("repeated finalize refuses: " ++ ceErr r2) 0 (ceCode r2)
+
+-- | Signing without a logged-in session refuses instead of arming.
+caseLoginRequired :: IO ()
+caseLoginRequired = do
+  let initArgs = [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")]
+  r <- runTempScenario "unsigned"
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , JObj [("action", JStr "sign.init"), ("arguments", JObj initArgs)
+      , ("expect", JObj [("return", JStr "CKR_USER_NOT_LOGGED_IN")])] ]
+  assertEqual ("signing without login refuses: " ++ ceErr r) 0 (ceCode r)
+
+-- | A logged-in sign.init arms the session and echoes the consumed
+-- mechanism and key in its step line.
+caseArmedEcho :: IO ()
+caseArmedEcho = do
+  r <- runTempScenario "armed"
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+      , ("pin", JStr "1234")] Nothing
+    , step "sign.init" [("session", JStr "s1")
+      , ("fixture_key", JStr "demo-signing-key")
+      , ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_OK") ]
+  assertEqual ("arming run passes: " ++ ceErr r) 0 (ceCode r)
+  assertBool "armed pair echoed"
+    ("mechanism=CKM_RSA_PKCS key=demo-signing-key" `isInfixOf` ceOut r)

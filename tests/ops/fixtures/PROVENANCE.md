@@ -40,3 +40,5 @@ documentary `note` object; validation drops them.
 (`session.open` and `token.remove`); other labels refuse at execution.
 `sim-scenario.json`: the `token` arguments now name the served slot-0 label
 (`session.open` and `token.remove`); other labels refuse at execution.
+`sim-scenario.json`: the mid-file `finalize` moved after the `s2` block
+(steps after finalize refuse); step order otherwise unchanged.
