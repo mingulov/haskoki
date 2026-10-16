@@ -206,10 +206,10 @@ errorCase p c msg =
       row = rowText p c "error" ns Nothing Nothing Nothing "error"
   in CaseResult "error" json row
 
-childCase :: FilePath -> (Int, Int) -> IO CaseResult
-childCase exe (p, c) = do
-  r <- timeout hardCapUs
-         (readProcessWithExitCode exe ["--case", show p, show c] "")
+childCaseWith :: Int -> FilePath -> [String] -> (Int, Int) -> IO CaseResult
+childCaseWith cap exe argv (p, c) = do
+  r <- timeout cap
+         (readProcessWithExitCode exe argv "")
   pure $ case r of
     Nothing -> hardCensored p c
     Just (code, out, err) ->
@@ -219,6 +219,10 @@ childCase exe (p, c) = do
       in case (code, js, rs) of
            (ExitSuccess, [j], [row]) -> CaseResult (statusOf j) j row
            _ -> errorCase p c ("exit " ++ exitText code ++ ": " ++ take 400 err)
+
+childCase :: FilePath -> (Int, Int) -> IO CaseResult
+childCase exe (p, c) =
+  childCaseWith hardCapUs exe ["--case", show p, show c] (p, c)
 
 exitText :: ExitCode -> String
 exitText ExitSuccess = "0"
@@ -257,6 +261,13 @@ selfTest = do
   failIf "error record lacks the exit code" (not ("exit 1" `isInfixOf` crJson ec))
   failIf "error record field set differs" (keysOf (crJson ec) /= keysOf (crJson ok))
   failIf "hard-censored record field set differs" (keysOf (crJson hc) /= keysOf (crJson ok))
+  -- The parent-side hard cap through the real timeout path: a child that
+  -- outlives a 100 ms cap must produce the censored-hard record. The
+  -- abandoned sleep exits on its own after 5 s.
+  hcTimeout <- childCaseWith 100000 "/bin/sleep" ["5"] (65536, 1024)
+  check 65536 1024 "censored-hard" hcTimeout
+  failIf "timeout hard-cap record field set differs"
+    (keysOf (crJson hcTimeout) /= keysOf (crJson ok))
   failIf "usage parse accepts a zero chunk" (parseArgs ["--case", "65536", "0"] /= Nothing)
   failIf "usage parse rejects a valid case"
     (parseArgs ["--case", "65536", "1"] /= Just (OneCase (CaseArgs 65536 1)))
