@@ -3,14 +3,14 @@
     "opensc": {
       "package": "opensc",
       "package_version": "0.27.0~rc1-1",
-      "runtime_probe": ["dpkg-query", "--show", "--showformat=${Version}", "opensc"],
-      "runtime_string": "0.27.0~rc1-1"
+      "runtime_argv": ["dpkg-query", "-W", "-f=${Version}", "opensc"],
+      "runtime_version": "0.27.0~rc1-1"
     },
     "openssl": {
       "package": "openssl",
       "package_version": "3.5.5-1ubuntu3.7",
-      "runtime_probe": ["openssl", "version"],
-      "runtime_string": "OpenSSL 3.5.5"
+      "runtime_argv": ["openssl", "version"],
+      "runtime_version": "OpenSSL 3.5.5"
     }
   },
   "profiles": {
@@ -29,9 +29,8 @@
       "profiles": ["portfolio", "image"],
       "phase": "module",
       "client": "opensc",
-      "store": "opensc/haskoki-provision.toml",
+      "store": "provision",
       "argv": ["pkcs11-tool", "--module", "@MODULE@", "--init-token", "--label", "haskoki-demo", "--so-pin", "5678"],
-      "env": {"HASKOKI_CONFIG": "@CFG@/haskoki-provision.toml"},
       "timeout_seconds": 60,
       "expect": {"exit": 0, "markers": ["Token successfully initialized"]},
       "depends_on": []
@@ -41,11 +40,10 @@
       "profiles": ["portfolio", "image"],
       "phase": "module",
       "client": "opensc",
-      "store": "opensc/haskoki-provision.toml",
+      "store": "provision",
       "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--login-type", "so", "--so-pin", "5678", "--init-pin", "--pin", "pin-bravo-02"],
-      "env": {"HASKOKI_CONFIG": "@CFG@/haskoki-provision.toml"},
       "timeout_seconds": 60,
-      "expect": {"exit": 0, "markers": []},
+      "expect": {"exit": 0, "markers": ["User PIN successfully initialized"]},
       "depends_on": ["opensc-provision-init-token"]
     },
     {
@@ -53,11 +51,10 @@
       "profiles": ["portfolio", "image"],
       "phase": "module",
       "client": "opensc",
-      "store": "opensc/haskoki-provision.toml",
+      "store": "provision",
       "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "pin-bravo-02", "--change-pin", "--new-pin", "pin-charlie-03"],
-      "env": {"HASKOKI_CONFIG": "@CFG@/haskoki-provision.toml"},
       "timeout_seconds": 60,
-      "expect": {"exit": 0, "markers": []},
+      "expect": {"exit": 0, "markers": ["PIN successfully changed"]},
       "depends_on": ["opensc-provision-init-pin"]
     },
     {
@@ -65,9 +62,8 @@
       "profiles": ["portfolio", "image"],
       "phase": "module",
       "client": "opensc",
-      "store": "opensc/haskoki-provision.toml",
+      "store": "provision",
       "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "pin-charlie-03", "--keypairgen", "--key-type", "EC:prime256v1", "--label", "prov-ec", "--id", "0909", "--usage-sign"],
-      "env": {"HASKOKI_CONFIG": "@CFG@/haskoki-provision.toml"},
       "timeout_seconds": 60,
       "expect": {"exit": 0, "markers": ["Key pair generated"]},
       "depends_on": ["opensc-provision-change-pin"]
@@ -77,9 +73,8 @@
       "profiles": ["portfolio", "image"],
       "phase": "module",
       "client": "opensc",
-      "store": "opensc/haskoki-provision.toml",
+      "store": "provision",
       "argv": ["pkcs11-tool", "--module", "@MODULE@", "--read-object", "--type", "pubkey", "--id", "0909", "-o", "@RUN@/out/prov-pub.der"],
-      "env": {"HASKOKI_CONFIG": "@CFG@/haskoki-provision.toml"},
       "timeout_seconds": 60,
       "expect": {"exit": 0, "markers": [], "files": [{"path": "out/prov-pub.der", "op": "nonempty"}]},
       "depends_on": ["opensc-provision-create-ec"]
@@ -89,9 +84,8 @@
       "profiles": ["portfolio", "image"],
       "phase": "module",
       "client": "opensc",
-      "store": "opensc/haskoki-provision.toml",
+      "store": "provision",
       "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "pin-charlie-03", "--sign", "--mechanism", "ECDSA-SHA256", "--id", "0909", "--signature-format", "openssl", "--input-file", "@SRC@/tests/journeys/opensc/provision-message.txt", "--output-file", "@RUN@/out/prov-sig.der"],
-      "env": {"HASKOKI_CONFIG": "@CFG@/haskoki-provision.toml"},
       "timeout_seconds": 60,
       "expect": {"exit": 0, "markers": []},
       "requires_verification": "opensc-provision-verify-independent",
@@ -102,33 +96,29 @@
       "profiles": ["portfolio", "image"],
       "phase": "verifier",
       "client": "openssl",
-      "store": "opensc/haskoki-provision.toml",
       "argv": ["openssl", "dgst", "-sha256", "-verify", "@RUN@/out/prov-pub.der", "-keyform", "DER", "-signature", "@RUN@/out/prov-sig.der", "@SRC@/tests/journeys/opensc/provision-message.txt"],
-      "env": {},
       "timeout_seconds": 60,
       "expect": {"exit": 0, "markers": ["Verified OK"]},
-      "depends_on": ["opensc-provision-sign"]
+      "depends_on": ["opensc-provision-export-pubkey", "opensc-provision-sign"]
     },
     {
       "name": "opensc-provision-enumerate-new-pin",
       "profiles": ["portfolio", "image"],
       "phase": "module",
       "client": "opensc",
-      "store": "opensc/haskoki-provision.toml",
+      "store": "provision",
       "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "pin-charlie-03", "--list-objects"],
-      "env": {"HASKOKI_CONFIG": "@CFG@/haskoki-provision.toml"},
       "timeout_seconds": 60,
       "expect": {"exit": 0, "markers": ["prov-ec"]},
-      "depends_on": ["opensc-provision-verify-independent"]
+      "depends_on": ["opensc-provision-create-ec"]
     },
     {
       "name": "opensc-provision-refuse-old-pin",
       "profiles": ["portfolio", "image"],
       "phase": "module",
       "client": "opensc",
-      "store": "opensc/haskoki-provision.toml",
+      "store": "provision",
       "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "pin-bravo-02", "--list-objects"],
-      "env": {"HASKOKI_CONFIG": "@CFG@/haskoki-provision.toml"},
       "timeout_seconds": 60,
       "expect": {"exit": 1, "markers": []},
       "expect_refusal": {"rv": "CKR_PIN_INCORRECT", "markers": ["CKR_PIN_INCORRECT"]},

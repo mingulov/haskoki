@@ -21,7 +21,7 @@
  *   - restart persistence: changed PINs survive Finalize +
  *     Initialize; a relabel needs the catalog updated to match
  *     (the operator flow: rewrite config, restart, serve on)
- *   - linearization: barrier-start load stays clean. The
+ *   - linearization: rendezvous-start load stays clean. The
  *     same-value leg races login-vs-SetPIN(A->A): every call
  *     answers, sessions conserve, and the stale leg pins the
  *     strike counter. The replace legs race two distinct
@@ -653,7 +653,6 @@ static void phase_restart(void) {
 #define RACE_ITERS 25
 #define STALE_ITERS 10
 
-static pthread_barrier_t g_race_start;
 static int g_race_bad = 0;
 static int g_race_login_ok = 0;
 static int g_race_login_dup = 0;
@@ -664,6 +663,13 @@ static void race_note_bad(void) {
   __sync_fetch_and_add(&g_race_bad, 1);
 }
 
+/* Fail-aware rendezvous shared by every race leg (defined
+ * with the replace race below; the legs run sequentially,
+ * so one set of state serves all). */
+static void rendezvous_reset(int parties);
+static void rendezvous_fail(void);
+static int rendezvous_wait(void);
+
 static void *stale_worker(void *arg);
 
 static void *race_worker(void *arg) {
@@ -671,15 +677,14 @@ static void *race_worker(void *arg) {
   int iter;
   CK_RV rv;
   CK_SESSION_HANDLE sess = 0;
-  int brc;
   (void)id;
   rv = open_rw(0, &sess);
   if (rv != CKR_OK || sess == 0) {
     race_note_bad();
+    rendezvous_fail();
     return NULL;
   }
-  brc = pthread_barrier_wait(&g_race_start);
-  if (brc != 0 && brc != PTHREAD_BARRIER_SERIAL_THREAD) {
+  if (rendezvous_wait() != 0) {
     race_note_bad();
     g_api->C_CloseSession(sess);
     return NULL;
@@ -736,19 +741,16 @@ static void phase_race_idempotent(void) {
   g_race_bad = 0;
   g_race_login_ok = 0;
   g_race_login_dup = 0;
-  if (pthread_barrier_init(&g_race_start, NULL, RACE_WORKERS) != 0) {
-    CHECKC(0, "race: barrier init");
-    return;
-  }
+  rendezvous_reset(RACE_WORKERS);
   for (i = 0; i < RACE_WORKERS; i++) {
     if (pthread_create(&workers[i], NULL, race_worker, (void *)i) != 0) {
       CHECKC(0, "race: worker spawn");
+      rendezvous_fail();
       break;
     }
     created++;
   }
   for (i = 0; i < created; i++) pthread_join(workers[i], NULL);
-  pthread_barrier_destroy(&g_race_start);
   CHECKC(created == RACE_WORKERS && g_race_bad == 0 &&
          g_race_login_ok == 1 && g_race_login_dup == RACE_WORKERS - 1,
          "race: one login grants, rest observe, every SetPIN/close answers OK");
@@ -761,20 +763,17 @@ static void phase_race_idempotent(void) {
    * the linearization. */
   g_stale_incorrect = 0;
   g_stale_locked = 0;
-  if (pthread_barrier_init(&g_race_start, NULL, RACE_WORKERS) != 0) {
-    CHECKC(0, "race: stale barrier init");
-    return;
-  }
+  rendezvous_reset(RACE_WORKERS);
   created = 0;
   for (i = 0; i < RACE_WORKERS; i++) {
     if (pthread_create(&workers[i], NULL, stale_worker, (void *)i) != 0) {
       CHECKC(0, "race: stale worker spawn");
+      rendezvous_fail();
       break;
     }
     created++;
   }
   for (i = 0; i < created; i++) pthread_join(workers[i], NULL);
-  pthread_barrier_destroy(&g_race_start);
   CHECKC(created == RACE_WORKERS && g_race_bad == 0 &&
          g_stale_incorrect == 2 &&
          g_stale_locked == RACE_WORKERS * STALE_ITERS - 2,
@@ -808,15 +807,14 @@ static void *stale_worker(void *arg) {
   int iter;
   CK_RV rv;
   CK_SESSION_HANDLE sess = 0;
-  int brc;
   (void)id;
   rv = open_rw(0, &sess);
   if (rv != CKR_OK || sess == 0) {
     race_note_bad();
+    rendezvous_fail();
     return NULL;
   }
-  brc = pthread_barrier_wait(&g_race_start);
-  if (brc != 0 && brc != PTHREAD_BARRIER_SERIAL_THREAD) {
+  if (rendezvous_wait() != 0) {
     race_note_bad();
     g_api->C_CloseSession(sess);
     return NULL;
@@ -840,57 +838,61 @@ static void *stale_worker(void *arg) {
 
 #define REPLACE_WORKERS 2
 
-/* Fail-aware two-party rendezvous for the replace race: a plain
- * pthread barrier cannot abort, so a worker that fails its open
- * (or a pthread_create failure with only one worker alive) would
- * leave the peer waiting forever and the join hanging. Here a
- * worker failure broadcasts and every waiter fails cleanly. */
-static pthread_mutex_t g_replace_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_replace_cond = PTHREAD_COND_INITIALIZER;
-static int g_replace_arrived = 0;
-static int g_replace_failed = 0;
-static int g_replace_generation = 0;
+/* Fail-aware N-party rendezvous shared by every race leg: a
+ * plain pthread barrier cannot abort, so a worker that fails
+ * its open (or a pthread_create failure with a partial crew)
+ * would leave the peers waiting forever and the join hanging.
+ * Here a worker failure broadcasts and every waiter fails
+ * cleanly. The legs run sequentially and reset the party
+ * count per leg, so one set of state serves all. */
+static pthread_mutex_t g_rv_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_rv_cond = PTHREAD_COND_INITIALIZER;
+static int g_rv_arrived = 0;
+static int g_rv_failed = 0;
+static int g_rv_generation = 0;
+static int g_rv_parties = 0;
 static CK_RV g_replace_rv[REPLACE_WORKERS];
 static const char *g_replace_old = "pin-alpha-01";
 static const char *g_replace_new[REPLACE_WORKERS] = { "pin-bravo-02",
                                                       "pin-charlie-03" };
 
-static void replace_barrier_reset(void) {
-  pthread_mutex_lock(&g_replace_mutex);
-  g_replace_arrived = 0;
-  g_replace_failed = 0;
-  g_replace_generation++;
-  pthread_mutex_unlock(&g_replace_mutex);
+static void rendezvous_reset(int parties) {
+  pthread_mutex_lock(&g_rv_mutex);
+  g_rv_arrived = 0;
+  g_rv_failed = 0;
+  g_rv_generation++;
+  g_rv_parties = parties;
+  pthread_mutex_unlock(&g_rv_mutex);
 }
 
-static void replace_barrier_fail(void) {
-  pthread_mutex_lock(&g_replace_mutex);
-  g_replace_failed = 1;
-  pthread_cond_broadcast(&g_replace_cond);
-  pthread_mutex_unlock(&g_replace_mutex);
+static void rendezvous_fail(void) {
+  pthread_mutex_lock(&g_rv_mutex);
+  g_rv_failed = 1;
+  pthread_cond_broadcast(&g_rv_cond);
+  pthread_mutex_unlock(&g_rv_mutex);
 }
 
-static int replace_barrier_wait(void) {
+static int rendezvous_wait(void) {
   int gen;
   int rc = 0;
-  pthread_mutex_lock(&g_replace_mutex);
-  if (g_replace_failed) {
-    pthread_mutex_unlock(&g_replace_mutex);
+  pthread_mutex_lock(&g_rv_mutex);
+  if (g_rv_failed) {
+    pthread_mutex_unlock(&g_rv_mutex);
     return -1;
   }
-  gen = g_replace_generation;
-  g_replace_arrived++;
-  if (g_replace_arrived == REPLACE_WORKERS) {
-    g_replace_arrived = 0;
-    g_replace_generation++;
-    pthread_cond_broadcast(&g_replace_cond);
-    pthread_mutex_unlock(&g_replace_mutex);
+  gen = g_rv_generation;
+  g_rv_arrived++;
+  if (g_rv_arrived == g_rv_parties) {
+    g_rv_arrived = 0;
+    g_rv_generation++;
+    pthread_cond_broadcast(&g_rv_cond);
+    pthread_mutex_unlock(&g_rv_mutex);
     return 0;
   }
-  while (gen == g_replace_generation && !g_replace_failed)
-    pthread_cond_wait(&g_replace_cond, &g_replace_mutex);
-  if (g_replace_failed) rc = -1;
-  pthread_mutex_unlock(&g_replace_mutex);
+  while (gen == g_rv_generation && !g_rv_failed)
+    pthread_cond_wait(&g_rv_cond, &g_rv_mutex);
+  if (g_rv_failed) rc = -1;
+  pthread_mutex_unlock(&g_rv_mutex);
   return rc;
 }
 
@@ -900,10 +902,10 @@ static void *replace_worker(void *arg) {
   /* public RW session; NO login: the old PIN authenticates */
   if (open_rw(0, &sess) != CKR_OK) {
     race_note_bad();
-    replace_barrier_fail();
+    rendezvous_fail();
     return NULL;
   }
-  if (replace_barrier_wait() != 0) {
+  if (rendezvous_wait() != 0) {
     race_note_bad();
     g_api->C_CloseSession(sess);
     return NULL;
@@ -918,7 +920,9 @@ static void *replace_worker(void *arg) {
 /* Run one replace race over the current old/new pair: exactly
  * one racer wins (CKR_OK), the other is refused with
  * CKR_PIN_INCORRECT on the superseded old credential, in
- * either order. Returns nonzero when the barrier ran. */
+ * either order. Returns nonzero when both racers spawned,
+ * even if the rendezvous aborted (the CHECKC below records
+ * the abort, and the caller stops the phase on a zero). */
 static int run_replace_race(const char *tag) {
   pthread_t workers[REPLACE_WORKERS];
   long i;
@@ -928,11 +932,11 @@ static int run_replace_race(const char *tag) {
 
   g_race_bad = 0;
   for (i = 0; i < REPLACE_WORKERS; i++) g_replace_rv[i] = CKR_GENERAL_ERROR;
-  replace_barrier_reset();
+  rendezvous_reset(REPLACE_WORKERS);
   for (i = 0; i < REPLACE_WORKERS; i++) {
     if (pthread_create(&workers[i], NULL, replace_worker, (void *)i) != 0) {
       CHECKC(0, "race: replace worker spawn");
-      replace_barrier_fail();
+      rendezvous_fail();
       break;
     }
     created++;

@@ -1,0 +1,17 @@
+# Junction config: OpenSC provisioning legs. Fresh SQLite store per run;
+# no [tokens] section, so slot 0 serves the home singleton (haskoki-demo).
+# Runner substitution: @JOURNEY_DIR@ as in haskoki-opensc.toml.
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "sqlite"
+path = "@JOURNEY_DIR@/provision-tokens.db"
+
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+
+[trace]
+enabled = false

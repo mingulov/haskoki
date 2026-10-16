@@ -2094,9 +2094,22 @@ journeyChildren = [child1, child2, child3, child4, child5]
         , "close=0"
         ]
       )
+    -- Three user strikes and three SO strikes precede the
+    -- reset, so both roles lock and every post-reset auth
+    -- assert discriminates: without the reset the flags would
+    -- read back locked with 3 attempts each. Reinit
+    -- authorization is the SO PIN bytes only
+    -- ('haskokiStdInitToken' compares PINs, never the lock
+    -- flags), so the reset still answers 0 on a locked token.
     child5 =
-      ( "open,close,init-token/haskoki-demo/5678,open,login-state"
+      ( "open,login/user/bad005,login/user/bad006,login/user/bad007,login/so/0001,login/so/0002,login/so/0003,close,init-token/haskoki-demo/5678,open,login-state"
       , [ "open=0"
+        , "login/user/bad005=" ++ rvText CKR_PIN_INCORRECT
+        , "login/user/bad006=" ++ rvText CKR_PIN_INCORRECT
+        , "login/user/bad007=" ++ rvText CKR_PIN_LOCKED
+        , "login/so/0001=" ++ rvText CKR_PIN_INCORRECT
+        , "login/so/0002=" ++ rvText CKR_PIN_INCORRECT
+        , "login/so/0003=" ++ rvText CKR_PIN_LOCKED
         , "close=0"
         , "init-token/haskoki-demo/5678=0"
         , "open=0"
