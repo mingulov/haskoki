@@ -1,8 +1,10 @@
 {
   "schema_version": 1,
-  "status": "design-example-not-executed",
   "name": "pending-sign-and-token-removal",
-  "notice": "The owned-instance runner interprets these actions; a separate CLI does not control another loaded process.",
+  "note": {
+    "status": "design-example-not-executed",
+    "notice": "The owned-instance runner interprets these actions; a separate CLI does not control another loaded process."
+  },
   "rules": [],
   "steps": [
     {

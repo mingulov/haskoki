@@ -84,6 +84,10 @@ spec = testGroup "Sim bridge"
   , testCase "save_as validates (string, session.open only)" caseSaveAsValidated
   , testCase "expect validates (object, supported clause only)" caseExpectValidated
   , testCase "unknown step fields reject" caseStepFieldsRejected
+  , testCase "top-level note validates and is dropped" caseTopNoteDropped
+  , testCase "unknown top-level fields reject" caseTopUnknownRejected
+  , testCase "string note rejects" caseTopNoteShape
+  , testCase "top-level schema version admits only 1" caseTopSchemaVersion
   , testCase "duplicate fields reject" caseDuplicateFieldsRejected
   , testCase "per-action arguments validate" caseArgumentsValidated
   , testCase "save_as names the opened session" caseSaveAsHonored
@@ -451,6 +455,55 @@ caseStepFieldsRejected :: IO ()
 caseStepFieldsRejected =
   assertRejected "unknown step field" (scenarioWith "c4-fields" Nothing
     [JObj [("action", JStr "initialize"), ("when", JStr "now")]])
+
+-- | A scenario object with extra top-level fields.
+scenarioTop :: String -> [(String, Json)] -> [Json] -> Json
+scenarioTop name extras steps = JObj $
+  [("name", JStr name)] ++ extras ++ [("steps", JArr steps)]
+
+-- | A top-level 'note' object validates and changes nothing: the
+-- noted scenario validates to the same value as the plain one.
+caseTopNoteDropped :: IO ()
+caseTopNoteDropped = do
+  let steps = [JObj [("action", JStr "initialize")]]
+      note = [("note", JObj [("status", JStr "sim-demo")
+                      , ("notice", JStr "free prose")])]
+  case (validateScenario (scenarioTop "noted" note steps)
+       , validateScenario (scenarioWith "noted" Nothing steps)) of
+    (Right noted, Right plain) ->
+      assertEqual "note validates and is dropped" plain noted
+    (Left err, _) -> assertFailure ("noted scenario must validate: " ++ err)
+    (_, Left err) -> assertFailure ("plain scenario must validate: " ++ err)
+
+-- | Unknown top-level fields reject, naming the field.
+caseTopUnknownRejected :: IO ()
+caseTopUnknownRejected = do
+  let steps = [JObj [("action", JStr "initialize")]]
+  assertRejected "top-level status"
+    (scenarioTop "top" [("status", JStr "x")] steps)
+  assertRejected "top-level notice"
+    (scenarioTop "top" [("notice", JStr "x")] steps)
+  assertRejected "top-level token"
+    (scenarioTop "top" [("token", JStr "demo-token")] steps)
+  case validateScenario (scenarioTop "top" [("status", JStr "x")] steps) of
+    Left err -> assertBool "names the field" ("unknown scenario field: status" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
+
+-- | A non-object top-level 'note' rejects.
+caseTopNoteShape :: IO ()
+caseTopNoteShape =
+  assertRejected "string note"
+    (scenarioTop "top" [("note", JStr "prose")] [JObj [("action", JStr "initialize")]])
+
+-- | 'schema_version' is optional but admits only 1.
+caseTopSchemaVersion :: IO ()
+caseTopSchemaVersion = do
+  let steps = [JObj [("action", JStr "initialize")]]
+  case validateScenario (scenarioTop "top" [("schema_version", JNum 1)] steps) of
+    Left err -> assertFailure ("schema_version 1 must validate: " ++ err)
+    Right _ -> pure ()
+  assertRejected "schema_version 2"
+    (scenarioTop "top" [("schema_version", JNum 2)] steps)
 
 -- | Duplicate keys reject: lookup takes the first, so a second
 -- entry would silently vanish (notably an empty 'rules' hiding a

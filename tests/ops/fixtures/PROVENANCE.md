@@ -27,3 +27,8 @@ device-error window.
 PINs are public test fixtures. Use disposable keys and paths. Configuration
 behavior, including reserved settings, is described in the
 [configuration reference](../../../docs/config-honesty.md).
+
+`scenario.json`: the top-level `status`/`notice` markers moved under a
+documentary `note` object; validation drops them.
+`sim-scenario.json`: the top-level `status`/`notice` markers moved under a
+documentary `note` object; validation drops them.

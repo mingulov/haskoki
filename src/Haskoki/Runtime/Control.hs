@@ -719,7 +719,11 @@ knownVerbs =
   ]
 
 -- | Validate a scenario object: bounded step count, known verbs,
--- per-action arguments, well-formed extras. Rules must be absent or
+-- per-action arguments, well-formed extras. The top level carries
+-- exactly 'name', 'rules', 'steps', an optional 'schema_version'
+-- (which must be 1 when present), and an optional 'note' object;
+-- every other top-level field rejects. 'note' is validated and
+-- dropped (documentary by construction). Rules must be absent or
 -- empty: the runner never executes them, so carrying any would
 -- silently mislead. Arguments validate per action (known keys,
 -- value shapes, and required keys). Step extras validate per
@@ -733,6 +737,7 @@ knownVerbs =
 validateScenario :: Json -> Either String Scenario
 validateScenario (JObj kvs) = do
   checkDup "scenario field" kvs
+  mapM_ checkTopField kvs
   name <- case lookup "name" kvs of
     Just (JStr n) | not (null n) -> Right n
     _ -> Left "scenario needs a non-empty string 'name'"
@@ -781,6 +786,15 @@ validateScenario (JObj kvs) = do
     checkField (k, _)
       | k `elem` ["action", "arguments", "save_as", "expect"] = Right ()
       | otherwise = Left ("unknown scenario step field: " ++ k)
+    checkTopField (k, v)
+      | k `elem` ["name", "rules", "steps"] = Right ()
+      | k == "note" = case v of
+          JObj _ -> Right ()
+          _ -> Left "scenario 'note' must be an object"
+      | k == "schema_version" = case v of
+          JNum 1 -> Right ()
+          _ -> Left "scenario 'schema_version' must be 1"
+      | otherwise = Left ("unknown scenario field: " ++ k)
     checkArgs act pairs = do
       checkDup "scenario argument" pairs
       mapM_ (checkArg act) pairs

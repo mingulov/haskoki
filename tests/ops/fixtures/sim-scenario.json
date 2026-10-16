@@ -1,8 +1,10 @@
 {
   "schema_version": 1,
-  "status": "sim-demo",
   "name": "sim-delay-token-fault",
-  "notice": "Repo-authored: exercises token.insert, async.delay and fault.window on the owned-instance runner (never another live process). Run with sim-demo.toml (test-enabled + [sim] knobs).",
+  "note": {
+    "status": "sim-demo",
+    "notice": "Repo-authored: exercises token.insert, async.delay and fault.window on the owned-instance runner (never another live process). Run with sim-demo.toml (test-enabled + [sim] knobs)."
+  },
   "rules": [],
   "steps": [
     {
