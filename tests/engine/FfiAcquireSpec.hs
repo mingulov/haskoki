@@ -1070,16 +1070,24 @@ caseProcessResidueUnbounded = do
   anomalies <- residueAnomalies
   assertEqual "process residue cell protocol slips" 0 anomalies
 
+-- | Storm-scale iteration bound for the process-residue poll: one
+-- 5 ms iteration per unit of the shared 300 s hang-detection budget.
+--
+-- Keep in sync with tests/model/StormBudget.hs: suites share only
+-- tests/support, so the constant is duplicated.
+stormResidueIters :: Int
+stormResidueIters = 300000000 `div` 5000
+
 -- | Poll the process residue count down to the target. Another case's
 -- open or close may hold entries mid-retry; each further poll runs one
 -- more real export open and close, which retries them again. Gives up
--- after about two seconds.
+-- after the storm-scale budget.
 awaitProcessResidue :: ResidueOwner -> Int -> IO Int
 awaitProcessResidue owner target = go (0 :: Int)
   where
     go k = do
       c <- residueCount owner
-      if c <= target || k >= 400
+      if c <= target || k >= stormResidueIters
         then pure c
         else do
           threadDelay 5000

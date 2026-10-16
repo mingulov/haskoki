@@ -151,13 +151,15 @@ record: symbol separation, sanitizer runs, evidence limits) and
   instead of staying unreachable with its lock held (`ResidueOwner`
   in `ffi/Haskoki/FFI/Async.hs`).
 - Standalone context close is now cancellable at every blocking wait
-  and resumable. A canceled close leaves the context owned by its slot
-  in a closing state that admits nothing, and the next close through
-  the slot resumes teardown where it stopped. Only the final
-  nonblocking pointer transfer (retire the registry entry, free the
-  pointer, null the slot) runs uninterruptibly. A failed or canceled
-  store-box close likewise keeps its slot until a retry closes the
-  Store for real.
+  but the bounded SQLite busy waits inside FFI calls, and resumable.
+  A close canceled in the borrower wait reopens the context; one
+  canceled past it leaves the context owned by its slot in a closing
+  state that admits nothing, and the next close through the slot
+  resumes teardown where it stopped. The final nonblocking pointer
+  transfer (retire the registry entry, free the pointer, null the
+  slot) runs uninterruptibly, as do the bounded backend-drain and
+  Store-close tails. A failed or canceled store-box close likewise
+  keeps its slot until a retry closes the Store for real.
 - Calls through an unregistered async context key (never registered,
   or parked by a test hook only) are now refused before any
   dereference, the same as retired keys; previously they could be

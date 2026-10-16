@@ -56,9 +56,11 @@ Standalone ownership (caller-owned contexts and store boxes).
 Each standalone context and store box is owned by the caller
 that opened it and is closed explicitly ('haskokiAsyncClose',
 'haskokiAsyncStoreClose'). Close is cancellable at every
-blocking wait: a canceled close leaves the context owned by its
-slot in a closing state that admits nothing, and the next close
-through the slot resumes teardown where it stopped. A failed or
+blocking wait but the bounded SQLite busy waits inside FFI calls:
+a close canceled in the borrower wait reopens the context; one
+canceled past it leaves the context owned by its slot in a closing
+state that admits nothing, and the next close through the slot
+resumes teardown where it stopped. A failed or
 canceled box close likewise keeps its slot until a retry closes
 for real. Callers close every context on a box — and join their
 calls — before closing the box, and never close one slot
@@ -912,8 +914,10 @@ data AcquireFailure
 -- through 'aaResidue', so a test injects a private owner and never
 -- shares the process instance. Every later standalone open and
 -- close through a record retries the Stores on that record's owner
--- ('retryResidue'), so a residue's lock is recovered by the next
--- standalone open or close in the process; until then it stays held.
+-- ('retryResidue') — save the value-level close ('asyncCloseCtx'),
+-- a NULL-box open, and the config-failure refusals, which return
+-- before the retry — so a residue's lock is recovered by the next
+-- retrying open or close in the process; until then it stays held.
 data ResidueOwner
   = ProcessResidue
     -- ^ the process instance, used by the production record: the
@@ -930,8 +934,10 @@ data ResidueOwner
 newResidueOwner :: IO ResidueOwner
 newResidueOwner = PrivateResidue <$> newIORef []
 
--- | TEST-ONLY: the number of residue Stores an owner holds,
--- including any another thread holds mid-retry.
+-- | TEST-ONLY: the number of residue Stores queued on an owner.
+-- The process cell also counts entries another thread holds
+-- mid-retry; a private owner's in-flight entries are not counted,
+-- because the retry takes the whole queue before closing any.
 residueCount :: ResidueOwner -> IO Int
 residueCount (PrivateResidue ref) = length <$> readIORef ref
 residueCount ProcessResidue = fromIntegral <$> c_residueCount
@@ -978,7 +984,8 @@ withResidueSlot owner body = do
 -- root allocation and the push run masked, so no kill can strand the
 -- root between them. A second push through one slot (a protocol
 -- slip) reserves afresh; if that cannot grow the cell, the Store
--- keeps its root (reachable, never freed) rather than being dropped.
+-- keeps its root but stays unreachable — a leaked root and lock —
+-- rather than being dropped.
 pushResidue :: ResidueSlot -> Store -> IO ()
 pushResidue (ResidueSlot (PrivateResidue ref) held) st = do
   _ <- atomicModifyIORef' held (\h -> (False, h))
@@ -1352,10 +1359,11 @@ asyncOpenReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
 -- close through the same slot claims nothing and returns without
 -- touching the slot: the owner completes teardown and nulls it,
 -- so the pointer frees exactly once. Close is cancellable at
--- every blocking wait. A kill before teardown starts reopens the
--- gate; a kill past the borrower drain leaves the context owned
--- by its slot in a closing state that admits nothing, and the
--- next close through the slot resumes teardown where it stopped.
+-- every blocking wait but the bounded SQLite busy waits inside FFI
+-- calls. A kill before teardown starts reopens the gate; a kill
+-- past the borrower drain leaves the context owned by its slot
+-- in a closing state that admits nothing, and the next close
+-- through the slot resumes teardown where it stopped.
 -- After killing a closer, join it — or loop until the slot is
 -- null — before retrying: a retry issued while the killed closer
 -- still unwinds claims nothing and returns silently with the
