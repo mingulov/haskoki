@@ -150,6 +150,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          # Full history: check-findings-ledger verifies that every cited
+          # fix commit is an ancestor of HEAD and fails on a shallow clone.
+          fetch-depth: 0
       - name: Restore OpenSSL prefix cache
         id: ossl-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

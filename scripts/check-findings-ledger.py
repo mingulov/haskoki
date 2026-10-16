@@ -17,12 +17,21 @@ Retired rows: a finding or exclusion that left the frozen sets at a
 re-freeze moves from "rows" to "retired" (same schema plus `retired_by`,
 the fix commits, and `refreeze_evidence`). Its id must no longer be in the
 frozen sources, its decision is provider-fix, and its test and receipt are
-existing paths (never pending). "proxy_owned_divergences" records
-proxy-owned behaviour found while fixing the provider.
+existing paths. "proxy_owned_divergences" records proxy-owned behaviour
+found while fixing the provider.
+
+Commit rule: every `retired_by` and `proxy_owned_divergences[].commit` SHA
+must be an ancestor of HEAD (`git merge-base --is-ancestor`), not merely a
+known object: a rebase that rewrites the fix commits leaves the old SHAs
+behind, and the ledger must be rewritten with them. The check needs full
+history, so the gate fails hard, with an explicit message, outside a git
+checkout or in a shallow clone (CI checks out with fetch-depth: 0). Git
+runs with `-c safe.directory=<repo>` so a container whose checkout owner
+differs from the runner user still verifies instead of erroring.
 
 Evidence rule: `test` and `receipt` are an existing repo path (optionally
-`path::detail`), `none: <reason>`, or `pending: WP12 Task N`. `pending` is
-accepted only for decision provider-fix, so later tasks fill those rows.
+`path::detail`) or `none: <reason>`. Pending evidence is no longer
+accepted: every provider fix has landed, so a `pending` value is refused.
 
 TODO_IDS is hard-coded here because its source (the outer workspace todo.md
 and its gap-analysis disposition table) is outside this repository; adding a
@@ -37,9 +46,12 @@ Usage: python3 scripts/check-findings-ledger.py [--self-test]
 
 import copy
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -57,7 +69,6 @@ FIELDS = ["id", "kind", "dimension", "source", "input", "expected",
 DIMENSIONS = ["checker", "c-routing", "planner", "catalog", "todo"]
 EXCL_FAMILIES = ["A-msg-init-0x71", "B-blowfish", "C-tls12", "D-wtls",
                  "E-boundary"]
-PENDING_RE = re.compile(r"^pending: WP12 Task [2-8]$")
 
 COUNTS = {"finding": 18, "exclusion": 61, "c-function": 11,
           "planner-function": 21, "mechanism-planned": 57,
@@ -138,11 +149,8 @@ def classify(row):
 def evidence_ok(value, decision, repo):
     if not isinstance(value, str) or not value.strip():
         return "empty"
-    if PENDING_RE.match(value):
-        return None if decision == "provider-fix" else \
-            "%r is only allowed for provider-fix (got %s)" % (value, decision)
     if value.startswith("pending"):
-        return "malformed pending (want 'pending: WP12 Task N')"
+        return "pending evidence %r is no longer accepted" % value
     if value.startswith("none: ") and len(value) > 6:
         return None
     path = value.split("::", 1)[0]
@@ -266,8 +274,12 @@ def validate_retired(ledger, src, seen, repo):
         if not isinstance(by, list) or not by or not all(
                 isinstance(c, str) and SHA_RE.match(c) for c in by):
             errs.append("retired %s: retired_by needs fix commit shas" % rid)
-        elif not all(_commit_exists(c, repo) for c in by):
-            errs.append("retired %s: retired_by names an unknown commit" % rid)
+        else:
+            for c in by:
+                if not _is_ancestor(c, repo):
+                    errs.append("retired %s: retired_by %s is not an ancestor "
+                                "of HEAD (rebased away? rewrite the ledger "
+                                "SHAs)" % (rid, c))
         if not isinstance(r["refreeze_evidence"], str) or not r[
                 "refreeze_evidence"].strip():
             errs.append("retired %s: empty refreeze_evidence" % rid)
@@ -276,37 +288,63 @@ def validate_retired(ledger, src, seen, repo):
             errs.append("retired %s count %d != pinned %d"
                         % (kind, kinds.get(kind, 0), n))
     for d in ledger.get("proxy_owned_divergences", []):
+        c = d.get("commit", "")
         if not (d.get("id") and d.get("note") and
-                _commit_exists(d.get("commit", ""), repo) and
                 not evidence_ok(d.get("test", ""), "provider-fix", repo)):
             errs.append("bad proxy_owned_divergences entry %s" % d.get("id"))
+        if not (isinstance(c, str) and SHA_RE.match(c)
+                and _is_ancestor(c, repo)):
+            errs.append("proxy_owned_divergences %s: commit %r is not an "
+                        "ancestor of HEAD" % (d.get("id"), c))
     if not ledger.get("proxy_owned_divergences"):
-        errs.append("proxy_owned_divergences is empty (4819bd4 receipt)")
+        errs.append("proxy_owned_divergences is empty (digest-key receipt)")
     return errs
 
 
-def _commit_exists(sha, repo):
-    """True when git knows the commit. Accepted without history (git absent,
-    or an exported/shallow tree where `git rev-parse HEAD` fails): the
-    unknown-commit check only bites inside a git checkout."""
+def _git(repo, *args):
+    """Run git in `repo`, trusting it explicitly (CI containers check out as
+    a different owner, and git then refuses with exit 128)."""
+    return subprocess.run(["git", "-c", "safe.directory=%s" % repo,
+                           "-C", str(repo)] + list(args),
+                          capture_output=True, text=True)
+
+
+def _is_ancestor(sha, repo):
+    """True only when `sha` names a commit that is an ancestor of HEAD.
+    A missing object, a non-commit or a commit off HEAD's history is
+    False; history_problem() has already refused a tree without history."""
     if not sha:
         return False
+    return _git(repo, "merge-base", "--is-ancestor", sha, "HEAD"
+                ).returncode == 0
+
+
+def history_problem(repo=REPO):
+    """None when the commit rule can be verified, else why it cannot.
+    Never a silent pass: no git, no checkout or a shallow clone fails."""
     try:
-        r = subprocess.run(["git", "-C", str(repo), "cat-file", "-e",
-                            sha + "^{commit}"], capture_output=True)
-    except OSError:
-        return True
-    if r.returncode == 0:
-        return True
-    # shallow or exported tree without history: only fail when git works
-    chk = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                         capture_output=True)
-    return chk.returncode != 0
+        head = _git(repo, "rev-parse", "--verify", "HEAD^{commit}")
+    except OSError as e:
+        return "git is not available (%s)" % e
+    if head.returncode != 0:
+        return ("not a usable git checkout (%s)"
+                % (head.stderr.strip() or "rev-parse HEAD failed"))
+    shallow = _git(repo, "rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0 or shallow.stdout.strip() != "false":
+        return ("shallow repository: the retired_by / proxy_owned_divergences "
+                "commits cannot be verified as ancestors of HEAD; fetch full "
+                "history (actions/checkout fetch-depth: 0, or "
+                "git fetch --unshallow)")
+    return None
 
 
 def run_gate():
     if not LEDGER.exists():
         print("FAIL: %s missing" % LEDGER.relative_to(REPO))
+        return 1
+    why = history_problem()
+    if why:
+        print("FAIL: findings-ledger cannot verify fix commits: " + why)
         return 1
     errs = validate(json.loads(LEDGER.read_text()), read_sources())
     for e in errs:
@@ -319,9 +357,45 @@ def run_gate():
     return 0
 
 
+def _non_ancestor_commit(repo):
+    """Write a real commit that is NOT an ancestor of HEAD (a child of HEAD)
+    into a throwaway object directory layered over the repository's, so the
+    control proves the ancestry rule rather than object existence and the
+    repository's own object store is untouched. Returns (sha, env, tmpdir)."""
+    objs = _git(repo, "rev-parse", "--git-path", "objects").stdout.strip()
+    objs = str((repo / objs).resolve()) if not os.path.isabs(objs) else objs
+    tmp = tempfile.mkdtemp(prefix="ledger-selftest-")
+    env = {"GIT_OBJECT_DIRECTORY": tmp,
+           "GIT_ALTERNATE_OBJECT_DIRECTORIES": objs,
+           "GIT_AUTHOR_NAME": "self-test", "GIT_AUTHOR_EMAIL": "t@invalid",
+           "GIT_COMMITTER_NAME": "self-test",
+           "GIT_COMMITTER_EMAIL": "t@invalid"}
+    saved = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        sha = _git(repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD",
+                   "-m", "ledger self-test non-ancestor").stdout.strip()
+    finally:
+        _restore_env(saved)
+    return sha, env, tmp
+
+
+def _restore_env(saved):
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 def self_test():
     if not LEDGER.exists():
         print("FAIL: ledger missing")
+        return 1
+    why = history_problem()
+    if why:
+        print("FAIL: findings-ledger self-test cannot verify fix commits: "
+              + why)
         return 1
     base = json.loads(LEDGER.read_text())
     src = read_sources()
@@ -397,26 +471,21 @@ def self_test():
         bad += 1
     else:
         print("ok   control supported-refusal-with-normative-source -> accepted")
-    # pending evidence only for provider-fix
+    # pending evidence is refused on every decision, provider-fix included
     i = next(i for i, r in enumerate(rows) if r["decision"] != "provider-fix")
     r2 = copy.deepcopy(rows)
-    r2[i]["test"] = "pending: WP12 Task 3"
+    r2[i]["test"] = "pending: later"
     expect("pending-on-non-provider-fix", validate(with_rows(r2), src))
     j = next(i for i, r in enumerate(rows) if r["decision"] == "provider-fix")
     r2 = copy.deepcopy(rows)
     r2[j]["test"] = "pending soon"
     expect("malformed-pending", validate(with_rows(r2), src))
     r2 = copy.deepcopy(rows)
+    r2[j]["test"] = "pending: later"
+    expect("pending-on-provider-fix", validate(with_rows(r2), src))
+    r2 = copy.deepcopy(rows)
     r2[j]["receipt"] = "no/such/file.md"
     expect("dangling-path", validate(with_rows(r2), src))
-    # positive: pending accepted on provider-fix
-    r2 = copy.deepcopy(rows)
-    r2[j]["test"] = "pending: WP12 Task 4"
-    if validate(with_rows(r2), src):
-        print("FAIL control pending-on-provider-fix was rejected")
-        bad += 1
-    else:
-        print("ok   control pending-on-provider-fix -> accepted")
     # retired-row controls
     ret = base["retired"]
 
@@ -435,6 +504,28 @@ def self_test():
     r2 = copy.deepcopy(ret)
     r2[0]["retired_by"] = ["0000000000000000000000000000000000000000"]
     expect("retired-unknown-commit", validate(with_ret(r2), src))
+    # A commit that exists but is off HEAD's history (what a rebase leaves
+    # behind) must be refused too: existence is not ancestry.
+    sha, env, tmp = _non_ancestor_commit(REPO)
+    saved = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        exists = _git(REPO, "cat-file", "-e", sha + "^{commit}"
+                      ).returncode == 0 if sha else False
+        if not exists:
+            print("FAIL control retired-non-ancestor-commit: could not "
+                  "create the non-ancestor commit")
+            bad += 1
+        else:
+            r2 = copy.deepcopy(ret)
+            r2[0]["retired_by"] = [sha]
+            expect("retired-non-ancestor-commit", validate(with_ret(r2), src))
+            d2 = copy.deepcopy(base)
+            d2["proxy_owned_divergences"][0]["commit"] = sha
+            expect("proxy-divergence-non-ancestor-commit", validate(d2, src))
+    finally:
+        _restore_env(saved)
+        shutil.rmtree(tmp, ignore_errors=True)
     r2 = copy.deepcopy(ret)
     r2[0]["decision"] = "target-gap"
     expect("retired-not-provider-fix", validate(with_ret(r2), src))
