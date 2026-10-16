@@ -100,6 +100,8 @@ spec = testGroup "objects and attributes"
   , testCase "copy: unsealing overrides rejected, sealed copies stay sealed" caseCopySealRatchet
   , testCase "copy: absent EXTRACTABLE cannot be copied to true" caseCopyExtractableAbsent
   , testCase "create/copy: history attributes in templates refused" caseCreateRefusesHistory
+  , testCase "create: key imports stamp the history rows" caseCreateStampsKeyAttrs
+  , testCase "create: stamping covers every key class" caseCreateStampsEveryClass
   , testCase "copy: legacy copies materialize the absent flags" caseCopyMaterializesAbsent
   , testCase "copy: tightening keeps never-extractable false" caseCopyTightenKeepsNeverFalse
   , testCase "copy: sensitizing keeps always-sensitive false" caseCopySensitizeKeepsAlwaysFalse
@@ -3323,3 +3325,69 @@ caseVisibilityFindCounts = do
   mP2 <- snd <$> runCommit mSO (logoutReq sid)
   (codeD, _) <- runReject mP2 (destroyReq sid hk)
   assertEqual "remembered private handle invalid after logout" CKR_OBJECT_HANDLE_INVALID codeD
+
+-- | A sensitive import mints explicit import history: the omitted
+-- extractable defaults false and every origin row reads false.
+caseCreateStampsKeyAttrs :: IO ()
+caseCreateStampsKeyAttrs = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0
+    (createReq sid (secretAes (BS.replicate 16 5) ++ [(AttrSensitive, ValBool True)]))
+  h <- commitHandle pc
+  Just ost <- pure (resolveHandle m1 h)
+  assertEqual "sensitive" (Just (ValBool True)) (Map.lookup AttrSensitive (osAttrs ost))
+  assertEqual "extractable" (Just (ValBool False)) (Map.lookup AttrExtractable (osAttrs ost))
+  assertEqual "always-sensitive" (Just (ValBool False)) (Map.lookup AttrAlwaysSensitive (osAttrs ost))
+  assertEqual "never-extractable" (Just (ValBool False)) (Map.lookup AttrNeverExtractable (osAttrs ost))
+  assertEqual "local" (Just (ValBool False)) (Map.lookup AttrLocal (osAttrs ost))
+  assertEqual "key-gen mechanism"
+    (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (osAttrs ost))
+
+-- | Creation stamping covers every key class: public imports take
+-- the public rows plus origin with no history, private and secret
+-- imports take defaulted protection plus false history, explicit
+-- flags never forge history, and data objects own no key rows.
+caseCreateStampsEveryClass :: IO ()
+caseCreateStampsEveryClass = do
+  (sid, m0) <- openSession seeded
+  (pcPub, m1) <- runCommit m0 (createReq sid publicRsa)
+  hPub <- commitHandle pcPub
+  Just pubOst <- pure (resolveHandle m1 hPub)
+  assertEqual "public sensitive" (Just (ValBool False)) (Map.lookup AttrSensitive (osAttrs pubOst))
+  assertEqual "public extractable" (Just (ValBool True)) (Map.lookup AttrExtractable (osAttrs pubOst))
+  assertEqual "public local" (Just (ValBool False)) (Map.lookup AttrLocal (osAttrs pubOst))
+  assertEqual "public key-gen mechanism"
+    (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (osAttrs pubOst))
+  assertEqual "public always-sensitive absent" Nothing
+    (Map.lookup AttrAlwaysSensitive (osAttrs pubOst))
+  assertEqual "public never-extractable absent" Nothing
+    (Map.lookup AttrNeverExtractable (osAttrs pubOst))
+  (pcPriv, m2) <- runCommit m1 (createReq sid privateRsaLegacy)
+  hPriv <- commitHandle pcPriv
+  Just privOst <- pure (resolveHandle m2 hPriv)
+  assertImportHistory "private" (osAttrs privOst) False False
+  (pcSec, m3) <- runCommit m2 (createReq sid (secretAes (BS.replicate 16 7)))
+  hSec <- commitHandle pcSec
+  Just secOst <- pure (resolveHandle m3 hSec)
+  assertImportHistory "secret" (osAttrs secOst) False False
+  (pcExp, m4) <- runCommit m3
+    (createReq sid (secretAes (BS.replicate 16 9) ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]))
+  hExp <- commitHandle pcExp
+  Just expOst <- pure (resolveHandle m4 hExp)
+  assertImportHistory "explicit" (osAttrs expOst) True True
+  (pcData, m5) <- runCommit m4 (createReq sid [classData, label "plain"])
+  hData <- commitHandle pcData
+  Just dataOst <- pure (resolveHandle m5 hData)
+  mapM_ (\t -> assertEqual ("data absent " ++ show t) Nothing (Map.lookup t (osAttrs dataOst)))
+    [AttrSensitive, AttrExtractable, AttrAlwaysSensitive, AttrNeverExtractable, AttrLocal, AttrKeyGenMechanism]
+  where
+    assertImportHistory tag attrs sens ext = do
+      assertEqual (tag ++ " sensitive") (Just (ValBool sens)) (Map.lookup AttrSensitive attrs)
+      assertEqual (tag ++ " extractable") (Just (ValBool ext)) (Map.lookup AttrExtractable attrs)
+      assertEqual (tag ++ " always-sensitive") (Just (ValBool False))
+        (Map.lookup AttrAlwaysSensitive attrs)
+      assertEqual (tag ++ " never-extractable") (Just (ValBool False))
+        (Map.lookup AttrNeverExtractable attrs)
+      assertEqual (tag ++ " local") (Just (ValBool False)) (Map.lookup AttrLocal attrs)
+      assertEqual (tag ++ " key-gen mechanism")
+        (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism attrs)

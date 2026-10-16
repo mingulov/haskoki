@@ -71,6 +71,7 @@ import Haskoki.Attribute
   , payloadSealed
   , sealedAttrs
   , shapeMatches
+  , stampKeyDefaults
   )
 import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
@@ -536,10 +537,30 @@ objectVisible st ost =
 -- Planning
 -- ---------------------------------------------------------------------------
 
+-- | Stamp one imported key: the caller-wins protection defaults
+-- plus import history. Imported material was exposed outside the
+-- token, so history and origin read false (secret and private
+-- keys take false history rows; public keys take the origin pair
+-- and own no history rows). Non-key classes pass through
+-- unchanged. Runs after 'importMaterial', before admission.
+stampCreatedKey :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+stampCreatedKey attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c)
+    | c == ckoPublicKey ->
+        Map.insert AttrKeyGenMechanism (ValULong maxBound)
+          (Map.insert AttrLocal (ValBool False) (stampKeyDefaults c attrs))
+    | c == ckoPrivateKey || c == ckoSecretKey ->
+        Map.insert AttrKeyGenMechanism (ValULong maxBound)
+          (Map.insert AttrLocal (ValBool False)
+            (Map.insert AttrNeverExtractable (ValBool False)
+              (Map.insert AttrAlwaysSensitive (ValBool False) (stampKeyDefaults c attrs))))
+  _ -> attrs
+
 -- | Plan object creation: validate the template, derive key-import
--- material ('importMaterial'), then allocate the object id and handle
--- deterministically from the model counters. A failed template
--- leaves no partial object and no binding.
+-- material ('importMaterial'), stamp creation history on keys,
+-- then allocate the object id and handle deterministically from
+-- the model counters. A failed template leaves no partial object
+-- and no binding.
 planCreateObject
   :: Model -> SessionState -> [(AttributeType, AttributeValue)] -> PlanResult
 planCreateObject model st tmpl = case validateTemplate tmpl of
@@ -568,7 +589,7 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
               ("unknown object class: " ++ show c)
         | otherwise -> case importMaterial attrs of
             Left (code, msg) -> templateReject code msg
-            Right stored
+            Right stored0
               | Left deny <- admitPrivate (ssLogin st) (mergedIsPrivate stored) ->
                   templateReject (admitCode deny)
                     "only the normal user may create private objects"
@@ -596,6 +617,8 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
                   , pcReleases = []
                   , pcReasons = ["created object " ++ show oid]
                   }
+              where
+                stored = stampCreatedKey stored0
 
 ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes, ckkDsa, ckkDh, ckkX9_42Dh, ckkEcEdwards, ckkMlDsa, ckkSlhDsa, ckkMlKem :: Word64
 ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
@@ -1279,11 +1302,13 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                 Map.lookup AttrClass (osAttrs src) == Just (ValULong ckoData)
               -- First copy-template refusal in priority order, if any.
               -- TRUSTED on a certificate source stays refused even
-              -- same-value (no SO exception); same-value overrides are
-              -- otherwise no-ops; data VALUE merges on modifiable
-              -- sources only; exemptions bypass the modifiable gate;
-              -- everything else goes through the shared policy with
-              -- copy wording.
+              -- same-value (no SO exception); history attributes
+              -- always refuse (token-assigned rows are never
+              -- caller-carried, even same-value); same-value
+              -- overrides are otherwise no-ops; data VALUE merges
+              -- on modifiable sources only; exemptions bypass the
+              -- modifiable gate; everything else goes through the
+              -- shared policy with copy wording.
               copyRefusal srcAttrs overM = go ordered
                 where
                   ordered = sortOn (\(t, _) -> (copyPriority t, fromEnum t))
@@ -1293,6 +1318,12 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                     | isCertSource, t == AttrTrusted =
                         Just (CKR_ATTRIBUTE_READ_ONLY,
                           "copy cannot override certificate field: " ++ show t)
+                    | t `elem` historyAttrs = case setAttributePolicy srcAttrs t v of
+                        Just (code, sharedMsg) ->
+                          Just (code, copyMessage t v sharedMsg)
+                        -- Unreachable: the shared policy refuses
+                        -- history attributes unconditionally.
+                        Nothing -> go rest
                     | Map.lookup t srcAttrs == Just v = go rest
                     | t == AttrValue, isDataSource
                     , flagOr modifiableDefault AttrModifiable srcAttrs = go rest

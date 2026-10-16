@@ -14,15 +14,16 @@ all — fromdata rc=-2 in 4.0.2).
 This module owns the row table, the codec, the base type gate,
 and the attribute map. The map covers modeled attributes only:
 CKA_TRUSTED, the dates and CKA_WRAP_TEMPLATE are outside the map,
-as are CKA_LOCAL and CKA_GEN_MECHANISM (inventoried, but this row
-stamps no history), so reflections
-(ENCRYPT<-DECRYPT, VERIFY<-SIGN, VERIFY_RECOVER<-SIGN_RECOVER,
-WRAP<-UNWRAP, ENCAPSULATE<-DECAPSULATE), copies (DERIVE\/ID\/
-SUBJECT\/PUBLIC_KEY_INFO\/ALLOWED_MECHANISMS), forced-false
-(TOKEN\/PRIVATE), forced-true (MODIFIABLE\/COPYABLE\/DESTROYABLE)
-and forced-empty (LABEL) are the whole table. Missing base
-booleans stay missing (reads default false); the caller
-template wins over map defaults at the planner. Pure core only.
+so reflections (ENCRYPT<-DECRYPT, VERIFY<-SIGN,
+VERIFY_RECOVER<-SIGN_RECOVER, WRAP<-UNWRAP,
+ENCAPSULATE<-DECAPSULATE), copies (DERIVE\/ID\/SUBJECT\/
+PUBLIC_KEY_INFO\/ALLOWED_MECHANISMS), forced-false
+(TOKEN\/PRIVATE\/SENSITIVE\/LOCAL), forced-true
+(MODIFIABLE\/COPYABLE\/DESTROYABLE\/EXTRACTABLE), forced-empty
+(LABEL) and forced-unavailable (CKA_KEY_GEN_MECHANISM) are the
+whole table. Missing base booleans stay missing (reads default
+false); the caller template wins over map defaults at the
+planner. Pure core only.
 
 Consumers:
 
@@ -53,8 +54,8 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64)
 
-import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
-import Haskoki.Attribute.Generated (mustKeyTypeId)
+import Haskoki.Attribute (AttributeType (..), AttributeValue (..), stampKeyDefaults)
+import Haskoki.Attribute.Generated (mustClassId, mustKeyTypeId)
 import Haskoki.Der (ecPkcs8HasPub, ecSec1HasPub)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
@@ -130,15 +131,21 @@ copies =
 -- | The attribute map: reflections and copies follow the base
 -- (missing stays missing), TOKEN\/PRIVATE force false,
 -- MODIFIABLE\/COPYABLE\/DESTROYABLE force true, LABEL forces
--- empty. Cells outside the map (LOCAL, TRUSTED, dates,
--- GEN_MECHANISM, WRAP_TEMPLATE) are out of scope by
--- construction — see the module header.
+-- empty, the protection pair forces the public defaults
+-- (non-sensitive, extractable), LOCAL forces false and
+-- KEY_GEN_MECHANISM forces unavailable. Public outputs own no
+-- history rows. Cells outside the map (TRUSTED, dates,
+-- WRAP_TEMPLATE) are out of scope by construction — see the
+-- module header.
 pubPrivMapAttrs
   :: Map AttributeType AttributeValue
   -> Map AttributeType AttributeValue
 pubPrivMapAttrs base =
-  Map.fromList forced <> Map.fromList reflected <> Map.fromList copied
+  Map.insert AttrKeyGenMechanism (ValULong maxBound)
+    (Map.insert AttrLocal (ValBool False)
+      (stampKeyDefaults (mustClassId "CKO_PUBLIC_KEY") mapped))
   where
+    mapped = Map.fromList forced <> Map.fromList reflected <> Map.fromList copied
     reflected =
       [ (dst, v)
       | (dst, src) <- reflections

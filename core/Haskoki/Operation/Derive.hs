@@ -395,7 +395,7 @@ planDerive rules model st mech baseH blob
                 "HKDF PRF has no servable hash length")
               Just hashLen -> case resolveBase model st baseH of
                 Left deny -> KeyDenied deny
-                Right (ost, _) -> finish tmpls (255 * hashLen)
+                Right (ost, _) -> finish (osAttrs ost) Nothing tmpls (255 * hashLen)
                   "derived total exceeds the HKDF-Expand ceiling"
                   (FxDerive mech (Just (osId ost)) Nothing
                     (BS.singleton prf <> BS.singleton mode <> salt) info)
@@ -462,7 +462,7 @@ planDerive rules model st mech baseH blob
                     "ECDH base/peer curve mismatch")
                 | xdhPeerMismatched ost mat peer -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                     "ECDH Montgomery peer length mismatch")
-                | otherwise -> finish tmpls (ecdhSecretWidth mat)
+                | otherwise -> finish (osAttrs ost) Nothing tmpls (ecdhSecretWidth mat)
                     "derived total exceeds the ECDH secret width"
                     (FxDerive mech (Just (osId ost)) Nothing ecdhBlob BS.empty)
                     (Just (ecdhSecretWidth mat))
@@ -486,7 +486,7 @@ planDerive rules model st mech baseH blob
           | not (dhParamsValid r dhBlob) -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
               "DH mechanism parameters rejected by the recipe")
           | otherwise -> case decodeDhParams dhBlob of
-              Just _ -> finish tmpls (dhSecretWidth mat)
+              Just _ -> finish (osAttrs ost) Nothing tmpls (dhSecretWidth mat)
                 "derived total exceeds the DH secret width"
                 (FxDerive mech (Just (osId ost)) Nothing dhBlob BS.empty)
                 (Just (dhSecretWidth mat))
@@ -510,7 +510,7 @@ planDerive rules model st mech baseH blob
               "PBKDF2 mechanism parameters rejected by the recipe")
           | not (rkPbkd2 r), not (BS.null info) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "SHA key derivation takes empty info")
-          | rkPbkd2 r -> finish tmpls maxDerivedTotal
+          | rkPbkd2 r -> finish (osAttrs ost) Nothing tmpls maxDerivedTotal
               "derived total exceeds the derive ceiling"
               (FxDerive mech (Just (osId ost)) Nothing info BS.empty)
               Nothing
@@ -522,7 +522,7 @@ planDerive rules model st mech baseH blob
           -- 24) or refuses INCOMPLETE (AES has none); a length past
           -- the digest width is a capacity error.
           | otherwise -> case kdfShaWidth r of
-              Just w -> finishMerged Right tmpls w
+              Just w -> finishMerged (Right . stampDerived (osAttrs ost) Nothing) tmpls w
                 "derived total exceeds the digest width"
                 (FxDerive mech (Just (osId ost)) Nothing BS.empty BS.empty)
                 (SpecLenDefault w False)
@@ -532,7 +532,7 @@ planDerive rules model st mech baseH blob
               -- 'maxXofTotal'; a missing length stays
               -- INCOMPLETE (no natural width to default to).
               Nothing -> case kdfXofStem r of
-                Just _ -> finish tmpls maxXofTotal
+                Just _ -> finish (osAttrs ost) Nothing tmpls maxXofTotal
                   "derived total exceeds the XOF output ceiling"
                   (FxDerive mech (Just (osId ost)) Nothing BS.empty BS.empty)
                   Nothing
@@ -554,7 +554,7 @@ planDerive rules model st mech baseH blob
                 "TLS-PRF base key is not a generic secret")
           | not (tlsPrfParamsValid r prfBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "TLS-PRF mechanism parameters rejected by the recipe")
-          | otherwise -> finish tmpls maxTlsPrfOutput
+          | otherwise -> finish (osAttrs ost) Nothing tmpls maxTlsPrfOutput
               "derived total exceeds the TLS-PRF ceiling"
               (FxDerive mech (Just (osId ost)) Nothing prfBlob BS.empty)
               Nothing
@@ -574,7 +574,7 @@ planDerive rules model st mech baseH blob
                 "TLS-KDF base key is not a generic secret")
           | not (tlsKdfParamsValid r kdfBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "TLS-KDF mechanism parameters rejected by the recipe")
-          | otherwise -> finish tmpls maxTlsKdfOutput
+          | otherwise -> finish (osAttrs ost) Nothing tmpls maxTlsKdfOutput
               "derived total exceeds the TLS-KDF ceiling"
               (FxDerive mech (Just (osId ost)) Nothing kdfBlob BS.empty)
               Nothing
@@ -617,7 +617,7 @@ planDerive rules model st mech baseH blob
                   "SSL3 master base key is not a generic secret")
             | not (ssl3ParamsValid r mBlob) -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
                 "SSL3 master mechanism parameters rejected by the recipe")
-            | otherwise -> finish tmpls 48
+            | otherwise -> finish (osAttrs ost) Nothing tmpls 48
                 "derived total exceeds the 48-byte SSL3 master width"
                 (FxDerive mech (Just (osId ost)) Nothing mBlob BS.empty)
                 Nothing
@@ -676,11 +676,16 @@ planDerive rules model st mech baseH blob
                       -- map); typed, never a crash.
                       Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
                         "IKE PRF code without a digest width")
-                      Just ceilingN -> finish tmpls ceilingN
-                        "derived total exceeds the IKE ceiling"
-                        (FxDerive mech (Just (osId ost)) mAux ikeBlob BS.empty)
-                        Nothing
-                        CKR_ARGUMENTS_BAD
+                      Just ceilingN -> case auxAttrsOf model mAux of
+                        -- Unreachable: the aux resolved above, in
+                        -- this same model.
+                        Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
+                          "IKE aux lost after resolution")
+                        Just mAuxAttrs -> finish (osAttrs ost) mAuxAttrs tmpls ceilingN
+                          "derived total exceeds the IKE ceiling"
+                          (FxDerive mech (Just (osId ost)) mAux ikeBlob BS.empty)
+                          Nothing
+                          CKR_ARGUMENTS_BAD
   | Just r <- byteOpsRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -738,7 +743,7 @@ planDerive rules model st mech baseH blob
                   "SP800-108 PRF has no servable hash length")
                 Just h
                   | sp800LengthFits (rsMode r) (spLengthBits p)
-                      (spCounterBits p) h tmpls -> finish tmpls maxSp800Total
+                      (spCounterBits p) h tmpls -> finish (osAttrs ost) Nothing tmpls maxSp800Total
                       "derived total exceeds the SP800-108 ceiling"
                       (FxDerive mech (Just (osId ost)) Nothing spBlob BS.empty)
                       Nothing
@@ -760,7 +765,7 @@ planDerive rules model st mech baseH blob
           | not (encryptDataParamsValid r edBlob) -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
               "encrypt-data mechanism parameters rejected by the recipe")
           | otherwise -> case encryptDataOutputLen r edBlob of
-              Just w -> finish tmpls w
+              Just w -> finish (osAttrs ost) Nothing tmpls w
                 "derived total exceeds the encrypted data width"
                 (FxDerive mech (Just (osId ost)) Nothing edBlob BS.empty)
                 (Just w)
@@ -771,14 +776,15 @@ planDerive rules model st mech baseH blob
       KeyDenied (KeyDeny CKR_MECHANISM_INVALID
         ("not a derive mechanism: " ++ show mech))
   where
-    finish tmpls ceilingN ceilingMsg fx defLen ceilingCode =
-      finishMerged Right tmpls ceilingN ceilingMsg fx
+    finish baseAttrs mAuxAttrs tmpls ceilingN ceilingMsg fx defLen ceilingCode =
+      finishMerged (Right . stampDerived baseAttrs mAuxAttrs) tmpls ceilingN ceilingMsg fx
         (maybe NoLenDefault GenericLenDefault defLen) ceilingCode
     -- | 'finish' with a per-template merge over the validated
-    -- attributes: identity for every family except the byte
-    -- operations, which resolve §6.43 source inheritance here
-    -- (before ceiling, admission and effect construction), so the
-    -- merged flags retain through finish/publication.
+    -- attributes: source inheritance plus history for every
+    -- family (the byte operations additionally refuse §6.43
+    -- downgrades in their merge). The merge runs before ceiling,
+    -- admission and effect construction, so the merged flags
+    -- retain through finish/publication.
     finishMerged merge tmpls ceilingN ceilingMsg fx defLen ceilingCode =
       case checkAllMerged defLen merge tmpls of
         Left deny -> KeyDenied deny
@@ -876,9 +882,11 @@ planDerive rules model st mech baseH blob
         -- | The §6.43 merge for one validated caller template:
         -- base protection plus the aux key's where the row takes
         -- one (concat-key only; the data/offset rows pass
-        -- 'Nothing').
+        -- 'Nothing'), then the source-derived stamp (inherited
+        -- protection for the omitted rows, derived history).
         byteOpsMerge mAuxAttrs =
-          resolveByteOpsProtection (byteOpsProtectionOf (osAttrs ost) mAuxAttrs)
+          fmap (stampDerived (osAttrs ost) mAuxAttrs)
+            . resolveByteOpsProtection (byteOpsProtectionOf (osAttrs ost) mAuxAttrs)
         natural mAuxAttrs n
           | n < 1 = KeyDenied (KeyDeny CKR_KEY_SIZE_RANGE
               "byte-op natural output is empty")
@@ -932,8 +940,9 @@ planDerive rules model st mech baseH blob
         ivEff = case tkmKind r of KeyMatTls12Safe -> 0; _ -> iv
         total = 2 * mac + 2 * key + 2 * ivEff
         outsFor attrs =
-          [ ( Map.insert AttrValueLen (ValULong (fromIntegral n))
-                (Map.insert AttrKeyType (ValULong (outType role)) attrs)
+          [ ( stampDerived (osAttrs ost) Nothing
+                (Map.insert AttrValueLen (ValULong (fromIntegral n))
+                  (Map.insert AttrKeyType (ValULong (outType role)) attrs))
             , n
             )
           | (role, n) <- tlsKeyMatLayout mac key ivEff
@@ -987,8 +996,9 @@ planDerive rules model st mech baseH blob
       where
         total = 2 * mac + 2 * key + 2 * iv
         outsFor attrs =
-          [ ( Map.insert AttrValueLen (ValULong (fromIntegral n))
-                (Map.insert AttrKeyType (ValULong (outType role)) attrs)
+          [ ( stampDerived (osAttrs ost) Nothing
+                (Map.insert AttrValueLen (ValULong (fromIntegral n))
+                  (Map.insert AttrKeyType (ValULong (outType role)) attrs))
             , n
             )
           | (role, n) <- ssl3KeyMatLayout mac key iv
@@ -1128,6 +1138,55 @@ planDerive rules model st mech baseH blob
           "derived length is malformed")
         Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
           "derived data template needs CKA_VALUE_LEN")
+
+-- | Stamp one derived SECRET key: omitted protection flags
+-- inherit the source-effective values (the base key, plus the aux
+-- key where the mechanism takes one), and history derives from
+-- the child flags and the source history: always-sensitive is the
+-- child sensitive mark AND the sources' always rows;
+-- never-extractable is the child unextractable mark AND the
+-- sources' never rows; local is false and the mechanism id reads
+-- unavailable. Explicit caller values always win. Sources read
+-- through the effective view (a source without stored history
+-- reads false). Data outputs stamp nothing; the public row stamps
+-- its own forced set.
+stampDerived
+  :: Map.Map AttributeType AttributeValue
+  -> Maybe (Map.Map AttributeType AttributeValue)
+  -> Map.Map AttributeType AttributeValue
+  -> Map.Map AttributeType AttributeValue
+stampDerived base mAux attrs =
+  Map.insert AttrKeyGenMechanism (ValULong maxBound)
+    (Map.insert AttrLocal (ValBool False)
+      (Map.insert AttrNeverExtractable (ValBool never)
+        (Map.insert AttrAlwaysSensitive (ValBool always) filled)))
+  where
+    sensSrc = effectiveSensitive base || maybe False effectiveSensitive mAux
+    extSrc = effectiveExtractable base && maybe True effectiveExtractable mAux
+    alwaysSrc = histTrue AttrAlwaysSensitive base
+      && maybe True (histTrue AttrAlwaysSensitive) mAux
+    neverSrc = histTrue AttrNeverExtractable base
+      && maybe True (histTrue AttrNeverExtractable) mAux
+    filled = foldr insertMissing attrs [(AttrSensitive, sensSrc), (AttrExtractable, extSrc)]
+    sens = Map.lookup AttrSensitive filled == Just (ValBool True)
+    ext = Map.lookup AttrExtractable filled == Just (ValBool True)
+    always = sens && alwaysSrc
+    never = not ext && neverSrc
+    insertMissing (t, v) acc
+      | Map.member t acc = acc
+      | otherwise = Map.insert t (ValBool v) acc
+    -- Stored-true-or-false reads the same as the effective view
+    -- for key objects (absent history defaults false); every
+    -- derive source is a key.
+    histTrue t m = Map.lookup t m == Just (ValBool True)
+
+-- | Project aux-key attributes out of the model: 'Nothing' when
+-- the mechanism takes no aux key. A resolved aux always looks up
+-- (same model); 'Nothing' on a 'Just' handle is
+-- unreachable-defensive and denies at the call site.
+auxAttrsOf :: Model -> Maybe ObjectId -> Maybe (Maybe (Map.Map AttributeType AttributeValue))
+auxAttrsOf _ Nothing = Just Nothing
+auxAttrsOf model (Just oid) = Just <$> (osAttrs <$> Map.lookup oid (mObjects model))
 
 -- | How a derive family fills an omitted @CKA_VALUE_LEN@.
 data LenDefault

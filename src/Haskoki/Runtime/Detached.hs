@@ -133,7 +133,7 @@ import qualified Data.Set as Set
 import Data.Unique (Unique, newUnique)
 import Data.Word (Word64, Word8)
 
-import Haskoki.Attribute (AttributeType, AttributeValue)
+import Haskoki.Attribute (AttributeType, AttributeValue, historyAttrs)
 import Haskoki.CallWork (callWorkEffect, checkedCallWork)
 import Haskoki.Model (Model, SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Effect (CryptoEffect (..))
@@ -684,15 +684,15 @@ recipeFromWork func work ticks cap = case work of
       { rkTicks = ticks
       , rkCapacity = cap
       , rkEffect = fx
-      , rkTemplate = poAttrs k
+      , rkTemplate = stripDerived (poAttrs k)
       , rkSessionOwned = ownedOf k
       }
     (PwGeneratePair pub priv, FxGenerateKey {}) -> Just RecipeGenKeyPair
       { rkpTicks = ticks
       , rkpCapacity = cap
       , rkpEffect = fx
-      , rkpPub = poAttrs pub
-      , rkpPriv = poAttrs priv
+      , rkpPub = stripDerived (poAttrs pub)
+      , rkpPriv = stripDerived (poAttrs priv)
       , rkpPubOwned = ownedOf pub
       , rkpPrivOwned = ownedOf priv
       }
@@ -702,6 +702,12 @@ recipeFromWork func work ticks cap = case work of
     ownedOf k = case poOwner k of
       Nothing -> False
       Just _ -> True
+    -- | Derived rows never persist in a recipe: rejoin replays the
+    -- template through the planner, which re-derives them
+    -- deterministically (replaying stamped rows would refuse, as
+    -- caller templates may not carry history).
+    stripDerived :: Map.Map AttributeType AttributeValue -> Map.Map AttributeType AttributeValue
+    stripDerived = flip (foldr Map.delete) historyAttrs
 
 -- ---------------------------------------------------------------------------
 -- Detach (GetID)

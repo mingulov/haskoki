@@ -105,6 +105,28 @@ static void fill_pat(CK_BYTE *p, CK_ULONG n, unsigned tag) {
   }
 }
 
+static void expect_bool_attr(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE h,
+                             CK_ATTRIBUTE_TYPE t, CK_BBOOL want,
+                             const char *what) {
+  CK_BBOOL got = 0xa5;
+  CK_ATTRIBUTE q[] = { { t, &got, sizeof(got) } };
+  CK_RV rv = f->C_GetAttributeValue(s, h, q, 1);
+  CHECK(rv == CKR_OK && got == want && q[0].ulValueLen == sizeof(got),
+        "%s reads %s (rv=0x%lx)", what, want ? "true" : "false",
+        (unsigned long)rv);
+}
+
+static void expect_ulong_attr(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE h,
+                              CK_ATTRIBUTE_TYPE t, CK_ULONG want,
+                              const char *what) {
+  CK_ULONG got = 0;
+  CK_ATTRIBUTE q[] = { { t, &got, sizeof(got) } };
+  CK_RV rv = f->C_GetAttributeValue(s, h, q, 1);
+  CHECK(rv == CKR_OK && got == want && q[0].ulValueLen == sizeof(got),
+        "%s reads 0x%lx (rv=0x%lx)", what, (unsigned long)want,
+        (unsigned long)rv);
+}
+
 int main(int argc, char **argv) {
   CK_RV rv;
   CK_C_GetFunctionList getList = NULL;
@@ -697,6 +719,70 @@ int main(int argc, char **argv) {
             (unsigned long)rv, (unsigned long)h2);
       after = count_all(sess, "trusted-inherit");
       CHECK(after == before, "TRUSTED inherit leaves count unchanged");
+    }
+  }
+
+  /* ---- generated keys carry birth history; copies inherit it ---- */
+  {
+    CK_MECHANISM gm;
+    CK_ULONG vlen = 16;
+    CK_OBJECT_HANDLE gen = 0, gcopy = 0;
+    CK_ATTRIBUTE gtmpl[] = {
+      { CKA_CLASS, &seckls, sizeof(seckls) },
+      { CKA_KEY_TYPE, &aeskt, sizeof(aeskt) },
+      { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+      { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+      { CKA_SENSITIVE, &bTrue, sizeof(bTrue) },
+      { CKA_EXTRACTABLE, &bFalse, sizeof(bFalse) }
+    };
+    gm.mechanism = CKM_AES_KEY_GEN;
+    gm.pParameter = NULL_PTR;
+    gm.ulParameterLen = 0;
+    rv = f->C_GenerateKey(sess, &gm, gtmpl, 6, &gen);
+    CHECK(rv == CKR_OK && gen != 0, "locked AES key generates");
+    if (gen != 0) {
+      track(gen);
+      expect_bool_attr(sess, gen, CKA_SENSITIVE, CK_TRUE,
+                       "generated SENSITIVE");
+      expect_bool_attr(sess, gen, CKA_EXTRACTABLE, CK_FALSE,
+                       "generated EXTRACTABLE");
+      expect_bool_attr(sess, gen, CKA_ALWAYS_SENSITIVE, CK_TRUE,
+                       "generated ALWAYS_SENSITIVE");
+      expect_bool_attr(sess, gen, CKA_NEVER_EXTRACTABLE, CK_TRUE,
+                       "generated NEVER_EXTRACTABLE");
+      expect_bool_attr(sess, gen, CKA_LOCAL, CK_TRUE, "generated LOCAL");
+      expect_ulong_attr(sess, gen, CKA_KEY_GEN_MECHANISM,
+                        (CK_ULONG)CKM_AES_KEY_GEN, "generated KEY_GEN_MECHANISM");
+      rv = f->C_CopyObject(sess, gen, NULL_PTR, 0, &gcopy);
+      CHECK(rv == CKR_OK && gcopy != 0, "generated key copies");
+      if (gcopy != 0) {
+        track(gcopy);
+        expect_bool_attr(sess, gcopy, CKA_SENSITIVE, CK_TRUE,
+                         "generated-copy SENSITIVE");
+        expect_bool_attr(sess, gcopy, CKA_EXTRACTABLE, CK_FALSE,
+                         "generated-copy EXTRACTABLE");
+        expect_bool_attr(sess, gcopy, CKA_ALWAYS_SENSITIVE, CK_TRUE,
+                         "generated-copy ALWAYS_SENSITIVE");
+        expect_bool_attr(sess, gcopy, CKA_NEVER_EXTRACTABLE, CK_TRUE,
+                         "generated-copy NEVER_EXTRACTABLE");
+        expect_bool_attr(sess, gcopy, CKA_LOCAL, CK_TRUE,
+                         "generated-copy LOCAL");
+        expect_ulong_attr(sess, gcopy, CKA_KEY_GEN_MECHANISM,
+                          (CK_ULONG)CKM_AES_KEY_GEN,
+                          "generated-copy KEY_GEN_MECHANISM");
+      }
+      {
+        CK_ATTRIBUTE forge[] = {
+          { CKA_LOCAL, &bFalse, sizeof(bFalse) }
+        };
+        check_refused(sess, gen, forge, 1, "generated LOCAL forge");
+      }
+      {
+        CK_ATTRIBUTE forge[] = {
+          { CKA_ALWAYS_SENSITIVE, &bFalse, sizeof(bFalse) }
+        };
+        check_refused(sess, gen, forge, 1, "generated ALWAYS_SENSITIVE forge");
+      }
     }
   }
 

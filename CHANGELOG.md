@@ -4,6 +4,27 @@
 
 Behaviour changes a caller written against 0.4.0.0 can observe:
 
+- Fresh keys report explicit creation history. Generated keys read
+  `CKA_LOCAL` true with `CKA_KEY_GEN_MECHANISM` set to the generating
+  mechanism; `CKA_ALWAYS_SENSITIVE` reads true when the key was born
+  sensitive and `CKA_NEVER_EXTRACTABLE` reads true when it was born
+  unextractable. Imported, unwrapped and derived keys read `CKA_LOCAL`
+  false with an unavailable mechanism; unwrapped and imported keys read
+  both history rows false, while derived keys conjoin the child flags
+  with the source history. Previously every fresh key read local false
+  with false history and an unavailable mechanism.
+- `C_UnwrapKey` with a template that omits `CKA_EXTRACTABLE` now yields
+  an extractable key (PKCS#11 v3.2 section 5.18.4); it used to yield an
+  unextractable one. Reads of `CKA_EXTRACTABLE` on such keys flip
+  false to true, and wrapping them no longer fails.
+- `C_DeriveKey` with a template that omits `CKA_SENSITIVE` or
+  `CKA_EXTRACTABLE` now inherits the source values; they used to read
+  false. Derived children of extractable bases are now extractable.
+- `C_CopyObject` refuses history attributes (`CKA_ALWAYS_SENSITIVE`,
+  `CKA_NEVER_EXTRACTABLE`, `CKA_LOCAL`, `CKA_KEY_GEN_MECHANISM`) in the
+  template unconditionally, even when the value matches the source;
+  same-value history overrides on copies used to slip through as no-ops.
+
 - `CKM_AES_GMAC` no longer advertises `CKF_MESSAGE_SIGN` or
   `CKF_MESSAGE_VERIFY`: PKCS#11 defines no message-API parameter shape
   for it. Single-part sign and verify with `CK_GCM_PARAMS` are unchanged.

@@ -11,15 +11,17 @@ path); ML-DSA\/SLH-DSA\/ML-KEM refuse (no provider priv-import
 path at all).
 
 The recipe owns the row table, the no-params codec, the base
-type gate, and the attribute map (modeled attrs only: CKA_LOCAL,
-CKA_TRUSTED, dates, CKA_GEN_MECHANISM and CKA_WRAP_TEMPLATE have
-no 'AttributeType' here, so the map covers the rest — reflections
-ENCRYPT<-DECRYPT, VERIFY<-SIGN, VERIFY_RECOVER<-SIGN_RECOVER,
-WRAP<-UNWRAP, ENCAPSULATE<-DECAPSULATE; copies DERIVE\/ID\/SUBJECT\/
+type gate, and the attribute map (modeled attrs only: CKA_TRUSTED,
+dates and CKA_WRAP_TEMPLATE have no 'AttributeType' here, so the
+map covers the rest — reflections ENCRYPT<-DECRYPT, VERIFY<-SIGN,
+VERIFY_RECOVER<-SIGN_RECOVER, WRAP<-UNWRAP,
+ENCAPSULATE<-DECAPSULATE; copies DERIVE\/ID\/SUBJECT\/
 PUBLIC_KEY_INFO\/ALLOWED_MECHANISMS; forces TOKEN\/PRIVATE false
-and MODIFIABLE\/COPYABLE\/DESTROYABLE true; forces LABEL empty).
-Missing base booleans stay missing (reads default false); the
-caller template wins over map defaults at the planner.
+and MODIFIABLE\/COPYABLE\/DESTROYABLE true; forces LABEL empty;
+forces SENSITIVE false, EXTRACTABLE true, LOCAL false and
+CKA_KEY_GEN_MECHANISM unavailable). Missing base booleans stay
+missing (reads default false); the caller template wins over map
+defaults at the planner.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module RecipePubPrivSpec (spec) where
@@ -177,6 +179,11 @@ caseMap = do
   assertEqual "destroyable" (Just (ValBool True))
     (Map.lookup AttrDestroyable got)
   assertEqual "label" (Just (ValBytes "")) (Map.lookup AttrLabel got)
+  assertEqual "sensitive" (Just (ValBool False)) (Map.lookup AttrSensitive got)
+  assertEqual "extractable" (Just (ValBool True)) (Map.lookup AttrExtractable got)
+  assertEqual "local" (Just (ValBool False)) (Map.lookup AttrLocal got)
+  assertEqual "key-gen mechanism" (Just (ValULong maxBound))
+    (Map.lookup AttrKeyGenMechanism got)
 
 caseMapShape :: IO ()
 caseMapShape = do
@@ -187,9 +194,13 @@ caseMapShape = do
     [ AttrToken
     , AttrPrivate
     , AttrLabel
+    , AttrSensitive
+    , AttrExtractable
     , AttrCopyable
     , AttrDestroyable
     , AttrModifiable
+    , AttrLocal
+    , AttrKeyGenMechanism
     ]
     (Map.keys got)
 

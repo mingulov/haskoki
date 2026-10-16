@@ -16,6 +16,7 @@ module Haskoki.Attribute
   , payloadSealed
   , sealedAttrs
   , historyAttrs
+  , stampKeyDefaults
   , encodeValue
   , decodeValue
   , maxAttributeBytes
@@ -208,6 +209,28 @@ historyAttrs =
   , AttrLocal
   , AttrKeyGenMechanism
   ]
+
+-- | Stamp the caller-wins creation defaults for the protection
+-- pair onto a validated key template: non-sensitive and
+-- unextractable for secret and private keys, non-sensitive and
+-- extractable for public keys (public material is always
+-- readable, so the extractable default tells the truth).
+-- Explicit values always win (absent rows only); non-key classes
+-- pass through unchanged. History and origin rows are derived
+-- per creation path at the call sites, never here. Lives here
+-- (not in the object planner) so the recipe layer can share it
+-- without an import cycle.
+stampKeyDefaults :: Word64 -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+stampKeyDefaults cls attrs
+  | cls == mustClassId "CKO_PUBLIC_KEY" = fill [(AttrSensitive, False), (AttrExtractable, True)] attrs
+  | cls == mustClassId "CKO_PRIVATE_KEY" || cls == mustClassId "CKO_SECRET_KEY" =
+      fill [(AttrSensitive, False), (AttrExtractable, False)] attrs
+  | otherwise = attrs
+  where
+    fill rows m = foldr insertMissing m rows
+    insertMissing (t, v) acc
+      | Map.member t acc = acc
+      | otherwise = Map.insert t (ValBool v) acc
 
 -- | Whether the payload ('AttrValue') of the given attribute map is
 -- sealed: sensitive or unextractable. Either flag alone seals it.
