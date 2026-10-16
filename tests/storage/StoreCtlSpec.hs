@@ -63,6 +63,11 @@ spec = testGroup "Store commands"
   , testCase "migrate: a foreign WAL through a symlink refuses, keeping the credential" caseMigrateSymlinkWal
   , testCase "migrate: a bare symlink migrates the target" caseMigrateSymlinkBare
   , testCase "migrate: a failure after the clear still reports the clearing" caseMigrateCliReportsClearOnFailure
+  , testCase "check: a FIFO store is refused without hanging" caseCheckFifoStore
+  , testCase "migrate: a FIFO store is refused without hanging" caseMigrateFifoStore
+  , testCase "check: a FIFO lock is refused without hanging" caseCheckFifoLock
+  , testCase "check: a symlinked lock is refused without following it" caseCheckSymlinkLock
+  , testCase "check: an oversized lock without a pid line is unreadable" caseCheckOversizedLock
   , testCase "migrate: a v0.4 store migrates (exit 0) and then checks ok" caseMigrateCliV04
   , testCase "migrate: a current store needs nothing (exit 0)" caseMigrateCliNotNeeded
   , testCase "migrate: a drifted catalog refuses (exit 1), nothing written" caseMigrateCliRefusesDrift
@@ -593,6 +598,76 @@ caseMigrateCliReportsClearOnFailure = withScratch "ctl-migrate" $ \dir -> do
   assertBool "clearing reported" ("cold-journal-removed: yes" `elem` lines out)
   gone <- not <$> doesFileExist (store ++ "-journal")
   assertBool "journal removed" gone
+
+-- A FIFO at the store path is refused by lstat, never opened: the
+-- held writer only keeps a regression from hanging the suite (an
+-- open would read its garbage instead of blocking).
+caseCheckFifoStore :: IO ()
+caseCheckFifoStore = withScratch "ctl-check" $ \dir -> do
+  let store = dir </> "store.sqlite"
+  createNamedPipe store 0o600
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  withFifoWriter store "not a database file, only pipe garbage" $ do
+    r <- check store cfgPath
+    assertEqual "exit 1" 1 (ceCode r)
+    assertEqual "no plan printed" "" (ceOut r)
+    assertBool "tag" ("store-unreadable:" `isPrefixOf` ceErr r)
+    assertBool "names non-regular" ("not a regular file" `isInfixOf` ceErr r)
+
+-- Likewise for migrate: no backup, nothing written beside the FIFO.
+caseMigrateFifoStore :: IO ()
+caseMigrateFifoStore = withScratch "ctl-migrate" $ \dir -> do
+  let store = dir </> "store.sqlite"; backups = dir </> "backups"
+  createNamedPipe store 0o600
+  createDirectory backups
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  withFifoWriter store "not a database file, only pipe garbage" $ do
+    r <- migrateCli store cfgPath backups
+    assertEqual "exit 1" 1 (ceCode r)
+    assertBool "tag" ("store-unreadable:" `isPrefixOf` ceErr r)
+    assertBool "names non-regular" ("not a regular file" `isInfixOf` ceErr r)
+    listDirectory backups >>= assertEqual "no backup" []
+
+-- A FIFO at the lock path is refused by lstat: the writer offers a
+-- dead pid, which an open would accept and plan from.
+caseCheckFifoLock :: IO ()
+caseCheckFifoLock = withScratch "ctl-check" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  createNamedPipe (store ++ ".lock") 0o600
+  withFifoWriter (store ++ ".lock") "999999999\n" $ do
+    r <- check store cfgPath
+    assertEqual "exit 1" 1 (ceCode r)
+    assertEqual "no plan printed" "" (ceOut r)
+    assertBool "tag" ("store-live:" `isPrefixOf` ceErr r)
+    assertBool "names non-regular" ("not a regular file" `isInfixOf` ceErr r)
+
+-- A symlink at the lock path is refused, never followed: the link
+-- target offers pid 1 (alive), which a follow would report as the
+-- holder instead.
+caseCheckSymlinkLock :: IO ()
+caseCheckSymlinkLock = withScratch "ctl-check" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let fifo = dir </> "target.fifo"
+  createNamedPipe fifo 0o600
+  createSymbolicLink fifo (store ++ ".lock")
+  withFifoWriter fifo "1\n" $ do
+    r <- check store cfgPath
+    assertEqual "exit 1" 1 (ceCode r)
+    assertEqual "no plan printed" "" (ceOut r)
+    assertBool "tag" ("store-live:" `isPrefixOf` ceErr r)
+    assertBool "names non-regular" ("not a regular file" `isInfixOf` ceErr r)
+
+-- A lock far beyond a pid line, without one, reads as unreadable:
+-- the read is capped and the pid line must be complete.
+caseCheckOversizedLock :: IO ()
+caseCheckOversizedLock = withScratch "ctl-check" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  BS.writeFile (store ++ ".lock") (BS.replicate 4096 0x78)
+  r <- check store cfgPath
+  assertEqual "exit 1" 1 (ceCode r)
+  assertEqual "no plan printed" "" (ceOut r)
+  assertBool "tag" ("store-live:" `isPrefixOf` ceErr r)
+  assertBool "unreadable" ("unreadable" `isInfixOf` ceErr r)
 
 -- A cold journal must not bypass the -wal refusal: check names the
 -- -wal (not the cold journal) and migrate refuses with every byte

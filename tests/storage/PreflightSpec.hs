@@ -74,6 +74,7 @@ spec = testGroup "Store preflight"
       , testCase "unknown schema versions refuse unchanged" caseUnknownVersionsRefuse
       , testCase "schema-3 rowless tokens still name their ids" caseV3RowlessNamesIds
       , testCase "a foreign WAL refuses the serving open, merging nothing" caseServingRefusesForeignWal
+      , testCase "a FIFO store refuses the serving open without hanging" caseServingRefusesFifoStore
       ]
   , testGroup "snapshot"
       [ testCase "snapshot reads a released store without writing" caseSnapshotReadsFixture
@@ -304,6 +305,20 @@ caseServingRefusesForeignWal = withScratch "refused-open" $ \dir -> do
   assertBool "no -shm created" (not shmLeft)
   lockLeft <- doesFileExist (store ++ ".lock")
   assertBool "no lock left" (not lockLeft)
+
+-- A FIFO at the store path refuses the serving open by lstat,
+-- never opened: the held writer only keeps a regression from
+-- hanging the suite.
+caseServingRefusesFifoStore :: IO ()
+caseServingRefusesFifoStore = withScratch "refused-open" $ \dir -> do
+  let store = dir </> "store.db"
+  createNamedPipe store 0o600
+  withFifoWriter store "not a database file, only pipe garbage" $ do
+    r <- openSQLiteStore store
+    case r of
+      Left (StoreIO m) -> assertBool "names non-regular" ("not a regular file" `isInfixOf` m)
+      Left other -> assertFailure ("wrong refusal: " ++ show other)
+      Right s -> storeClose s >> assertFailure "the serving open took a FIFO store"
 
 -- | The manifest's generator and template digests name the files in
 -- the tree, so an edit to either cannot leave a stale record.

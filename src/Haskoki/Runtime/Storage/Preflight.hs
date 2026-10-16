@@ -61,7 +61,8 @@ import Haskoki.Runtime.Storage
 import Haskoki.Runtime.Storage.SQLite
   ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
   , clearColdJournalOwned, guardFlags, migrateOwned, noMigrationHooks, pidIsDead, probeOwner, readFileCloexec
-  , readStoreSnapshot, readStoreSnapshotAllowCold, resolveStorePath, sqliteSchemaVersion, withOwnedStoreFile )
+  , readStoreSnapshot, readStoreSnapshotAllowCold, requireRegularStore, resolveStorePath, sqliteSchemaVersion
+  , withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
 -- | SHA-256 of a byte string as 64 lowercase hex digits, computed by
@@ -173,10 +174,14 @@ planVerdict p = case sopIdentity p of
 checkStoreOpen :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
 checkStoreOpen path0 cfg = do
   path <- resolveStorePath path0
-  owner <- probeOwner path
-  case owner of
-    OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
-    _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshot path
+  eReg <- requireRegularStore path
+  case eReg of
+    Left err -> pure (Left err)
+    Right () -> do
+      owner <- probeOwner path
+      case owner of
+        OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
+        _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshot path
 
 -- | Like 'checkStoreOpen' but a cold journal does not refuse: used
 -- by the migration to learn its verdict before deciding whether the
@@ -185,10 +190,14 @@ checkStoreOpen path0 cfg = do
 checkStoreOpenAllowCold :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
 checkStoreOpenAllowCold path0 cfg = do
   path <- resolveStorePath path0
-  owner <- probeOwner path
-  case owner of
-    OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
-    _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshotAllowCold path
+  eReg <- requireRegularStore path
+  case eReg of
+    Left err -> pure (Left err)
+    Right () -> do
+      owner <- probeOwner path
+      case owner of
+        OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
+        _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshotAllowCold path
 
 renderPlan :: StoreOpenPlan -> String
 renderPlan p = unlines

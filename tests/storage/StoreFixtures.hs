@@ -10,6 +10,7 @@ module StoreFixtures
   , fixtureLabels, fixtureSo, fixtureUser, fixturePins, assertNoPins
   , withFileMode, reapedPid
   , walChildMain, plantForeignWal, withSymlinkedFixture
+  , withFifoWriter
   , StoreState (..), captureState, assertUnchanged, makeSchemaStore
   , writeStoreConfig, expectStdNeedsMigration, fixtureToken
   , spawnedPid, claimReap, waitBounded, releaseHolder, awaitHolderExit
@@ -29,10 +30,13 @@ import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, 
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
-import System.IO.Error (catchIOError, isAlreadyExistsError)
+import System.IO.Error (catchIOError, isAlreadyExistsError, isDoesNotExistError, tryIOError)
+import System.Posix.Directory (closeDirStream, openDirStream, readDirStream)
 import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, setFileMode)
-import System.Posix.Process (exitImmediately, getProcessID)
-import System.Posix.Signals (sigKILL, signalProcess)
+import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
+import System.Posix.IO.ByteString (fdWrite)
+import System.Posix.Process (exitImmediately, forkProcess, getProcessID, getProcessStatus)
+import System.Posix.Signals (scheduleAlarm, sigKILL, signalProcess)
 import System.Posix.Types (FileMode, ProcessID)
 import System.Process (ProcessHandle, createProcess, getPid, getProcessExitCode, proc, CreateProcess (..))
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure)
@@ -294,6 +298,52 @@ plantForeignWal target mode = do
     removeIfExists p = do
       exists <- doesFileExist p
       when exists (removeFile p)
+
+-- | Keep a FIFO writable while the action runs: a double-forked
+-- writer process loops raw blocking opens of the FIFO (each open
+-- unblocks one reader open), writing the given bytes, and closing
+-- (so readers see EOF instead of hanging). A process, not a
+-- thread: only the kernel schedules it, so no RTS or masking
+-- interaction can stall either side. The immediate child is
+-- reaped at once; the grandchild exits once the scratch FIFO is
+-- deleted, or after two minutes (so a killed run cannot leak it
+-- forever). Keeps a regression from hanging the suite: it fails
+-- instead.
+withFifoWriter :: FilePath -> BS.ByteString -> IO a -> IO a
+withFifoWriter fifo bytes act = do
+  child <- forkProcess $ do
+    _ <- forkProcess (closeInheritedFds >> scheduleAlarm 120 >> writerLoop)
+    exitImmediately ExitSuccess
+  _ <- getProcessStatus True False child
+  act
+  where
+    writerLoop = do
+      e <- tryIOError (bracket (openFd fifo WriteOnly defaultFileFlags) closeFd (`fdWrite` bytes))
+      case e of
+        Left err | isDoesNotExistError err -> exitImmediately ExitSuccess
+        _ -> writerLoop
+
+-- | Close every inherited fd except stdio in a forked-without-exec
+-- child. Without this the writer grandchild duplicates the test
+-- process's open database and lock fds (flocks included) and holds
+-- them for its whole lifetime, wedging parallel tests that reopen
+-- those stores.
+closeInheritedFds :: IO ()
+closeInheritedFds = do
+  eFds <- tryIOError (bracket (openDirStream "/proc/self/fd") closeDirStream collect)
+  mapM_ closeOne (either (const [3..1023]) id eFds)
+  where
+    collect s = go s []
+      where
+        go st acc = do
+          e <- readDirStream st
+          if null e then pure acc
+            else case reads e of
+              [(n, "")] | (n :: Int) > 2 -> go st (n : acc)
+              _ -> go st acc
+    closeOne n = do
+      _ <- tryIOError (closeFd (fromIntegral (n :: Int)))
+      pure ()
 
 -- | Copy a released fixture under a real directory, point a symlink
 -- at the copy, and write a config naming the symlink (as an

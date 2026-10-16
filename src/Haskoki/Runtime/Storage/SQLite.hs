@@ -65,6 +65,7 @@ module Haskoki.Runtime.Storage.SQLite
   , FileIdentity (..)
   , StoreSnapshot (..)
   , resolveStorePath
+  , requireRegularStore
   , readStoreSnapshot
   , readStoreSnapshotAllowCold
   , OwnerState (..)
@@ -105,6 +106,7 @@ import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
 import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, readSymbolicLink, removeLink, setFdSize, setFileMode)
 import System.IO (hClose)
 import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWrite, openFd)
+import System.Posix.IO.ByteString (fdRead)
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (Fd, ProcessID)
 import System.Posix.Unistd (fileSynchronise)
@@ -368,7 +370,7 @@ procRootFromEnv = do
 -- our close, so the next open is wrongly refused as a second
 -- writer.
 guardFlags :: OpenFileFlags
-guardFlags = defaultFileFlags { cloexec = True }
+guardFlags = defaultFileFlags { cloexec = True, nonBlock = True, nofollow = True }
 
 -- | All bytes of a file, read through a 'guardFlags' descriptor. A GHC
 -- 'Handle' open ('readFile', 'BS.readFile') does not set O_CLOEXEC, so
@@ -376,6 +378,44 @@ guardFlags = defaultFileFlags { cloexec = True }
 readFileCloexec :: FilePath -> IO ByteString
 readFileCloexec p = bracket open hClose BS.hGetContents
   where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
+
+-- | A lock sidecar's pid line through a 'guardFlags' descriptor: a
+-- single raw 64-byte read (lock files only ever hold @pid\n@, so a
+-- bounded read cannot be swamped), and the pid line must be complete
+-- (a missing newline fails closed instead of parsing a truncated
+-- pid). Raw 'fdRead', not a 'Handle': on a swapped-in FIFO the
+-- O_NONBLOCK read surfaces end-of-file or an error at once instead
+-- of waiting. Callers lstat first and only call this on regular
+-- files.
+readLockBytes :: FilePath -> IO ByteString
+readLockBytes p = bracket (openFd p ReadOnly guardFlags) closeFd $ \fd -> do
+  bs <- fdRead fd 64
+  if BS.elem 10 bs then pure bs else ioError (userError ("lock file has no pid line: " ++ p))
+
+-- | lstat without following the final component and without opening:
+-- missing files report 'Nothing' (callers keep their create/absent
+-- paths); present files report their status for a regular-file
+-- check. Other I\/O failures report 'Left'. A FIFO can never hang
+-- this call.
+lstatOpt :: FilePath -> IO (Either String (Maybe FileStatus))
+lstatOpt path = do
+  e <- tryIOError (getSymbolicLinkStatus path)
+  pure $ case e of
+    Left err
+      | isDoesNotExistError err -> Right Nothing
+      | otherwise -> Left (show err)
+    Right st -> Right (Just st)
+
+-- | Refuse anything but a regular file or a missing path (missing
+-- paths keep their downstream report): lstat only, never opened, so
+-- a FIFO cannot hang the caller.
+requireRegularStore :: FilePath -> IO (Either StoreError ())
+requireRegularStore path = do
+  e <- lstatOpt path
+  pure $ case e of
+    Right (Just st) | not (isRegularFile st) ->
+      Left (StoreIO ("not a regular file: " ++ path))
+    _ -> Right ()
 
 -- | Take single-writer ownership via an O_EXCL sidecar lock carrying
 -- our pid. An existing lock owned by a live pid fails explicitly;
@@ -426,10 +466,17 @@ claimFresh dbPath lockPath procRoot attempts fd pid = do
 -- compare as text, avoiding any orphan 'Read' instances.
 inspectLock :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
 inspectLock dbPath lockPath procRoot pid attempts = do
-  eContent <- tryIOError (BC8.unpack <$> readFileCloexec lockPath)
-  case eContent of
-    Left _ -> pure (Left (StoreSecondWriter ("store is locked and the owner is unreadable: " ++ lockPath)))
-    Right content -> case reads content of
+  eSt <- tryIOError (getSymbolicLinkStatus lockPath)
+  case eSt of
+    Right st | not (isRegularFile st) ->
+      pure (Left (StoreSecondWriter ("store lock is not a regular file: " ++ lockPath)))
+    _ -> do
+      eContent <- tryIOError (BC8.unpack <$> readLockBytes lockPath)
+      case eContent of
+        Left _ -> pure (Left (StoreSecondWriter ("store is locked and the owner is unreadable: " ++ lockPath)))
+        Right content -> inspectContent content
+  where
+    inspectContent content = case reads content of
       [(ownerN, _) :: (Int, String)] | show ownerN == show pid ->
         pure (Left (StoreSecondWriter ("store is already open in this process: " ++ dbPath)))
       [(ownerN, _) :: (Int, String)] -> do
@@ -553,23 +600,29 @@ confirmTakeover dbPath lockPath procRoot pid attempts = do
     -- this fd, so a cancellation during the retry cannot
     -- double-close it after the number is recycled.
     Right fd -> do
-      locked <- tryFlock fd `onException` closeQuietFd fd
-      if not locked
-        then do
+      eSt <- tryIOError (getFdStatus fd) `onException` closeQuietFd fd
+      case eSt of
+        Right st | not (isRegularFile st) -> do
           closeQuietFd fd
-          pure (Left (StoreSecondWriter ("store lock is held by a live owner (kernel lock held on "
-            ++ lockPath ++ "); refusing second writer: " ++ dbPath)))
-        else do
-          same <- sameFile fd lockPath `onException` closeQuietFd fd
-          if not same
+          pure (Left (StoreSecondWriter ("store lock is not a regular file: " ++ lockPath)))
+        _ -> do
+          locked <- tryFlock fd `onException` closeQuietFd fd
+          if not locked
             then do
               closeQuietFd fd
-              takeOwnership dbPath lockPath procRoot (attempts - 1)
+              pure (Left (StoreSecondWriter ("store lock is held by a live owner (kernel lock held on "
+                ++ lockPath ++ "); refusing second writer: " ++ dbPath)))
             else do
-              _ <- (do
-                _ <- tryIOError (setFdSize fd 0)
-                tryIOError (fdWrite fd (show pid ++ "\n"))) `onException` closeQuietFd fd
-              pure (Right fd)
+              same <- sameFile fd lockPath `onException` closeQuietFd fd
+              if not same
+                then do
+                  closeQuietFd fd
+                  takeOwnership dbPath lockPath procRoot (attempts - 1)
+                else do
+                  _ <- (do
+                    _ <- tryIOError (setFdSize fd 0)
+                    tryIOError (fdWrite fd (show pid ++ "\n"))) `onException` closeQuietFd fd
+                  pure (Right fd)
 
 -- | True when the open fd and the path name the same file (the
 -- unlink race: a closer may have removed the path after we opened
@@ -621,23 +674,28 @@ ensureDbGuard dbPath = mask_ (go (3 :: Int))
     go n
       | n <= 0 = pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
       | otherwise = do
-          eFd <- tryIOError (openFd dbPath ReadOnly guardFlags)
-          case eFd of
-            Right fd -> do
-              eGuard <- takeDbGuard dbPath fd
-              pure (fmap (, False) eGuard)
-            Left e
-              | isDoesNotExistError e -> do
-                  eCr <- tryIOError (openFd dbPath WriteOnly
-                    guardFlags { creat = Just 0o600, exclusive = True })
-                  case eCr of
-                    Right fd -> do
-                      eGuard <- takeDbGuard dbPath fd
-                      pure (fmap (, True) eGuard)
-                    Left e2
-                      | isAlreadyExistsError e2 -> go (n - 1)
-                      | otherwise -> pure (Left (StoreIO ("store database cannot be created: " ++ dbPath)))
-              | otherwise -> pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
+          eSt <- lstatOpt dbPath
+          case eSt of
+            Right (Just st) | not (isRegularFile st) ->
+              pure (Left (StoreIO ("not a regular file: " ++ dbPath)))
+            _ -> do
+              eFd <- tryIOError (openFd dbPath ReadOnly guardFlags)
+              case eFd of
+                Right fd -> do
+                  eGuard <- takeDbGuard dbPath fd
+                  pure (fmap (, False) eGuard)
+                Left e
+                  | isDoesNotExistError e -> do
+                      eCr <- tryIOError (openFd dbPath WriteOnly
+                        guardFlags { creat = Just 0o600, exclusive = True })
+                      case eCr of
+                        Right fd -> do
+                          eGuard <- takeDbGuard dbPath fd
+                          pure (fmap (, True) eGuard)
+                        Left e2
+                          | isAlreadyExistsError e2 -> go (n - 1)
+                          | otherwise -> pure (Left (StoreIO ("store database cannot be created: " ++ dbPath)))
+                  | otherwise -> pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
 
 -- | @flock(2)@ constants (Linux ABI; this backend is Linux-only, as
 -- is the @\/proc@ liveness check above).
@@ -2486,8 +2544,9 @@ probeOwner path = do
   sidecar <- case eLock of
     Left e | isDoesNotExistError e -> pure (Right Nothing)
            | otherwise -> pure (Left "the lock file cannot be examined")
+    Right st | not (isRegularFile st) -> pure (Left "the lock file is not a regular file")
     Right _ -> do
-      eContent <- tryIOError (readFileCloexec lockPath)
+      eContent <- tryIOError (readLockBytes lockPath)
       case eContent of
         Left _ -> pure (Left "the lock file is unreadable")
         Right content -> case reads (BC8.unpack content) of
@@ -2522,14 +2581,20 @@ probeOwner path = do
 -- interruptible under the mask).
 kernelLockHeld :: FilePath -> IO (Either String Bool)
 kernelLockHeld path = mask_ $ do
-  eFd <- tryIOError (openFd path ReadOnly guardFlags)
-  case eFd of
-    Left e
-      | isDoesNotExistError e -> pure (Right False)
-      | otherwise -> pure (Left "the database cannot be opened to probe its lock")
-    Right fd -> do
-      held <- attempt fd 0 `finally` closeQuietFd fd
-      pure (Right held)
+  eSt <- lstatOpt path
+  case eSt of
+    Right Nothing -> pure (Right False)
+    Right (Just st) | not (isRegularFile st) -> pure (Left "the database is not a regular file")
+    Left _ -> pure (Left "the database cannot be opened to probe its lock")
+    Right _ -> do
+      eFd <- tryIOError (openFd path ReadOnly guardFlags)
+      case eFd of
+        Left e
+          | isDoesNotExistError e -> pure (Right False)
+          | otherwise -> pure (Left "the database cannot be opened to probe its lock")
+        Right fd -> do
+          held <- attempt fd 0 `finally` closeQuietFd fd
+          pure (Right held)
   where
     attempt :: Fd -> Int -> IO Bool
     attempt fd n = do
@@ -2574,31 +2639,36 @@ noMigrationHooks = MigrationHooks (\_ -> pure ()) (\_ -> pure ())
 -- only file created, and it is removed on release.
 withOwnedStoreFile :: FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
 withOwnedStoreFile path act = mask $ \restore -> do
-  exists <- fileExist path
-  if not exists then pure (Left (StoreIO ("no store file at " ++ path))) else do
-    procRoot <- procRootFromEnv
-    let lockPath = path ++ ".lock"
-    eOwn <- takeOwnership path lockPath procRoot 3
-    case eOwn of
-      Left err -> pure (Left err)
-      Right lockFd -> do
-        eFd <- tryIOError (openFd path ReadOnly guardFlags)
-          `onException` releaseQuiet lockFd lockPath
-        case eFd of
-          Left e
-            | isDoesNotExistError e -> releaseQuiet lockFd lockPath
-                >> pure (Left (StoreIO ("store vanished while taking ownership: " ++ path)))
-            | otherwise -> releaseQuiet lockFd lockPath
-                >> pure (Left (StoreIO ("store database cannot be opened: " ++ path)))
-          Right fd0 -> do
-            eGuard <- takeDbGuard path fd0 `onException` releaseQuiet lockFd lockPath
-            case eGuard of
-              Left err -> releaseQuiet lockFd lockPath >> pure (Left err)
-              Right dbFd -> do
-                let release = closeQuietFd dbFd >> releaseQuiet lockFd lockPath
-                r <- restore (act (OwnedStoreFile path dbFd)) `onException` release
-                release
-                pure (Right r)
+  eSt <- lstatOpt path
+  case eSt of
+    Right Nothing -> pure (Left (StoreIO ("no store file at " ++ path)))
+    Right (Just st) | not (isRegularFile st) ->
+      pure (Left (StoreIO ("not a regular file: " ++ path)))
+    Left e -> pure (Left (StoreIO ("store database cannot be examined: " ++ path ++ ": " ++ e)))
+    Right _ -> do
+      procRoot <- procRootFromEnv
+      let lockPath = path ++ ".lock"
+      eOwn <- takeOwnership path lockPath procRoot 3
+      case eOwn of
+        Left err -> pure (Left err)
+        Right lockFd -> do
+          eFd <- tryIOError (openFd path ReadOnly guardFlags)
+            `onException` releaseQuiet lockFd lockPath
+          case eFd of
+            Left e
+              | isDoesNotExistError e -> releaseQuiet lockFd lockPath
+                  >> pure (Left (StoreIO ("store vanished while taking ownership: " ++ path)))
+              | otherwise -> releaseQuiet lockFd lockPath
+                  >> pure (Left (StoreIO ("store database cannot be opened: " ++ path)))
+            Right fd0 -> do
+              eGuard <- takeDbGuard path fd0 `onException` releaseQuiet lockFd lockPath
+              case eGuard of
+                Left err -> releaseQuiet lockFd lockPath >> pure (Left err)
+                Right dbFd -> do
+                  let release = closeQuietFd dbFd >> releaseQuiet lockFd lockPath
+                  r <- restore (act (OwnedStoreFile path dbFd)) `onException` release
+                  release
+                  pure (Right r)
 
 -- | Remove a cold rollback journal inside the caller's ownership
 -- window (the sidecar plus the database kernel guard are already
