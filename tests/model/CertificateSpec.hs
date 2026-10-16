@@ -528,8 +528,9 @@ fullCert = certAttrs
      , (AttrEndDate, ValBytes "20250131")
      ]
 
--- | Copy/set of every certificate-immutable member refuses — CLASS
--- override on cert sources included — except TRUSTED=false set
+-- | Copy/set of every certificate-immutable member refuses — a CLASS
+-- copy-override refuses read-only (the class is immutable on copy),
+-- every other member inconsistent — except TRUSTED=false set
 -- (allowed all logins) and SO TRUSTED=true set (allowed).
 -- LABEL/APPLICATION/ID overrides stay allowed on both paths.
 caseCertImmutableMatrix :: IO ()
@@ -554,8 +555,12 @@ caseCertImmutableMatrix = do
         ]
       checkCopy entry = do
         (code, m') <- runReject m1 (copyReq sid h [entry])
-        assertEqual ("copy refused: " ++ show (fst entry))
-          CKR_TEMPLATE_INCONSISTENT code
+        -- The class is immutable on copy (the set path's code);
+        -- every other member keeps the certificate message code.
+        let want = if fst entry == AttrClass
+              then CKR_ATTRIBUTE_READ_ONLY
+              else CKR_TEMPLATE_INCONSISTENT
+        assertEqual ("copy refused: " ++ show (fst entry)) want code
         assertEqual ("no copy created: " ++ show (fst entry))
           (Map.size (mObjects m1)) (Map.size (mObjects m'))
       checkSet entry = do
@@ -614,8 +619,8 @@ caseCertImmutableMatrix = do
   assertEqual "id set" CKR_OK (pcCode pcSI)
 
 -- | The certificate copy guard never fires off-class: non-certificate
--- VALUE-override copies still merge, and non-certificate
--- CLASS-override copies keep their existing merge behavior.
+-- VALUE-override copies still merge. Class overrides refuse
+-- read-only on any source: the class is immutable on copy.
 caseCopyScopeRegression :: IO ()
 caseCopyScopeRegression = do
   (sid, m0) <- openSession seeded
@@ -636,14 +641,12 @@ caseCopyScopeRegression = do
         (Just (ValBytes "v2")) (Map.lookup AttrValue (osAttrs ost))
       assertEqual "label inherited"
         (Just (ValBytes "src")) (Map.lookup AttrLabel (osAttrs ost))
-  (pcC2, m3) <- runCommit m2
+  let (nObjs, nHandles) = (Map.size (mObjects m2), Map.size (mHandles m2))
+  (codeC2, m3) <- runReject m2
     (copyReq sid h [(AttrClass, ValULong secretClass)])
-  assertEqual "class-override copy keeps merging" CKR_OK (pcCode pcC2)
-  h3 <- commitHandle pcC2
-  case resolveHandle m3 h3 of
-    Nothing -> assertFailure "class-copy handle lost"
-    Just ost -> assertEqual "class merged"
-      (Just (ValULong secretClass)) (Map.lookup AttrClass (osAttrs ost))
+  assertEqual "class-override copy refused read-only" CKR_ATTRIBUTE_READ_ONLY codeC2
+  assertEqual "no class-override copy created" (nObjs, nHandles)
+    (Map.size (mObjects m3), Map.size (mHandles m3))
 
 -- | Copy-template precedence: contradictory duplicates refuse;
 -- wrong-shape overrides refuse INCONSISTENT before the seal and

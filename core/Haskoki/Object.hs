@@ -1128,7 +1128,10 @@ deriveCopyAttrs srcAttrs over
 -- visible to the calling session, the override template must be
 -- contradiction-free, and the merged attributes must still carry a
 -- class. The copy gets a fresh id and handle; the source is
--- untouched. Seal ratchet: overrides that flip sensitive true->false,
+-- untouched. Class and key type are immutable: an override that
+-- changes either is refused ('CKR_ATTRIBUTE_READ_ONLY', the set
+-- path's code for these attributes); a no-op same-value override
+-- still copies. Seal ratchet: overrides that flip sensitive true->false,
 -- or set extractable true on a source whose effective flag is not
 -- extractable, are rejected ('CKR_TEMPLATE_INCONSISTENT');
 -- sealed flags otherwise inherit, so a copy of a sealed object is
@@ -1159,6 +1162,15 @@ planCopyObject model st h tmpl = case resolveHandle model h of
           Just t -> templateReject CKR_TEMPLATE_INCONSISTENT
             ("wrong shape for attribute: " ++ show t)
           Nothing
+            -- Class and key type are immutable on copy (PKCS#11
+            -- Table 4: neither may appear changed in a copy
+            -- template): a changed override is refused read-only,
+            -- the set path's code for these attributes, so a copy
+            -- can never rewrite its source's class. A no-op
+            -- same-value override still copies.
+            | Just t <- immutableChange (osAttrs src) over ->
+                templateReject CKR_ATTRIBUTE_READ_ONLY
+                  ("copy cannot override immutable attribute: " ++ show t)
             | effectiveSensitive (osAttrs src)
             , Map.lookup AttrSensitive over == Just (ValBool False) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT
@@ -1218,6 +1230,16 @@ planCopyObject model st h tmpl = case resolveHandle model h of
             where
               isCertSource =
                 Map.lookup AttrClass (osAttrs src) == Just (ValULong ckoCertificate)
+              -- The first of the class/key-type pair the override
+              -- changes (a value the source lacks counts as
+              -- changed); 'Nothing' when the override carries no
+              -- changed value for either.
+              immutableChange srcAttrs overM =
+                find changed [AttrClass, AttrKeyType]
+                where
+                  changed t = case Map.lookup t overM of
+                    Just v -> Map.lookup t srcAttrs /= Just v
+                    Nothing -> False
 
 -- | Plan an attribute change: the handle must resolve and be
 -- visible to the calling session, the template must be

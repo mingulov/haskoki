@@ -182,9 +182,10 @@ getAttributes attrs wanted =
       | otherwise = CKR_OK
 
 -- | Attributes sealed by the payload rule (sensitive or
--- unextractable): the opaque value plus the private key components.
--- Public components (modulus, public exponent, curve point) stay
--- readable under the same flags.
+-- unextractable): the opaque value plus the private key components
+-- (the RSA CRT set and the PQC private seed). Public components
+-- (modulus, public exponent, curve point) stay readable under the
+-- same flags.
 sealedAttrs :: [AttributeType]
 sealedAttrs =
   [ AttrValue
@@ -194,6 +195,7 @@ sealedAttrs =
   , AttrExponent1
   , AttrExponent2
   , AttrCoefficient
+  , AttrSeed
   ]
 
 -- | Token-assigned history/origin attributes: the module stamps

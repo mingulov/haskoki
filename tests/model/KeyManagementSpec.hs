@@ -335,6 +335,7 @@ import Haskoki.Session (SessionLogin (..))
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
+  , ObjectId (..)
   , ReturnCode (..)
   , SessionId (..)
   , SlotId (..)
@@ -6422,6 +6423,20 @@ caseRealByteOpsVector = withRealEnv $ \env -> do
   gotExt4 <- derive extractMech fExt4 2
   assertEqual "extract sub-byte KAT" (Just (hex "0010")) gotExt4
 
+-- | The delta a key plan would publish: denials carry no objects
+-- (empty delta); immediate outcomes carry their own delta; an
+-- effect would allocate its pending objects on finish, so it maps
+-- to a sentinel allocation at the model's next id (a plan that
+-- allocates fails the size check instead of passing it).
+denialDelta :: Model -> KeyPlan -> StateDelta
+denialDelta m plan = case plan of
+  KeyDenied _ -> StateDelta []
+  KeyImmediate pr -> case pr of
+    Immediate pc -> pcDelta pc
+    Reject rej -> rejDelta rej
+    Execute _ _ -> StateDelta [DeltaCreateObject (ObjectId (mNextObject m))]
+  KeyEffect _ _ -> StateDelta [DeltaCreateObject (ObjectId (mNextObject m))]
+
 -- | Byte-operation protection inheritance (OASIS 3.2 §6.43.3–§6.43.7,
 -- finding TS4): a template that explicitly downgrades inherited
 -- protection refuses 'CKR_TEMPLATE_INCONSISTENT'; matching and
@@ -6605,15 +6620,18 @@ caseByteOpsProtection = withSynth $ \answer -> do
     KeyDenied (KeyDeny code _) ->
       assertEqual "overrun code" CKR_ARGUMENTS_BAD code
     other -> assertFailure ("overrun must deny, got: " ++ show other)
-  -- A refused derivation allocates nothing: the denial carries no
-  -- delta, so publishing leaves the pre-snapshot unchanged.
+  -- A refused derivation allocates nothing: publishing the
+  -- denied plan's own delta leaves the pre-snapshot unchanged. The
+  -- size check runs before the code match, so a plan that allocates
+  -- fails here rather than below.
   let before = Map.size (mObjects m5)
-  case planDerive defaultRules m5 st extractMech protBaseH
-      (encodeDeriveParams fExt [kidDown 16]) of
+      deniedPlan = planDerive defaultRules m5 st extractMech protBaseH
+        (encodeDeriveParams fExt [kidDown 16])
+  mAfterDeny <- expectRight (publishDelta m5 (denialDelta m5 deniedPlan))
+  assertEqual "denied derive allocates nothing" before (Map.size (mObjects mAfterDeny))
+  case deniedPlan of
     KeyDenied _ -> pure ()
     other -> assertFailure ("downgrade must deny, got: " ++ show other)
-  mAfterDeny <- expectRight (publishDelta m5 (StateDelta []))
-  assertEqual "denied derive allocates nothing" before (Map.size (mObjects mAfterDeny))
   -- The sealed flags retain through finish/publication with exact
   -- output bytes; readback and wrap then refuse typed.
   (m6, childH) <- case planDerive defaultRules m5 st extractMech protBaseH
@@ -6709,16 +6727,17 @@ caseByteOpsProtection = withSynth $ \answer -> do
         (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
     other -> assertFailure ("absent-base derive must plan, got: " ++ show other)
   -- A history attribute in the derive template refuses
-  -- inconsistent and allocates nothing: publishing the denial
-  -- leaves the pre-snapshot unchanged.
+  -- inconsistent and allocates nothing: publishing the denied
+  -- plan's own delta leaves the pre-snapshot unchanged.
   let histBefore = Map.size (mObjects m5)
-  case planDerive defaultRules m5 st concatKeyMech plainBaseH
-      (encodeDeriveParams fKeyPlainAux [kidOmit 64 ++ [(AttrLocal, ValBool True)]]) of
+      histPlan = planDerive defaultRules m5 st concatKeyMech plainBaseH
+        (encodeDeriveParams fKeyPlainAux [kidOmit 64 ++ [(AttrLocal, ValBool True)]])
+  mAfterHist <- expectRight (publishDelta m5 (denialDelta m5 histPlan))
+  assertEqual "refused history derive allocates nothing" histBefore (Map.size (mObjects mAfterHist))
+  case histPlan of
     KeyDenied (KeyDeny code _) ->
       assertEqual "history derive code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("history derive must deny, got: " ++ show other)
-  mAfterHist <- expectRight (publishDelta m5 (StateDelta []))
-  assertEqual "refused history derive allocates nothing" histBefore (Map.size (mObjects mAfterHist))
   -- Unaffected family: HKDF carries no §6.43 inheritance rule, so
   -- a readable template over a protected base still plans with the
   -- caller's flags (scoping control against a global rule).
@@ -6734,7 +6753,8 @@ caseByteOpsProtection = withSynth $ \answer -> do
 
 -- | A history attribute in a generation template refuses
 -- inconsistent at the strict choke point and allocates nothing:
--- publishing the denial leaves the pre-snapshot unchanged.
+-- publishing the denied plan's own delta leaves the pre-snapshot
+-- unchanged.
 caseKeyTemplatesRefuseHistory :: IO ()
 caseKeyTemplatesRefuseHistory = do
   m0 <- seedModel
@@ -6747,12 +6767,13 @@ caseKeyTemplatesRefuseHistory = do
         , (AttrAlwaysSensitive, ValBool True)
         ]
       before = Map.size (mObjects m0)
-  case planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty tmpl of
+      genPlan = planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty tmpl
+  mAfterGen <- expectRight (publishDelta m0 (denialDelta m0 genPlan))
+  assertEqual "refused history generate allocates nothing" before (Map.size (mObjects mAfterGen))
+  case genPlan of
     KeyDenied (KeyDeny code _) ->
       assertEqual "history generate code" CKR_TEMPLATE_INCONSISTENT code
     other -> assertFailure ("history generate must deny, got: " ++ show other)
-  mAfterGen <- expectRight (publishDelta m0 (StateDelta []))
-  assertEqual "refused history generate allocates nothing" before (Map.size (mObjects mAfterGen))
 
 keyMat10Mech, keyMat12Mech, keyMatSafeMech :: MechanismId
 keyMat10Mech = MechanismId ckm_TLS_KEY_AND_MAC_DERIVE

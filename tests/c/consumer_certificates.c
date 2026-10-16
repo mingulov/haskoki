@@ -347,7 +347,11 @@ static void leg_lifecycle(void) {
     "copy-refuse-start-date", "copy-refuse-end-date"};
   for (unsigned i = 0; i < N(cover); ++i) {
     CK_OBJECT_HANDLE n = SENTINEL;
-    RV(a.CopyObject(h, o, &cover[i], 1, &n), CKR_TEMPLATE_INCONSISTENT, cnames[i]);
+    /* The class is immutable on copy (the set path's code); every
+     * other member keeps the certificate message code. */
+    CK_RV want = cover[i].type == CKA_CLASS ? CKR_ATTRIBUTE_READ_ONLY
+                                            : CKR_TEMPLATE_INCONSISTENT;
+    RV(a.CopyObject(h, o, &cover[i], 1, &n), want, cnames[i]);
     REQUIRE(n == SENTINEL, "copy-refuse-canary");
   }
   static const char *snames[] = {"set-refuse-class", "set-refuse-type",

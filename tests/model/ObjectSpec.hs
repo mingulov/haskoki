@@ -103,6 +103,13 @@ spec = testGroup "objects and attributes"
   , testCase "copy: tightening keeps never-extractable false" caseCopyTightenKeepsNeverFalse
   , testCase "copy: sensitizing keeps always-sensitive false" caseCopySensitizeKeepsAlwaysFalse
   , testCase "copy: refused copies change nothing" caseRefusedCopyChangesNothing
+  , testCase "copy: class/type overrides refused (rsa-private, sensitive)" caseCopyImmutableRsaSensitive
+  , testCase "copy: class/type overrides refused (rsa-private, unextractable)" caseCopyImmutableRsaUnextractable
+  , testCase "copy: class/type overrides refused (rsa-private, legacy)" caseCopyImmutableRsaLegacy
+  , testCase "copy: class/type overrides refused (aes-secret, sensitive)" caseCopyImmutableAesSensitive
+  , testCase "copy: class/type overrides refused (aes-secret, unextractable)" caseCopyImmutableAesUnextractable
+  , testCase "copy: class/type overrides refused (aes-secret, legacy)" caseCopyImmutableAesLegacy
+  , testCase "copy: same-value class/type override still copies" caseCopyNoopClassAndType
   , testCase "key defaults: legacy key value seals" caseKeyEffectiveSeal
   , testCase "key defaults: find matches the effective protection" caseKeyEffectiveFind
   , testCase "key defaults: protection ratchets on legacy keys" caseKeyEffectiveRatchets
@@ -750,6 +757,111 @@ caseRefusedCopyChangesNothing = do
     Nothing -> assertFailure "source resolves after the refused copy"
     Just ost -> pure (osAttrs ost)
   assertEqual "source map unchanged" srcBefore srcAfter
+
+-- | One immutable-override refusal leg: copying the source with the
+-- given class or key-type override is refused read-only (the set
+-- path's code for these immutable attributes), with no handle
+-- emitted and the store unchanged. The rejection's own delta is
+-- published, so an allocating refusal would move the counts.
+copyImmutableRefused
+  :: String -> [(AttributeType, AttributeValue)]
+  -> (AttributeType, AttributeValue) -> IO ()
+copyImmutableRefused name src over = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid src)
+  h <- commitHandle pc
+  let nObjs = Map.size (mObjects m1)
+      nHandles = Map.size (mHandles m1)
+  (rej, m2) <- runRejectFull m1 (copyReq sid h [over])
+  assertEqual ("refused: " ++ name) CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual ("no handle emitted: " ++ name) [] (rejOutputs rej)
+  assertEqual ("object count unchanged: " ++ name) nObjs (Map.size (mObjects m2))
+  assertEqual ("handle count unchanged: " ++ name) nHandles (Map.size (mHandles m2))
+
+-- | The three immutable overrides for one source: a public-key
+-- class, a data class, and a changed key type.
+copyImmutableMatrix :: String -> [(AttributeType, AttributeValue)] -> Word64 -> IO ()
+copyImmutableMatrix name src changedType = mapM_
+  (\(ovName, over) -> copyImmutableRefused (name ++ "+" ++ ovName) src over)
+  [ ("class-public", (AttrClass, ValULong (mustClassId "CKO_PUBLIC_KEY")))
+  , ("class-data", (AttrClass, ValULong (mustClassId "CKO_DATA")))
+  , ("changed-type", (AttrKeyType, ValULong changedType))
+  ]
+
+-- | A sealed RSA private key (stored sensitive) copied with a
+-- changed class or key type is refused read-only.
+caseCopyImmutableRsaSensitive :: IO ()
+caseCopyImmutableRsaSensitive =
+  copyImmutableMatrix "rsa-private/sensitive"
+    (privateRsaLegacy ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)])
+    (mustKeyTypeId "CKK_EC")
+
+-- | A sealed RSA private key (stored unextractable) copied with a
+-- changed class or key type is refused read-only.
+caseCopyImmutableRsaUnextractable :: IO ()
+caseCopyImmutableRsaUnextractable =
+  copyImmutableMatrix "rsa-private/unextractable"
+    (privateRsaLegacy ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)])
+    (mustKeyTypeId "CKK_EC")
+
+-- | A flag-less RSA private key (sealed by the defaults) copied
+-- with a changed class or key type is refused read-only.
+caseCopyImmutableRsaLegacy :: IO ()
+caseCopyImmutableRsaLegacy =
+  copyImmutableMatrix "rsa-private/legacy"
+    privateRsaLegacy
+    (mustKeyTypeId "CKK_EC")
+
+-- | A sealed AES key (stored sensitive) copied with a changed class
+-- or key type is refused read-only.
+caseCopyImmutableAesSensitive :: IO ()
+caseCopyImmutableAesSensitive =
+  copyImmutableMatrix "aes-secret/sensitive"
+    (secretAes (BS.replicate 16 7) ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)])
+    (mustKeyTypeId "CKK_GENERIC_SECRET")
+
+-- | A sealed AES key (stored unextractable) copied with a changed
+-- class or key type is refused read-only.
+caseCopyImmutableAesUnextractable :: IO ()
+caseCopyImmutableAesUnextractable =
+  copyImmutableMatrix "aes-secret/unextractable"
+    (secretAes (BS.replicate 16 7) ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)])
+    (mustKeyTypeId "CKK_GENERIC_SECRET")
+
+-- | A flag-less AES key (sealed by the defaults) copied with a
+-- changed class or key type is refused read-only.
+caseCopyImmutableAesLegacy :: IO ()
+caseCopyImmutableAesLegacy =
+  copyImmutableMatrix "aes-secret/legacy"
+    (secretAes (BS.replicate 16 7))
+    (mustKeyTypeId "CKK_GENERIC_SECRET")
+
+-- | A no-op same-value class and key-type override still copies:
+-- only a changed value is refused. Both sources keep their class
+-- on the copy.
+caseCopyNoopClassAndType :: IO ()
+caseCopyNoopClassAndType = mapM_ noopLeg
+  [ ("rsa-private", privateRsaLegacy, "CKO_PRIVATE_KEY", "CKK_RSA")
+  , ("aes-secret", secretAes (BS.replicate 16 7), "CKO_SECRET_KEY", "CKK_AES")
+  ]
+  where
+    noopLeg (name, src, cls, kty) = do
+      (sid, m0) <- openSession seeded
+      (pc, m1) <- runCommit m0 (createReq sid src)
+      h <- commitHandle pc
+      (pcC, m2) <- runCommit m1 (copyReq sid h
+        [ (AttrClass, ValULong (mustClassId cls))
+        , (AttrKeyType, ValULong (mustKeyTypeId kty))
+        ])
+      assertEqual ("no-op override copies: " ++ name) CKR_OK (pcCode pcC)
+      h2 <- commitHandle pcC
+      assertBool ("no-op copy is a fresh handle: " ++ name) (h2 /= h)
+      case (resolveHandle m2 h, resolveHandle m2 h2) of
+        (Just srcOst, Just dstOst) ->
+          assertEqual ("no-op copy keeps the class: " ++ name)
+            (Map.lookup AttrClass (osAttrs srcOst))
+            (Map.lookup AttrClass (osAttrs dstOst))
+        _ -> assertFailure ("no-op copy handles lost: " ++ name)
 
 -- | A legacy key (no protection flags stored) seals: its absent
 -- EXTRACTABLE reads as unextractable, so the value redacts.

@@ -19,8 +19,9 @@ PKCS#11.
 
 Template defaults follow PKCS#11: a missing class is incomplete, a
 missing key type defaults to the mechanism's key, usage flags and
-the extractable mark default to false (absent means false, and the
-planners enforce strictly).
+the sensitive mark default to false. The extractable mark defaults
+to false on private and secret keys and to true on public keys;
+the planners enforce the effective (reported) values strictly.
 
 Class, key-type and mechanism ids resolve through the
 generated tables ('Haskoki.Attribute.Generated',
