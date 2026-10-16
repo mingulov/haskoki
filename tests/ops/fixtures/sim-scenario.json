@@ -3,7 +3,8 @@
   "name": "sim-delay-token-fault",
   "note": {
     "status": "sim-demo",
-    "notice": "Repo-authored: exercises token.insert, async.delay and fault.window on the owned-instance runner (never another live process). Run with sim-demo.toml (test-enabled + [sim] knobs)."
+    "notice": "Repo-authored: exercises token.insert, async.delay and fault.window on the owned-instance runner (never another live process). Run with sim-demo.toml (test-enabled + [sim] knobs).",
+    "assumes": "fresh owned store"
   },
   "rules": [],
   "steps": [
@@ -13,8 +14,7 @@
     {
       "action": "fixture.load",
       "arguments": {
-        "fixture": "minimal-demo",
-        "only_if_new_store": true
+        "fixture": "minimal-demo"
       }
     },
     {

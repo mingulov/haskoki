@@ -371,8 +371,11 @@ runTempAsync tag enabled polls completes = withTimeout ("scenario " ++ tag) $
           [ ("token", JStr "demo-token"), ("read_write", JBool True)
           , ("asynchronous", JBool True)
           ]
-      , step "sign.init" [("session", JStr "s1")]
-      , step "sign" [("session", JStr "s1")]
+      , step "sign.init" [("session", JStr "s1")
+          , ("fixture_key", JStr "demo-signing-key")
+          , ("mechanism", JStr "CKM_RSA_PKCS")]
+      , step "sign" [("session", JStr "s1")
+          , ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)]
       ]
       ++ replicate completes (step "async.complete" [("session", JStr "s1"), ("function", JStr "C_Sign")])
     step action args = JObj [("action", JStr action), ("arguments", JObj args)]

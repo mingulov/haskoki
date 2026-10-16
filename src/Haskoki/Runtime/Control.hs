@@ -45,6 +45,8 @@ module Haskoki.Runtime.Control
   , ScenarioStep (..)
   , validateScenario
   , maxScenarioActions
+  , base64DecodedLength
+  , knownMechanism
   ) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
@@ -61,6 +63,7 @@ import qualified Data.ByteString.Internal as BSI
 import Data.ByteString (ByteString)
 import Data.Char (isDigit, isSpace)
 import Data.List (intercalate)
+import qualified Data.Text as T
 import Data.Word (Word64)
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -70,6 +73,7 @@ import Data.Word (Word8)
 
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Outcome (ModelFault (..))
+import Haskoki.Registry.Generated (generatedIdByName)
 import Haskoki.Runtime.Async (AsyncTable, advanceTicks)
 import Haskoki.Runtime.Config (Config (..), ControlCfg (..), SimCfg (..))
 import Haskoki.Runtime.Events
@@ -820,6 +824,23 @@ validateScenario (JObj kvs) = do
         JNum n | n >= lo && n <= hi -> Right ()
         _ -> Left ("scenario argument '" ++ k ++ "' for action '" ++ act
           ++ "' must be an integer in " ++ show lo ++ ".." ++ show hi)
+      Just ArgTrue -> case v of
+        JBool True -> Right ()
+        _ -> Left ("scenario argument '" ++ k ++ "' for action '" ++ act
+          ++ "' must be true (the simulator models read-write sessions only)")
+      Just ArgBase64 -> case v of
+        JStr s | Just _ <- base64DecodedLength s -> Right ()
+        _ -> Left ("scenario argument '" ++ k ++ "' for action '" ++ act
+          ++ "' must be strict base64")
+      Just ArgMechanism -> case v of
+        JStr m | knownMechanism m -> Right ()
+        JStr m -> Left ("unknown mechanism '" ++ m ++ "'")
+        _ -> typeErr "a string"
+      Just (ArgLiteral alts) -> case v of
+        JStr s | s `elem` alts -> Right ()
+        JStr s -> Left ("unsupported " ++ k ++ " '" ++ s
+          ++ "' (supported: " ++ intercalate ", " alts ++ ")")
+        _ -> typeErr "a string"
       where
         typeErr want = Left ("scenario argument '" ++ k ++ "' for action '"
           ++ act ++ "' must be " ++ want)
@@ -880,27 +901,32 @@ data ArgType
   | ArgBool
   | ArgInt
   | ArgIntRange !Integer !Integer
+  | ArgTrue
+  | ArgBase64
+  | ArgMechanism
+  | ArgLiteral ![String]
   deriving (Eq, Show)
 
--- | Per-action argument surface: the keys the runner reads plus the
--- documentary keys the shipped fixtures carry (token names, fixture
--- labels, capacities). Anything else is a typo the runner would
--- silently ignore, so it rejects. An empty session reference can
--- never resolve ('save_as' is never empty), so it rejects too.
+-- | Per-action execution schema: every admitted key is validated and
+-- either consumed by the runner or admitted as a value needing no
+-- execution branch (a single supported literal); anything else is a
+-- typo the runner would silently ignore, so it rejects. An empty
+-- session reference can never resolve ('save_as' is never empty),
+-- so it rejects too.
 argSpec :: String -> [(String, ArgType)]
 argSpec "fixture.load" =
-  [("fixture", ArgString), ("only_if_new_store", ArgBool)]
+  [("fixture", ArgLiteral ["minimal-demo"])]
 argSpec "session.open" =
-  [("token", ArgString), ("read_write", ArgBool), ("asynchronous", ArgBool)]
+  [("token", ArgNonEmptyString), ("read_write", ArgTrue), ("asynchronous", ArgBool)]
 argSpec "session.login" =
-  [("session", ArgNonEmptyString), ("role", ArgString), ("pin", ArgString)]
+  [("session", ArgNonEmptyString), ("role", ArgLiteral ["USER", "SO"]), ("pin", ArgString)]
 argSpec "sign.init" =
-  [("session", ArgNonEmptyString), ("fixture_key", ArgString), ("mechanism", ArgString)]
+  [("session", ArgNonEmptyString), ("fixture_key", ArgLiteral ["demo-signing-key"]), ("mechanism", ArgMechanism)]
 argSpec "sign" =
-  [("session", ArgNonEmptyString), ("data_base64", ArgString), ("output_capacity", ArgInt)]
+  [("session", ArgNonEmptyString), ("data_base64", ArgBase64), ("output_capacity", ArgIntRange 0 16777216)]
 argSpec "async.complete" =
-  [("session", ArgNonEmptyString), ("function", ArgString)]
-argSpec "token.remove" = [("token", ArgString)]
+  [("session", ArgNonEmptyString), ("function", ArgLiteral ["C_Sign"])]
+argSpec "token.remove" = [("token", ArgNonEmptyString)]
 argSpec "slot-event.wait" = [("nonblocking", ArgBool)]
 argSpec "token.insert" = [("slot", ArgIntRange 0 0xFFFFFFFF)]
 argSpec "async.delay" =
@@ -912,9 +938,38 @@ argSpec _ = []
 -- | Arguments without a runner default: absence would fail during
 -- execution, so validation requires them beforehand. Every other
 -- key is optional ('session' defaults to the @"s1"@ slot,
--- 'asynchronous'\/'nonblocking' to runner defaults).
+-- 'asynchronous'\/'nonblocking'\/'token'\/'fixture' to runner defaults).
 requiredArgs :: String -> [String]
+requiredArgs "session.login" = ["role", "pin"]
+requiredArgs "sign.init" = ["mechanism", "fixture_key"]
+requiredArgs "sign" = ["data_base64", "output_capacity"]
+requiredArgs "async.complete" = ["function"]
 requiredArgs "token.insert" = ["slot"]
 requiredArgs "async.delay" = ["polls"]
 requiredArgs "fault.window" = ["start", "ticks"]
 requiredArgs _ = []
+
+-- | Strict base64 decoded length: empty decodes to 0; otherwise the
+-- input length must be a multiple of 4, the body must use the
+-- canonical alphabet only, and at most two @=@ may terminate the
+-- input. Anything else (including data after the pad) is malformed.
+base64DecodedLength :: String -> Maybe Int
+base64DecodedLength s
+  | null s = Just 0
+  | length s `mod` 4 /= 0 = Nothing
+  | '=' `elem` core = Nothing
+  | not (all isB64 core) = Nothing
+  | length pad > 2 = Nothing
+  | not (all (== '=') pad) = Nothing
+  | otherwise = Just ((length s `div` 4) * 3 - length pad)
+  where
+    (core, pad) = span (/= '=') s
+    isB64 c = ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')
+      || ('0' <= c && c <= '9') || c == '+' || c == '/'
+
+-- | A mechanism name is known when the generated inventory resolves
+-- it (canonical or alias).
+knownMechanism :: String -> Bool
+knownMechanism m = case generatedIdByName (T.pack m) of
+  Just _ -> True
+  Nothing -> False

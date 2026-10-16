@@ -32,3 +32,7 @@ behavior, including reserved settings, is described in the
 documentary `note` object; validation drops them.
 `sim-scenario.json`: the top-level `status`/`notice` markers moved under a
 documentary `note` object; validation drops them.
+`scenario.json`: the retired `only_if_new_store` argument dropped from
+`fixture.load`; the fresh-store assumption recorded in the top-level note.
+`sim-scenario.json`: the retired `only_if_new_store` argument dropped from
+`fixture.load`; the fresh-store assumption recorded in the top-level note.

@@ -57,6 +57,7 @@ import Haskoki.Runtime.Control
   ( ControlState
   , Json (..)
   , Scenario (..)
+  , base64DecodedLength
   , dispatchControl
   , newControlState
   , bindPrivatePresenceOwner
@@ -88,6 +89,18 @@ spec = testGroup "Sim bridge"
   , testCase "unknown top-level fields reject" caseTopUnknownRejected
   , testCase "string note rejects" caseTopNoteShape
   , testCase "top-level schema version admits only 1" caseTopSchemaVersion
+  , testCase "unsupported mechanism refuses at load" caseMechanismRefused
+  , testCase "unknown fixture key refuses at load" caseFixtureKeyRefused
+  , testCase "malformed base64 refuses at load" caseBase64Refused
+  , testCase "negative capacity refuses at load" caseCapacityRefused
+  , testCase "unsupported function refuses at load" caseFunctionRefused
+  , testCase "unknown role refuses at load" caseRoleRefused
+  , testCase "read-only session refuses at load" caseReadOnlyRefused
+  , testCase "missing operation inputs refuse at load" caseRequiredInputs
+  , testCase "retired execution key refuses" caseRetiredKeyRefused
+  , testCase "unsupported fixture refuses at load" caseFixtureRefused
+  , testCase "empty token refuses at load" caseEmptyTokenRefused
+  , testCase "base64 decoder accepts canonical shapes" caseBase64Shapes
   , testCase "duplicate fields reject" caseDuplicateFieldsRejected
   , testCase "per-action arguments validate" caseArgumentsValidated
   , testCase "save_as names the opened session" caseSaveAsHonored
@@ -302,7 +315,7 @@ caseFaultWindows = do
         , ("asynchronous", JBool async)
         ]
       loginArgs = [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
-      signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA"), ("output_capacity", JNum 256)]
+      signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)]
       compArgs = [("session", JStr "s1"), ("function", JStr "C_Sign")]
   -- Seed: sign at index 5 sits in sim-demo's seeded (2,4) window.
   rSeed <- runTempScenario "seed"
@@ -310,7 +323,8 @@ caseFaultWindows = do
     , step "fixture.load" [] Nothing
     , step "session.open" (openArgs True) Nothing
     , step "session.login" loginArgs Nothing
-    , step "sign.init" [("session", JStr "s1")] Nothing
+    , step "sign.init"
+        [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key"), ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
     , step "sign" signArgs (Just "CKR_DEVICE_ERROR")
     , step "finalize" [] Nothing
     ]
@@ -324,7 +338,8 @@ caseFaultWindows = do
     , step "fixture.load" [] Nothing
     , step "session.open" (openArgs True) Nothing
     , step "session.login" loginArgs Nothing
-    , step "sign.init" [("session", JStr "s1")] Nothing
+    , step "sign.init"
+        [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key"), ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
     , step "fault.window" [("start", JNum 7), ("ticks", JNum 5)] Nothing
     , step "fault.window" [("start", JNum 9), ("ticks", JNum 1)] Nothing
     , step "sign" signArgs (Just "CKR_PENDING")
@@ -363,9 +378,10 @@ caseSyncNeverPends = do
         [("token", JStr "demo-token"), ("read_write", JBool True)] Nothing
     , step "session.login"
         [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")] Nothing
-    , step "sign.init" [("session", JStr "s1")] Nothing
+    , step "sign.init"
+        [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key"), ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
     , step "sign"
-        [("session", JStr "s1"), ("data_base64", JStr "eA"), ("output_capacity", JNum 256)]
+        [("session", JStr "s1"), ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)]
         (Just "CKR_OK")
     , step "finalize" [] Nothing
     ]
@@ -423,10 +439,10 @@ caseSaveAsValidated = do
 caseExpectValidated :: IO ()
 caseExpectValidated = do
   assertRejected "non-object expect" (scenarioWith "c4-expect" Nothing
-    [JObj [("action", JStr "sign"), ("expect", JStr "CKR_OK")]])
+    [JObj [("action", JStr "sign"), ("arguments", JObj signArgs), ("expect", JStr "CKR_OK")]])
   assertRejected "non-string return" (scenarioWith "c4-expect" Nothing
     [JObj [("action", JStr "sign")
-      , ("expect", JObj [("return", JNum 1)])]])
+      , ("arguments", JObj signArgs), ("expect", JObj [("return", JNum 1)])]])
   assertRejected "event on initialize" (scenarioWith "c4-expect" Nothing
     [JObj [("action", JStr "initialize")
       , ("expect", JObj [("event", JStr "token-state-change")])]])
@@ -435,20 +451,22 @@ caseExpectValidated = do
       , ("expect", JObj [("return", JStr "CKR_OK")])]])
   assertRejected "event on sign" (scenarioWith "c4-expect" Nothing
     [JObj [("action", JStr "sign")
-      , ("expect", JObj [("event", JStr "token-state-change")])]])
+      , ("arguments", JObj signArgs), ("expect", JObj [("event", JStr "token-state-change")])]])
   assertRejected "unknown expect key" (scenarioWith "c4-expect" Nothing
     [JObj [("action", JStr "sign")
-      , ("expect", JObj [("return", JStr "CKR_OK"), ("trace", JBool True)])]])
+      , ("arguments", JObj signArgs), ("expect", JObj [("return", JStr "CKR_OK"), ("trace", JBool True)])]])
   case validateScenario (scenarioWith "c4-expect" Nothing
     [ JObj [("action", JStr "initialize")
       , ("expect", JObj [("return", JStr "CKR_OK")])]
     , JObj [("action", JStr "sign")
-      , ("expect", JObj [("return", JStr "CKR_OK")])]
+      , ("arguments", JObj signArgs), ("expect", JObj [("return", JStr "CKR_OK")])]
     , JObj [("action", JStr "slot-event.wait")
       , ("expect", JObj [("event", JStr "token-state-change")])]
     ]) of
     Left err -> assertFailure ("well-formed expects must validate: " ++ err)
     Right sc -> assertEqual "three steps" 3 (length (scSteps sc))
+  where
+    signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)]
 
 -- | Unknown step-level fields reject (the runner would ignore them).
 caseStepFieldsRejected :: IO ()
@@ -504,6 +522,160 @@ caseTopSchemaVersion = do
     Right _ -> pure ()
   assertRejected "schema_version 2"
     (scenarioTop "top" [("schema_version", JNum 2)] steps)
+
+-- | An unknown mechanism refuses at load, naming the value.
+caseMechanismRefused :: IO ()
+caseMechanismRefused = do
+  let bad = scenarioWith "mech" Nothing [JObj [("action", JStr "sign.init")
+        , ("arguments", JObj [("session", JStr "s1")
+          , ("fixture_key", JStr "demo-signing-key")
+          , ("mechanism", JStr "NO_SUCH_MECHANISM")])]]
+  assertRejected "unknown mechanism" bad
+  case validateScenario bad of
+    Left err -> assertBool "names the value"
+      ("unknown mechanism 'NO_SUCH_MECHANISM'" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
+
+-- | An unknown fixture key refuses at load.
+caseFixtureKeyRefused :: IO ()
+caseFixtureKeyRefused =
+  assertRejected "unknown fixture key"
+    (scenarioWith "key" Nothing [JObj [("action", JStr "sign.init")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("fixture_key", JStr "no-such-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")])]])
+
+-- | Malformed base64 refuses at load, naming the reason.
+caseBase64Refused :: IO ()
+caseBase64Refused = do
+  let bad tag payload = assertRejected tag
+        (scenarioWith "b64" Nothing [JObj [("action", JStr "sign")
+          , ("arguments", JObj [("session", JStr "s1")
+            , ("data_base64", JStr payload), ("output_capacity", JNum 256)])]])
+  bad "odd length" "eA"
+  bad "bad alphabet" "****"
+  bad "mid padding" "eA==eA=="
+  bad "over padding" "eA==="
+  bad "data after pad" "AB=C"
+  case validateScenario (scenarioWith "b64" Nothing [JObj [("action", JStr "sign")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("data_base64", JStr "eA"), ("output_capacity", JNum 256)])]]) of
+    Left err -> assertBool "names the reason" ("must be strict base64" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
+
+-- | Out-of-range capacities refuse at load, naming the range.
+caseCapacityRefused :: IO ()
+caseCapacityRefused = do
+  let cap tag n = assertRejected tag
+        (scenarioWith "cap" Nothing [JObj [("action", JStr "sign")
+          , ("arguments", JObj [("session", JStr "s1")
+            , ("data_base64", JStr "eA=="), ("output_capacity", JNum n)])]])
+  cap "negative" (-1)
+  cap "over 16 MiB" 16777217
+  case validateScenario (scenarioWith "cap" Nothing [JObj [("action", JStr "sign")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("data_base64", JStr "eA=="), ("output_capacity", JNum (-1))])]]) of
+    Left err -> assertBool "names the range" ("0..16777216" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
+
+-- | A foreign async function refuses at load.
+caseFunctionRefused :: IO ()
+caseFunctionRefused =
+  assertRejected "foreign function"
+    (scenarioWith "fn" Nothing [JObj [("action", JStr "async.complete")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("function", JStr "C_Encrypt")])]])
+
+-- | An unknown login role refuses at load.
+caseRoleRefused :: IO ()
+caseRoleRefused =
+  assertRejected "unknown role"
+    (scenarioWith "role" Nothing [JObj [("action", JStr "session.login")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("role", JStr "ADMIN"), ("pin", JStr "1234")])]])
+
+-- | A read-only open refuses at load: the simulator models
+-- read-write sessions only.
+caseReadOnlyRefused :: IO ()
+caseReadOnlyRefused =
+  assertRejected "read-only open"
+    (scenarioWith "ro" Nothing [JObj [("action", JStr "session.open")
+      , ("arguments", JObj [("read_write", JBool False)])]])
+
+-- | Missing per-operation inputs refuse at load.
+caseRequiredInputs :: IO ()
+caseRequiredInputs = do
+  assertRejected "login without pin"
+    (scenarioWith "req" Nothing [JObj [("action", JStr "session.login")
+      , ("arguments", JObj [("session", JStr "s1"), ("role", JStr "USER")])]])
+  assertRejected "login without role"
+    (scenarioWith "req" Nothing [JObj [("action", JStr "session.login")
+      , ("arguments", JObj [("session", JStr "s1"), ("pin", JStr "1234")])]])
+  assertRejected "init without mechanism"
+    (scenarioWith "req" Nothing [JObj [("action", JStr "sign.init")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")])]])
+  assertRejected "init without fixture key"
+    (scenarioWith "req" Nothing [JObj [("action", JStr "sign.init")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("mechanism", JStr "CKM_RSA_PKCS")])]])
+  assertRejected "sign without capacity"
+    (scenarioWith "req" Nothing [JObj [("action", JStr "sign")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("data_base64", JStr "eA==")])]])
+  assertRejected "sign without data"
+    (scenarioWith "req" Nothing [JObj [("action", JStr "sign")
+      , ("arguments", JObj [("session", JStr "s1")
+        , ("output_capacity", JNum 256)])]])
+  assertRejected "complete without function"
+    (scenarioWith "req" Nothing [JObj [("action", JStr "async.complete")
+      , ("arguments", JObj [("session", JStr "s1")])]])
+
+-- | The retired 'only_if_new_store' key refuses at load.
+caseRetiredKeyRefused :: IO ()
+caseRetiredKeyRefused =
+  assertRejected "only_if_new_store retired"
+    (scenarioWith "ret" Nothing [JObj [("action", JStr "fixture.load")
+      , ("arguments", JObj [("fixture", JStr "minimal-demo")
+        , ("only_if_new_store", JBool True)])]])
+
+-- | An unsupported fixture label refuses at load, naming the
+-- supported label.
+caseFixtureRefused :: IO ()
+caseFixtureRefused = do
+  let bad = scenarioWith "fix" Nothing [JObj [("action", JStr "fixture.load")
+        , ("arguments", JObj [("fixture", JStr "other-demo")])]]
+  assertRejected "unsupported fixture" bad
+  case validateScenario bad of
+    Left err -> do
+      assertBool "names the value"
+        ("unsupported fixture 'other-demo'" `isInfixOf` err)
+      assertBool "names the supported label"
+        ("(supported: minimal-demo)" `isInfixOf` err)
+    Right _ -> assertFailure "must reject"
+
+-- | An empty token label refuses at load wherever a label is given.
+caseEmptyTokenRefused :: IO ()
+caseEmptyTokenRefused = do
+  assertRejected "empty open token"
+    (scenarioWith "tok" Nothing [JObj [("action", JStr "session.open")
+      , ("arguments", JObj [("token", JStr "")])]])
+  assertRejected "empty remove token"
+    (scenarioWith "tok" Nothing [JObj [("action", JStr "token.remove")
+      , ("arguments", JObj [("token", JStr "")])]])
+
+-- | The strict base64 length decoder accepts canonical shapes and
+-- rejects malformed input.
+caseBase64Shapes :: IO ()
+caseBase64Shapes = do
+  assertEqual "empty" (Just 0) (base64DecodedLength "")
+  assertEqual "demo message" (Just 12) (base64DecodedLength "ZGVtbyBtZXNzYWdl")
+  assertEqual "one pad" (Just 2) (base64DecodedLength "eGk=")
+  assertEqual "two pads" (Just 1) (base64DecodedLength "eA==")
+  assertEqual "odd length" Nothing (base64DecodedLength "eA")
+  assertEqual "bad alphabet" Nothing (base64DecodedLength "****")
+  assertEqual "mid padding" Nothing (base64DecodedLength "eA==eA==")
+  assertEqual "data after pad" Nothing (base64DecodedLength "AB=C")
 
 -- | Duplicate keys reject: lookup takes the first, so a second
 -- entry would silently vanish (notably an empty 'rules' hiding a
@@ -562,7 +734,7 @@ caseArgumentsValidated = do
     Right _ -> pure ()
   case validateScenario (scenarioWith "c4-args" Nothing
     [ withArgsStep "fixture.load"
-        [("fixture", JStr "minimal-demo"), ("only_if_new_store", JBool True)]
+        [("fixture", JStr "minimal-demo")]
     , withArgsStep "session.open"
         [("token", JStr "demo-token"), ("read_write", JBool True)
         , ("asynchronous", JBool True)]
@@ -572,7 +744,7 @@ caseArgumentsValidated = do
         [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key")
         , ("mechanism", JStr "CKM_RSA_PKCS")]
     , withArgsStep "sign"
-        [("session", JStr "s1"), ("data_base64", JStr "eA")
+        [("session", JStr "s1"), ("data_base64", JStr "eA==")
         , ("output_capacity", JNum 256)]
     , withArgsStep "async.complete"
         [("session", JStr "s1"), ("function", JStr "C_Sign")]
@@ -601,8 +773,10 @@ caseSaveAsHonored = do
     , step "session.login"
         [("session", JStr "alice"), ("role", JStr "USER"), ("pin", JStr "1234")]
         Nothing
-    , step "sign.init" [("session", JStr "alice")] Nothing
-    , step "sign" [("session", JStr "alice")] (Just "CKR_OK")
+    , step "sign.init"
+        [("session", JStr "alice"), ("fixture_key", JStr "demo-signing-key"), ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
+    , step "sign"
+        [("session", JStr "alice"), ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)] (Just "CKR_OK")
     , step "finalize" [] Nothing
     ]
   assertEqual ("save_as run exit 0: " ++ ceErr r) 0 (ceCode r)
@@ -660,7 +834,8 @@ caseExpectEnforced = do
     , step "fixture.load" [] Nothing
     , step "session.open" (openArgs True) Nothing
     , step "session.login" loginArgs Nothing
-    , step "sign.init" [("session", JStr "s1")] Nothing
+    , step "sign.init"
+        [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key"), ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
     , step "fault.window" [("start", JNum 100), ("ticks", JNum 0)] Nothing
     , step "sign" signArgs (Just "CKR_OK")
     ]
@@ -672,7 +847,7 @@ caseExpectEnforced = do
       , ("asynchronous", JBool async)
       ]
     loginArgs = [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
-    signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA"), ("output_capacity", JNum 256)]
+    signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)]
 
 -- | The "s1" alias resolves to the first-OPENED session, not the
 -- first by name: zeta (async) opens before alpha (sync), so a sign
@@ -684,8 +859,10 @@ caseFirstOpenedAlias = do
     , step "fixture.load" [] Nothing
     , stepSaveAs "session.open" [("asynchronous", JBool True)] "zeta"
     , stepSaveAs "session.open" [("asynchronous", JBool False)] "alpha"
-    , step "sign.init" [("session", JStr "s1")] Nothing
-    , step "sign" [("session", JStr "s1")] (Just "CKR_PENDING")
+    , step "sign.init"
+        [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key"), ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
+    , step "sign"
+        [("session", JStr "s1"), ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)] (Just "CKR_PENDING")
     , step "finalize" [] Nothing
     ]
   assertEqual ("alias run exit 0: " ++ ceErr r) 0 (ceCode r)
@@ -717,7 +894,8 @@ caseEveryVerbExpectation = do
     , step "token.insert" [("slot", JNum 5)] (Just "CKR_OK")
     , step "session.open" (openArgs True) (Just "CKR_OK")
     , step "session.login" loginArgs (Just "CKR_OK")
-    , step "sign.init" [("session", JStr "s1")] (Just "CKR_OK")
+    , step "sign.init"
+        [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key"), ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_OK")
     , step "fault.window" [("start", JNum 100), ("ticks", JNum 0)] (Just "CKR_OK")
     , step "sign" signArgs (Just "CKR_PENDING")
     , step "async.delay" [("session", JStr "s1"), ("polls", JNum 1)] (Just "CKR_OK")
@@ -740,7 +918,7 @@ caseEveryVerbExpectation = do
       , ("asynchronous", JBool async)
       ]
     loginArgs = [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
-    signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA"), ("output_capacity", JNum 256)]
+    signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)]
     compArgs = [("session", JStr "s1"), ("function", JStr "C_Sign")]
 
 -- | One scenario step builder with a 'save_as' name.

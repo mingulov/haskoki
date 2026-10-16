@@ -3,7 +3,8 @@
   "name": "pending-sign-and-token-removal",
   "note": {
     "status": "design-example-not-executed",
-    "notice": "The owned-instance runner interprets these actions; a separate CLI does not control another loaded process."
+    "notice": "The owned-instance runner interprets these actions; a separate CLI does not control another loaded process.",
+    "assumes": "fresh owned store"
   },
   "rules": [],
   "steps": [
@@ -13,8 +14,7 @@
     {
       "action": "fixture.load",
       "arguments": {
-        "fixture": "minimal-demo",
-        "only_if_new_store": true
+        "fixture": "minimal-demo"
       }
     },
     {
