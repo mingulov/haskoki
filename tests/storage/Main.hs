@@ -32,6 +32,7 @@ main = do
     ["--holder", path, doneFile, readyFile] -> StoreSpec.holderMain path doneFile readyFile
     ["--migrate-child", store, cfg, backups, ready] -> PreflightSpec.migrateChildMain store cfg backups ready
     ["--migrate-child-small", store, cfg, backups, ready] -> PreflightSpec.migrateChildSmallMain store cfg backups ready
+    ["--reserved-holder", store, ready, go] -> PreflightSpec.reservedHolderMain store ready go
     _ -> do
       -- Never above the capability count: tasty raises the RTS
       -- capabilities to match NumThreads, which would turn a -N1 run

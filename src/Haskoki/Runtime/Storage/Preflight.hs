@@ -28,16 +28,18 @@ module Haskoki.Runtime.Storage.Preflight
   ) where
 
 import Control.Exception (IOException, bracket, finally, fromException, mask, throwIO, try)
+import Control.Monad (forM_)
 import Data.Bifunctor (first)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
-import Data.List (intercalate)
+import Data.List (intercalate, isInfixOf, isPrefixOf)
 import Data.Word (Word8)
 import Foreign.C.Error (Errno (..), eNOTSUP, eOPNOTSUPP, ePERM, eXDEV)
 import Foreign.Ptr (castPtr)
 import GHC.IO.Exception (ioe_errno)
+import System.Directory (listDirectory)
 import System.IO.Error (isAlreadyExistsError, tryIOError)
 import System.Posix.Files
   ( createLink, deviceID, fileAccess, fileID, getFileStatus, getSymbolicLinkStatus, isDirectory
@@ -57,7 +59,7 @@ import Haskoki.Runtime.Storage
   , reconcileIdentities, renderIdentityRefusal, tokensWithoutCredentials )
 import Haskoki.Runtime.Storage.SQLite
   ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
-  , clearColdJournal, guardFlags, migrateOwned, noMigrationHooks, probeOwner, readFileCloexec
+  , clearColdJournal, guardFlags, migrateOwned, noMigrationHooks, pidIsDead, probeOwner, readFileCloexec
   , readStoreSnapshot, readStoreSnapshotAllowCold, sqliteSchemaVersion, withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
@@ -491,13 +493,16 @@ syncDir dir = bracket (openFd dir ReadOnly guardFlags) closeFd fileSynchronise
 -- 'writeExclusive'; it is then moved into place by link(2) plus unlink
 -- (unlike rename(2), link never replaces an existing name), and the
 -- directory is fsynced. Our temporary is removed on every path after
--- its write. On filesystems without hard links (the link fails with
--- EPERM, ENOTSUP, EOPNOTSUPP or EXDEV) it falls back to an O_EXCL
--- create-and-write of the final name, which still never overwrites;
--- any other link failure stays a receipt failure.
+-- its write. Stale temporaries from provably-dead owners are swept
+-- before writing (see 'sweepStaleReceiptTemps'). On filesystems
+-- without hard links (the link fails with EPERM, ENOTSUP, EOPNOTSUPP
+-- or EXDEV) it falls back to an O_EXCL create-and-write of the final
+-- name, which still never overwrites; any other link failure stays a
+-- receipt failure.
 writeReceipt :: (FilePath -> IO ()) -> (FilePath -> FilePath -> IO ()) -> FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
 writeReceipt afterCreate link final bytes dir = mask $ \restore -> do
   pid <- getProcessID
+  sweepStaleReceiptTemps dir (fromIntegral pid)
   attempt restore pid 0
   where
     attempt restore pid nonce
@@ -530,6 +535,44 @@ writeReceipt afterCreate link final bytes dir = mask $ \restore -> do
                       _ <- tryIOError (removeLink tmp)
                       _ <- tryIOError (syncDir dir)
                       pure (WriteFailed ("cannot move " ++ tmp ++ " to " ++ final ++ ": " ++ show e))
+
+-- | Remove stale receipt temporaries from provably-dead owners:
+-- files named @<receipt>.tmp.\<pid\>.\<nonce\>@ in the backup
+-- directory whose pid is dead ('pidIsDead') and is not ours. Files
+-- that do not parse, live owners, unknowable liveness and our own
+-- pid are all left alone. Best-effort: every failure is ignored, so
+-- a sweep that cannot complete only leaves files for the next run.
+sweepStaleReceiptTemps :: FilePath -> Int -> IO ()
+sweepStaleReceiptTemps dir self = do
+  eNames <- tryIOError (listDirectory dir)
+  case eNames of
+    Left _ -> pure ()
+    Right names -> forM_ names $ \name ->
+      case stalePid name of
+        Just pid | pid /= self -> do
+          dead <- pidIsDead pid
+          whenDead dead (dir ++ "/" ++ name)
+        _ -> pure ()
+  where
+    whenDead True p = do
+      _ <- tryIOError (removeLink p)
+      pure ()
+    whenDead False _ = pure ()
+    stalePid :: String -> Maybe Int
+    stalePid name
+      | ".receipt.tmp." `isInfixOf` name = case breakOn ".tmp." name of
+          Just rest -> case span (/= '.') rest of
+            (pidTxt@(_ : _), '.' : nonceTxt) -> case (reads pidTxt, reads nonceTxt) of
+              ([(pid, "")], [(nonce, "")]) | pid > 0 && nonce >= (0 :: Int) -> Just pid
+              _ -> Nothing
+            _ -> Nothing
+          Nothing -> Nothing
+      | otherwise = Nothing
+    breakOn :: String -> String -> Maybe String
+    breakOn pat str = case str of
+      [] -> Nothing
+      _ | pat `isPrefixOf` str -> Just (drop (length pat) str)
+      (_ : t) -> breakOn pat t
 
 -- | How many unique temporary receipt names are tried before the
 -- receipt write gives up (a stale temporary only costs one attempt).

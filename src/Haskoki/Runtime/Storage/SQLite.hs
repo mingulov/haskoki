@@ -61,6 +61,7 @@ module Haskoki.Runtime.Storage.SQLite
   , livenessFromProbes
   , PidLiveness (..)
   , ProcProbe (..)
+  , pidIsDead
   , FileIdentity (..)
   , StoreSnapshot (..)
   , readStoreSnapshot
@@ -499,6 +500,16 @@ pidLiveness procRoot ownerPid = do
           pure (livenessFromProbes selfProbe meProbe mParentProbe ownerProbe)
         _ -> pure PidUnknown
     _ -> pure PidUnknown
+
+-- | True exactly when a pid is provably dead ('PidDead' through the
+-- same @\/proc@ policy as owner liveness, honouring
+-- @HASKOKI_PROC_ROOT@). Anything unknowable is alive (fail closed:
+-- the caller must not act on it).
+pidIsDead :: Int -> IO Bool
+pidIsDead pid = do
+  procRoot <- procRootFromEnv
+  live <- pidLiveness procRoot pid
+  pure (live == PidDead)
 
 -- | Take over an apparently-stale lock: the kernel lock confirms
 -- staleness (a live-but-hidden owner still holds it, and we refuse),
