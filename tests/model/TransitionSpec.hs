@@ -19,12 +19,18 @@ import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.CallWork
-  ( WorkMismatch (..)
+  ( CallFamily (..)
+  , WorkMismatch (..)
   , admitLegacyUnstepped
   , callFunctionEffect
+  , callFunctionFamily
   , callFunctionSlot
   , callPairCompatible
+  , callWorkEffect
+  , callWorkReservation
+  , callWorkSession
   , checkedCallWork
+  , mkFixtureCallWork
   )
 import Haskoki.Model
   ( HandleBinding (..)
@@ -162,6 +168,8 @@ spec = testGroup "model transitions"
   , testCase "first init without a verdict grants" caseInitTokenFirstInitGrants
   , testCase "init-token argument shape refuses junk" caseInitTokenArgsShape
   , testCase "locked SO: refusal preserves the lock, grant clears it" caseInitTokenLockedSo
+  , testCase "fixture constructor admits unstepped triples explicitly" caseFixtureConstructsUnstepped
+  , testCase "outer family table is pinned" caseFamilyTablePinned
   ]
 
 caseUnbindHandle :: IO ()
@@ -774,6 +782,41 @@ caseCallLegacySplit = mapM_ check allReps
         True (callPairCompatible h1Sid res eff)
       assertBool ("legacy admission names unstepped" ++ ctx)
         (admitLegacyUnstepped res)
+
+-- Twin pin with 'caseCallLegacySplit' (rewritten at seal time): both
+-- assert the same fixture-constructor read-backs; keep them in sync.
+caseFixtureConstructsUnstepped :: IO ()
+caseFixtureConstructsUnstepped = mapM_ check allReps
+  where
+    res = Reservation "legacy" [] Nothing Nothing
+    check fx = do
+      let eff = EffectCrypto fx
+          ctx = " (" ++ show fx ++ ")"
+      assertEqual ("checked still refuses unstepped" ++ ctx)
+        (Left WorkUnstepped) (checkedCallWork h1Sid res eff)
+      let cw = mkFixtureCallWork h1Sid res eff
+      assertEqual ("fixture session reads back" ++ ctx)
+        h1Sid (callWorkSession cw)
+      assertEqual ("fixture reservation reads back" ++ ctx)
+        res (callWorkReservation cw)
+      assertEqual ("fixture effect reads back" ++ ctx)
+        eff (callWorkEffect cw)
+
+caseFamilyTablePinned :: IO ()
+caseFamilyTablePinned = do
+  mapM_ (check FamilySign)
+    [F_Sign, F_SignFinal, F_SignRecover, F_SignMessage, F_SignMessageNext]
+  mapM_ (check FamilyDigest)
+    [F_Digest, F_DigestInit, F_DigestUpdate, F_DigestFinal]
+  mapM_ (check FamilyOther)
+    [fid | fid <- [minBound .. maxBound], fid `notElem` signFids,
+      fid `notElem` digestFids]
+  where
+    signFids =
+      [F_Sign, F_SignFinal, F_SignRecover, F_SignMessage, F_SignMessageNext]
+    digestFids = [F_Digest, F_DigestInit, F_DigestUpdate, F_DigestFinal]
+    check fam fid = assertEqual ("family " ++ show fid)
+      fam (callFunctionFamily fid)
 
 -- | Open one read-write session on a seated token.
 openTokenSession :: IO (SessionId, Model)

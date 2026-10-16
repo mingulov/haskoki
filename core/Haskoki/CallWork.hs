@@ -32,6 +32,10 @@ module Haskoki.CallWork
   , callWorkSession
   , callWorkReservation
   , callWorkEffect
+  , mkFixtureCallWork
+  , CallFamily (..)
+  , callFunctionFamily
+  , callWorkFamily
   ) where
 
 import Data.Either (isRight)
@@ -324,3 +328,94 @@ admitLegacyUnstepped :: Reservation -> Bool
 admitLegacyUnstepped res = case resStep res of
   Nothing -> True
   Just _ -> False
+
+-- | INTERNAL TEST-ONLY: build call work without checking. Hand-built
+-- fixtures predate pinned steps; they construct here and submit
+-- through 'Haskoki.Runtime.Async.startFixtureJob'. Normal submission
+-- never calls this: production triples come from 'checkedCallWork'.
+mkFixtureCallWork :: SessionId -> Reservation -> EffectRequest -> CallWork
+mkFixtureCallWork sid res eff = CallWork sid res eff
+
+-- | The serving family of a finishing function: the outer
+-- 'Haskoki.Runtime.Async.JobFunction' coherence relation groups by
+-- this. Sign and digest families serve async jobs; every other
+-- function (cipher, verify, message-cipher, legless) pairs with no
+-- outer function.
+data CallFamily = FamilySign | FamilyDigest | FamilyOther
+  deriving (Eq, Show)
+
+-- | The serving family of one function. Exhaustive over
+-- 'FunctionId' (no wildcard): a new constructor breaks the build
+-- here, forcing an explicit family verdict, exactly as in
+-- 'callFunctionSlot'.
+callFunctionFamily :: FunctionId -> CallFamily
+callFunctionFamily fid = case fid of
+  F_Sign -> FamilySign
+  F_SignFinal -> FamilySign
+  F_SignRecover -> FamilySign
+  F_SignMessage -> FamilySign
+  F_SignMessageNext -> FamilySign
+  F_Digest -> FamilyDigest
+  F_DigestInit -> FamilyDigest
+  F_DigestUpdate -> FamilyDigest
+  F_DigestFinal -> FamilyDigest
+  F_Verify -> FamilyOther
+  F_VerifyFinal -> FamilyOther
+  F_VerifyRecover -> FamilyOther
+  F_Encrypt -> FamilyOther
+  F_EncryptUpdate -> FamilyOther
+  F_EncryptFinal -> FamilyOther
+  F_Decrypt -> FamilyOther
+  F_DecryptUpdate -> FamilyOther
+  F_DecryptFinal -> FamilyOther
+  F_EncryptMessage -> FamilyOther
+  F_DecryptMessage -> FamilyOther
+  F_VerifyMessage -> FamilyOther
+  F_EncryptMessageNext -> FamilyOther
+  F_DecryptMessageNext -> FamilyOther
+  F_VerifyMessageNext -> FamilyOther
+  F_GetInfo -> FamilyOther
+  F_GetSlotList -> FamilyOther
+  F_GetSessionInfo -> FamilyOther
+  F_OpenSession -> FamilyOther
+  F_CloseSession -> FamilyOther
+  F_Login -> FamilyOther
+  F_Logout -> FamilyOther
+  F_SignInit -> FamilyOther
+  F_SignRecoverInit -> FamilyOther
+  F_CreateObject -> FamilyOther
+  F_DestroyObject -> FamilyOther
+  F_CopyObject -> FamilyOther
+  F_FindObjects -> FamilyOther
+  F_GetAttributeValue -> FamilyOther
+  F_SetAttributeValue -> FamilyOther
+  F_SignUpdate -> FamilyOther
+  F_VerifyInit -> FamilyOther
+  F_VerifyRecoverInit -> FamilyOther
+  F_VerifyUpdate -> FamilyOther
+  F_EncryptInit -> FamilyOther
+  F_DecryptInit -> FamilyOther
+  F_MessageEncryptInit -> FamilyOther
+  F_MessageDecryptInit -> FamilyOther
+  F_MessageSignInit -> FamilyOther
+  F_MessageVerifyInit -> FamilyOther
+  F_EncryptMessageBegin -> FamilyOther
+  F_DecryptMessageBegin -> FamilyOther
+  F_SignMessageBegin -> FamilyOther
+  F_VerifyMessageBegin -> FamilyOther
+  F_MessageEncryptFinal -> FamilyOther
+  F_MessageDecryptFinal -> FamilyOther
+  F_MessageSignFinal -> FamilyOther
+  F_MessageVerifyFinal -> FamilyOther
+  F_SessionCancel -> FamilyOther
+  F_InitToken -> FamilyOther
+  F_InitPIN -> FamilyOther
+  F_SetPIN -> FamilyOther
+
+-- | The serving family of checked call work: the pinned step's
+-- function family, or 'FamilyOther' for unstepped fixture work
+-- (which normal submission refuses before this is ever consulted).
+callWorkFamily :: CallWork -> CallFamily
+callWorkFamily w = case resStep (callWorkReservation w) of
+  Nothing -> FamilyOther
+  Just step -> callFunctionFamily (csFunction step)
