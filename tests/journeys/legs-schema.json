@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "haskoki-journey-legs/1",
+  "title": "Required-leg table for installed-client journeys",
+  "description": "Client pins, profiles and leg rows. Table order is run order; every leg that consumes another leg's output names it in depends_on. Placeholders in argv, cwd and env come from a fixed whitelist (@MODULE@, @RUN@, @CFG@, @NATIVE@, @SRC@). Cross-references (row profiles, verification and order targets, the placeholder whitelist, run-relative paths) are enforced by validate_legs_table in tests/journeys/journeys.py, which mirrors this schema.",
+  "type": "object",
+  "required": ["clients", "profiles", "legs"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "clients": {
+      "type": "object",
+      "description": "Pinned clients; pins for clients a profile does not use are not required.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "package": {"type": ["string", "null"]},
+          "package_version": {"type": ["string", "null"], "description": "Pinned dpkg version; records must match exactly."},
+          "runtime_argv": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Probe that prints the runtime version."},
+          "runtime_version": {"type": ["string", "null"], "description": "Pinned runtime string; records must carry it as a whole token."},
+          "compile_target": {"type": ["string", "null"], "description": "Java release target, else null."}
+        }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["clients", "phases"],
+        "properties": {
+          "description": {"type": "string"},
+          "clients": {"type": "array", "items": {"type": "string"}, "description": "Clients this profile's legs use."},
+          "phases": {"type": "array", "minItems": 1, "items": {"type": "string", "enum": ["module", "verifier"]}, "description": "Phases that must be complete before check passes."}
+        }
+      }
+    },
+    "legs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "profiles", "phase", "client", "argv", "expect"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "profiles": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+          "phase": {"type": "string", "enum": ["module", "verifier"]},
+          "client": {"type": "string"},
+          "store": {"type": "string"},
+          "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "One argv per leg; whitelist placeholders allowed."},
+          "cwd": {"type": "string", "description": "Optional working directory; whitelist placeholders allowed."},
+          "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment deltas; whitelist placeholders allowed in values."},
+          "timeout_seconds": {"type": "integer", "minimum": 1},
+          "expect": {
+            "type": "object",
+            "required": ["exit"],
+            "properties": {
+              "exit": {"type": "integer", "description": "Expected process exit; nonzero for refusal legs."},
+              "markers": {"type": "array", "items": {"type": "string"}, "description": "Output substrings that must appear."},
+              "absent_markers": {"type": "array", "items": {"type": "string"}, "description": "Output substrings that must not appear."},
+              "files": {
+                "type": "array",
+                "description": "File assertions over run-relative paths.",
+                "items": {
+                  "type": "object",
+                  "required": ["path", "op"],
+                  "properties": {
+                    "path": {"type": "string", "minLength": 1, "description": "Run-relative path under test."},
+                    "op": {"type": "string", "enum": ["equal", "nonempty", "absent"]},
+                    "other": {"type": "string", "minLength": 1, "description": "Run-relative comparison path, required for equal."}
+                  },
+                  "allOf": [
+                    {"if": {"properties": {"op": {"const": "equal"}}}, "then": {"required": ["other"]}}
+                  ]
+                }
+              }
+            }
+          },
+          "expect_refusal": {
+            "type": "object",
+            "description": "Present on refusal legs only: at least one of rv or markers must be non-empty, every given item must appear in the log, and empty output never counts.",
+            "properties": {
+              "rv": {"type": "string", "description": "Expected CKR name, e.g. CKR_PIN_INCORRECT."},
+              "markers": {"type": "array", "items": {"type": "string"}, "description": "A markers-only refusal names a positive line printed by a helper."}
+            }
+          },
+          "requires_verification": {"type": "string", "minLength": 1, "description": "The verifier leg that must pass for this leg to count."},
+          "verification": {"type": "string", "enum": ["in-leg"], "description": "in-leg means the helper verifies its own output and prints the marker."},
+          "verification_marker": {"type": "string", "minLength": 1},
+          "unchanged": {"type": "string", "minLength": 1, "description": "Run-relative path whose bytes must not change during the leg."},
+          "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Legs whose outputs this leg consumes; table order is run order."}
+        },
+        "allOf": [
+          {"if": {"required": ["verification"]}, "then": {"required": ["verification_marker"]}}
+        ]
+      }
+    }
+  }
+}

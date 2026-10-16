@@ -41,10 +41,14 @@
   },
   "profiles": {
     "portfolio": {
-      "description": "Installed bundle plus pinned clients in a disposable client container."
+      "description": "Installed bundle plus pinned clients in a disposable client container.",
+      "clients": ["opensc", "gnutls", "java", "openssl", "native", "runner"],
+      "phases": ["module", "verifier"]
     },
     "image": {
-      "description": "Candidate demo image: module phase in the image, verifier phase on the host."
+      "description": "Candidate demo image: module phase in the image, verifier phase on the host.",
+      "clients": ["opensc", "native", "runner"],
+      "phases": ["module", "verifier"]
     }
   },
   "legs": [

@@ -55,8 +55,7 @@
     },
     "expect_refusal": {
       "type": "object",
-      "description": "Present on refusal legs only: the specified refusal.",
-      "required": ["rv", "markers"],
+      "description": "Present on refusal legs only: the specified refusal. At least one of rv or markers must be non-empty; every given item must appear in the log.",
       "properties": {
         "rv": {"type": "string", "description": "Expected CKR name, e.g. CKR_PIN_INCORRECT."},
         "markers": {"type": "array", "items": {"type": "string"}}
@@ -82,7 +81,7 @@
       }
     },
     "phase": {"type": "string", "enum": ["module", "verifier"]},
-    "failure_stage": {"type": ["string", "null"], "enum": ["setup", "exit", "marker", "refusal-unreached", "verification", "unchanged", "timeout", "pin", "module", "config", null]},
+    "failure_stage": {"type": ["string", "null"], "enum": ["setup", "exit", "marker", "refusal-unreached", "verification", "unchanged", "timeout", "pin", "module", "config", "file", null]},
     "verifies": {"type": ["string", "null"], "description": "The leg this verifier leg checks, else null."},
     "unchanged": {
       "type": ["object", "null"],
