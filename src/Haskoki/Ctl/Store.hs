@@ -11,13 +11,14 @@ module Haskoki.Ctl.Store
   , storeMigrateCommand
   , strictFlagsSwitch
   , renderUnexpectedFailure
+  , renderCheckUnexpectedFailure
   ) where
 
-import Control.Exception (SomeException, displayException, try)
-import Data.Char (isDigit)
+import Control.Exception (IOException, SomeException, fromException, try)
 import Data.List (isPrefixOf, stripPrefix)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import qualified Database.SQLite3 as S
 
 import Haskoki.Runtime.Catalog (asyncHomeConfig)
 import Haskoki.Runtime.Config (Config, ConfigError (..), loadConfigFile)
@@ -101,7 +102,7 @@ checkSelected :: FilePath -> FilePath -> Bool -> Config -> IO (Int, String, Stri
 checkSelected path cfgPath asyncHome cfg = do
   r <- try (checkStoreOpen path cfg) :: IO (Either SomeException (Either StoreError StoreOpenPlan))
   pure $ case r of
-    Left ex -> (1, "", line ("store-unreadable", show ex))
+    Left ex -> (1, "", line (renderCheckUnexpectedFailure ex))
     Right (Left (StoreIO m))
       | "no store file" `isPrefixOf` m -> (1, "", line ("store-missing", m))
     Right (Left se) -> (1, "", line (renderStoreRefusal se))
@@ -137,21 +138,34 @@ storeMigrateCommand args0 = case strictFlagsSwitch ["--path", "--config", "--bac
             Right () -> migrateSelected path cfg dir
     _ -> pure (2, "", migrateUsage)
 
--- | An unexpected exception as a fixed tagged line: the first line of
--- its rendering, with every run of four or more digits redacted, so a
--- PIN-like value can never survive into operator output. Single line,
--- like every other exit-1 refusal.
+-- | The exception's type name only, never its message: PINs are not
+-- digit-only, so no redaction of message text can be complete.
+-- Known store-layer failures name themselves; anything else is a
+-- bare 'SomeException'.
+exceptionTypeName :: SomeException -> String
+exceptionTypeName ex =
+  case fromException ex :: Maybe IOException of
+    Just _ -> "IOException"
+    Nothing -> case fromException ex :: Maybe S.SQLError of
+      Just _ -> "SQLError"
+      Nothing -> case fromException ex :: Maybe StoreError of
+        Just _ -> "StoreError"
+        Nothing -> "SomeException"
+
+-- | An unexpected exception as a fixed tagged line: the exception
+-- type only, never raw message text, so no credential of any shape
+-- can reach operator output. Single line, like every other exit-1
+-- refusal.
 renderUnexpectedFailure :: SomeException -> (String, String)
 renderUnexpectedFailure ex =
-  ("migrate-failed", "unexpected failure: " ++ redact (takeWhile (/= '\n') (displayException ex))
+  ("migrate-failed", "unexpected failure: " ++ exceptionTypeName ex
     ++ "; run store check before anything else")
-  where
-    redact [] = []
-    redact (c : cs)
-      | isDigit c =
-          let (digits, rest) = span isDigit (c : cs)
-          in (if length digits >= 4 then "[redacted]" else digits) ++ redact rest
-      | otherwise = c : redact cs
+
+-- | An unexpected exception through check as a fixed tagged line:
+-- the exception type only, never the raw message.
+renderCheckUnexpectedFailure :: SomeException -> (String, String)
+renderCheckUnexpectedFailure ex =
+  ("store-unreadable", "unexpected failure: " ++ exceptionTypeName ex)
 
 migrateSelected :: FilePath -> Config -> FilePath -> IO (Int, String, String)
 migrateSelected path cfg dir = do

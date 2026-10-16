@@ -25,10 +25,10 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Ctl (CtlExit (..), ctlHelp, runCtl)
-import Haskoki.Ctl.Store (renderUnexpectedFailure)
+import Haskoki.Ctl.Store (renderCheckUnexpectedFailure, renderUnexpectedFailure)
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
 import Haskoki.Runtime.Catalog (asyncHomeEntry)
-import Haskoki.Runtime.Storage (CommitResult (..), CredentialRecord (..), Store (..), emptyDelta)
+import Haskoki.Runtime.Storage (CommitResult (..), CredentialRecord (..), Store (..), StoreError (..), emptyDelta)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Types (TokenId (..))
 
@@ -76,6 +76,7 @@ spec = testGroup "Store commands"
   , testCase "migrate: usage errors exit 2" caseMigrateCliUsage
   , testCase "migrate: no output or receipt carries a PIN" caseMigrateCliNoPins
   , testCase "migrate: an unexpected failure is a fixed redacted line" caseMigrateUnexpectedRedacted
+  , testCase "check: an unexpected failure is a fixed tagged line with the type only" caseCheckUnexpectedTagged
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -714,19 +715,39 @@ caseMigrateCliNoPins = withScratch "ctl-migrate" $ \dir -> do
   mapM_ (\r -> assertNoPins "migrate output" (ceOut r ++ ceErr r)) [r1, r2, r3]
   mapM_ (assertNoPins "receipt") texts
 
--- An unexpected exception through migrate prints a fixed tagged line;
--- the exception detail is confined to one redacted line that cannot
--- carry a PIN.
+-- An unexpected exception through migrate prints a fixed tagged line
+-- with the exception type only: no raw message text ever reaches
+-- operator output, so no PIN of any shape can survive.
 caseMigrateUnexpectedRedacted :: IO ()
 caseMigrateUnexpectedRedacted = do
   let (tag, detail) = renderUnexpectedFailure (toException (userError "boom 58213946"))
   assertEqual "tag" "migrate-failed" tag
   assertBool "fixed shape" ("unexpected failure: " `isPrefixOf` detail)
+  assertBool "names the exception type" ("IOException" `isInfixOf` detail)
+  assertBool "no raw message" (not ("boom" `isInfixOf` detail))
+  assertBool "no PIN" (not ("58213946" `isInfixOf` detail))
   assertBool "names the next step" ("run store check before anything else" `isInfixOf` detail)
   assertBool "single line" (not ('\n' `elem` detail))
   assertNoPins "unexpected failure" (tag ++ ": " ++ detail)
-  let (_, multi) = renderUnexpectedFailure (toException (userError "first 1234\nsecond 5678"))
-  assertBool "only the first line" (not ("second" `isInfixOf` multi))
-  assertNoPins "multiline failure" multi
-  let (_, kept) = renderUnexpectedFailure (toException (userError "schema 2 needs x"))
-  assertBool "short numbers survive" ("schema 2" `isInfixOf` kept)
+  let (_, alpha) = renderUnexpectedFailure (toException (userError "auth ab12CD34"))
+  assertBool "no alphanumeric message" (not ("ab12CD34" `isInfixOf` alpha))
+  assertNoPins "alphanumeric failure" alpha
+  let (_, store) = renderUnexpectedFailure (toException (StoreIO "disk 58213946"))
+  assertBool "store type" ("StoreError" `isInfixOf` store)
+  assertBool "no store message" (not ("disk" `isInfixOf` store))
+  assertNoPins "store failure" store
+
+-- An unexpected exception through check prints a fixed tagged line
+-- with the exception type only, never the raw message.
+caseCheckUnexpectedTagged :: IO ()
+caseCheckUnexpectedTagged = do
+  let (tag, detail) = renderCheckUnexpectedFailure (toException (userError "boom 58213946"))
+  assertEqual "tag" "store-unreadable" tag
+  assertBool "fixed shape" ("unexpected failure: " `isPrefixOf` detail)
+  assertBool "names the exception type" ("IOException" `isInfixOf` detail)
+  assertBool "no raw message" (not ("boom" `isInfixOf` detail))
+  assertBool "no PIN" (not ("58213946" `isInfixOf` detail))
+  assertBool "single line" (not ('\n' `elem` detail))
+  assertNoPins "unexpected check failure" (tag ++ ": " ++ detail)
+  let (_, alpha) = renderCheckUnexpectedFailure (toException (userError "auth ab12CD34"))
+  assertBool "no alphanumeric message" (not ("ab12CD34" `isInfixOf` alpha))
