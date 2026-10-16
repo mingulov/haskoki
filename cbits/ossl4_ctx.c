@@ -5264,7 +5264,7 @@ long hsk_ossl4_rsa_x509_sign(OSSL_LIB_CTX *ctx, const char *propq,
     ERR_clear_error(); /* fresh queue; failures keep it for last_error */
     EVP_PKEY *pkey = NULL;
     unsigned char *padded = NULL;
-    size_t k;
+    size_t k = 0;
     int ksize;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
