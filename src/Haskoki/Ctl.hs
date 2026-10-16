@@ -48,6 +48,7 @@ import Text.Read (readMaybe)
 import Haskoki.Ctl.Store (storeCheckCommand, storeMigrateCommand)
 import Haskoki.Runtime.Async (newAsyncTable)
 import Haskoki.Runtime.Config
+import Haskoki.Runtime.Storage.SQLite (resolveStorePath)
 import Haskoki.Runtime.Control
   ( Json (..)
   , Scenario (..)
@@ -675,8 +676,11 @@ readLockState dbPath = do
 
 -- | Offline inspect: report lock state + table counts over a
 -- SELECT-only connection. Never creates the sidecar, never writes.
+-- The path is resolved once up front, so the lock read and the
+-- counts both name the real file.
 inspectStore :: FilePath -> IO CtlExit
-inspectStore path = do
+inspectStore path0 = do
+  path <- resolveStorePath path0
   exists <- fileExist path
   if not exists
     then pure (CtlExit 1 "" ("store-missing: " ++ path ++ "\n"))
@@ -735,9 +739,12 @@ readCounts path = do
 
 -- | Offline reset: refuse live stores; reset offline ones only with
 -- the confirm flag (removes the db + sidecar; the next open
--- recreates).
+-- recreates). The path is resolved once up front, so the liveness
+-- check and the removal both name the real file; the operator's
+-- symlink itself is left in place.
 resetStore :: FilePath -> Bool -> IO CtlExit
-resetStore path confirmed = do
+resetStore path0 confirmed = do
+  path <- resolveStorePath path0
   exists <- fileExist path
   if not exists
     then pure (CtlExit 1 "" ("store-missing: " ++ path ++ "\n"))

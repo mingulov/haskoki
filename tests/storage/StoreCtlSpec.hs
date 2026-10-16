@@ -109,6 +109,10 @@ spec = testGroup "Store commands"
   , testCase "migrate: a dangling symlink refuses, creating nothing at the target" caseMigrateDanglingLink
   , testCase "open: a dangling symlink refuses, creating nothing at the target" caseOpenDanglingLink
   , testCase "migrate: the backup-dir guard follows a symlink to the real store dir" caseMigrateSymlinkBackupDir
+  , testCase "inspect: through a symlink, a live owner at the target reads live" caseInspectSymlinkLive
+  , testCase "inspect: through a symlink, an offline store names the target" caseInspectSymlinkOffline
+  , testCase "reset: through a symlink, a live owner at the target refuses" caseResetSymlinkLive
+  , testCase "reset: through a symlink, an offline store removes the target" caseResetSymlinkOffline
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -1295,3 +1299,84 @@ caseMigrateSymlinkBackupDir = withScratch "ctl-migrate" $ \dir -> do
   leftovers <- filter (\f -> ".bak" `isSuffixOf` f || ".receipt" `isSuffixOf` f)
     <$> listDirectory realDir
   assertEqual "no backup beside the store" [] leftovers
+
+-- Through a symlink, inspect reads the lock beside the target: a
+-- live owner there reads live, not offline.
+caseInspectSymlinkLive :: IO ()
+caseInspectSymlinkLive = withScratch "store-ctl" $ \dir -> do
+  let realDir = dir </> "real"; real = realDir </> "store.sqlite"; link = dir </> "link.sqlite"
+  createDirectory realDir
+  eSt <- openSQLiteStore real
+  case eSt of
+    Left err -> fail ("open failed: " ++ show err)
+    Right st -> do
+      createSymbolicLink real link
+      r <- runCtl ["store", "inspect", "--path", link]
+      c <- storeCommit st emptyDelta
+      storeClose st
+      assertEqual "inspect exits 0" 0 (ceCode r)
+      assertBool "names the target" (("store: " ++ real) `elem` lines (ceOut r))
+      assertBool "reports live" ("lock: live" `isInfixOf` ceOut r)
+      assertEqual "owner kept serving" Committed c
+
+-- Through a symlink, an offline inspect still works and names the
+-- resolved target.
+caseInspectSymlinkOffline :: IO ()
+caseInspectSymlinkOffline = withScratch "store-ctl" $ \dir -> do
+  let realDir = dir </> "real"; real = realDir </> "store.sqlite"; link = dir </> "link.sqlite"
+  createDirectory realDir
+  eSt <- openSQLiteStore real
+  case eSt of
+    Left err -> fail ("open failed: " ++ show err)
+    Right st -> storeClose st
+  createSymbolicLink real link
+  r <- runCtl ["store", "inspect", "--path", link]
+  assertEqual "inspect exits 0" 0 (ceCode r)
+  assertBool "names the target" (("store: " ++ real) `elem` lines (ceOut r))
+  assertBool "reports offline" ("lock: offline" `isInfixOf` ceOut r)
+
+-- Through a symlink, reset refuses while the target's owner is
+-- live: neither the link nor the target is touched.
+caseResetSymlinkLive :: IO ()
+caseResetSymlinkLive = withScratch "store-ctl" $ \dir -> do
+  let realDir = dir </> "real"; real = realDir </> "store.sqlite"; link = dir </> "link.sqlite"
+  createDirectory realDir
+  eSt <- openSQLiteStore real
+  case eSt of
+    Left err -> fail ("open failed: " ++ show err)
+    Right st -> do
+      createSymbolicLink real link
+      lockBefore <- BS.readFile (real ++ ".lock")
+      r <- runCtl ["store", "reset", "--path", link, "--confirm-demo-reset"]
+      BS.readFile (real ++ ".lock") >>= assertEqual "owner lock untouched" lockBefore
+      c <- storeCommit st emptyDelta
+      storeClose st
+      assertEqual "exit 1" 1 (ceCode r)
+      assertBool "refused live" ("reset-refused:" `isPrefixOf` ceErr r)
+      assertEqual "owner kept serving" Committed c
+      linkLeft <- doesFileExist link
+      realLeft <- doesFileExist real
+      assertBool "link untouched" linkLeft
+      assertBool "target untouched" realLeft
+
+-- Through a symlink, resetting an offline store removes the target
+-- (and its lock); the operator's symlink is left dangling, so the
+-- next open fails closed instead of serving a fresh store.
+caseResetSymlinkOffline :: IO ()
+caseResetSymlinkOffline = withScratch "store-ctl" $ \dir -> do
+  let realDir = dir </> "real"; real = realDir </> "store.sqlite"; link = dir </> "link.sqlite"
+  createDirectory realDir
+  eSt <- openSQLiteStore real
+  case eSt of
+    Left err -> fail ("open failed: " ++ show err)
+    Right st -> storeClose st
+  createSymbolicLink real link
+  r <- runCtl ["store", "reset", "--path", link, "--confirm-demo-reset"]
+  assertEqual "reset exits 0" 0 (ceCode r)
+  assertEqual "names the target" ("reset: " ++ real ++ " removed (offline)\n") (ceOut r)
+  realLeft <- doesFileExist real
+  lockLeft <- doesFileExist (real ++ ".lock")
+  assertBool "target removed" (not realLeft)
+  assertBool "target lock removed" (not lockLeft)
+  entries <- listDirectory dir
+  assertBool "symlink left dangling" ("link.sqlite" `elem` entries)
