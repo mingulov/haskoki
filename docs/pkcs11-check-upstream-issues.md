@@ -47,7 +47,9 @@ correction: choose a key type outside the mechanism's list (for example
 `CKK_AES`) as the wrong key. Haskoki pins both sides natively: a
 generic-secret key signs and verifies BLAKE2B-256-HMAC against an independent
 oracle, and an AES key is refused with `CKR_KEY_TYPE_INCONSISTENT`
-(`tests/c/consumer_roundtrip.c`, "blake2b-key-type").
+(`tests/c/consumer_roundtrip.c`, "blake2b-key-type"). Filed upstream as
+[BLAKE2B message-API wrong-key-type helper,
+#53](https://github.com/mingulov/pkcs11-check/issues/53).
 
 ## Public issue reports
 
