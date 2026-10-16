@@ -533,7 +533,10 @@ grantAdmitsPending st =
 -- PKCS#11 v3.1 section 5.1.6, and the init return lists in 5.8.1,
 -- 5.10.1, 5.13.1, 5.14.1 and 5.15.1 carry it, never
 -- 'CKR_OBJECT_HANDLE_INVALID'; one code for all three, so the refusal
--- is no existence oracle, as on the derive path), carry a
+-- is no existence oracle, as on the derive path; this covers
+-- operation init, C_DigestKey and recover init only: wrap, unwrap
+-- and KEM key resolution still refuse 'CKR_OBJECT_HANDLE_INVALID',
+-- a target gap recorded in spec/findings-ledger.json), carry a
 -- compatible key type, permit the operation, and (for
 -- always-authenticate keys) sit under a user login. Success carries
 -- the resolved object id and the auth marking. A second

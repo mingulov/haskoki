@@ -61,6 +61,13 @@ All three reports were closed on October 5, 2026. Their public threads
 retain the original inputs and comparisons. They describe historical
 checker versions, not unresolved findings in every later release.
 
+One report is open. [Async child results,
+#49](https://github.com/mingulov/pkcs11-check/issues/49): the
+`ckr_v32_raw` async probes pass a ctypes character buffer where the
+binding declares unsigned bytes, so they fail before `C_AsyncGetID` is
+called. It covers the two async findings in the current set; nothing new
+needs filing for them.
+
 ## Remaining recipe and provider boundaries
 
 The raw RSA X9.31 recipe needs prehashed input rather than the generic

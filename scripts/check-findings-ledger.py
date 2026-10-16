@@ -34,8 +34,9 @@ Evidence rule: `test` and `receipt` are an existing repo path (optionally
 accepted: every provider fix has landed, so a `pending` value is refused.
 
 TODO_IDS is hard-coded here because its source (the outer workspace todo.md
-and its gap-analysis disposition table) is outside this repository; adding a
-TODO category means editing this list and the ledger together.
+and its gap-analysis disposition table, plus target gaps recorded after the
+v0.5 provider fixes) is outside this repository; adding a TODO category
+means editing this list and the ledger together.
 
 Provider-owned finding/exclusion rows must be provider-fix, or
 supported-refusal whose `source` cites normative text (contains "PKCS#11" and
@@ -88,6 +89,8 @@ TODO_IDS = [
     "todo:attribute-breadth-catalog-identity-only",
     "todo:xor-base-and-data-unequal-length",
     "todo:reserved-config-knobs", "todo:auth-wrap-functions",
+    # target gaps found after the v0.5 provider fixes
+    "todo:xor-derive-des-parity", "todo:wrap-unwrap-kem-key-handle-code",
 ]
 
 

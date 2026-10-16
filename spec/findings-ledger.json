@@ -12,7 +12,7 @@
    "observed": "failed in direct and proxy lanes",
    "owner": "checker",
    "decision": "checker-fix",
-   "target": "pkcs11-check #49 (ctypes binding c_ubyte* vs c_char buffer; inputs never reach the module); upstream issue text in WP12 Task 8",
+   "target": "pkcs11-check #49 (ctypes binding c_ubyte* vs c_char buffer; inputs never reach the module); covered by the open upstream report https://github.com/mingulov/pkcs11-check/issues/49, linked from docs/pkcs11-check-upstream-issues.md (nothing new to file)",
    "test": "tests/c/async_routed.c",
    "receipt": "docs/pkcs11-oracle-triage.md",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
@@ -27,7 +27,7 @@
    "observed": "failed in direct and proxy lanes",
    "owner": "checker",
    "decision": "checker-fix",
-   "target": "pkcs11-check #49 (ctypes binding c_ubyte* vs c_char buffer; inputs never reach the module); upstream issue text in WP12 Task 8",
+   "target": "pkcs11-check #49 (ctypes binding c_ubyte* vs c_char buffer; inputs never reach the module); covered by the open upstream report https://github.com/mingulov/pkcs11-check/issues/49, linked from docs/pkcs11-check-upstream-issues.md (nothing new to file)",
    "test": "tests/c/async_routed.c",
    "receipt": "docs/pkcs11-oracle-triage.md",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
@@ -4171,6 +4171,36 @@
    "test": "tests/recipes/RecipeByteOpsSpec.hs::casePlan (xor short/long data, past the shorter length)",
    "receipt": "tests/c/consumer_roundtrip.c::xor_unequal_legs",
    "checker_pin": "n/a (not a checker case)"
+  },
+  {
+   "id": "todo:xor-derive-des-parity",
+   "kind": "todo",
+   "dimension": "todo",
+   "source": "PKCS#11 v3.1 section 6.43.6: \"If a DES, DES2, DES3, or CDMF key is derived with this mechanism, the parity bits of the key will be set properly\"; disclosed in docs/release-notes-0.4.0.0.md (Derivation: no DES parity adjustment)",
+   "input": "CKM_XOR_BASE_AND_DATA with a CKK_DES/CKK_DES2/CKK_DES3 template",
+   "expected": "derived DES-family key bytes carry odd parity",
+   "observed": "derived key bytes are the raw XOR result; no derive path adjusts DES parity (only PBE keygen does)",
+   "owner": "provider",
+   "decision": "target-gap",
+   "target": "apply DES odd-parity adjustment to DES-family keys derived by XOR (and the other derive paths that can produce them); not in 0.5.0.0 scope",
+   "test": "none: no test pins parity on derived keys yet",
+   "receipt": "docs/release-notes-0.4.0.0.md",
+   "checker_pin": "n/a (not a checker case)"
+  },
+  {
+   "id": "todo:wrap-unwrap-kem-key-handle-code",
+   "kind": "todo",
+   "dimension": "todo",
+   "source": "PKCS#11 v3.1 section 5.1.6 and the C_UnwrapKey return list (CKR_UNWRAPPING_KEY_HANDLE_INVALID, no CKR_OBJECT_HANDLE_INVALID); operation init, C_DigestKey and recover init already return CKR_KEY_HANDLE_INVALID",
+   "input": "unknown, destroyed or invisible wrapping, unwrapping, wrap-target or KEM key handle",
+   "expected": "the function's key-handle code (CKR_WRAPPING_KEY_HANDLE_INVALID / CKR_UNWRAPPING_KEY_HANDLE_INVALID / CKR_KEY_HANDLE_INVALID)",
+   "observed": "CKR_OBJECT_HANDLE_INVALID (0x82) from core/Haskoki/Operation/KeyManagement.hs (withWrappingKey, withRsaWrappingKey, withEcCompWrappingKey, withWrapTarget) and core/Haskoki/Operation/Kem.hs (planKemEncaps, planKemDecaps)",
+   "owner": "provider",
+   "decision": "target-gap",
+   "target": "align wrap, unwrap and KEM key resolution with each function's return list (only the C_UnwrapKey list was checked against the specification text); not in 0.5.0.0 scope",
+   "test": "tests/model/DecodedRequestSpec.hs::unwrap double-fault (handle) code",
+   "receipt": "core/Haskoki/Operation/KeyManagement.hs::withWrappingKey",
+   "checker_pin": "n/a (not a checker case)"
   }
  ],
  "retired": [
@@ -4204,9 +4234,9 @@
    "observed": "CKR_ARGUMENTS_BAD (0x7): NULL params; non-standard 16-byte counter/digits image required",
    "owner": "provider",
    "decision": "provider-fix",
-   "target": "0.5.0.0: adopt standard CK_OTP_PARAMS, retire 16-byte BE image (ruling 3, Task 5)",
-   "test": "tests/recipes/RecipeOtpSpec.hs::caseNativeEntries",
-   "receipt": "tests/c/consumer_roundtrip.c::HOTP CK_OTP_PARAMS legs",
+   "target": "0.5.0.0: HOTP leaves the message API (PKCS#11 v3.2 defines no per-message parameter shape for it): no message routes or flags, and message init refuses CKR_MECHANISM_INVALID; classic init takes the standard CK_OTP_PARAMS and the 16-byte image is retired; sign without CK_OTP_COUNTER refuses 0x71 (supported refusal, PKCS#11 v3.2 section 6.53.7.1 last sentence: no token counter is kept, so the counter is mandatory; GAP-OTP-STATEFUL)",
+   "test": "tests/model/MessageFlagBatterySpec.hs::caseRoutelessInit",
+   "receipt": "tests/c/message_routed.c::hotp_message_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
     "d3d904c",
@@ -4244,9 +4274,9 @@
    "observed": "CKR_ARGUMENTS_BAD (0x7): NULL params; non-standard 16-byte counter/digits image required",
    "owner": "provider",
    "decision": "provider-fix",
-   "target": "0.5.0.0: adopt standard CK_OTP_PARAMS, retire 16-byte BE image (ruling 3, Task 5)",
-   "test": "tests/recipes/RecipeOtpSpec.hs::caseNativeEntries",
-   "receipt": "tests/c/consumer_roundtrip.c::HOTP CK_OTP_PARAMS legs",
+   "target": "0.5.0.0: HOTP leaves the message API (PKCS#11 v3.2 defines no per-message parameter shape for it): no message routes or flags, and message init refuses CKR_MECHANISM_INVALID; classic init takes the standard CK_OTP_PARAMS and the 16-byte image is retired; verify requires CK_OTP_COUNTER (PKCS#11 v3.2 section 6.53.9.3) and refuses 0x71 without it",
+   "test": "tests/model/MessageFlagBatterySpec.hs::caseRoutelessInit",
+   "receipt": "tests/c/message_routed.c::hotp_message_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
     "d3d904c",
@@ -4679,7 +4709,13 @@
    "id": "proxy-divergence:digest-key-after-destroy-control-leg",
    "commit": "64fe39a",
    "test": "tests/c/consumer_errors.c::refusal_code_legs",
-   "note": "pkcs11-proxy-ng v0.2.2 refuses C_DigestKey on an unknown handle in its shim, so the backend digest stays active (CKR_OPERATION_ACTIVE on the next C_DigestInit); direct topology terminates it (PKCS#11 v3.1 section 5.12). The control leg is topology-aware. Proxy-owned; list in WP11's proxy-exclusions doc."
+   "note": "pkcs11-proxy-ng v0.2.2 refuses C_DigestKey on an unknown handle in its shim, so the backend digest stays active (CKR_OPERATION_ACTIVE on the next C_DigestInit); direct topology terminates it (PKCS#11 v3.1 section 5.12). The control leg is topology-aware. Proxy-owned; listed in docs/proxy-exclusions.md."
+  },
+  {
+   "id": "proxy-divergence:hotp-otp-params-refused-by-shim",
+   "commit": "d3d904c",
+   "test": "tests/c/consumer_roundtrip.c::proxied HOTP params are PARAM_INVALID",
+   "note": "pkcs11-proxy-ng v0.2.2's shim refuses any parameterized CKM_HOTP (0x291 has no entry in its mechanism parameter registry, so the pointer inside CK_OTP_PARAMS is not marshalled) with CKR_MECHANISM_PARAM_INVALID before forwarding. The proxied leg asserts that refusal; the CK_OTP_PARAMS vectors and decoder refusals run direct only. Proxy-owned; listed in docs/proxy-exclusions.md."
   }
  ]
 }
