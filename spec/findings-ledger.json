@@ -4719,13 +4719,13 @@
   },
   {
    "id": "proxy-divergence:restart-stale-handle-aliases",
-   "commit": "60d4ba3",
+   "commit": "f84833b",
    "test": "tests/c/consumer_certificates.c::leg_restart",
    "note": "pkcs11-proxy-ng v0.2.2's object handles are per client context and start again at 1 after a client C_Finalize and C_Initialize, so the pre-restart handle names the re-found certificate: restart-stale-fault (sqlite) and restart-memory-stale-fault (memory; the aliased object is the surviving original, present only because of the volatile divergence) return CKR_BUFFER_TOO_SMALL (0x150) proxied and CKR_OBJECT_HANDLE_INVALID (0x82) direct. The assertions are topology-aware; the restart re-find and the CKA_PRIVATE default and find are compared. No upstream issue of its own; pkcs11-proxy-ng issue 27 is the closest reference. Proxy-owned; listed in docs/proxy-exclusions.md."
   },
   {
    "id": "proxy-divergence:restart-memory-object-outlives-client-finalize",
-   "commit": "60d4ba3",
+   "commit": "f84833b",
    "test": "tests/c/consumer_certificates.c::leg_restart",
    "note": "pkcs11-proxy-ng v0.2.2 keeps the backend initialized across a client C_Finalize, so with memory storage the token certificate survives the client restart: restart-memory-volatile finds 1 object proxied and 0 direct. The assertion is topology-aware; the rest of the leg is compared. pkcs11-proxy-ng issue 27 reports this exact symptom (closed by design 2026-10-05). Proxy-owned; listed in docs/proxy-exclusions.md."
   }
