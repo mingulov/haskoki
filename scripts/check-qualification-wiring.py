@@ -12,9 +12,10 @@ Fails (exit 1) when any rule fails:
 * QW-INV-*: `scripts/driver-inventory.json` is the single source of
   truth AND is drift-checked against `scripts/test-*.sh` (the same
   contract `scripts/release-evidence.sh` enforces at runtime): every
-  driver script appears exactly once, roles are container/host/nested,
-  nested drivers name a non-nested parent, and no entry is duplicated,
-  unowned, or parented in a cycle.
+  driver script appears exactly once, roles are
+  container/host/nested/qualification, nested drivers name a
+  non-nested parent, and no entry is duplicated, unowned, or parented
+  in a cycle.
 * QW-OWNER-*: every V4-owned probe is wired into its required
   owner driver on an execution line (a `cc` build, the scenario-list
   construction, or the consumer glob plus a literal binding mention),
@@ -153,6 +154,16 @@ Receipt verifier (judges a real run, build-free):
   include directory first (fail closed), under `set -euo pipefail`,
   never swallowed; static-gates never compiles the harness (the runner
   has no such prefix).
+* QW-LANE-JOURNEYS: the qualify job runs scripts/test-client-journeys.sh
+  in exactly one execution step (a step with a driver line carrying
+  none of --check, --self-test or --build-native), on `if: always()`,
+  under `set -euo pipefail`, never swallowed, installing a bundle
+  tarball (--bundle-tar) for the portfolio profile (--profile
+  portfolio) with its --out under $RUNNER_TEMP/qualify-evidence/journeys.
+  Qualify and report each run --check on the journeys run directory
+  (the runner-temp tree in qualify, the downloaded artifact in
+  report), never swallowed, and static-gates runs both journey
+  self-tests plus sh -n on the driver.
 * QW-SAN-TABLE: the driver's case lists, run loops and negative
   controls equal the expected sets below (build-free drift check).
 
@@ -878,6 +889,69 @@ def check_lane(root, failures):
                 else "evidence-in/qualify-evidence/sanitizer/art")
         if want not in code:
             _add(failures, "QW-LANE-SANVERIFY", f"{job}: sanitizer verifier must read {want}")
+    if QUALIFY_JOB in blocks:
+        # Only execution steps count: a step whose driver lines all
+        # carry --check, --self-test or --build-native is a control
+        # step, not the journey run.
+        jsteps = [st for st in re.split(r"(?m)^      - name:", blocks[QUALIFY_JOB])
+                  if any(JOURNEYS_DRIVER in line and "--check" not in line
+                         and "--self-test" not in line and "--build-native" not in line
+                         for line in _code_lines(st))]
+        if len(jsteps) != 1:
+            _add(failures, "QW-LANE-JOURNEYS",
+                 f"{QUALIFY_JOB} must run {JOURNEYS_DRIVER} in exactly one execution step "
+                 f"(found {len(jsteps)})")
+        else:
+            jst = jsteps[0]
+            code = "\n".join(_code_lines(jst))
+            if "set -euo pipefail" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run under set -euo pipefail "
+                     "(the tee would hide the exit)")
+            if "--bundle-tar" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must install a bundle tarball (--bundle-tar)")
+            if "--profile portfolio" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run the portfolio profile (--profile portfolio)")
+            if not re.search(r"--out\s+['\"]*\$RUNNER_TEMP/qualify-evidence/journeys/", code):
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey --out must be under $RUNNER_TEMP/qualify-evidence/journeys")
+            if not re.search(r"(?m)^        if: always\(\)", jst):
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run on if: always() (record its verdict)")
+            if "continue-on-error" in jst or "|| true" in code or "|| :" in code:
+                _add(failures, "QW-LANE-JOURNEYS", "journey failure is swallowed")
+    for job in (QUALIFY_JOB, REPORT_JOB):
+        if job not in blocks:
+            continue
+        csteps = [st for st in re.split(r"(?m)^      - name:", blocks[job])
+                  if any(JOURNEYS_DRIVER in line and "--check" in line
+                         for line in _code_lines(st))]
+        if len(csteps) != 1:
+            _add(failures, "QW-LANE-JOURNEYS",
+                 f"{job}: need exactly one journey --check step (found {len(csteps)})")
+            continue
+        code = "\n".join(_code_lines(csteps[0]))
+        want = ("$RUNNER_TEMP/qualify-evidence/journeys/run" if job == QUALIFY_JOB
+                else "evidence-in/qualify-evidence/journeys/run")
+        if want not in code:
+            _add(failures, "QW-LANE-JOURNEYS", f"{job}: journey check must read {want}")
+        if "|| true" in code or "|| :" in code or "continue-on-error" in csteps[0]:
+            _add(failures, "QW-LANE-JOURNEYS", f"{job}: journey check failure is swallowed")
+    if "static-gates" in blocks:
+        static = blocks["static-gates"]
+        code = "\n".join(_code_lines(static))
+        if "tests/journeys/journeys.py --self-test" not in code:
+            _add(failures, "QW-LANE-JOURNEYS",
+                 "static-gates must run the journey engine self-test")
+        if "test-client-journeys.sh --self-test" not in code:
+            _add(failures, "QW-LANE-JOURNEYS",
+                 "static-gates must run the journey driver self-test")
+        loop = re.search(r"for d in (.*?);\s*do", static, re.S)
+        if loop is None or JOURNEYS_DRIVER not in loop.group(1):
+            _add(failures, "QW-LANE-JOURNEYS",
+                 "static-gates must syntax-check the journey driver (sh -n loop)")
     for name, block in blocks.items():
         if not re.search(r"(?m)^    timeout-minutes:\s*\d+\s*$", block):
             _add(failures, "QW-LANE-TIMEOUT", f"job {name} has no timeout-minutes")
@@ -1263,6 +1337,7 @@ def check_ownership_table(root, failures):
 # ------------------------------------------------------------------
 
 SANITIZER_DRIVER = "scripts/test-native-sanitizers.sh"
+JOURNEYS_DRIVER = "scripts/test-client-journeys.sh"
 SAN_SCHEMA = "haskoki-native-sanitizer-receipt/1"
 SAN_VARIANTS = ("san-hooks", "san-prod", "plain-hooks", "plain-prod")
 SAN_SOURCES = ("cbits/ossl4_ctx.c", "cbits/ossl4_ctx.h", "tests/c/ossl4_sanitize.c",
@@ -2224,6 +2299,31 @@ def self_test():
         _rewrite(root / QUALIFICATION_YML, 'evidence-in/qualify-evidence/sanitizer/art --expect-sha "$REQUESTED_REVISION"',
                  'evidence-in/qualify-evidence/sanitizer/art --expect-sha "$(git rev-parse HEAD)"')
         controls.expect_fail("report sanitizer verifier uses the checkout sha", root, "QW-LANE-SANVERIFY")
+        # Installed client journeys: one execution step, unswallowed,
+        # checked in both jobs, self-tested in static-gates.
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "scripts/test-client-journeys.sh --profile portfolio")
+        controls.expect_fail("drop the journey step", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, 'tee "$JOURNEYS_DIR/journeys.log"',
+                 'tee "$JOURNEYS_DIR/journeys.log" || true')
+        controls.expect_fail("swallow the journey step", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--check "$RUNNER_TEMP/qualify-evidence/journeys/run"',
+                 '--self-test "$RUNNER_TEMP/qualify-evidence/journeys/run"')
+        controls.expect_fail("drop the journey check from qualify", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "--check evidence-in/qualify-evidence/journeys/run",
+                 "--self-test evidence-in/qualify-evidence/journeys/run")
+        controls.expect_fail("drop the journey check from report", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "tests/journeys/journeys.py --self-test")
+        controls.expect_fail("drop the journey self-tests from static-gates", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / INVENTORY,
+                 ',\n    {"name": "test-client-journeys.sh", "role": "qualification", "parent": null}',
+                 "")
+        controls.expect_fail("journey driver outside the inventory", root, "QW-INV-UNOWNED")
         # Static drift between the sanitizer driver and the expected sets.
         root = fresh()
         _rewrite(root / SANITIZER_DRIVER, "seam-dsa-hash-raw-ok-shrink\"", "\"")
