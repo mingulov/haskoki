@@ -76,6 +76,7 @@ TODO_IDS = [
     "todo:storage-flake", "todo:cleanups",
     "todo:attribute-breadth-catalog-identity-only",
     "todo:xor-base-and-data-unequal-length",
+    "todo:reserved-config-knobs", "todo:auth-wrap-functions",
 ]
 
 

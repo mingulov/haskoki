@@ -3918,6 +3918,21 @@
    "checker_pin": "n/a (not a checker case)"
   },
   {
+   "kind": "todo",
+   "dimension": "todo",
+   "expected": "explicit disposition",
+   "observed": "recorded; see target",
+   "owner": "none",
+   "checker_pin": "n/a (not a checker case)",
+   "id": "todo:auth-wrap-functions",
+   "source": "todo.md E mechanisms (authenticated wrap)",
+   "input": "auth-wrap-functions",
+   "decision": "supported-refusal",
+   "target": "C_WrapKeyAuthenticated and C_UnwrapKeyAuthenticated are refused-by-design stubs (CKR_FUNCTION_NOT_SUPPORTED); no authenticated-wrap mechanism is advertised",
+   "test": "SUPPORTED-HOSTS.md",
+   "receipt": "SUPPORTED-HOSTS.md"
+  },
+  {
    "id": "todo:certificates-trust-url-java",
    "kind": "todo",
    "dimension": "todo",
@@ -4062,7 +4077,7 @@
    "observed": "recorded; see target",
    "owner": "checker",
    "decision": "checker-fix",
-   "target": "WP12 Task 8: P11C-011..014, #49 text, pin decision (pin unchanged per ruling 7)",
+   "target": "P11C-011..014 are recorded in the upstream-issues register (011/012 pending upstream; 013/014 left the demo baseline when the recipes were corrected); checker pin unchanged in 0.5.0.0 (ruling 7); the async child-result shape is covered by the existing upstream report #49 (nothing new to file)",
    "test": "docs/pkcs11-check-upstream-issues.md",
    "receipt": "docs/pkcs11-check-upstream-issues.md",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
@@ -4111,6 +4126,21 @@
    "test": "none: superseded by outer-workspace ws/reviews/2026-10-15-release-gap-analysis/traceability.md",
    "receipt": "none: superseded by outer-workspace ws/reviews/2026-10-15-release-gap-analysis/traceability.md",
    "checker_pin": "n/a (not a checker case)"
+  },
+  {
+   "kind": "todo",
+   "dimension": "todo",
+   "expected": "explicit disposition",
+   "observed": "recorded; see target",
+   "owner": "none",
+   "checker_pin": "n/a (not a checker case)",
+   "id": "todo:reserved-config-knobs",
+   "source": "todo.md E config delta (reserved knobs)",
+   "input": "reserved-config-knobs",
+   "decision": "target-gap",
+   "target": "6 reserved keys (limits buffer_bytes/transcript_bytes/aggregate_payload_bytes/attribute_entries/attribute_depth, async.persist_detached) parse and are disclosed but drive no enforcement; the config table is compared with the parser mechanically",
+   "test": "tests/model/ConfigHonestySpec.hs",
+   "receipt": "docs/config-honesty.md"
   },
   {
    "id": "todo:storage-flake",
