@@ -13,8 +13,8 @@ Every command owns its instance or works offline:
   session never pends; strict load: nonempty rules, unknown step
   fields, mistyped arguments, and misplaced save_as\/expect reject;
   each step's result is checked centrally against its expectation;
-  value admission, expectable refusals, lifecycle; inert prose only
-  under `note`);
+  value admission, expectable refusals, lifecycle; only the @note@
+  field carries inert prose);
 * @store inspect@ reads a SQLite store offline (SELECT-only under
   @query_only@; never takes the ownership lock);
 * @store check@ plans an open of a store read-only and reports what
@@ -486,6 +486,7 @@ isLifecycleGated act = act `notElem` lifecycleExempt
 -- | The traced call for a lifecycle refusal on a verb: each gated
 -- verb reports the call it would have run. Unknown verbs cannot
 -- arrive (validated), so the fallback names the verb itself.
+-- Names are the scenario runner's traced calls, not an exact PKCS#11 mapping.
 refusalFunction :: String -> String
 refusalFunction verb = case verb of
   "fixture.load" -> "C_InitToken"

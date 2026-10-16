@@ -17,7 +17,7 @@ import Control.Exception (bracket)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.IORef (newIORef, readIORef, modifyIORef')
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
@@ -131,6 +131,7 @@ spec = testGroup "Sim bridge"
   , testCase "second login as the same role refuses" caseLoginAlready
   , testCase "login as another role refuses" caseLoginAnother
   , testCase "signing under SO refuses" caseSoSignRefused
+  , testCase "sign and completion under SO refuse" caseSoSigningGates
   , testCase "unit capacity signs" caseCapacityOne
   , testCase "refusals emit trace events" caseRefusalTraces
   ]
@@ -1405,9 +1406,33 @@ caseSoSignRefused = do
     ]
   assertEqual ("signing under SO refuses: " ++ ceErr r) 0 (ceCode r)
 
+-- | The signing login gate needs the normal user: under an SO
+-- login, a direct sign and a direct completion refuse with
+-- CKR_USER_NOT_LOGGED_IN. The login guard precedes the arming
+-- check, so both steps reach it unarmed.
+caseSoSigningGates :: IO ()
+caseSoSigningGates = do
+  let prefix =
+        [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+        , step "session.open" [("asynchronous", JBool False)] Nothing
+        , step "session.login" [("session", JStr "s1"), ("role", JStr "SO")
+            , ("pin", JStr "5678")] (Just "CKR_OK") ]
+  rSign <- runTempScenarioFull (fixture "maximal-demo.toml") "sosigngate" Nothing
+    (prefix ++ [step "sign"
+      [("session", JStr "s1"), ("data_base64", JStr "eA==")
+      , ("output_capacity", JNum 256)] (Just "CKR_USER_NOT_LOGGED_IN")])
+  assertEqual ("sign under SO refuses: " ++ ceErr rSign) 0 (ceCode rSign)
+  rComp <- runTempScenarioFull (fixture "maximal-demo.toml") "socompletegate" Nothing
+    (prefix ++ [step "async.complete"
+      [("session", JStr "s1"), ("function", JStr "C_Sign")]
+      (Just "CKR_USER_NOT_LOGGED_IN")])
+  assertEqual ("completion under SO refuses: " ++ ceErr rComp)
+    0 (ceCode rComp)
+
 -- | Boundary pin for the capacity model: capacity 1 signs (any
 -- positive capacity is accepted without a size comparison),
--- while expecting CKR_BUFFER_TOO_SMALL fails.
+-- while expecting CKR_BUFFER_TOO_SMALL fails. This pin is
+-- expected to change with a real size model.
 caseCapacityOne :: IO ()
 caseCapacityOne = do
   let signWith cap expect = JObj [("action", JStr "sign")
@@ -1428,22 +1453,29 @@ caseCapacityOne = do
     (prefix ++ [signWith 1 "CKR_BUFFER_TOO_SMALL"])
   assertEqual "expecting too-small fails" 1 (ceCode r2)
 
+-- | The run's trace-lines footer names the exact emitted
+-- count: whole-line match, so a count never matches a longer
+-- one sharing its prefix. The tracer content itself stays
+-- inside the runner (the run prints only the footer count).
+assertTraceLines :: String -> Int -> CtlExit -> IO ()
+assertTraceLines tag n r =
+  assertEqual tag ["trace-lines: " ++ show n]
+    (filter ("trace-lines: " `isPrefixOf`) (lines (ceOut r)))
+
 -- | Expectable refusals emit their traced call, counted in the
 -- run's trace-lines footer: the lifecycle refusal, the finalize
--- refusal, the signing login gate, short capacity, and the two
--- second-login refusals.
+-- refusal, the three signing login gates, short capacity, and
+-- the two second-login refusals.
 caseRefusalTraces :: IO ()
 caseRefusalTraces = do
   rCycle <- runTempScenarioFull (fixture "maximal-demo.toml") "tracelife" Nothing
     [step "session.open" [] (Just "CKR_CRYPTOKI_NOT_INITIALIZED")]
   assertEqual ("lifecycle refusal exit 0: " ++ ceErr rCycle) 0 (ceCode rCycle)
-  assertBool "lifecycle refusal traced"
-    ("trace-lines: 1" `isInfixOf` ceOut rCycle)
+  assertTraceLines "lifecycle refusal traced" 1 rCycle
   rFin <- runTempScenarioFull (fixture "maximal-demo.toml") "tracefin" Nothing
     [step "finalize" [] (Just "CKR_CRYPTOKI_NOT_INITIALIZED")]
   assertEqual ("finalize refusal exit 0: " ++ ceErr rFin) 0 (ceCode rFin)
-  assertBool "finalize refusal traced"
-    ("trace-lines: 1" `isInfixOf` ceOut rFin)
+  assertTraceLines "finalize refusal traced" 1 rFin
   rGate <- runTempScenarioFull (fixture "maximal-demo.toml") "tracegate" Nothing
     [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
     , step "session.open" [] Nothing
@@ -1452,8 +1484,25 @@ caseRefusalTraces = do
         , ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_USER_NOT_LOGGED_IN")
     ]
   assertEqual ("login-gate refusal exit 0: " ++ ceErr rGate) 0 (ceCode rGate)
-  assertBool "login-gate refusal traced"
-    ("trace-lines: 4" `isInfixOf` ceOut rGate)
+  assertTraceLines "login-gate refusal traced" 4 rGate
+  rGateSign <- runTempScenarioFull (fixture "maximal-demo.toml") "tracegatesign" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "sign" [("session", JStr "s1"), ("data_base64", JStr "eA==")
+        , ("output_capacity", JNum 256)] (Just "CKR_USER_NOT_LOGGED_IN")
+    ]
+  assertEqual ("sign login-gate refusal exit 0: " ++ ceErr rGateSign)
+    0 (ceCode rGateSign)
+  assertTraceLines "sign login-gate refusal traced" 4 rGateSign
+  rGateComp <- runTempScenarioFull (fixture "maximal-demo.toml") "tracegatecomp" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "async.complete" [("session", JStr "s1")
+        , ("function", JStr "C_Sign")] (Just "CKR_USER_NOT_LOGGED_IN")
+    ]
+  assertEqual ("completion login-gate refusal exit 0: " ++ ceErr rGateComp)
+    0 (ceCode rGateComp)
+  assertTraceLines "completion login-gate refusal traced" 4 rGateComp
   rCap <- runTempScenarioFull (fixture "maximal-demo.toml") "tracecap" Nothing
     [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
     , step "session.open" [("asynchronous", JBool False)] Nothing
@@ -1466,8 +1515,7 @@ caseRefusalTraces = do
         , ("output_capacity", JNum 0)] (Just "CKR_BUFFER_TOO_SMALL")
     ]
   assertEqual ("capacity refusal exit 0: " ++ ceErr rCap) 0 (ceCode rCap)
-  assertBool "capacity refusal traced"
-    ("trace-lines: 6" `isInfixOf` ceOut rCap)
+  assertTraceLines "capacity refusal traced" 6 rCap
   rLogin <- runTempScenarioFull (fixture "maximal-demo.toml") "tracelogin" Nothing
     [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
     , step "session.open" [] Nothing
@@ -1479,5 +1527,4 @@ caseRefusalTraces = do
         , ("pin", JStr "5678")] (Just "CKR_USER_ANOTHER_ALREADY_LOGGED_IN")
     ]
   assertEqual ("login refusal exit 0: " ++ ceErr rLogin) 0 (ceCode rLogin)
-  assertBool "login refusals traced"
-    ("trace-lines: 6" `isInfixOf` ceOut rLogin)
+  assertTraceLines "login refusals traced" 6 rLogin
