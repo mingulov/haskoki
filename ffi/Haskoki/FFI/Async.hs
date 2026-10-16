@@ -60,6 +60,17 @@ module Haskoki.FFI.Async
   , AsyncData
   , JobHandle
   , StoreBox (..)
+  , AsyncAcquisition (..)
+  , AcquireStep (..)
+  , AcquireFailure (..)
+  , ResidueOwner
+  , newResidueOwner
+  , asyncAcquisition
+  , openStoreBoxWith
+  , openAsyncCtxWith
+  , openAsyncCtxOnWith
+  , closeCtxSlotWith
+  , closeStoreBoxSlotWith
   , asyncLiveHandles
   , asyncCloseCtx
   , allocJobHandle
@@ -84,6 +95,7 @@ module Haskoki.FFI.Async
   , pokeCompletion
   , pokeNeed
   , haskokiAsyncOpen
+  , haskokiAsyncOpenWith
   , haskokiAsyncClose
   , haskokiAsyncDigestInit
   , haskokiAsyncStart
@@ -91,18 +103,24 @@ module Haskoki.FFI.Async
   , haskokiAsyncComplete
   , haskokiAsyncCancel
   , haskokiAsyncStoreOpen
+  , haskokiAsyncStoreOpenWith
   , haskokiAsyncStoreClose
   , haskokiAsyncOpenOn
+  , haskokiAsyncOpenOnWith
   , haskokiAsyncGetId
   , haskokiAsyncJoin
   ) where
 
 import Control.Exception
-  ( SomeException
+  ( SomeAsyncException
+  , SomeException
+  , catch
   , finally
+  , fromException
   , mask
   , mask_
   , onException
+  , throwIO
   , try
   , uninterruptibleMask_
   )
@@ -198,7 +216,7 @@ import Haskoki.Runtime.Detached
   , openDetached
   , retireLiveTableFor
   )
-import Haskoki.Runtime.Config (newConfigCell, resolveOnce)
+import Haskoki.Runtime.Config (Config, newConfigCell, resolveOnce)
 import Haskoki.Runtime.Lifecycle
   ( Env
   , defaultInitArgs
@@ -792,6 +810,113 @@ pokeCompletion pS completion = do
       poke (castPtr pS `plusPtr` offValueLen :: Ptr CULong) (CULong 0)
 
 -- ---------------------------------------------------------------------------
+-- Standalone acquisition seam
+-- ---------------------------------------------------------------------------
+
+-- | The points of a standalone open where a resource is held and
+-- the next step can block or throw. 'aaStep' runs at each one.
+data AcquireStep
+  = AfterStoreOpen
+    -- ^ the box's Store is open, token setup not yet run
+  | AfterTokenSetup
+    -- ^ the home token and detach state are ready, no box pointer yet
+  | AfterStoreReload
+    -- ^ a store-bound context reloaded its tokens, no backend yet
+  | AfterBackendOpen
+    -- ^ the backend is open, no proof session yet
+  | AfterSessionOpen
+    -- ^ the proof session is published, no job table yet
+  | AfterCtxAlloc
+    -- ^ the context pointer is allocated, not yet registered
+  deriving (Eq, Show)
+
+-- | Why a typed standalone open returned no handle.
+data AcquireFailure
+  = AcquireRefused
+    -- ^ an explicit refusal (config, init, seating, store, backend,
+    -- table allocator)
+  | AcquireThrew !SomeException
+    -- ^ a synchronous exception from a step (asynchronous ones
+    -- propagate instead)
+  | AcquireResidue !(Maybe SomeException) !SomeException !Store
+    -- ^ the primary failure ('Nothing' for a refusal), the cleanup
+    -- close error, and the Store the caller now owns: its
+    -- 'storeClose' retries the close
+
+-- | Owner of the Stores a failed cleanup close leaves behind with no
+-- caller to receive them. Reached through 'aaResidue', so a test
+-- injects a private owner and never shares the process instance.
+data ResidueOwner
+  = ProcessResidue
+    -- ^ the process instance, used by the production record
+  | PrivateResidue !(IORef [Store])
+    -- ^ a private instance, injected by a test
+
+-- | A fresh, empty private residue owner.
+newResidueOwner :: IO ResidueOwner
+newResidueOwner = PrivateResidue <$> newIORef []
+
+-- | Injectable steps of the standalone opens and closes (the
+-- 'Haskoki.FFI.Exports.CryptoAcquisition' precedent). Every
+-- resource-creating and resource-releasing call of
+-- 'openStoreBoxWith', 'openAsyncCtxWith', 'openAsyncCtxOnWith',
+-- 'closeCtxSlotWith' and 'closeStoreBoxSlotWith' goes through this
+-- record, so a probe counts or fails each one. 'aaStep' is
+-- TEST-ONLY: production runs 'pure ()' at every 'AcquireStep', and
+-- a test parks or throws there.
+data AsyncAcquisition = AsyncAcquisition
+  { aaInit :: !(Env -> IO (Outcome ()))
+  , aaOpenBackend :: !(IO (EngineResult (BackendEnv OpenSSL4)))
+  , aaCloseBackend :: !(BackendEnv OpenSSL4 -> IO ())
+  , aaOpenStore :: !(CString -> IO (Either () Store))
+  , aaCloseStore :: !(Store -> IO ())
+  , aaNewCtxPtr :: !(AsyncCtx -> IO (StablePtr AsyncCtx))
+  , aaFreeCtxPtr :: !(StablePtr AsyncCtx -> IO ())
+  , aaRegisterCtx :: !(StablePtr AsyncCtx -> AsyncTable -> IO ())
+  , aaRetireCtx :: !(StablePtr AsyncCtx -> IO ())
+  , aaNewBoxPtr :: !(StoreBox -> IO (StablePtr StoreBox))
+  , aaFreeBoxPtr :: !(StablePtr StoreBox -> IO ())
+  , aaStep :: !(AcquireStep -> IO ())
+  , aaResidue :: !ResidueOwner
+  }
+
+-- | Production acquisition steps.
+asyncAcquisition :: AsyncAcquisition
+asyncAcquisition = AsyncAcquisition
+  { aaInit = \env -> initialize env defaultInitArgs
+  , aaOpenBackend = openBackend "provider=default"
+  , aaCloseBackend = closeBackend
+  , aaOpenStore = openStoreByPath
+  , aaCloseStore = storeClose
+  , aaNewCtxPtr = newStablePtr
+  , aaFreeCtxPtr = freeStablePtr
+  , aaRegisterCtx = registerCtx
+  , aaRetireCtx = retireCtx
+  , aaNewBoxPtr = newStablePtr
+  , aaFreeBoxPtr = freeStablePtr
+  , aaStep = const (pure ())
+  , aaResidue = ProcessResidue
+  }
+
+-- | Sync-failure boundary for the typed opens: an unexpected
+-- synchronous exception becomes 'AcquireThrew'; an asynchronous one
+-- propagates, so a kill aborts the open instead of being swallowed.
+-- The @foreign export@ boundaries keep their catch-all 'guardedPtr'.
+guardedAcquire :: IO (Either AcquireFailure a) -> IO (Either AcquireFailure a)
+guardedAcquire body = body `catch` \e ->
+  case (fromException e :: Maybe SomeAsyncException) of
+    Just _ -> throwIO e
+    Nothing -> pure (Left (AcquireThrew e))
+
+-- | The NULL handle.
+nullStable :: StablePtr a
+nullStable = castPtrToStablePtr nullPtr
+
+-- | Map a typed open result to the C contract: any failure is NULL.
+fromAcquired :: Either AcquireFailure (StablePtr a) -> StablePtr a
+fromAcquired = either (const nullStable) id
+
+-- ---------------------------------------------------------------------------
 -- Foreign exports
 -- ---------------------------------------------------------------------------
 
@@ -829,50 +954,80 @@ foreign export ccall "haskoki_hs_async_join" haskokiAsyncJoin
 -- asynchronous session), live backend, and an empty job table. Any
 -- failure reports NULL.
 haskokiAsyncOpen :: IO (StablePtr AsyncCtx)
-haskokiAsyncOpen = guardedPtr $ do
+haskokiAsyncOpen = haskokiAsyncOpenWith asyncAcquisition
+
+-- | The body of 'haskokiAsyncOpen' over injected acquisition steps:
+-- resolve the config, open through 'openAsyncCtxWith', and map every
+-- failure (and any exception) to NULL.
+haskokiAsyncOpenWith :: AsyncAcquisition -> IO (StablePtr AsyncCtx)
+haskokiAsyncOpenWith acq = guardedPtr $ do
   cell <- newConfigCell
   eCfg <- resolveOnce cell
   case eCfg of
-    Left _ -> pure (castPtrToStablePtr nullPtr)
-    Right cfg -> do
-      env <- newEnv (rulesFromConfig cfg)
-      ini <- initialize env defaultInitArgs
-      case ini of
-        OutcomeErr _ -> pure (castPtrToStablePtr nullPtr)
-        OutcomeOk () -> do
-          eSeat <- seatToken env (SlotId 0)
-          case eSeat of
-            Left _ -> pure (castPtrToStablePtr nullPtr)
+    Left _ -> pure nullStable
+    Right cfg -> fromAcquired <$> openAsyncCtxWith acq cfg
+
+-- | Open an async context from a RESOLVED config over injected
+-- acquisition steps: fresh environment, provider init, seated
+-- token, then the shared tail ('finishAsyncOpen'). Refusals report
+-- 'AcquireRefused', synchronous exceptions 'AcquireThrew';
+-- asynchronous exceptions propagate.
+openAsyncCtxWith
+  :: AsyncAcquisition -> Config -> IO (Either AcquireFailure (StablePtr AsyncCtx))
+openAsyncCtxWith acq cfg = guardedAcquire $ do
+  env <- newEnv (rulesFromConfig cfg)
+  ini <- aaInit acq env
+  case ini of
+    OutcomeErr _ -> pure (Left AcquireRefused)
+    OutcomeOk () -> do
+      eSeat <- seatToken env (SlotId 0)
+      case eSeat of
+        Left _ -> pure (Left AcquireRefused)
+        Right () -> finishAsyncOpen acq env Nothing
+
+-- | The shared tail of both context opens: live backend, one proof
+-- session, an empty job table, then the masked pointer adoption
+-- (allocate, then register, before the pointer escapes). The
+-- context binds the given detach state (a store-bound open) or none.
+finishAsyncOpen
+  :: AsyncAcquisition -> Env -> Maybe DetachCtx
+  -> IO (Either AcquireFailure (StablePtr AsyncCtx))
+finishAsyncOpen acq env mDc = do
+  m0 <- snapshotModel env
+  let sid = SessionId (mNextSession m0)
+  r <- aaOpenBackend acq
+  case r of
+    EngineFail _ -> pure (Left AcquireRefused)
+    EngineOk be -> do
+      aaStep acq AfterBackendOpen
+      case planCall (envRules env) m0 asyncOpenReq of
+        Immediate pc -> do
+          pr <- publishCommit env be pc
+          case pr of
+            Left _ -> aaCloseBackend acq be >> pure (Left AcquireRefused)
             Right () -> do
-              m0 <- snapshotModel env
-              let sid = SessionId (mNextSession m0)
-              r <- openBackend "provider=default"
-              case r of
-                EngineFail _ -> pure (castPtrToStablePtr nullPtr)
-                EngineOk be -> case planCall (envRules env) m0 openReq of
-                  Immediate pc -> do
-                    pr <- publishCommit env be pc
-                    case pr of
-                      Left _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
-                      Right () -> do
-                        mTable <- tryNewAsyncTable ctxCapacity
-                        case mTable of
-                          Nothing ->
-                            -- Table-allocator refusal (past 2^32-1
-                            -- tables): NULL like every other open
-                            -- failure, with the backend shut.
-                            closeBackend be >> pure (castPtrToStablePtr nullPtr)
-                          Just table -> do
-                            enableAsyncSession table sid
-                            live <- newIORef Set.empty
-                            let ctx = AsyncCtx env be sid table live Nothing
-                            mask_ $ do
-                              sp <- newStablePtr ctx
-                              registerCtx sp table
-                              pure sp
-                  _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
-  where
-    openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
+              aaStep acq AfterSessionOpen
+              mTable <- tryNewAsyncTable ctxCapacity
+              case mTable of
+                Nothing ->
+                  -- Table-allocator refusal (past 2^32-1 tables):
+                  -- refused like every other open failure, with
+                  -- the backend shut.
+                  aaCloseBackend acq be >> pure (Left AcquireRefused)
+                Just table -> do
+                  enableAsyncSession table sid
+                  live <- newIORef Set.empty
+                  let ctx = AsyncCtx env be sid table live mDc
+                  mask $ \restore -> do
+                    sp <- aaNewCtxPtr acq ctx
+                    restore (aaStep acq AfterCtxAlloc)
+                    aaRegisterCtx acq sp table
+                    pure (Right sp)
+        _ -> aaCloseBackend acq be >> pure (Left AcquireRefused)
+
+-- | The single proof-session open request of an async context.
+asyncOpenReq :: Request
+asyncOpenReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
 
 -- | Close a context through its handle slot: resolve the entry
 -- through the registry (no dereference before the claim), and on
@@ -896,7 +1051,13 @@ haskokiAsyncOpen = guardedPtr $ do
 -- the allocator reuses names its new owner (callers must not
 -- retain context values across close, exactly as with @fclose@).
 haskokiAsyncClose :: Ptr (StablePtr AsyncCtx) -> IO ()
-haskokiAsyncClose pSlot = guardedUnit $
+haskokiAsyncClose pSlot = guardedUnit (closeCtxSlotWith asyncAcquisition pSlot)
+
+-- | The body of 'haskokiAsyncClose' over injected steps: the
+-- backend close, the registry retirement and the pointer free go
+-- through the record. Exceptions propagate; the export swallows them.
+closeCtxSlotWith :: AsyncAcquisition -> Ptr (StablePtr AsyncCtx) -> IO ()
+closeCtxSlotWith acq pSlot =
   if pSlot == nullPtr
     then pure ()
     else mask_ $ do
@@ -911,9 +1072,9 @@ haskokiAsyncClose pSlot = guardedUnit $
               if first
                 then do
                   c <- deRefStablePtr sp
-                  closeClaimedCtx c
-                  retireCtx sp
-                  freeStablePtr sp
+                  closeClaimedCtx acq c
+                  aaRetireCtx acq sp
+                  aaFreeCtxPtr acq sp
                   poke pSlot (castPtrToStablePtr nullPtr)
                 else pure ()
             -- Retired (owned or borrowed, already closed), live
@@ -934,12 +1095,12 @@ haskokiAsyncClose pSlot = guardedUnit $
 -- ownership it installs. Value-level teardown only: a
 -- 'StablePtr' owner frees its own pointer separately. Exported
 -- so tests assert drain state through the same worker the export
--- calls.
+-- calls, over the production steps ('asyncAcquisition').
 asyncCloseCtx :: AsyncCtx -> IO ()
 asyncCloseCtx ctx = mask_ $ do
   first <- claimTableClose (acTable ctx)
   if first
-    then closeClaimedCtx ctx
+    then closeClaimedCtx asyncAcquisition ctx
     else pure ()
 
 -- | Await admitted borrowers, then drain one claimed context.
@@ -952,19 +1113,19 @@ asyncCloseCtx ctx = mask_ $ do
 -- runs uninterruptibly — a kill can only land in the wait (where
 -- it releases) or after the drain (where teardown is done) —
 -- never mid-drain.
-closeClaimedCtx :: AsyncCtx -> IO ()
-closeClaimedCtx ctx = mask $ \restore ->
+closeClaimedCtx :: AsyncAcquisition -> AsyncCtx -> IO ()
+closeClaimedCtx acq ctx = mask $ \restore ->
   (do restore (awaitTableQuiescent (acTable ctx))
-      uninterruptibleMask_ (drainClaimedCtx ctx))
+      uninterruptibleMask_ (drainClaimedCtx acq ctx))
     `onException` mask_ (releaseTableClose (acTable ctx))
 
 -- | Drain one claimed context after its borrowers are gone:
 -- retire this table's detach attachments, drain its live jobs
 -- and handles, shut the backend. Runs only from
 -- 'closeClaimedCtx', after a successful quiescence wait, under
--- an uninterruptible mask.
-drainClaimedCtx :: AsyncCtx -> IO ()
-drainClaimedCtx ctx = do
+-- an uninterruptible mask. The backend closes through the record.
+drainClaimedCtx :: AsyncAcquisition -> AsyncCtx -> IO ()
+drainClaimedCtx acq ctx = do
   case acDetach ctx of
     Nothing -> pure ()
     Just dc -> do
@@ -972,7 +1133,7 @@ drainClaimedCtx ctx = do
       pure ()
   live <- readIORef (acLive ctx)
   mapM_ drainOne (Set.toList live)
-  closeBackend (acBackend ctx)
+  aaCloseBackend acq (acBackend ctx)
   where
     drainOne :: Ptr () -> IO ()
     drainOne key = do
@@ -1314,17 +1475,36 @@ cancelThrough c jid = case acDetach c of
 -- (id 1, slot 0, generation 0); a non-empty store without the home
 -- token is refused. Any failure reports NULL.
 haskokiAsyncStoreOpen :: CString -> IO (StablePtr StoreBox)
-haskokiAsyncStoreOpen cPath = guardedPtr $ do
-  eStore <- openStoreByPath cPath
+haskokiAsyncStoreOpen = haskokiAsyncStoreOpenWith asyncAcquisition
+
+-- | The body of 'haskokiAsyncStoreOpen' over injected acquisition
+-- steps: open through 'openStoreBoxWith' and map every failure (and
+-- any exception) to NULL.
+haskokiAsyncStoreOpenWith :: AsyncAcquisition -> CString -> IO (StablePtr StoreBox)
+haskokiAsyncStoreOpenWith acq cPath =
+  guardedPtr (fromAcquired <$> openStoreBoxWith acq cPath)
+
+-- | Open a process-level store over injected acquisition steps: the
+-- Store, the home token and detach state, then the box pointer. A
+-- refused token setup closes the Store. Refusals report
+-- 'AcquireRefused', synchronous exceptions 'AcquireThrew';
+-- asynchronous exceptions propagate.
+openStoreBoxWith
+  :: AsyncAcquisition -> CString -> IO (Either AcquireFailure (StablePtr StoreBox))
+openStoreBoxWith acq cPath = guardedAcquire $ do
+  eStore <- aaOpenStore acq cPath
   case eStore of
-    Left _ -> pure (castPtrToStablePtr nullPtr)
+    Left _ -> pure (Left AcquireRefused)
     Right store -> do
+      aaStep acq AfterStoreOpen
       mDc <- ensureHomeToken store
       case mDc of
         Nothing -> do
-          storeClose store
-          pure (castPtrToStablePtr nullPtr)
-        Just dc -> newStablePtr (StoreBox store dc)
+          aaCloseStore acq store
+          pure (Left AcquireRefused)
+        Just dc -> do
+          aaStep acq AfterTokenSetup
+          Right <$> aaNewBoxPtr acq (StoreBox store dc)
 
 -- | Open the store named by the path pointer (NULL\/empty = memory).
 openStoreByPath :: CString -> IO (Either () Store)
@@ -1380,7 +1560,14 @@ ensureHomeToken store = do
 -- ownership, free the pointer, and null the slot. Idempotent by
 -- construction, like context close.
 haskokiAsyncStoreClose :: Ptr (StablePtr StoreBox) -> IO ()
-haskokiAsyncStoreClose pSlot = guardedUnit $
+haskokiAsyncStoreClose pSlot =
+  guardedUnit (closeStoreBoxSlotWith asyncAcquisition pSlot)
+
+-- | The body of 'haskokiAsyncStoreClose' over injected steps: the
+-- Store close and the box free go through the record. Exceptions
+-- propagate; the export swallows them.
+closeStoreBoxSlotWith :: AsyncAcquisition -> Ptr (StablePtr StoreBox) -> IO ()
+closeStoreBoxSlotWith acq pSlot =
   if pSlot == nullPtr
     then pure ()
     else do
@@ -1389,8 +1576,8 @@ haskokiAsyncStoreClose pSlot = guardedUnit $
         then pure ()
         else do
           b <- deRefStablePtr box
-          storeClose (sbStore b)
-          freeStablePtr box
+          aaCloseStore acq (sbStore b)
+          aaFreeBoxPtr acq box
           poke pSlot (castPtrToStablePtr nullPtr)
 
 -- | Open a context on a process-level store: fresh environment,
@@ -1398,58 +1585,53 @@ haskokiAsyncStoreClose pSlot = guardedUnit $
 -- session, live backend, and an empty job table bound to the box's
 -- detach state. Any failure reports NULL.
 haskokiAsyncOpenOn :: StablePtr StoreBox -> IO (StablePtr AsyncCtx)
-haskokiAsyncOpenOn box = guardedPtr $
+haskokiAsyncOpenOn = haskokiAsyncOpenOnWith asyncAcquisition
+
+-- | The body of 'haskokiAsyncOpenOn' over injected acquisition
+-- steps: refuse a NULL box, resolve the config, open through
+-- 'openAsyncCtxOnWith', and map every failure (and any exception)
+-- to NULL.
+haskokiAsyncOpenOnWith
+  :: AsyncAcquisition -> StablePtr StoreBox -> IO (StablePtr AsyncCtx)
+haskokiAsyncOpenOnWith acq box = guardedPtr $
   if isNullStable box
-    then pure (castPtrToStablePtr nullPtr)
+    then pure nullStable
     else do
-      b <- deRefStablePtr box
       cell <- newConfigCell
       eCfg <- resolveOnce cell
       case eCfg of
-        Left _ -> pure (castPtrToStablePtr nullPtr)
-        Right cfg -> do
-          env <- newEnv (rulesFromConfig cfg)
-          ini <- initialize env defaultInitArgs
-          case ini of
-            OutcomeErr _ -> pure (castPtrToStablePtr nullPtr)
-            OutcomeOk () -> do
-              eLoaded <- storeLoadTokens (sbStore b)
-              case eLoaded of
-                Left _ -> pure (castPtrToStablePtr nullPtr)
-                Right loaded -> do
-                  eRestored <- restoreStoreState env loaded
-                  case eRestored of
-                    Left _ -> pure (castPtrToStablePtr nullPtr)
-                    Right () -> do
-                      m0 <- snapshotModel env
-                      let sid = SessionId (mNextSession m0)
-                      r <- openBackend "provider=default"
-                      case r of
-                        EngineFail _ -> pure (castPtrToStablePtr nullPtr)
-                        EngineOk be -> case planCall (envRules env) m0 openReq of
-                          Immediate pc -> do
-                            pr <- publishCommit env be pc
-                            case pr of
-                              Left _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
-                              Right () -> do
-                                mTable <- tryNewAsyncTable ctxCapacity
-                                case mTable of
-                                  Nothing ->
-                                    -- Table-allocator refusal (past 2^32-1
-                                    -- tables): NULL like every other open
-                                    -- failure, with the backend shut.
-                                    closeBackend be >> pure (castPtrToStablePtr nullPtr)
-                                  Just table -> do
-                                    enableAsyncSession table sid
-                                    live <- newIORef Set.empty
-                                    let ctx = AsyncCtx env be sid table live (Just (sbDetach b))
-                                    mask_ $ do
-                                      sp <- newStablePtr ctx
-                                      registerCtx sp table
-                                      pure sp
-                          _ -> closeBackend be >> pure (castPtrToStablePtr nullPtr)
-  where
-    openReq = Request Pkcs11_3_2 F_OpenSession Nothing Nothing "slot=0,rw" []
+        Left _ -> pure nullStable
+        Right cfg -> fromAcquired <$> openAsyncCtxOnWith acq cfg box
+
+-- | Open a context on a process-level store from a RESOLVED config
+-- over injected acquisition steps: fresh environment, provider
+-- init, token\/object reload from the box's store, then the shared
+-- tail ('finishAsyncOpen') bound to the box's detach state. The box
+-- must be live (caller obligation); a NULL box refuses. Refusals
+-- report 'AcquireRefused', synchronous exceptions 'AcquireThrew';
+-- asynchronous exceptions propagate.
+openAsyncCtxOnWith
+  :: AsyncAcquisition -> Config -> StablePtr StoreBox
+  -> IO (Either AcquireFailure (StablePtr AsyncCtx))
+openAsyncCtxOnWith acq cfg box
+  | isNullStable box = pure (Left AcquireRefused)
+  | otherwise = guardedAcquire $ do
+      b <- deRefStablePtr box
+      env <- newEnv (rulesFromConfig cfg)
+      ini <- aaInit acq env
+      case ini of
+        OutcomeErr _ -> pure (Left AcquireRefused)
+        OutcomeOk () -> do
+          eLoaded <- storeLoadTokens (sbStore b)
+          case eLoaded of
+            Left _ -> pure (Left AcquireRefused)
+            Right loaded -> do
+              eRestored <- restoreStoreState env loaded
+              case eRestored of
+                Left _ -> pure (Left AcquireRefused)
+                Right () -> do
+                  aaStep acq AfterStoreReload
+                  finishAsyncOpen acq env (Just (sbDetach b))
 
 -- | Detach a live job (GetID): on success the persistent id lands in
 -- the out-pointer and the old native handle is retired (late use is
