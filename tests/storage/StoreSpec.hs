@@ -38,7 +38,7 @@ import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, from
 import Control.Monad (replicateM_, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
-import Data.Char (isSpace)
+import Data.Char (isAlphaNum, isSpace)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isPrefixOf, sort)
 import Data.Maybe (mapMaybe)
@@ -253,13 +253,20 @@ testHeldFdsCloexec = do
 --      @cloexec = True@;
 --   2. no @setFdOption@, @F_SETFD@ or @cloexec = False@ in code
 --      under src\/ or ffi\/ (a later close-on-exec step, or an
---      opt-out, reopens the window).
+--      opt-out, reopens the window);
+--   3. the offline preflight (Storage\/Preflight.hs), which opens the
+--      store and its backups, follows rule 1 with the same @guardFlags@;
+--   4. neither module reads a file through a GHC 'Handle' open
+--      (@readFile@ and its ByteString form do not set O_CLOEXEC); they
+--      read through the backend's close-on-exec reader.
 -- If a legitimate refactor trips it, update the rule here.
 testOpenFdSourceGate :: IO ()
 testOpenFdSourceGate = do
   root <- findPackageRoot "."
   let backend = root </> "src/Haskoki/Runtime/Storage/SQLite.hs"
+      preflight = root </> "src/Haskoki/Runtime/Storage/Preflight.hs"
   body <- readFile backend
+  pbody <- readFile preflight
   files <- sourceFilesUnder [root </> "src", root </> "ffi"]
   let stripComment l = go l
         where go ('-' : '-' : _) = ""
@@ -268,13 +275,21 @@ testOpenFdSourceGate = do
       codeLines txt = [(n, stripComment l, l) | (n, l) <- zip [1 :: Int ..] (lines txt)
                       , not ("--" `isPrefixOf` dropWhile isSpace l)
                       , not ("//" `isPrefixOf` dropWhile isSpace l)]
-      ls = zip [1 :: Int ..] (lines body)
       code = codeLines body
-      calls = [n | (n, c, _) <- code, "openFd " `isInfixOf` c, not ("import " `isPrefixOf` c)]
-      nextTwo n = unwords [l | (m, l) <- ls, m == n || m == n + 1]
-      bad = [(n, l) | n <- calls, let l = nextTwo n, not ("guardFlags" `isInfixOf` l)]
-  assertBool "rule 1: found the backend's openFd calls (gate may need updating)" (length calls >= 4)
-  assertEqual "rule 1: openFd call not using guardFlags (line, text)" [] bad
+      callsIn txt = [n | (n, c, _) <- codeLines txt, "openFd " `isInfixOf` c, not ("import " `isPrefixOf` c)]
+      unguarded txt =
+        let ls = zip [1 :: Int ..] (lines txt)
+            nextTwo n = unwords [l | (m, l) <- ls, m == n || m == n + 1]
+        in [(n, l) | n <- callsIn txt, let l = nextTwo n, not ("guardFlags" `isInfixOf` l)]
+      handleReads txt = [(n, l) | (n, c, l) <- codeLines txt, not ("import " `isPrefixOf` c)
+                        , any (`elem` ["readFile", "BS.readFile", "BC8.readFile"]) (identifiers c)]
+      identifiers = words . map (\ch -> if isAlphaNum ch || ch `elem` ("_'." :: String) then ch else ' ')
+  assertBool "rule 1: found the backend's openFd calls (gate may need updating)" (length (callsIn body) >= 4)
+  assertEqual "rule 1: openFd call not using guardFlags (line, text)" [] (unguarded body)
+  assertBool "rule 3: found the preflight's openFd calls (gate may need updating)" (length (callsIn pbody) >= 2)
+  assertEqual "rule 3: preflight openFd call not using guardFlags (line, text)" [] (unguarded pbody)
+  assertEqual "rule 4: backend Handle read (line, text)" [] (handleReads body)
+  assertEqual "rule 4: preflight Handle read (line, text)" [] (handleReads pbody)
   assertBool "rule 1: guardFlags must be defined with cloexec = True on one line"
     (any (\(_, c, _) -> "guardFlags = " `isInfixOf` c && "cloexec = True" `isInfixOf` c) code)
   forbidden <- fmap concat $ mapM (\f -> do

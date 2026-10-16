@@ -66,6 +66,8 @@ module Haskoki.Runtime.Storage.SQLite
   , readStoreSnapshot
   , OwnerState (..)
   , probeOwner
+  , guardFlags
+  , readFileCloexec
   , OwnedStoreFile
   , ownedPath
   , withOwnedStoreFile
@@ -77,7 +79,7 @@ module Haskoki.Runtime.Storage.SQLite
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, putMVar, readMVar, takeMVar)
-import Control.Exception (SomeException, bracket, bracket_, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Exception (SomeException, bracket, bracketOnError, bracket_, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (when)
 import Data.Bits (shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
@@ -97,7 +99,8 @@ import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
 import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, removeLink, setFdSize, setFileMode)
-import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdWrite, openFd)
+import System.IO (hClose)
+import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWrite, openFd)
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (Fd, ProcessID)
 
@@ -340,6 +343,13 @@ procRootFromEnv = do
 guardFlags :: OpenFileFlags
 guardFlags = defaultFileFlags { cloexec = True }
 
+-- | All bytes of a file, read through a 'guardFlags' descriptor. A GHC
+-- 'Handle' open ('readFile', 'BS.readFile') does not set O_CLOEXEC, so
+-- a concurrent fork+exec could inherit it.
+readFileCloexec :: FilePath -> IO ByteString
+readFileCloexec p = bracket open hClose BS.hGetContents
+  where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
+
 -- | Take single-writer ownership via an O_EXCL sidecar lock carrying
 -- our pid. An existing lock owned by a live pid fails explicitly;
 -- a lock whose owner liveness is unknowable fails closed; a lock
@@ -389,7 +399,7 @@ claimFresh dbPath lockPath procRoot attempts fd pid = do
 -- compare as text, avoiding any orphan 'Read' instances.
 inspectLock :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
 inspectLock dbPath lockPath procRoot pid attempts = do
-  eContent <- tryIOError (readFile lockPath)
+  eContent <- tryIOError (BC8.unpack <$> readFileCloexec lockPath)
   case eContent of
     Left _ -> pure (Left (StoreSecondWriter ("store is locked and the owner is unreadable: " ++ lockPath)))
     Right content -> case reads content of
@@ -2263,7 +2273,7 @@ probeOwner path = do
     Left e | isDoesNotExistError e -> pure (Right Nothing)
            | otherwise -> pure (Left "the lock file cannot be examined")
     Right _ -> do
-      eContent <- tryIOError (BS.readFile lockPath)
+      eContent <- tryIOError (readFileCloexec lockPath)
       case eContent of
         Left _ -> pure (Left "the lock file is unreadable")
         Right content -> case reads (BC8.unpack content) of
@@ -2292,7 +2302,7 @@ probeOwner path = do
 -- held lock.
 kernelLockHeld :: FilePath -> IO (Either String Bool)
 kernelLockHeld path = mask_ $ do
-  eFd <- tryIOError (openFd path ReadOnly defaultFileFlags)
+  eFd <- tryIOError (openFd path ReadOnly guardFlags)
   case eFd of
     Left e
       | isDoesNotExistError e -> pure (Right False)
@@ -2348,7 +2358,7 @@ withOwnedStoreFile path act = mask $ \restore -> do
     case eOwn of
       Left err -> pure (Left err)
       Right lockFd -> do
-        eFd <- tryIOError (openFd path ReadOnly defaultFileFlags { cloexec = True })
+        eFd <- tryIOError (openFd path ReadOnly guardFlags)
           `onException` releaseQuiet lockFd lockPath
         case eFd of
           Left e

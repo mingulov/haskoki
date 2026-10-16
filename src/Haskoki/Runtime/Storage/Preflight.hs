@@ -27,7 +27,7 @@ module Haskoki.Runtime.Storage.Preflight
   , renderMigrateError
   ) where
 
-import Control.Exception (bracket, bracketOnError, finally)
+import Control.Exception (IOException, bracket, finally, fromException, mask, throwIO, try)
 import Data.Bifunctor (first)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
@@ -36,13 +36,11 @@ import Data.ByteString (ByteString)
 import Data.List (intercalate)
 import Data.Word (Word8)
 import Foreign.Ptr (castPtr)
-import System.IO (hClose)
 import System.IO.Error (isAlreadyExistsError, tryIOError)
 import System.Posix.Files
-  ( deviceID, fileAccess, fileID, getFileStatus, getSymbolicLinkStatus, isDirectory
+  ( createLink, deviceID, fileAccess, fileID, getFileStatus, getSymbolicLinkStatus, isDirectory
   , isSymbolicLink, removeLink )
-import System.Posix.IO
-  ( OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWriteBuf, openFd )
+import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, fdWriteBuf, openFd)
 import System.Posix.Time (epochTime)
 import System.Posix.Types (Fd)
 import System.Posix.Unistd (fileSynchronise)
@@ -56,8 +54,8 @@ import Haskoki.Runtime.Storage
   , reconcileIdentities, renderIdentityRefusal, tokensWithoutCredentials )
 import Haskoki.Runtime.Storage.SQLite
   ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
-  , migrateOwned, noMigrationHooks, probeOwner, readStoreSnapshot, sqliteSchemaVersion
-  , withOwnedStoreFile )
+  , guardFlags, migrateOwned, noMigrationHooks, probeOwner, readFileCloexec, readStoreSnapshot
+  , sqliteSchemaVersion, withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
 -- | SHA-256 of a byte string as 64 lowercase hex digits, computed by
@@ -229,10 +227,14 @@ data MigrateHooks = MigrateHooks
   , mhAfterBackup :: IO ()
     -- ^ after the verified backup, before the transaction
   , mhClock :: IO Integer
-    -- ^ epoch seconds, read once per migration (default: 'epochTime')
+    -- ^ epoch seconds (default: 'epochTime'), read twice: once for the
+    -- backup name and 'mrEpoch', once at completion for 'mrCompleted'
   , mhDigest :: ByteString -> IO (Either String String)
     -- ^ SHA-256 of the backup bytes (default: 'sha256Hex'); a 'Left'
     -- refuses before any file is written
+  , mhAfterCreate :: FilePath -> IO ()
+    -- ^ after a backup or receipt file is created, before its bytes
+    -- are written (a failure here is a failure after the create)
   , mhSQLite :: MigrationHooks
   }
 
@@ -242,6 +244,7 @@ noMigrateHooks = MigrateHooks
   , mhAfterBackup = pure ()
   , mhClock = truncate . toRational <$> epochTime
   , mhDigest = sha256Hex
+  , mhAfterCreate = \_ -> pure ()
   , mhSQLite = noMigrationHooks
   }
 
@@ -251,7 +254,9 @@ data MigrationReceipt = MigrationReceipt
   { mrStore :: !FilePath, mrFrom :: !Int, mrTo :: !Int
   , mrFrozen :: ![TokenId], mrPreserved :: ![TokenId]
   , mrBackup :: !FilePath, mrBackupBytes :: !Int, mrBackupSha256 :: !String
-  , mrReceipt :: !FilePath, mrEpoch :: !Integer
+  , mrReceipt :: !FilePath
+  , mrEpoch :: !Integer      -- ^ the clock reading in the backup name
+  , mrCompleted :: !Integer  -- ^ read after the commit and its read-back
   } deriving (Eq, Show)
 
 data MigrateOutcome = MigrateNotNeeded | Migrated !MigrationReceipt deriving (Eq, Show)
@@ -321,12 +326,13 @@ migrateStoreWith hooks path cfg backupDir =
           Left err -> pure (Left (MigrateTxnFailed bak err))
           Right () ->
             verifyMigrated plan bak >>? \() -> do
+              done <- mhClock hooks
               let rc = MigrationReceipt
                     { mrStore = path, mrFrom = sopSchema plan, mrTo = sqliteSchemaVersion
                     , mrFrozen = map crToken freeze, mrPreserved = sopCredentialTokens plan
                     , mrBackup = bak, mrBackupBytes = nBytes, mrBackupSha256 = sha
-                    , mrReceipt = bak ++ ".receipt", mrEpoch = now }
-              w <- writeExclusive (mrReceipt rc) (BC8.pack (renderReceipt rc)) backupDir
+                    , mrReceipt = bak ++ ".receipt", mrEpoch = now, mrCompleted = done }
+              w <- writeReceipt (mhAfterCreate hooks) (mrReceipt rc) (BC8.pack (renderReceipt rc)) backupDir
               pure $ case w of
                 Written -> Right (Migrated rc)
                 NameTaken -> Left (MigrateReceiptFailed bak (mrReceipt rc ++ " appeared during the migration"))
@@ -380,40 +386,65 @@ checkBackupDir store dir = do
               _ -> pure (Right ())
   where unsafe why = pure (Left (MigrateUnsafeBackupDir dir why))
 
--- | All bytes of a file, read through a close-on-exec descriptor.
-readBytes :: FilePath -> IO ByteString
-readBytes p = bracket open hClose BS.hGetContents
-  where open = bracketOnError (openFd p ReadOnly defaultFileFlags { cloexec = True }) closeFd fdToHandle
-
 data ExclusiveWrite = Written | NameTaken | WriteFailed !String
 
--- | Create a NEW file (O_EXCL, 0600, close-on-exec), write all bytes,
+-- | Create a NEW file (O_EXCL, 0600, 'guardFlags'), write all bytes,
 -- fsync it and its directory. Never overwrites: an existing name is
--- 'NameTaken'. A failure after the create removes the incomplete file.
-writeExclusive :: FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
-writeExclusive path bytes dir = do
-  eFd <- tryIOError (openFd path WriteOnly
-    defaultFileFlags { creat = Just 0o600, exclusive = True, cloexec = True })
+-- 'NameTaken'. Any failure after the create, or an asynchronous
+-- exception (re-thrown), removes the file: the create and the cleanup
+-- run masked, only the writing is interruptible.
+writeExclusive :: (FilePath -> IO ()) -> FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
+writeExclusive afterCreate path bytes dir = mask $ \restore -> do
+  eFd <- tryIOError (openFd path WriteOnly guardFlags { creat = Just 0o600, exclusive = True })
   case eFd of
     Left e
       | isAlreadyExistsError e -> pure NameTaken
       | otherwise -> pure (WriteFailed ("cannot create " ++ path ++ ": " ++ show e))
     Right fd -> do
-      eW <- tryIOError ((writeAll fd bytes >> fileSynchronise fd) `finally` closeFd fd)
-      eD <- either (pure . Left) (const (tryIOError syncDir)) eW
-      case eD of
+      r <- try (restore ((fill fd `finally` closeFd fd) >> syncDir dir))
+      case r of
         Right () -> pure Written
         Left e -> do
           _ <- tryIOError (removeLink path)
-          pure (WriteFailed ("cannot write " ++ path ++ " (incomplete file removed): " ++ show e))
+          case fromException e of
+            Just (io :: IOException) ->
+              pure (WriteFailed ("cannot write " ++ path ++ " (incomplete file removed): " ++ show io))
+            Nothing -> throwIO e
   where
-    syncDir = bracket (openFd dir ReadOnly defaultFileFlags { cloexec = True }) closeFd fileSynchronise
+    fill fd = afterCreate path >> writeAll fd bytes >> fileSynchronise fd
     writeAll :: Fd -> ByteString -> IO ()
     writeAll fd bs
       | BS.null bs = pure ()
       | otherwise = do
           n <- BS.useAsCStringLen bs (\(p, len) -> fdWriteBuf fd (castPtr p) (fromIntegral len))
           writeAll fd (BS.drop (fromIntegral n) bs)
+
+-- | fsync a directory, so a create, link or unlink in it is durable.
+syncDir :: FilePath -> IO ()
+syncDir dir = bracket (openFd dir ReadOnly guardFlags) closeFd fileSynchronise
+
+-- | Write a receipt so that its name never holds a truncated file: the
+-- bytes go to a new temporary (written and fsynced by 'writeExclusive'),
+-- which is then moved into place by link(2) plus unlink (unlike
+-- rename(2), link never replaces an existing name), and the directory
+-- is fsynced.
+writeReceipt :: (FilePath -> IO ()) -> FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
+writeReceipt afterCreate final bytes dir = mask $ \restore -> do
+  let tmp = final ++ ".tmp"
+  w <- restore (writeExclusive afterCreate tmp bytes dir)
+  case w of
+    NameTaken -> pure (WriteFailed ("the temporary receipt name is taken: " ++ tmp))
+    WriteFailed why -> pure (WriteFailed why)
+    Written -> do
+      eLink <- tryIOError (createLink tmp final)
+      _ <- tryIOError (removeLink tmp)
+      eSync <- tryIOError (syncDir dir)
+      pure $ case (eLink, eSync) of
+        (Left e, _)
+          | isAlreadyExistsError e -> NameTaken
+          | otherwise -> WriteFailed ("cannot move " ++ tmp ++ " to " ++ final ++ ": " ++ show e)
+        (Right (), Left e) -> WriteFailed ("cannot sync " ++ dir ++ ": " ++ show e)
+        (Right (), Right ()) -> Written
 
 -- | Hash, then copy the owned store into the first free candidate
 -- name, then verify by byte readback and by a read-only snapshot
@@ -434,12 +465,12 @@ writeVerifiedBackup hooks store dir from now snap =
       Left err -> Left (MigrateBackupFailed ("backup does not open read-only: " ++ bak ++ ": " ++ show err))
   where
     candidates = backupCandidates store dir from now
-    readOrFail what p = first (\e -> MigrateBackupFailed (what ++ ": " ++ show e)) <$> tryIOError (readBytes p)
+    readOrFail what p = first (\e -> MigrateBackupFailed (what ++ ": " ++ show e)) <$> tryIOError (readFileCloexec p)
     pickAndWrite _ [] = pure (Left (MigrateBackupExists firstName))
     pickAndWrite bytes (c : cs) = do
       receiptTaken <- exists (c ++ ".receipt")
       if receiptTaken then pickAndWrite bytes cs else do
-        r <- writeExclusive c bytes dir
+        r <- writeExclusive (mhAfterCreate hooks) c bytes dir
         case r of
           Written -> pure (Right c)
           NameTaken -> pickAndWrite bytes cs
@@ -460,7 +491,8 @@ renderReceipt rc = unlines
   , "backup: " ++ mrBackup rc
   , "backup-bytes: " ++ show (mrBackupBytes rc)
   , "backup-sha256: " ++ mrBackupSha256 rc
-  , "completed-epoch-seconds: " ++ show (mrEpoch rc)
+  , "backup-epoch-seconds: " ++ show (mrEpoch rc)
+  , "completed-epoch-seconds: " ++ show (mrCompleted rc)
   ]
   where ids [] = "none"; ids ts = unwords (map tokenSerial ts)
 

@@ -13,7 +13,7 @@ module Haskoki.Ctl.Store
   ) where
 
 import Control.Exception (SomeException, try)
-import Data.List (isInfixOf, isPrefixOf, stripPrefix)
+import Data.List (isPrefixOf, stripPrefix)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 

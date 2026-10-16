@@ -9,7 +9,7 @@ module PreflightSpec (spec) where
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import qualified Data.Map.Strict as Map
-import Control.Exception (IOException, bracket, throwIO, try)
+import Control.Exception (AsyncException (ThreadKilled), IOException, bracket, throwIO, try)
 import Data.Bits ((.&.))
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isSuffixOf, nub, sort)
@@ -20,6 +20,7 @@ import System.Directory (createDirectory, doesFileExist, listDirectory, removeFi
 import System.FilePath ((</>))
 import System.Posix.Files (createSymbolicLink, fileMode, getFileStatus, modificationTime)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
+import System.IO.Error (fullErrorType, mkIOError)
 import System.Posix.User (getEffectiveUserID)
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (HUnitFailure, assertBool, assertEqual, assertFailure, testCase)
@@ -118,7 +119,11 @@ spec = testGroup "Store preflight"
       , testCase "an existing backup name is never overwritten" caseMigrateNeverOverwrites
       , testCase "all 100 backup names taken refuses" caseMigrateBackupNamesExhausted
       , testCase "a hashing failure refuses before any write" caseMigrateHashFailure
-      , testCase "the clock is read once: backup name and receipt agree" caseMigrateClockOnce
+      , testCase "the clock: one reading names the backup, completion is read after the commit" caseMigrateClockReadings
+      , testCase "a backup write failing after create refuses; only an existing name advances" caseMigrateBackupWriteFails
+      , testCase "an interrupted backup write leaves no file" caseMigrateInterruptedWriteLeavesNoFile
+      , testCase "a failed read-back after commit is reported with the backup" caseMigrateVerifyFails
+      , testCase "a receipt name taken after the backup is never overwritten" caseMigrateReceiptFails
       , testCase "a failed transaction keeps the store and the backup" caseMigrateTxnFailureKeepsStore
       , testCase "appended catalog tokens are left to the next open" caseMigrateLeavesSeedsToOpen
       , testCase "naming: candidate backup names" caseBackupCandidates
@@ -1046,10 +1051,11 @@ caseMigrateHashFailure = withScratch "migrate" $ \dir -> do
     other -> assertFailure ("wrong result: " ++ show other)
   expectRefusedClean store backups before
 
--- One clock read per migration: the backup name and the receipt
--- epoch come from the same reading.
-caseMigrateClockOnce :: IO ()
-caseMigrateClockOnce = withScratch "migrate" $ \dir -> do
+-- The backup name and 'mrEpoch' share one clock reading; the receipt's
+-- completion time is a second reading, taken after the commit and its
+-- read-back.
+caseMigrateClockReadings :: IO ()
+caseMigrateClockReadings = withScratch "migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let backups = dir </> "backups"
   createDirectory backups
@@ -1063,7 +1069,106 @@ caseMigrateClockOnce = withScratch "migrate" $ \dir -> do
   assertEqual "epoch" 1700000000 (mrEpoch rc)
   assertEqual "backup name carries the same epoch"
     (backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak") (mrBackup rc)
-  readIORef ticks >>= assertEqual "read exactly once" 1700000007
+  assertEqual "completion is the second reading" 1700000007 (mrCompleted rc)
+  readIORef ticks >>= assertEqual "read exactly twice" 1700000014
+  t <- readFile (mrReceipt rc)
+  assertBool "receipt: backup epoch" ("backup-epoch-seconds: 1700000000\n" `isInfixOf` t)
+  assertBool "receipt: completion" ("completed-epoch-seconds: 1700000007\n" `isInfixOf` t)
+
+-- A failure after the backup file is created (here a simulated full
+-- disk) refuses: the incomplete file is removed and the next name is
+-- NOT tried. Only an existing name (EEXIST) moves to the next one.
+caseMigrateBackupWriteFails :: IO ()
+caseMigrateBackupWriteFails = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      taken = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+      second = backups </> "store.sqlite.pre-migrate.schema2.1700000000-1.bak"
+  createDirectory backups
+  writeFile taken "keep"
+  cfg <- loadConfigOrFail cfgPath
+  before <- captureState store
+  created <- newIORef []
+  let failing = fixedClock { mhAfterCreate = \p -> do
+        atomicModifyIORef' created (\ps -> (ps ++ [p], ()))
+        ioError (mkIOError fullErrorType "simulated full disk" Nothing (Just p)) }
+  r <- migrateStoreWith failing store cfg backups
+  case r of
+    Left err@(MigrateBackupFailed why) -> do
+      assertBool "names the file" (second `isInfixOf` why)
+      assertEqual "tag" "migrate-backup-failed" (fst (renderMigrateError err))
+    other -> assertFailure ("wrong result: " ++ show other)
+  readIORef created >>= assertEqual "one create, after the existing name only" [second]
+  listBackups backups >>= assertEqual "incomplete file removed; existing kept"
+    ["store.sqlite.pre-migrate.schema2.1700000000.bak"]
+  readFile taken >>= assertEqual "existing file untouched" "keep"
+  assertUnchanged "backup write failure" before store
+
+-- An asynchronous exception between the create and the last byte
+-- removes the file and propagates; ownership is released.
+caseMigrateInterruptedWriteLeavesNoFile :: IO ()
+caseMigrateInterruptedWriteLeavesNoFile = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  before <- captureState store
+  let killed = fixedClock { mhAfterCreate = \_ -> throwIO ThreadKilled }
+  r <- try (migrateStoreWith killed store cfg backups)
+  case r of
+    Left ThreadKilled -> pure ()
+    Left other -> assertFailure ("wrong exception: " ++ show other)
+    Right other -> assertFailure ("not interrupted: " ++ show other)
+  listBackups backups >>= assertEqual "no file left" []
+  assertUnchanged "interrupted backup" before store
+
+-- The transaction commits but the read-back disagrees (here the
+-- objects vanish inside the transaction): reported as
+-- MigrateVerifyFailed with the backup, no receipt.
+caseMigrateVerifyFails :: IO ()
+caseMigrateVerifyFails = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+  createDirectory backups
+  pre <- BS.readFile store
+  cfg <- loadConfigOrFail cfgPath
+  let lossy = fixedClock { mhSQLite = noMigrationHooks { mgBeforeCommit = \db -> S.exec db "DELETE FROM objects" } }
+  r <- migrateStoreWith lossy store cfg backups
+  case r of
+    Left err@(MigrateVerifyFailed b why) -> do
+      assertEqual "backup" bak b
+      assertEqual "reason" "object or job count changed" why
+      assertEqual "tag" "migrate-verify-failed" (fst (renderMigrateError err))
+      assertBool "names the backup" (bak `isInfixOf` snd (renderMigrateError err))
+    other -> assertFailure ("wrong result: " ++ show other)
+  BS.readFile bak >>= \b -> assertBool "backup holds the pre-migration bytes" (b == pre)
+  listBackups backups >>= assertEqual "no receipt" ["store.sqlite.pre-migrate.schema2.1700000000.bak"]
+  lockLeft <- doesFileExist (store ++ ".lock")
+  assertBool "ownership released" (not lockLeft)
+
+-- The receipt name appears after the backup was chosen: the migration
+-- has committed, the receipt is reported unwritten, and the other file
+-- is left exactly as it was (no temp file stays behind).
+caseMigrateReceiptFails :: IO ()
+caseMigrateReceiptFails = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+      receipt = bak ++ ".receipt"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  let squat = fixedClock { mhAfterBackup = writeFile receipt "not ours" }
+  r <- migrateStoreWith squat store cfg backups
+  case r of
+    Left err@(MigrateReceiptFailed b _) -> do
+      assertEqual "backup" bak b
+      assertEqual "tag" "migrate-receipt-failed" (fst (renderMigrateError err))
+    other -> assertFailure ("wrong result: " ++ show other)
+  readFile receipt >>= assertEqual "existing receipt untouched" "not ours"
+  listBackups backups >>= assertEqual "backup and the squatted name only"
+    ["store.sqlite.pre-migrate.schema2.1700000000.bak", "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt"]
+  roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "committed" ["3"]
 
 caseMigrateTxnFailureKeepsStore :: IO ()
 caseMigrateTxnFailureKeepsStore = withScratch "migrate" $ \dir -> do
