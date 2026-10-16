@@ -640,8 +640,8 @@ refusalInit env st args = ioCode (snd (initOperation env emptySessionOps st args
 caseMechParamCode :: IO ()
 caseMechParamCode = do
   let ghost op = Just (KeyPolicy (ExternalHandle 999) [op] False)
-      run op mech params spec =
-        refusalInit refusalEnv testSession (InitArgs op mech params (ghost op) spec Nothing)
+      run op mech params shape =
+        refusalInit refusalEnv testSession (InitArgs op mech params (ghost op) shape Nothing)
       blk = Just (CipherSpec 16 False)
       rsa = Just (CipherSpec 256 False)
       strm = Just (CipherSpec 1 False)
