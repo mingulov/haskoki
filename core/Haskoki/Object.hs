@@ -995,8 +995,10 @@ planDestroyObject model st h = case resolveHandle model h of
 -- visible to the calling session, the override template must be
 -- contradiction-free, and the merged attributes must still carry a
 -- class. The copy gets a fresh id and handle; the source is
--- untouched. Seal ratchet: overrides that flip sensitive true->false
--- or extractable false->true are rejected ('CKR_TEMPLATE_INCONSISTENT');
+-- untouched. Seal ratchet: overrides that flip sensitive true->false,
+-- or set extractable true on a source that is not explicitly
+-- extractable (false or absent), are rejected
+-- ('CKR_TEMPLATE_INCONSISTENT');
 -- sealed flags otherwise inherit, so a copy of a sealed object is
 -- sealed too. Wrongly shaped overrides refuse before any rule;
 -- TRUSTED=true overrides need the SO login; certificate sources
@@ -1025,7 +1027,12 @@ planCopyObject model st h tmpl = case resolveHandle model h of
             , Map.lookup AttrSensitive over == Just (ValBool False) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT
                   "copy cannot clear the sensitive flag"
-            | Map.lookup AttrExtractable (osAttrs src) == Just (ValBool False)
+            -- A copy may set EXTRACTABLE=true only when the source is
+            -- explicitly extractable. An absent flag counts as
+            -- unextractable here, as on the set path and at wrap, so a
+            -- key that cannot be wrapped cannot become wrappable
+            -- through a copy.
+            | not (flagOr False AttrExtractable (osAttrs src))
             , Map.lookup AttrExtractable over == Just (ValBool True) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT
                   "copy cannot set extractable on an unextractable source"
@@ -1130,11 +1137,15 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
     firstRefusal cur ((t, v) : rest) = case mutableAs cur t v of
       Just refusal -> Just refusal
       Nothing -> firstRefusal cur rest
-    -- Nothing = mutable, Just = refusal. An absent flag reads as
-    -- its enforced default (the common storage flags through
-    -- 'flagOr' and the shared defaults; EXTRACTABLE and SENSITIVE as
-    -- false), so a no-op write to an absent flag succeeds while a
-    -- ratchet flip refuses.
+    -- Nothing = mutable, Just = refusal. A common storage flag that
+    -- is absent reads as its enforced default ('flagOr' and the
+    -- shared defaults). The ratchets here read an absent SENSITIVE
+    -- and an absent EXTRACTABLE as false. For SENSITIVE that matches
+    -- every other path. For EXTRACTABLE it matches the copy guard,
+    -- wrap and SSL3 derive, but not sealing or the byte-operation
+    -- protection, which treat an absent EXTRACTABLE as extractable;
+    -- that split is not settled here. A write of the value a flag
+    -- already reads as succeeds; a flip against the ratchet refuses.
     mutableAs :: Map AttributeType AttributeValue
       -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
     mutableAs cur t v

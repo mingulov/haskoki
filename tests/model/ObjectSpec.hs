@@ -97,6 +97,7 @@ spec = testGroup "objects and attributes"
   , testCase "generated: bumped binding faults while object lives" caseGenerationGuard
   , testCase "copy: inherits source, overrides template" caseCopyFlow
   , testCase "copy: unsealing overrides rejected, sealed copies stay sealed" caseCopySealRatchet
+  , testCase "copy: absent EXTRACTABLE cannot be copied to true" caseCopyExtractableAbsent
   , testCase "find: template match returns handles" caseFindFlow
   , testCase "find: sealed payloads never match a value guess" caseFindSealedNoOracle
   , testCase "find: contradictory template rejected, nothing bound" caseFindContradiction
@@ -110,6 +111,7 @@ spec = testGroup "objects and attributes"
   , testCase "set-attributes: ratchets and atomicity" caseSetAttrRatchets
   , testCase "copy: COPYABLE=false prohibits" caseCopyableGate
   , testCase "destroy: DESTROYABLE=false prohibits" caseDestroyableGate
+  , testCase "set-attributes: COPYABLE/DESTROYABLE ratchet true->false only" caseCopyDestroyRatchets
   , testCase "create: secret VALUE/VALUE_LEN coherence" caseSecretImportCoherence
   , testCase "create: certificate stores verbatim" caseCertCreate
   , testCase "visibility: private objects follow login state" caseVisibilityLogin
@@ -514,6 +516,31 @@ caseCopySealRatchet = do
   (rej, _) <- runRejectFull m6 (getReq sid h2 [AttrValue])
   assertEqual "copy of sealed still redacts" CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
   assertEqual "no payload bytes escape" [] (rejOutputs rej)
+
+-- | A key without CKA_EXTRACTABLE is not wrappable, and a copy may
+-- not make it so: a copy template that sets EXTRACTABLE=true is
+-- refused unless the source is explicitly extractable. Tightening
+-- (EXTRACTABLE=false) and plain copies still pass.
+caseCopyExtractableAbsent :: IO ()
+caseCopyExtractableAbsent = do
+  (sid, m0) <- openSession seeded
+  let sealedKey = secretAes (BS.replicate 16 9) ++ [(AttrSensitive, ValBool True)]
+  (pc, m1) <- runCommit m0 (createReq sid sealedKey)
+  h <- commitHandle pc
+  let nBefore = Map.size (mObjects m1)
+  (code, m2) <- runReject m1 (copyReq sid h [(AttrExtractable, ValBool True)])
+  assertEqual "absent EXTRACTABLE cannot be copied to true"
+    CKR_TEMPLATE_INCONSISTENT code
+  assertEqual "no extractable copy created" nBefore (Map.size (mObjects m2))
+  (pcF, m3) <- runCommit m2 (copyReq sid h [(AttrExtractable, ValBool False)])
+  assertEqual "copy may tighten to EXTRACTABLE=false" CKR_OK (pcCode pcF)
+  (pcP, m4) <- runCommit m3 (copyReq sid h [])
+  assertEqual "plain copy still allowed" CKR_OK (pcCode pcP)
+  (pcE, m5) <- runCommit m4
+    (createReq sid (secretAes (BS.replicate 16 3) ++ [(AttrExtractable, ValBool True)]))
+  he <- commitHandle pcE
+  (pcT, _) <- runCommit m5 (copyReq sid he [(AttrExtractable, ValBool True)])
+  assertEqual "explicitly extractable source copies as extractable" CKR_OK (pcCode pcT)
 
 caseFindFlow :: IO ()
 caseFindFlow = do
@@ -1764,6 +1791,34 @@ caseDestroyableGate = do
   h2 <- commitHandle pc2
   (pcD, _) <- runCommit m3 (destroyReq sid h2)
   assertEqual "destroyable destroy" CKR_OK (pcCode pcD)
+
+-- | COPYABLE and DESTROYABLE only ratchet true->false. From an
+-- absent flag (read as true): setting false commits, setting true
+-- again is refused, and the gated action is then prohibited. From an
+-- explicit false: setting true is refused.
+caseCopyDestroyRatchets :: IO ()
+caseCopyDestroyRatchets = mapM_ one
+  [ (AttrCopyable, \sid h -> copyReq sid h [])
+  , (AttrDestroyable, destroyReq)
+  ]
+  where
+    one (flag, act) = do
+      (sid, m0) <- openSession seeded
+      (pc, m1) <- runCommit m0 (createReq sid [classData, label "ratchet"])
+      h <- commitHandle pc
+      (pcOff, m2) <- runCommit m1 (setReq sid h [(flag, ValBool False)])
+      assertEqual (show flag ++ " absent -> false") CKR_OK (pcCode pcOff)
+      (codeOn, m3) <- runReject m2 (setReq sid h [(flag, ValBool True)])
+      assertEqual (show flag ++ " false -> true refused")
+        CKR_ATTRIBUTE_READ_ONLY codeOn
+      (codeAct, _) <- runReject m3 (act sid h)
+      assertEqual (show flag ++ " action prohibited") CKR_ACTION_PROHIBITED codeAct
+      (pcX, m4) <- runCommit m0
+        (createReq sid [classData, label "explicit", (flag, ValBool False)])
+      hx <- commitHandle pcX
+      (codeX, _) <- runReject m4 (setReq sid hx [(flag, ValBool True)])
+      assertEqual (show flag ++ " explicit false -> true refused")
+        CKR_ATTRIBUTE_READ_ONLY codeX
 
 caseSecretImportCoherence :: IO ()
 caseSecretImportCoherence = do
