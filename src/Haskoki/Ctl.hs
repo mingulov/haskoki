@@ -19,7 +19,8 @@ Every command owns its instance or works offline:
   it would need (nothing written; @--async-home@ plans a store the
   async open created);
 * @store migrate@ upgrades a store from an earlier release, after a
-  verified backup;
+  verified backup (@--async-home@ migrates a store the async open
+  created);
 * @store reset@ REFUSES a live (lock-held) store and resets an
   offline one only with @--confirm-demo-reset@.
 
@@ -102,13 +103,14 @@ ctlHelp = unlines
   , "  haskoki-ctl store inspect --path FILE"
   , "  haskoki-ctl store reset --path FILE --confirm-demo-reset"
   , "  haskoki-ctl store check --path FILE --config FILE [--async-home]"
-  , "  haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR"
+  , "  haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR [--async-home]"
   , ""
   , "Model: capabilities and scenario run own their module instance;"
   , "store commands are offline: inspect and check never write; reset and"
   , "migrate need the store owner stopped, and migrate writes a verified"
-  , "backup and a receipt first. --async-home makes check plan a store"
-  , "created through the async open. There is no remote administration:"
+  , "backup and a receipt first. --async-home makes check and"
+  , "migrate use the async home catalog (a store created through"
+  , "the async open). There is no remote administration:"
   , "this tool cannot mutate another process's loaded module."
   ]
 

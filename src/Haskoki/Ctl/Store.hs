@@ -21,6 +21,7 @@ import Haskoki.Runtime.Catalog (asyncHomeConfig)
 import Haskoki.Runtime.Config (Config, ConfigError (..), loadConfigFile)
 import Haskoki.Runtime.Storage (StoreError (..), renderIdentityRefusal)
 import Haskoki.Runtime.Storage.Preflight
+import Haskoki.Runtime.Storage.SQLite (sqliteSchemaVersion)
 
 -- | Exactly the named flags, each once, each with a value.
 strictFlags :: [String] -> [String] -> Either String (Map String String)
@@ -115,6 +116,39 @@ checkSelected path cfgPath asyncHome cfg = do
       VerdictIdentityRefused ir ->
         (1, renderPlan plan, line ("store-identity-refused", renderIdentityRefusal ir))
 
--- | Not available yet.
+migrateUsage :: String
+migrateUsage = unlines
+  [ "usage: haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR [--async-home]"
+  , "  --async-home migrates a store created through the async open"
+  , "  (home token labelled haskoki-async) instead of the config's catalog"
+  ]
+
 storeMigrateCommand :: [String] -> IO (Int, String, String)
-storeMigrateCommand _ = pure (2, "", "store migrate: not available yet\n")
+storeMigrateCommand args0 = case takeSwitch "--async-home" args0 of
+  Left why -> pure (2, "", "store migrate: " ++ why ++ "\n" ++ migrateUsage)
+  Right (asyncHome, args) -> case strictFlags ["--path", "--config", "--backup-dir"] args of
+    Left why -> pure (2, "", "store migrate: " ++ why ++ "\n" ++ migrateUsage)
+    Right fl -> case (Map.lookup "--path" fl, Map.lookup "--config" fl, Map.lookup "--backup-dir" fl) of
+      (Just path, Just cfgPath, Just dir) -> do
+        eCfg <- loadConfigFile cfgPath
+        case eCfg of
+          Left err -> pure (1, "", line (renderConfigError err))
+          Right cfg0 -> do
+            let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
+            sel <- configSelectsStore path cfg
+            case sel of
+              Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
+              Right () -> migrateSelected path cfg dir
+      _ -> pure (2, "", migrateUsage)
+
+migrateSelected :: FilePath -> Config -> FilePath -> IO (Int, String, String)
+migrateSelected path cfg dir = do
+  r <- try (migrateStore path cfg dir) :: IO (Either SomeException (Either MigrateError MigrateOutcome))
+  pure $ case r of
+    Left ex -> (1, "", line ("migrate-failed", "unexpected failure: " ++ show ex
+      ++ "; run store check before anything else"))
+    Right (Left me) -> (1, "", line (renderMigrateError me))
+    Right (Right MigrateNotNeeded) -> (0, line ("migrate-not-needed",
+      "the store is at schema " ++ show sqliteSchemaVersion
+        ++ " and every token has a credential row; nothing was written"), "")
+    Right (Right (Migrated rc)) -> (0, renderReceipt rc ++ "receipt: " ++ mrReceipt rc ++ "\nmigrate-done\n", "")
