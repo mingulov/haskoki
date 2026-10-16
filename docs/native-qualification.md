@@ -150,7 +150,9 @@ Evidence limits:
   Haskell side.
 - The harness is not the shipped object: the sanitizer runs cover the same
   source in a different build.
-- One compiler, GCC 15.2.0, and one toolchain image ID.
+- One compiler, GCC 15.2.0, and one toolchain source. The image ID in a
+  receipt identifies which build produced it: CI-built and locally-built
+  images differ there while sharing the toolchain source.
 - The seam and copy-fault cases run in both memory modes. In `track` mode
   the tracker's canaries sit inside the ASan block and freed blocks are held
   back, so ASan cannot see a short over-read or a use-after-free of those
