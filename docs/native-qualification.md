@@ -34,6 +34,11 @@ Evidence:
   gate fails statically; with the static rule removed it rebuilds and fails
   on the 33 exported hook symbols. The revert passes.
 - `nm "$(cabal list-bin exe:haskoki-ctl)" | grep -c hsk_ossl4_` prints 0.
+- `scripts/make-release.sh` refuses a release tree whose `lib/libhaskoki.so`
+  or `bin/haskoki-ctl` contains a `hsk_ossl4_test_` or `*_gated` symbol. The
+  operator tool links the test-configured Haskell library, whose test-only
+  code is purely additive (no `#else` branch in either `#ifdef` file), so the
+  C hook absence is the property the release proves.
 
 ## 2. Symbol and behavior inventory
 
@@ -175,10 +180,6 @@ an earlier single run on the same host measured 0.97 (31623102 against
 
 ## 7. Open items
 
-- Release time: `scripts/make-release.sh` should check with `nm` that
-  `bin/haskoki-ctl` and `lib/libhaskoki.so` in the release tree contain no
-  `hsk_ossl4_test_` or `*_gated` symbol. That check belongs to the release
-  work and is not done here.
 - In CI the checkout's git directory is mounted with it, so the driver
   measures the commit and cleanliness itself (`sha_source` `measured`). A
   worktree mounted into a container has no usable git directory; there the

@@ -110,6 +110,16 @@ if grep -i -E "libcrypto|libssl" "$OUT/closure/ldd-libhaskoki.txt"; then
 fi
 echo "STATIC: no dynamic libcrypto/libssl in module closure"
 
+# No test hooks in the shipped ELF pair: the operator tool links the
+# test-configured Haskell library (whose test-only code is purely
+# additive), so prove the C hooks never reach the release tree. Either
+# file gaining a hook symbol fails the release here, at build time.
+for f in "$OUT/lib/libhaskoki.so" "$OUT/bin/haskoki-ctl"; do
+  HOOKS=$(nm "$f" 2>/dev/null | grep -E 'hsk_ossl4_test_|_gated' || true)
+  [ -z "$HOOKS" ] || { echo "$HOOKS"; fail "test-hook symbols in shipped $f"; }
+done
+echo "STATIC: shipped module and operator tool contain no test-hook symbol"
+
 # Bundle every libHS* the module needs (GHC RTS closure, explicit).
 BUNDLED=0
 ldd "$SO" | awk '/libHS.*=>/ {print $3}' | sort -u | while read -r lib; do
