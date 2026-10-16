@@ -14,7 +14,7 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, bracket, onException, throwIO, try)
 import Control.Monad (forever)
 import Data.Bits ((.&.))
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, stripPrefix)
 import qualified Database.SQLite3 as S
 import Foreign.C.Error (eACCES, eNOTSUP, eOPNOTSUPP, ePERM, eXDEV, errnoToIOError)
@@ -133,6 +133,9 @@ spec = testGroup "Store preflight"
       , testCase "a cold journal is cleared under exclusive locks, then the migration runs" caseMigrateClearsColdJournal
       , testCase "a cold journal plus a foreign -wal refuses with everything untouched" caseMigrateColdJournalWithWalRefuses
       , testCase "a migration through a symlink locks the target file" caseMigrateSymlinkLocksTarget
+      , testCase "a store changed after the plan keeps its cold journal" caseMigrateStoreChangedKeepsColdJournal
+      , testCase "a cold journal that vanished counts as already cleared" caseMigrateVanishedColdJournalCleared
+      , testCase "a failure after the clear still reports the clearing" caseMigrateReportsClearOnFailure
       , testCase "a schema-3 store plus a cold journal needs nothing, journal untouched" caseMigrateSchema3ColdNotNeeded
       , testCase "a migration with no cold journal records cold-journal-removed: no" caseMigrateReceiptColdJournalNo
       , testCase "a cold journal while another process holds RESERVED refuses" caseColdJournalReservedRefuses
@@ -1178,6 +1181,81 @@ caseMigrateSymlinkLocksTarget = withScratch "migrate" $ \dir -> do
     Right (Migrated _) -> pure ()
     other -> assertFailure ("migration through a symlink failed: " ++ show other)
   readIORef seen >>= assertEqual "lock beside the target only" (False, True)
+
+-- The clear runs after the snapshot comparison inside the single
+-- ownership window: a store that changed after the plan refuses
+-- with its cold journal still in place (never removed
+-- unreported). The poke appends one trailing byte (SQLite ignores
+-- it; the file identity changes): poking through a read-write
+-- SQLite open would itself delete the cold journal on close.
+caseMigrateStoreChangedKeepsColdJournal :: IO ()
+caseMigrateStoreChangedKeepsColdJournal = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  BS.writeFile journal (BS.replicate 512 0)
+  jBefore <- BS.readFile journal
+  cleared <- newIORef False
+  let poke = noMigrateHooks
+        { mhAfterPlan = BS.appendFile store "x"
+        , mhOnColdClear = writeIORef cleared True }
+  r <- migrateStoreWith poke store cfg backups
+  assertEqual "changed store refused" (Left MigrateStoreChanged) r
+  BS.readFile journal >>= \b -> assertBool "journal still in place" (b == jBefore)
+  readIORef cleared >>= assertEqual "no clearing reported" False
+  listBackups backups >>= assertEqual "no backup" []
+  lockLeft <- doesFileExist (store ++ ".lock")
+  assertBool "ownership released" (not lockLeft)
+
+-- A cold journal that vanished between the plan and the clear
+-- counts as already cleared: the migration proceeds and records
+-- the clearing.
+caseMigrateVanishedColdJournalCleared :: IO ()
+caseMigrateVanishedColdJournalCleared = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  BS.writeFile journal (BS.replicate 512 0)
+  cleared <- newIORef False
+  let vanish = fixedClock
+        { mhAfterPlan = removeFile journal
+        , mhOnColdClear = writeIORef cleared True }
+  r <- migrateStoreWith vanish store cfg backups
+  rc <- case r of
+    Right (Migrated got) -> pure got
+    other -> assertFailure ("vanished journal blocked the migration: " ++ show other)
+  assertBool "receipt records the clearing" (mrColdJournalRemoved rc)
+  readIORef cleared >>= assertEqual "clearing reported" True
+  gone <- not <$> doesFileExist journal
+  assertBool "journal gone" gone
+  roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "migrated" ["3"]
+
+-- Every outcome after a clear reports it: a transaction failure
+-- after the clear still fires the clearing hook (the CLI prints
+-- the line on stdout). Uses the v0.3.1 store, whose migration
+-- needs a fresh page, so the page-count cap bites.
+caseMigrateReportsClearOnFailure :: IO ()
+caseMigrateReportsClearOnFailure = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.3.1.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  BS.writeFile journal (BS.replicate 512 0)
+  cleared <- newIORef False
+  let full = fixedClock
+        { mhOnColdClear = writeIORef cleared True
+        , mhSQLite = noMigrationHooks { mgAfterBegin = \db -> do
+            n <- pragmaInt db "PRAGMA page_count"
+            S.exec db (T.pack ("PRAGMA max_page_count = " ++ show n)) } }
+  r <- migrateStoreWith full store cfg backups
+  case r of
+    Left (MigrateTxnFailed _ (StoreFull _)) -> pure ()
+    other -> assertFailure ("wrong result: " ++ show other)
+  readIORef cleared >>= assertEqual "clearing reported" True
+  gone <- not <$> doesFileExist journal
+  assertBool "journal removed" gone
 
 -- A schema-3 store plus a cold journal needs nothing and the
 -- journal is left untouched: clearing runs only when the plan says

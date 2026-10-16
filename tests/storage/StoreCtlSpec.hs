@@ -25,7 +25,8 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Ctl (CtlExit (..), ctlHelp, runCtl)
-import Haskoki.Ctl.Store (renderCheckUnexpectedFailure, renderUnexpectedFailure)
+import Haskoki.Ctl.Store (renderCheckUnexpectedFailure, renderUnexpectedFailure, storeMigrateCommandWith)
+import Haskoki.Runtime.Storage.Preflight (MigrateHooks (..), noMigrateHooks)
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
 import Haskoki.Runtime.Catalog (asyncHomeEntry)
 import Haskoki.Runtime.Storage (CommitResult (..), CredentialRecord (..), Store (..), StoreError (..), emptyDelta)
@@ -61,6 +62,7 @@ spec = testGroup "Store commands"
   , testCase "check: a hot journal through a symlink names the journal" caseCheckSymlinkHotJournal
   , testCase "migrate: a foreign WAL through a symlink refuses, keeping the credential" caseMigrateSymlinkWal
   , testCase "migrate: a bare symlink migrates the target" caseMigrateSymlinkBare
+  , testCase "migrate: a failure after the clear still reports the clearing" caseMigrateCliReportsClearOnFailure
   , testCase "migrate: a v0.4 store migrates (exit 0) and then checks ok" caseMigrateCliV04
   , testCase "migrate: a current store needs nothing (exit 0)" caseMigrateCliNotNeeded
   , testCase "migrate: a drifted catalog refuses (exit 1), nothing written" caseMigrateCliRefusesDrift
@@ -573,6 +575,24 @@ caseMigrateSymlinkBare = withScratch "ctl-migrate" $ \dir -> do
   lockReal <- doesFileExist (real ++ ".lock")
   assertBool "no lock at the link" (not lockLink)
   assertBool "no lock at the target" (not lockReal)
+
+-- Every outcome after a clear reports it on stdout: here the
+-- backup digest fails after the cold journal is gone, and the
+-- failure output still carries the clearing line.
+caseMigrateCliReportsClearOnFailure :: IO ()
+caseMigrateCliReportsClearOnFailure = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  BS.writeFile (store ++ "-journal") (BS.replicate 512 0)
+  let failing = noMigrateHooks { mhDigest = \_ -> pure (Left "SHA-256 engine unavailable: test") }
+  (code, out, err) <- storeMigrateCommandWith failing
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 1" 1 code
+  assertBool "tag" ("migrate-backup-failed:" `isPrefixOf` err)
+  assertBool "clearing reported" ("cold-journal-removed: yes" `elem` lines out)
+  gone <- not <$> doesFileExist (store ++ "-journal")
+  assertBool "journal removed" gone
 
 -- A cold journal must not bypass the -wal refusal: check names the
 -- -wal (not the cold journal) and migrate refuses with every byte

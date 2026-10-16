@@ -74,7 +74,7 @@ module Haskoki.Runtime.Storage.SQLite
   , OwnedStoreFile
   , ownedPath
   , withOwnedStoreFile
-  , clearColdJournal
+  , clearColdJournalOwned
   , SQLiteMigration (..)
   , MigrationHooks (..)
   , noMigrationHooks
@@ -2600,39 +2600,34 @@ withOwnedStoreFile path act = mask $ \restore -> do
                 release
                 pure (Right r)
 
--- | Remove a cold rollback journal, only when every guard holds: the
--- owner probe passes, this call holds single-writer ownership (the
--- sidecar plus the database kernel guard), no @-wal@ or @-shm@
--- sibling exists (even zero-byte: the read-write connection below
--- would act on it), a plain connection takes a SQLite RESERVED lock
+-- | Remove a cold rollback journal inside the caller's ownership
+-- window (the sidecar plus the database kernel guard are already
+-- held), only when every guard holds: no @-wal@ or @-shm@ sibling
+-- exists (even zero-byte: the read-write connection below would act
+-- on it), a plain connection takes a SQLite RESERVED lock
 -- (@BEGIN IMMEDIATE@ fails while any other connection writes), and
 -- the re-read journal is still cold. Removing it cannot change what
 -- SQLite reads: the zeroed magic already makes SQLite treat the
--- journal as not hot. Anything else refuses, fail closed: a live
--- owner reports live, a sibling reports it, a busy database or a
--- changed journal reports the cold journal again.
-clearColdJournal :: FilePath -> IO (Either StoreError ())
-clearColdJournal path = do
-  owner <- probeOwner path
-  case owner of
-    OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
-    _ -> do
-      owned <- withOwnedStoreFile path clearOwned
-      pure (either Left id owned)
+-- journal as not hot. @onClear@ fires once the journal is gone. A
+-- journal that vanished between the plan and the clear counts as
+-- already cleared (fires, succeeds). Anything else refuses, fail
+-- closed, with the journal still in place -- except a sync or
+-- commit failure after the unlink, which already fired.
+clearColdJournalOwned :: IO () -> FilePath -> IO (Either StoreError ())
+clearColdJournalOwned onClear path = do
+  side <- anySidecarExists path
+  case side of
+    Just p -> pure (Left (StoreForeignSidecar p))
+    Nothing -> do
+      eDb <- trySQLite (S.open (T.pack path))
+      case eDb of
+        Left err -> pure (Left err)
+        Right db -> do
+          r <- clearWith db `onException` (rollbackQuiet db >> closeQuiet db)
+          closeQuiet db
+          pure r
   where
     journal = path ++ "-journal"
-    clearOwned _owned = do
-      side <- anySidecarExists path
-      case side of
-        Just p -> pure (Left (StoreForeignSidecar p))
-        Nothing -> do
-          eDb <- trySQLite (S.open (T.pack path))
-          case eDb of
-            Left err -> pure (Left err)
-            Right db -> do
-              r <- clearWith db `onException` (rollbackQuiet db >> closeQuiet db)
-              closeQuiet db
-              pure r
     clearWith db = do
       eBegin <- tryBegin db
       case eBegin of
@@ -2646,19 +2641,29 @@ clearColdJournal path = do
             JournalCold -> do
               eRm <- tryIOError (removeLink journal)
               case eRm of
-                Left e -> do
-                  rollbackQuiet db
-                  pure (Left (StoreIO ("cannot remove the cold journal " ++ journal ++ ": " ++ show e)))
+                Left e
+                  | isDoesNotExistError e -> do
+                      onClear
+                      rollbackQuiet db
+                      pure (Right ())
+                  | otherwise -> do
+                      rollbackQuiet db
+                      pure (Left (StoreIO ("cannot remove the cold journal " ++ journal ++ ": " ++ show e)))
                 Right () -> do
+                  onClear
                   eSync <- tryIOError (syncParentDir journal)
                   eCommit <- trySQLite (S.exec db "COMMIT")
                   pure (case (eCommit, eSync) of
                     (Left err, _) -> Left err
                     (Right (), Left e) -> Left (StoreIO ("cannot sync the store directory: " ++ show e))
                     (Right (), Right ()) -> Right ())
+            JournalAbsent -> do
+              onClear
+              rollbackQuiet db
+              pure (Right ())
             _ -> do
               rollbackQuiet db
-              pure (Left (StoreJournalCold journal))
+              pure (Left (StoreJournalPresent journal))
     tryBegin :: S.Database -> IO (Either S.SQLError ())
     tryBegin db = try (S.exec db "BEGIN IMMEDIATE")
 

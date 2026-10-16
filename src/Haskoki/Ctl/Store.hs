@@ -9,12 +9,14 @@ kind and line (or key) only, never the message body.
 module Haskoki.Ctl.Store
   ( storeCheckCommand
   , storeMigrateCommand
+  , storeMigrateCommandWith
   , strictFlagsSwitch
   , renderUnexpectedFailure
   , renderCheckUnexpectedFailure
   ) where
 
 import Control.Exception (IOException, SomeException, fromException, try)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isPrefixOf, stripPrefix)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -136,7 +138,13 @@ migrateUsage = unlines
   ]
 
 storeMigrateCommand :: [String] -> IO (Int, String, String)
-storeMigrateCommand args0 = case strictFlagsSwitch ["--path", "--config", "--backup-dir"] "--async-home" args0 of
+storeMigrateCommand = storeMigrateCommandWith noMigrateHooks
+
+-- | 'storeMigrateCommand' over injected migration hooks (the
+-- storage suite fails the run after the cold-journal clear to pin
+-- the clearing report).
+storeMigrateCommandWith :: MigrateHooks -> [String] -> IO (Int, String, String)
+storeMigrateCommandWith hooks0 args0 = case strictFlagsSwitch ["--path", "--config", "--backup-dir"] "--async-home" args0 of
   Left why -> pure (2, "", "store migrate: " ++ why ++ "\n" ++ migrateUsage)
   Right (asyncHome, fl) -> case (Map.lookup "--path" fl, Map.lookup "--config" fl, Map.lookup "--backup-dir" fl) of
     (Just path, Just cfgPath, Just dir) -> do
@@ -148,7 +156,7 @@ storeMigrateCommand args0 = case strictFlagsSwitch ["--path", "--config", "--bac
           sel <- configSelectsStore path cfg
           case sel of
             Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
-            Right () -> migrateSelected path cfg dir
+            Right () -> migrateSelectedWith hooks0 path cfg dir
     _ -> pure (2, "", migrateUsage)
 
 -- | The exception's type name only, never its message: PINs are not
@@ -180,13 +188,20 @@ renderCheckUnexpectedFailure :: SomeException -> (String, String)
 renderCheckUnexpectedFailure ex =
   ("store-unreadable", "unexpected failure: " ++ exceptionTypeName ex)
 
-migrateSelected :: FilePath -> Config -> FilePath -> IO (Int, String, String)
-migrateSelected path cfg dir = do
-  r <- try (migrateStore path cfg dir) :: IO (Either SomeException (Either MigrateError MigrateOutcome))
+-- | Run the selected migration over injected hooks. Every outcome
+-- after a cold-journal clear carries the clearing line on stdout
+-- (a migrated run already carries it in its receipt).
+migrateSelectedWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Int, String, String)
+migrateSelectedWith hooks0 path cfg dir = do
+  clearedRef <- newIORef False
+  let hooks = hooks0 { mhOnColdClear = mhOnColdClear hooks0 >> writeIORef clearedRef True }
+  r <- try (migrateStoreWith hooks path cfg dir) :: IO (Either SomeException (Either MigrateError MigrateOutcome))
+  cleared <- readIORef clearedRef
+  let coldLine = if cleared then "cold-journal-removed: yes\n" else ""
   pure $ case r of
-    Left ex -> (1, "", line (renderUnexpectedFailure ex))
-    Right (Left me) -> (1, "", line (renderMigrateError me))
-    Right (Right MigrateNotNeeded) -> (0, line ("migrate-not-needed",
+    Left ex -> (1, coldLine, line (renderUnexpectedFailure ex))
+    Right (Left me) -> (1, coldLine, line (renderMigrateError me))
+    Right (Right MigrateNotNeeded) -> (0, coldLine ++ line ("migrate-not-needed",
       "the store is at schema " ++ show sqliteSchemaVersion
         ++ " and every token has a credential row; nothing was written"), "")
     Right (Right (Migrated rc)) -> (0, renderReceipt rc ++ "receipt: " ++ mrReceipt rc ++ "\nmigrate-done\n", "")
