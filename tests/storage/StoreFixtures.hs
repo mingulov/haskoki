@@ -12,6 +12,7 @@ module StoreFixtures
   , StoreState (..), captureState, assertUnchanged, makeSchemaStore
   , writeStoreConfig, expectStdNeedsMigration, fixtureToken
   , spawnedPid, claimReap, waitBounded, releaseHolder, awaitHolderExit
+  , pragmaInt
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -331,3 +332,12 @@ expectStdNeedsMigration found r = case r of
     assertEqual "target schema" 3 t
   Left other -> assertFailure ("refused for the wrong reason: " ++ show other)
   Right acq -> closeAcquired acq >> assertFailure "an old-schema store opened"
+
+-- | The single integer a pragma returns, read on an open handle.
+pragmaInt :: S.Database -> T.Text -> IO Int
+pragmaInt db sql = bracket (S.prepare db sql) S.finalize $ \stmt -> do
+  _ <- S.step stmt
+  cols <- S.columns stmt
+  case cols of
+    [S.SQLInteger n] -> pure (fromIntegral n)
+    other -> assertFailure ("pragma " ++ T.unpack sql ++ ": " ++ show other)

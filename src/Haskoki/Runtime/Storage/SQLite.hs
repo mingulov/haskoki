@@ -66,6 +66,13 @@ module Haskoki.Runtime.Storage.SQLite
   , readStoreSnapshot
   , OwnerState (..)
   , probeOwner
+  , OwnedStoreFile
+  , ownedPath
+  , withOwnedStoreFile
+  , SQLiteMigration (..)
+  , MigrationHooks (..)
+  , noMigrationHooks
+  , migrateOwned
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -2297,3 +2304,122 @@ kernelLockHeld path = mask_ $ do
 
 lockSh :: CInt
 lockSh = 1 -- LOCK_SH: shared
+
+-- ---------------------------------------------------------------------------
+-- Owned migration
+-- ---------------------------------------------------------------------------
+
+-- | An existing store held with full single-writer ownership: the
+-- sidecar lock plus the database kernel guard, exactly as the
+-- serving open takes them, without opening the serving store.
+data OwnedStoreFile = OwnedStoreFile { osfPath :: !FilePath, osfDbFd :: !Fd }
+
+ownedPath :: OwnedStoreFile -> FilePath
+ownedPath = osfPath
+
+-- | What a migration does. 'smFrom' is the schema version the plan
+-- saw (1, 2 or 3; 3 only freezes rows and leaves the marker alone).
+data SQLiteMigration = SQLiteMigration
+  { smFrom :: !Int
+  , smFreeze :: ![CredentialRecord]
+  } deriving (Eq, Show)
+
+-- | Test seams: right after BEGIN IMMEDIATE, and after the body but
+-- before COMMIT.
+data MigrationHooks = MigrationHooks
+  { mgAfterBegin :: S.Database -> IO ()
+  , mgBeforeCommit :: S.Database -> IO ()
+  }
+
+noMigrationHooks :: MigrationHooks
+noMigrationHooks = MigrationHooks (\_ -> pure ()) (\_ -> pure ())
+
+-- | Hold full single-writer ownership of an EXISTING store, run the
+-- action, and release on every path. Never creates the database; a
+-- live owner is refused ('StoreSecondWriter'). The sidecar is the
+-- only file created, and it is removed on release.
+withOwnedStoreFile :: FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
+withOwnedStoreFile path act = mask $ \restore -> do
+  exists <- fileExist path
+  if not exists then pure (Left (StoreIO ("no store file at " ++ path))) else do
+    procRoot <- procRootFromEnv
+    let lockPath = path ++ ".lock"
+    eOwn <- takeOwnership path lockPath procRoot 3
+    case eOwn of
+      Left err -> pure (Left err)
+      Right lockFd -> do
+        eFd <- tryIOError (openFd path ReadOnly defaultFileFlags { cloexec = True })
+          `onException` releaseQuiet lockFd lockPath
+        case eFd of
+          Left e
+            | isDoesNotExistError e -> releaseQuiet lockFd lockPath
+                >> pure (Left (StoreIO ("store vanished while taking ownership: " ++ path)))
+            | otherwise -> releaseQuiet lockFd lockPath
+                >> pure (Left (StoreIO ("store database cannot be opened: " ++ path)))
+          Right fd0 -> do
+            eGuard <- takeDbGuard path fd0 `onException` releaseQuiet lockFd lockPath
+            case eGuard of
+              Left err -> releaseQuiet lockFd lockPath >> pure (Left err)
+              Right dbFd -> do
+                let release = closeQuietFd dbFd >> releaseQuiet lockFd lockPath
+                r <- restore (act (OwnedStoreFile path dbFd)) `onException` release
+                release
+                pure (Right r)
+
+-- | Migrate an owned store to 'sqliteSchemaVersion' in ONE
+-- transaction: re-read the marker (it must still be 'smFrom'),
+-- create the credentials table for version 1, INSERT every frozen
+-- row (never replacing: an existing row aborts everything), and
+-- advance the marker unless the store is already current. Any
+-- failure rolls back and leaves the file as it was; an exception
+-- rolls back, closes and re-throws.
+migrateOwned :: OwnedStoreFile -> SQLiteMigration -> MigrationHooks -> IO (Either StoreError ())
+migrateOwned owned mig hooks = mask $ \restore -> do
+  let path = osfPath owned
+  same <- sameFile (osfDbFd owned) path
+  if not same then pure (Left (StoreIO ("store database replaced while owned: " ++ path))) else do
+    eDb <- trySQLite (S.open (T.pack path))
+    case eDb of
+      Left err -> pure (Left err)
+      Right db -> do
+        r <- restore (txn db path) `onException` (rollbackQuiet db >> closeQuiet db)
+        closeQuiet db
+        pure r
+  where
+    txn db path = do
+      eCfg <- configure db
+      case eCfg of
+        Left err -> pure (Left err)
+        Right () -> do
+          eBegin <- trySQLite (S.exec db "BEGIN IMMEDIATE")
+          case eBegin of
+            Left err -> pure (Left err)
+            Right () -> do
+              mgAfterBegin hooks db
+              eBody <- body db path
+              case eBody of
+                Left err -> rollbackQuiet db >> pure (Left err)
+                Right () -> do
+                  mgBeforeCommit hooks db
+                  eCommit <- trySQLite (S.exec db "COMMIT")
+                  case eCommit of
+                    Left err -> rollbackQuiet db >> pure (Left err)
+                    Right () -> pure (Right ())
+    body db path = do
+      eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
+      case eVer of
+        Left err -> pure (Left err)
+        Right [[S.SQLText v]] | v == T.pack (show (smFrom mig)) -> firstFailure
+          ( [trySQLite (S.exec db createCredentialsTable) | smFrom mig == 1]
+            ++ map (insertCredential db) (smFreeze mig)
+            ++ [advance db | smFrom mig /= sqliteSchemaVersion] )
+        Right _ -> pure (Left (StoreRevisionConflict (path ++ ": schema marker moved under ownership")))
+    insertCredential db c = execParams db
+      "INSERT INTO credentials (token_id, record_json, format_version) VALUES (?, ?, 1)"
+      [ S.SQLText (T.pack (encodeHex16 (unTokenId (crToken c))))
+      , S.SQLText (T.pack (encodeCredentialRecord c)) ]
+    advance db = do
+      e <- execParams db "UPDATE store_meta SET value = ? WHERE key = 'schema_version' AND value = ?"
+        [S.SQLText (T.pack (show sqliteSchemaVersion)), S.SQLText (T.pack (show (smFrom mig)))]
+      n <- S.changes db
+      pure (e >> if n == 1 then Right () else Left (StoreRevisionConflict "schema marker not advanced"))

@@ -9,8 +9,9 @@ module PreflightSpec (spec) where
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import qualified Data.Map.Strict as Map
-import Control.Exception (bracket)
-import Data.List (isInfixOf)
+import Control.Exception (IOException, bracket, throwIO, try)
+import Data.List (isInfixOf, sort)
+import qualified Database.SQLite3 as S
 import Foreign.C.Types (CInt (..))
 import qualified Data.Text as T
 import System.Directory (createDirectory, doesFileExist)
@@ -23,7 +24,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.FFI.Standard (StdStoreError (..))
 import Haskoki.Runtime.Storage
-  (CommitResult (..), CredentialRecord (..), IdentityRefusal (..), StoreError (..), TokenRecord (..), emptyDelta, storeClose, storeCommit)
+  (CommitResult (..), CredentialRecord (..), IdentityRefusal (..), StoreError (..), TokenRecord (..), Store (..), emptyDelta)
 import Haskoki.Types (SlotId (..), TokenId (..))
 import Haskoki.Runtime.Catalog (asyncHomeConfig, asyncHomeEntry, homeCatalogEntry, identityCatalog)
 import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..))
@@ -32,7 +33,7 @@ import Haskoki.Runtime.Storage.Preflight
   ( MigrationOp (..), PlanVerdict (..), PreflightRefusal (..), StoreOpenPlan (..)
   , checkStoreOpen, configSelectsStore, planVerdict, renderPlan, renderStoreRefusal, sha256Hex )
 import Haskoki.Runtime.Storage.SQLite
-  (OwnerState (..), StoreSnapshot (..), openSQLiteStore, probeOwner, readStoreSnapshot)
+  (MigrationHooks (..), OwnerState (..), SQLiteMigration (..), StoreSnapshot (..), migrateOwned, noMigrationHooks, openSQLiteStore, probeOwner, readStoreSnapshot, withOwnedStoreFile)
 
 import StoreFixtures
 
@@ -82,6 +83,18 @@ spec = testGroup "Store preflight"
       , testCase "check on a missing path says there is no store" casePlanMissingPath
       , testCase "check on a store held by another fd is refused as live" casePlanLiveOwner
       , testCase "store-full has its own refusal tag" caseStoreFullTag
+      ]
+  , testGroup "owned migration"
+      [ testCase "schema 1 migrates: table, rows, marker; nothing else moves" caseOwnedMigratesV1
+      , testCase "schema 2 migrates; an existing row is kept byte-exact" caseOwnedMigratesV2KeepsRow
+      , testCase "a v0.4 async-created store migrates under the async plan" caseOwnedMigratesAsync
+      , testCase "schema 3 freezes rows with the marker unchanged" caseOwnedFreezesAtV3
+      , testCase "a freeze over an existing row aborts the whole migration" caseOwnedRefusesReplacingRow
+      , testCase "a moved schema marker aborts unchanged" caseOwnedSchemaMoved
+      , testCase "a crash before commit rolls back and releases ownership" caseOwnedCrashRollsBack
+      , testCase "a full disk rolls back unchanged" caseOwnedFullDisk
+      , testCase "ownership is refused while an owner is live" caseOwnedRefusesLive
+      , testCase "ownership never creates a store file" caseOwnedNeverCreates
       ]
   ]
 
@@ -499,3 +512,144 @@ caseStoreFullTag :: IO ()
 caseStoreFullTag = do
   assertEqual "store-full" "store-full" (fst (renderStoreRefusal (StoreFull "disk full")))
   assertEqual "io" "store-unreadable" (fst (renderStoreRefusal (StoreIO "x")))
+
+v1Tokens :: [TokenRecord]
+v1Tokens = [fixtureToken 1 0 "haskoki-demo", fixtureToken 2 1 "haskoki-ops"]
+
+frozen :: [CredentialRecord]
+frozen =
+  [ CredentialRecord (TokenId 1) "58213946" (Just "12873465")
+  , CredentialRecord (TokenId 2) "69324057" (Just "23984576") ]
+
+runOwned :: FilePath -> SQLiteMigration -> MigrationHooks -> IO (Either StoreError ())
+runOwned store mig hooks = do
+  r <- withOwnedStoreFile store (\o -> migrateOwned o mig hooks)
+  pure (either Left id r)
+
+caseOwnedMigratesV1 :: IO ()
+caseOwnedMigratesV1 = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"; fresh = dir </> "fresh.db"
+  makeSchemaStore 1 store v1Tokens []
+  rawExec store "INSERT INTO store_meta(key, value) VALUES ('p6-migration-marker', 'kept')"
+  objBefore <- roTexts store "SELECT object_id FROM objects ORDER BY object_id"
+  runOwned store (SQLiteMigration 1 frozen) noMigrationHooks >>= assertEqual "migrated" (Right ())
+  roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "marker" ["3"]
+  roTexts store "SELECT value FROM store_meta WHERE key = 'p6-migration-marker'" >>= assertEqual "meta kept" ["kept"]
+  roTexts store "SELECT object_id FROM objects ORDER BY object_id" >>= assertEqual "objects kept" objBefore
+  lockLeft <- doesFileExist (store ++ ".lock")
+  assertBool "ownership released" (not lockLeft)
+  makeSchemaStore 3 fresh [] []
+  let ddl p = sort <$> roTexts p "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"
+  m <- ddl store
+  f <- ddl fresh
+  assertEqual "migrated schema equals fresh" f m
+  e <- openSQLiteStore store
+  s <- either (assertFailure . show) pure e
+  creds <- storeLoadCredentials s
+  storeClose s
+  assertBool "frozen rows load" (creds == Right frozen)
+
+caseOwnedMigratesV2KeepsRow :: IO ()
+caseOwnedMigratesV2KeepsRow = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+      kept = CredentialRecord (TokenId 2) "69324057" (Just "34095687")
+  makeSchemaStore 2 store v1Tokens [kept]
+  docBefore <- roTexts store "SELECT record_json FROM credentials WHERE token_id = '0000000000000002'"
+  runOwned store (SQLiteMigration 2 (take 1 frozen)) noMigrationHooks >>= assertEqual "migrated" (Right ())
+  docAfter <- roTexts store "SELECT record_json FROM credentials WHERE token_id = '0000000000000002'"
+  assertBool "existing row byte-exact" (docBefore == docAfter)
+  roTexts store "SELECT token_id FROM credentials ORDER BY token_id"
+    >>= assertEqual "both rows" ["0000000000000001", "0000000000000002"]
+
+caseOwnedMigratesAsync :: IO ()
+caseOwnedMigratesAsync = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+      row = CredentialRecord (TokenId 1) "58213946" (Just "12873465")
+  makeSchemaStore 2 store [fixtureToken 1 0 "haskoki-async"] []
+  runOwned store (SQLiteMigration 2 [row]) noMigrationHooks >>= assertEqual "migrated" (Right ())
+  roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "marker" ["3"]
+  roTexts store "SELECT token_id FROM credentials" >>= assertEqual "row frozen" ["0000000000000001"]
+
+caseOwnedFreezesAtV3 :: IO ()
+caseOwnedFreezesAtV3 = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 3 store v1Tokens []
+  runOwned store (SQLiteMigration 3 frozen) noMigrationHooks >>= assertEqual "frozen" (Right ())
+  roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "marker" ["3"]
+  roTexts store "SELECT token_id FROM credentials ORDER BY token_id"
+    >>= assertEqual "rows" ["0000000000000001", "0000000000000002"]
+
+caseOwnedRefusesReplacingRow :: IO ()
+caseOwnedRefusesReplacingRow = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 2 store v1Tokens [CredentialRecord (TokenId 2) "69324057" (Just "34095687")]
+  before <- captureState store
+  r <- runOwned store (SQLiteMigration 2 frozen) noMigrationHooks
+  case r of
+    Left (StoreIO msg) | "UNIQUE" `isInfixOf` msg || "constraint" `isInfixOf` msg -> pure ()
+    other -> assertFailure ("not the constraint refusal: " ++ show other)
+  assertUnchanged "aborted migration" before store
+
+caseOwnedSchemaMoved :: IO ()
+caseOwnedSchemaMoved = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 2 store v1Tokens []
+  before <- captureState store
+  r <- runOwned store (SQLiteMigration 1 frozen) noMigrationHooks
+  case r of
+    Left (StoreRevisionConflict _) -> pure ()
+    other -> assertFailure ("wrong result: " ++ show other)
+  assertUnchanged "schema moved" before store
+
+caseOwnedCrashRollsBack :: IO ()
+caseOwnedCrashRollsBack = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 1 store v1Tokens []
+  before <- captureState store
+  let crash = noMigrationHooks { mgBeforeCommit = \_ -> throwIO (userError "simulated crash") }
+  r <- try (runOwned store (SQLiteMigration 1 frozen) crash) :: IO (Either IOException (Either StoreError ()))
+  case r of
+    Left _ -> pure ()
+    Right other -> assertFailure ("crash did not propagate: " ++ show other)
+  assertUnchanged "crashed migration" before store
+  again <- runOwned store (SQLiteMigration 1 frozen) noMigrationHooks
+  assertEqual "ownership was released; retry migrates" (Right ()) again
+
+caseOwnedFullDisk :: IO ()
+caseOwnedFullDisk = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 1 store v1Tokens []
+  -- the schema-1 fixture dropped a table: compact so the file has no
+  -- free pages and any new table must grow it
+  rawExec store "VACUUM"
+  before <- captureState store
+  let full = noMigrationHooks { mgAfterBegin = \db -> do
+        n <- pragmaInt db "PRAGMA page_count"
+        S.exec db (T.pack ("PRAGMA max_page_count = " ++ show n)) }
+  r <- runOwned store (SQLiteMigration 1 frozen) full
+  case r of
+    Left (StoreFull _) -> pure ()
+    other -> assertFailure ("wrong result: " ++ show other)
+  assertUnchanged "full disk" before store
+
+caseOwnedRefusesLive :: IO ()
+caseOwnedRefusesLive = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 3 store v1Tokens []
+  e <- openSQLiteStore store
+  s <- either (assertFailure . show) pure e
+  r <- withOwnedStoreFile store (\_ -> pure ())
+  storeClose s
+  case r of
+    Left (StoreSecondWriter _) -> pure ()
+    other -> assertFailure ("live owner not refused: " ++ show other)
+
+caseOwnedNeverCreates :: IO ()
+caseOwnedNeverCreates = withScratch "owned" $ \dir -> do
+  let store = dir </> "absent.db"
+  r <- withOwnedStoreFile store (\_ -> pure ())
+  case r of
+    Left (StoreIO _) -> pure ()
+    other -> assertFailure ("wrong result: " ++ show other)
+  created <- (||) <$> doesFileExist store <*> doesFileExist (store ++ ".lock")
+  assertBool "nothing created" (not created)
