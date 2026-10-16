@@ -845,6 +845,10 @@ def check_lane(root, failures):
                 _add(failures, "QW-LANE-HARNESS",
                      "harness syntax check must assert the pinned include "
                      "directory first (fail closed)")
+            if "-DHSK_OSSL4_TEST_HOOKS" not in code:
+                _add(failures, "QW-LANE-HARNESS",
+                     "harness syntax check must cover both source "
+                     "configurations (missing -DHSK_OSSL4_TEST_HOOKS)")
             if "set -euo pipefail" not in code:
                 _add(failures, "QW-LANE-HARNESS",
                      "harness syntax check must run under set -euo pipefail")
@@ -2232,6 +2236,12 @@ def self_test():
                  "tests/c/ossl4_sanitize.c'",
                  "tests/c/ossl4_sanitize.c' || true")
         controls.expect_fail("harness syntax check failure is swallowed",
+                             root, "QW-LANE-HARNESS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 " -DHSK_OSSL4_TEST_HOOKS -fsyntax-only",
+                 " -fsyntax-only")
+        controls.expect_fail("harness syntax check drops the hooks configuration",
                              root, "QW-LANE-HARNESS")
         # Static drift between the driver's case table and the expected set.
         driver = "scripts/" + OWNERSHIP_DRIVER

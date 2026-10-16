@@ -189,7 +189,7 @@ jobs:
           # directory is asserted first, so a broken image fails here
           # instead of checking against the wrong headers.
           docker run --rm -v "$PWD:/work:ro" -w /work haskoki-dev:ghc-9.10.3 \
-            sh -c 'test -d /opt/openssl-4.0.2/include && cc -std=c11 -Wall -Wextra -Werror -pthread -fsyntax-only -Icbits -I/opt/openssl-4.0.2/include tests/c/ossl4_sanitize.c'
+            sh -c 'test -d /opt/openssl-4.0.2/include && cc -std=c11 -Wall -Wextra -Werror -pthread -fsyntax-only -Icbits -I/opt/openssl-4.0.2/include tests/c/ossl4_sanitize.c && cc -std=c11 -Wall -Wextra -Werror -pthread -DHSK_OSSL4_TEST_HOOKS -fsyntax-only -Icbits -I/opt/openssl-4.0.2/include tests/c/ossl4_sanitize.c'
       - name: Record toolchain provenance
         run: |
           set -euo pipefail

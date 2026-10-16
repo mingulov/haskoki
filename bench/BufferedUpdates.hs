@@ -263,7 +263,7 @@ selfTest = do
   failIf "hard-censored record field set differs" (keysOf (crJson hc) /= keysOf (crJson ok))
   -- The parent-side hard cap through the real timeout path: a child that
   -- outlives a 100 ms cap must produce the censored-hard record. The
-  -- abandoned sleep exits on its own after 5 s.
+  -- timed-out child is terminated by the process cleanup.
   hcTimeout <- childCaseWith 100000 "/bin/sleep" ["5"] (65536, 1024)
   check 65536 1024 "censored-hard" hcTimeout
   failIf "timeout hard-cap record field set differs"
