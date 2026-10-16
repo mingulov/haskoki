@@ -133,6 +133,7 @@ import Haskoki.FFI.Async
   , resolveJobHandle
   , retireCtx
   , setEnterTestHook
+  , StoreBox (..)
   , submitTransfer
   )
 import Haskoki.FFI.Standard (StdInstance, haskokiStdClose, openStdInstance)
@@ -230,6 +231,7 @@ import Haskoki.Runtime.Storage
   , defaultLimits
   , emptyDelta
   , noFaults
+  , scriptedFaults
   )
 import Haskoki.Runtime.Storage.Memory
   ( MemoryWorld
@@ -299,6 +301,13 @@ spec = testGroup "FFI acquisition"
       , testCase "store throw in retirement still closes and keeps the record joinable" (counted "m3-standalone-ownership" "store-throw-in-retirement-still-closes-and-keeps-the-record-joinable" (caseStoreThrowInRetirementStillCloses))
       , testCase "value-level close killed in a lease wait resumes" (counted "m3-standalone-ownership" "value-level-close-killed-in-a-lease-wait-resumes" (caseValueCloseKilledInLeaseWaitResumes))
       , testCase "block wait rejects other block reasons" (counted "m3-standalone-ownership" "block-wait-rejects-other-block-reasons" (caseBlockWaitRejectsOtherReasons))
+      , testCase "null slot and null pointer closes are silent" (counted "m3-standalone-ownership" "null-slot-and-null-pointer-closes-are-silent" (caseNullClosesAreSilent))
+      , testCase "repeated context close frees and retires once" (counted "m3-standalone-ownership" "repeated-context-close-frees-and-retires-once" (caseRepeatedCloseFreesOnce))
+      , testCase "failed store close keeps the box slot until a retry succeeds" (counted "m3-standalone-ownership" "failed-store-close-keeps-the-box-slot-until-a-retry-succeeds" (caseFailedStoreCloseKeepsBoxSlot))
+      , testCase "store box close killed in the lock wait keeps the box" (counted "m3-standalone-ownership" "store-box-close-killed-in-the-lock-wait-keeps-the-box" (caseBoxCloseKilledInLockWaitKeepsBox))
+      , testCase "standalone churn leaves no orphan roots or native envs" (counted "m3-standalone-ownership" "standalone-churn-leaves-no-orphan-roots-or-native-envs" (caseStandaloneChurnLeavesNoOrphans))
+      , testCase "joined cleanup lets the same store reopen" (counted "m3-standalone-ownership" "joined-cleanup-lets-the-same-store-reopen" (caseJoinedCleanupReopensSameStore))
+      , testCase "joined cleanup lets the same sqlite store reopen" (counted "m3-standalone-ownership" "joined-cleanup-lets-the-same-sqlite-store-reopen" (caseJoinedCleanupReopensSameSqliteStore))
       ]
   ]
 
@@ -1723,6 +1732,13 @@ memoryStoreSteps :: MemoryWorld -> AsyncAcquisition -> AsyncAcquisition
 memoryStoreSteps world acq = acq
   { aaOpenStore = \_ -> either (const (Left ())) Right <$> openMemoryStore world }
 
+-- | Open the box's Store over a test-held memory world through the
+-- given injector (shared across opens, so a script fires once).
+memoryStoreThrough :: MemoryWorld -> FaultInjector -> AsyncAcquisition -> AsyncAcquisition
+memoryStoreThrough world inj acq = acq
+  { aaOpenStore = \_ ->
+      either (const (Left ())) Right <$> openMemoryStoreWith world defaultLimits inj }
+
 -- | Open backends through a test gate, so native envs are counted
 -- per gate.
 gatedBackendSteps :: Ptr TestGate -> AsyncAcquisition -> AsyncAcquisition
@@ -3028,4 +3044,393 @@ caseStoreThrowInRetirementStillCloses = do
     (refused, why) <- memoryReopenRefused world
     assertBalanced ("memory world reopen: " ++ why) c
     assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused)
+    `finally` releaseOpened opened
+
+-- ---------------------------------------------------------------------------
+-- Standalone ownership: close accounting, slot state and fresh reopen
+-- ---------------------------------------------------------------------------
+
+-- | A null slot and a null slot pointer close silently: the counting
+-- closes over a null pointer and over a null-holding slot move no
+-- counter, and the one export-level close over a null-holding slot
+-- returns without touching it.
+caseNullClosesAreSilent :: IO ()
+caseNullClosesAreSilent = do
+  (counting, readCounts) <- countingAcquisition
+  closeCtxSlotWith counting nullPtr
+  alloca $ \pSlot -> do
+    poke pSlot (castPtrToStablePtr nullPtr)
+    closeCtxSlotWith counting pSlot
+    after <- peek pSlot
+    assertBool "null context slot unchanged" (isNull after)
+  closeStoreBoxSlotWith counting nullPtr
+  alloca $ \pBox -> do
+    poke pBox (castPtrToStablePtr nullPtr)
+    closeStoreBoxSlotWith counting pBox
+    afterBox <- peek pBox
+    assertBool "null box slot unchanged" (isNull afterBox)
+  alloca $ \pSlot -> do
+    poke pSlot (castPtrToStablePtr nullPtr)
+    haskokiAsyncClose pSlot
+    afterExport <- peek pSlot
+    assertBool "export leaves the null slot unchanged" (isNull afterExport)
+  c <- readCounts
+  assertEqual "no store close" 0 (acStoreCloses c)
+  assertEqual "no backend close" 0 (acBackendCloses c)
+  assertEqual "no context free" 0 (acCtxFrees c)
+  assertEqual "no box free" 0 (acBoxFrees c)
+  assertEqual "no retirement" 0 (acRetirements c)
+  assertBalanced "silent closes" c
+
+-- | A repeated context close frees and retires once: the first of
+-- three counting closes nulls the slot, and the two that follow are
+-- silent no-ops.
+caseRepeatedCloseFreesOnce :: IO ()
+caseRepeatedCloseFreesOnce = do
+  (counting, readCounts) <- countingAcquisition
+  eCtx <- openAsyncCtxWith counting defaultConfig
+  sp <- case eCtx of
+    Right s -> pure s
+    Left _ -> assertFailure "context open failed"
+  ctx <- deRefStablePtr sp
+  alloca $ \pSlot -> do
+    poke pSlot sp
+    closeCtxSlotWith counting pSlot
+    after <- peek pSlot
+    assertBool "first close nulled the slot" (isNull after)
+    closeCtxSlotWith counting pSlot
+    closeCtxSlotWith counting pSlot
+    afterThird <- peek pSlot
+    assertBool "slot stays nulled" (isNull afterThird)
+  closeAfter <- inspectTableClose (acTable ctx)
+  assertEqual "gate closed" TableClosed closeAfter
+  nLive <- asyncLiveHandles ctx
+  assertZero "live_handles" "no live handles" nLive
+  (liveAfter, _, _) <- tableStats (acTable ctx)
+  assertZero "live_jobs" "no live jobs" liveAfter
+  c <- readCounts
+  assertEqual "context freed once" 1 (acCtxFrees c)
+  assertEqual "retired once" 1 (acRetirements c)
+  assertEqual "backend closed once" 1 (acBackendCloses c)
+  assertBalanced "repeated close" c
+
+-- | A failed store close keeps the box slot until a retry succeeds:
+-- with one close fault armed, the first close throws, frees no box,
+-- and keeps the lock (the world still refuses a reopen); the retry
+-- nulls the slot and the world reopens.
+caseFailedStoreCloseKeepsBoxSlot :: IO ()
+caseFailedStoreCloseKeepsBoxSlot = do
+  world <- newMemoryWorld
+  inj <- scriptedFaults [FaultClose]
+  (tracked, opened) <- trackOpened (memoryStoreThrough world inj asyncAcquisition)
+  (counting, readCounts) <- countingAcquisitionOver tracked
+  (do
+    eBox <- openStoreBoxWith counting nullPtr
+    box <- case eBox of
+      Right b -> pure b
+      Left _ -> assertFailure "store box open failed"
+    alloca $ \pBox -> do
+      poke pBox box
+      r <- try (closeStoreBoxSlotWith counting pBox) :: IO (Either SomeException ())
+      case r of
+        Left e -> case fromException e of
+          Just (StoreIO _) -> pure ()
+          _ -> assertFailure ("first close threw, but not the injected failure: " ++ show e)
+        Right () -> assertFailure "first close with an armed fault returned normally"
+      mid <- peek pBox
+      assertBool "failed close keeps the slot" (mid == box)
+      cMid <- readCounts
+      assertEqual "failed close frees no box" 0 (acBoxFrees cMid)
+      held <- openMemoryStore world
+      case held of
+        Left (StoreSecondWriter _) -> pure ()
+        Left e -> assertFailure ("reopen refused, but not by the held lock: " ++ show e)
+        Right st -> storeClose st >> assertFailure "reopen succeeded while the lock is held"
+      closeStoreBoxSlotWith counting pBox
+      after <- peek pBox
+      assertBool "retry nulled the slot" (isNull after)
+    c <- readCounts
+    assertEqual "box freed once on the retry" 1 (acBoxFrees c)
+    (refused, why) <- memoryReopenRefused world
+    assertBalanced ("memory world reopen: " ++ why) c
+    assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused)
+    `finally` releaseOpened opened
+
+-- | A store box close killed in the lock wait keeps the box: a
+-- sibling parks holding the commit lock, the forked export closer
+-- parks behind it in the close wait, and after the kill the slot is
+-- intact; once the sibling releases, the store still serves, the
+-- retry closes, and the world reopens.
+caseBoxCloseKilledInLockWaitKeepsBox :: IO ()
+caseBoxCloseKilledInLockWaitKeepsBox = do
+  world <- newMemoryWorld
+  armed <- newIORef False
+  arrived <- newEmptyMVar
+  hold <- newEmptyMVar
+  let inj = FaultInjector
+        { fiFire = \p ->
+            if p == FaultBeforeCommit
+              then do
+                fire <- atomicModifyIORef' armed (\on -> (False, on))
+                if fire
+                  then putMVar arrived () >> takeMVar hold >> pure False
+                  else pure False
+              else pure False
+        , fiOnMasked = pure ()
+        , fiOnResult = \_ -> pure ()
+        }
+  (tracked, opened) <- trackOpened (memoryStoreThrough world inj asyncAcquisition)
+  (counting, readCounts) <- countingAcquisitionOver tracked
+  (do
+    eBox <- openStoreBoxWith counting nullPtr
+    box <- case eBox of
+      Right b -> pure b
+      Left _ -> assertFailure "store box open failed"
+    -- Arm only after the open: seating the home token commits
+    -- through the same probe.
+    writeIORef armed True
+    boxStore <- sbStore <$> deRefStablePtr box
+    alloca $ \pBox -> do
+      poke pBox box
+      sibDone <- newEmptyMVar
+      _ <- forkIO $ do
+        r <- try (storeCommit boxStore emptyDelta { sdPutMeta = [("sibling-hold", "1")] })
+        putMVar sibDone (r :: Either SomeException CommitResult)
+      (do
+        within10s "sibling parks holding the commit lock" (takeMVar arrived)
+        closedDone <- newEmptyMVar
+        closerTid <- forkIO $ do
+          r <- try (haskokiAsyncStoreClose pBox)
+          putMVar closedDone (r :: Either SomeException ())
+        awaitBlocked BlockedOnMVar closerTid
+        midSlot <- peek pBox
+        assertBool "slot intact while the closer parks" (midSlot == box)
+        -- The kill goes from a forked thread: the throw only
+        -- queues against a parked closer, and the issuer would wedge
+        -- behind an undeliverable kill instead of reaching the join.
+        _ <- forkIO (killThread closerTid)
+        mClosed <- timeout 2000000 (takeMVar closedDone)
+        case mClosed of
+          Nothing -> do
+            -- The release lets the parked pair unwind on its own (the
+            -- sibling commits, the closer runs to its pending kill),
+            -- so join both before failing: the closer must never
+            -- write into the slot after its frame returns.
+            putMVar hold ()
+            _ <- within10s "sibling joins after release" (takeMVar sibDone)
+            _ <- within10s "closer joins after release" (takeMVar closedDone)
+            assertFailure "kill not delivered within 2 s"
+          Just (Right ()) -> pure ()
+          Just (Left e) -> assertFailure ("closer leaked: " ++ show e)
+        killed <- peek pBox
+        assertBool "slot intact after the kill" (killed == box)
+        putMVar hold ()
+        sibRes <- within10s "sibling joins" (takeMVar sibDone)
+        case sibRes of
+          Right Committed -> pure ()
+          other -> assertFailure ("sibling commit failed: " ++ show other)
+        -- The killed close never ran its tail: the handle still
+        -- serves, which is the open-handle observation.
+        eToks <- storeLoadTokens boxStore
+        case eToks of
+          Right _ -> pure ()
+          Left e -> assertFailure ("store stopped serving after the killed close: " ++ show e)
+        closeStoreBoxSlotWith counting pBox
+        after <- peek pBox
+        assertBool "retry nulled the slot" (isNull after)
+        haskokiAsyncStoreClose pBox
+        afterSecond <- peek pBox
+        assertBool "slot stays nulled" (isNull afterSecond))
+        `finally` (tryPutMVar hold () >> pure ())
+    c <- readCounts
+    assertEqual "box freed once on the retry" 1 (acBoxFrees c)
+    assertEqual "store closed once on the retry" 1 (acStoreCloses c)
+    (refused, why) <- memoryReopenRefused world
+    assertBalanced ("memory world reopen: " ++ why) c
+    assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused)
+    `finally` releaseOpened opened
+
+-- | Standalone churn leaves no orphan roots or native envs: fifty
+-- rounds of a box open, two contexts on it, one killed
+-- third-context acquisition cycling through the on-box steps, and
+-- the closes. Registrations balance retirements, allocs balance
+-- frees, reclamation drains, and the gate holds no env.
+caseStandaloneChurnLeavesNoOrphans :: IO ()
+caseStandaloneChurnLeavesNoOrphans = withOwnGate $ \g -> do
+  world <- newMemoryWorld
+  (tracked, opened) <- trackOpened
+    (gatedBackendSteps g (memoryStoreSteps world asyncAcquisition))
+  (acq, readCounts) <- countingAcquisitionOver tracked
+  (do
+    let steps = [AfterStoreReload, AfterBackendOpen, AfterSessionOpen, AfterCtxAlloc]
+    mapM_ (\i -> do
+      eBox <- openStoreBoxWith acq nullPtr
+      box <- case eBox of
+        Right b -> pure b
+        Left _ -> assertFailure ("round " ++ show i ++ ": box open failed")
+      eC1 <- openAsyncCtxOnWith acq defaultConfig box
+      c1 <- case eC1 of
+        Right s -> pure s
+        Left _ -> assertFailure ("round " ++ show i ++ ": first context open failed")
+      eC2 <- openAsyncCtxOnWith acq defaultConfig box
+      c2 <- case eC2 of
+        Right s -> pure s
+        Left _ -> assertFailure ("round " ++ show i ++ ": second context open failed")
+      killVictimAt (parkAt (steps !! (i `mod` length steps))) acq
+        (\a -> openAsyncCtxOnWith a defaultConfig box)
+      alloca $ \pCtx -> do
+        poke pCtx c1
+        closeCtxSlotWith acq pCtx
+        afterFirst <- peek pCtx
+        assertBool ("round " ++ show i ++ ": first context slot nulled") (isNull afterFirst)
+      alloca $ \pCtx -> do
+        poke pCtx c2
+        closeCtxSlotWith acq pCtx
+        afterSecond <- peek pCtx
+        assertBool ("round " ++ show i ++ ": second context slot nulled") (isNull afterSecond)
+      alloca $ \pBox -> do
+        poke pBox box
+        closeStoreBoxSlotWith acq pBox
+        afterBox <- peek pBox
+        assertBool ("round " ++ show i ++ ": box slot nulled") (isNull afterBox)) [0 .. 49 :: Int]
+    c <- readCounts
+    (refused, why) <- memoryReopenRefused world
+    assertBalanced ("memory world reopen: " ++ why) c
+    assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused
+    awaitNoPendingReclaims
+    awaitReclaimBalanced
+    envOut <- c_ownGateEnvOutstanding g
+    assertZero "env_outstanding" "native envs left on the gate" envOut
+    envDf <- c_ownEnvDoublefree
+    assertZero "env_doublefree" "no native double free" envDf)
+    `finally` releaseOpened opened
+
+-- | Open a box and a context on it, start and detach one job, kill a
+-- second-context acquisition at pointer allocation, close both,
+-- reopen the same identity, rejoin the detached job exactly once,
+-- and close again. Returns the reopened context for the caller's
+-- liveness asserts. The box opener names the identity (a memory
+-- world or a SQLite path).
+joinedCleanupReopen
+  :: AsyncAcquisition
+  -> (AsyncAcquisition -> IO (Either AcquireFailure (StablePtr StoreBox)))
+  -> IO AsyncCtx
+joinedCleanupReopen acq openBox = do
+  eBox <- openBox acq
+  box <- case eBox of
+    Right b -> pure b
+    Left _ -> assertFailure "store box open failed"
+  eCtx <- openAsyncCtxOnWith acq defaultConfig box
+  sp <- case eCtx of
+    Right s -> pure s
+    Left _ -> assertFailure "context open failed"
+  ctx <- deRefStablePtr sp
+  dc <- case acDetach ctx of
+    Just d -> pure d
+    Nothing -> assertFailure "context has no detach view"
+  initFfiDigestSession (acEnv ctx) (acSession ctx)
+  j0 <- startFfiDigest ctx "abc" 32 1
+  eDet <- detachJob dc (acTable ctx) j0 JobDigest
+  pid <- case eDet of
+    DetachOk p -> pure p
+    other -> assertFailure ("detach failed: " ++ show other)
+  (liveDet, _, _) <- tableStats (acTable ctx)
+  assertZero "live_jobs" "detach revoked the live job" liveDet
+  killVictimAt (parkAt AfterCtxAlloc) acq
+    (\a -> openAsyncCtxOnWith a defaultConfig box)
+  alloca $ \pCtx -> do
+    poke pCtx sp
+    closeCtxSlotWith acq pCtx
+    afterCtx <- peek pCtx
+    assertBool "context slot nulled" (isNull afterCtx)
+  alloca $ \pBox -> do
+    poke pBox box
+    closeStoreBoxSlotWith acq pBox
+    afterBox <- peek pBox
+    assertBool "box slot nulled" (isNull afterBox)
+  eBox2 <- openBox acq
+  box2 <- case eBox2 of
+    Right b -> pure b
+    Left _ -> assertFailure "box reopen failed"
+  eCtx2 <- openAsyncCtxOnWith acq defaultConfig box2
+  sp2 <- case eCtx2 of
+    Right s -> pure s
+    Left _ -> assertFailure "context reopen failed"
+  ctx2 <- deRefStablePtr sp2
+  dc2 <- case acDetach ctx2 of
+    Just d -> pure d
+    Nothing -> assertFailure "reopened context has no detach view"
+  initFfiDigestSession (acEnv ctx2) (acSession ctx2)
+  let rejoin = joinJob dc2 (acEnv ctx2) (acTable ctx2) JoinRequest
+        { jqPid = pid
+        , jqFunction = JobDigest
+        , jqSession = acSession ctx2
+        , jqCapacity = 32
+        }
+  eJoin <- rejoin
+  j2 <- case eJoin of
+    JoinOk j -> pure j
+    other -> assertFailure ("rejoin failed: " ++ show other)
+  eJoin2 <- rejoin
+  case eJoin2 of
+    JoinAlreadyAttached _ -> pure ()
+    other -> assertFailure ("second rejoin not refused: " ++ show other)
+  av2 <- inspectAttachment dc2 pid
+  assertEqual "rejoined attachment active" (Just (AvActive j2)) av2
+  h2 <- allocJobHandle ctx2 j2
+  alloca $ \pCtx -> do
+    poke pCtx sp2
+    closeCtxSlotWith acq pCtx
+    afterCtx2 <- peek pCtx
+    assertBool "reopened context slot nulled" (isNull afterCtx2)
+  alloca $ \pBox -> do
+    poke pBox box2
+    closeStoreBoxSlotWith acq pBox
+    afterBox2 <- peek pBox
+    assertBool "reopened box slot nulled" (isNull afterBox2)
+  mStale <- resolveJobHandle ctx2 h2
+  assertEqual "handle retired" Nothing mStale
+  pure ctx2
+
+-- | Joined cleanup lets the same store reopen: the shared
+-- detach-kill-close-reopen-rejoin skeleton over a memory world. The
+-- same world reopens and the detached job rejoins exactly once.
+caseJoinedCleanupReopensSameStore :: IO ()
+caseJoinedCleanupReopensSameStore = do
+  world <- newMemoryWorld
+  (tracked, opened) <- trackOpened (memoryStoreSteps world asyncAcquisition)
+  (acq, readCounts) <- countingAcquisitionOver tracked
+  (do
+    ctx2 <- joinedCleanupReopen acq (\a -> openStoreBoxWith a nullPtr)
+    nLive <- asyncLiveHandles ctx2
+    assertZero "live_handles" "no live handles" nLive
+    (liveAfter, _, _) <- tableStats (acTable ctx2)
+    assertZero "live_jobs" "no live jobs" liveAfter
+    c <- readCounts
+    (refused, why) <- memoryReopenRefused world
+    assertBalanced ("memory world reopen: " ++ why) c
+    assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused)
+    `finally` releaseOpened opened
+
+-- | Joined cleanup lets the same SQLite store reopen: the shared
+-- detach-kill-close-reopen-rejoin skeleton over a SQLite path. The
+-- same path reopens and the detached job rejoins exactly once.
+caseJoinedCleanupReopensSameSqliteStore :: IO ()
+caseJoinedCleanupReopensSameSqliteStore = withPrivateDir $ \dir -> do
+  let path = dir </> "store.sqlite"
+  (counting, readCounts) <- countingAcquisition
+  (acq, opened) <- trackOpened counting
+  (do
+    ctx2 <- joinedCleanupReopen acq (\a -> withCString path (openStoreBoxWith a))
+    nLive <- asyncLiveHandles ctx2
+    assertZero "live_handles" "no live handles" nLive
+    (liveAfter, _, _) <- tableStats (acTable ctx2)
+    assertZero "live_jobs" "no live jobs" liveAfter
+    c <- readCounts
+    r <- openSQLiteStore path
+    (refused, why) <- case r of
+      Right st -> storeClose st >> pure (0 :: Int, "reopened")
+      Left e -> pure (1, show e)
+    assertBalanced ("sqlite reopen: " ++ why) c
+    assertZero "store_reopen_refused" ("sqlite reopen: " ++ why) refused)
     `finally` releaseOpened opened
