@@ -26,7 +26,7 @@
     {
       "action": "session.open",
       "arguments": {
-        "token": "demo-token",
+        "token": "haskoki-demo",
         "read_write": true,
         "asynchronous": true
       },
@@ -126,7 +126,7 @@
     {
       "action": "token.remove",
       "arguments": {
-        "token": "demo-token"
+        "token": "haskoki-demo"
       }
     },
     {
@@ -144,7 +144,7 @@
     {
       "action": "session.open",
       "arguments": {
-        "token": "demo-token",
+        "token": "haskoki-demo",
         "read_write": true
       },
       "save_as": "s2"

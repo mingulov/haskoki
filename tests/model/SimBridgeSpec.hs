@@ -109,6 +109,10 @@ spec = testGroup "Sim bridge"
   , testCase "expect mismatch fails the run" caseExpectEnforced
   , testCase "wrong initialize expectation fails" caseInitializeWrongExpectationFails
   , testCase "every verb's expectation enforces" caseEveryVerbExpectation
+  , testCase "wrong PIN is an expected refusal" caseWrongPinExpected
+  , testCase "absent token label refuses the open" caseTokenAbsent
+  , testCase "absent token label refuses removal" caseTokenRemoveAbsent
+  , testCase "zero capacity answers too-small" caseCapacityZero
   ]
 
 fixture :: FilePath -> FilePath
@@ -311,7 +315,7 @@ runTempScenarioFull cfg tag mRules steps =
 caseFaultWindows :: IO ()
 caseFaultWindows = do
   let openArgs async =
-        [ ("token", JStr "demo-token"), ("read_write", JBool True)
+        [ ("token", JStr "haskoki-demo"), ("read_write", JBool True)
         , ("asynchronous", JBool async)
         ]
       loginArgs = [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
@@ -373,9 +377,9 @@ caseSyncNeverPends = do
     [ step "initialize" [] Nothing
     , step "fixture.load" [] Nothing
     , step "session.open"
-        [("token", JStr "demo-token"), ("read_write", JBool True)] Nothing
+        [("token", JStr "haskoki-demo"), ("read_write", JBool True)] Nothing
     , step "session.open"
-        [("token", JStr "demo-token"), ("read_write", JBool True)] Nothing
+        [("token", JStr "haskoki-demo"), ("read_write", JBool True)] Nothing
     , step "session.login"
         [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")] Nothing
     , step "sign.init"
@@ -814,7 +818,7 @@ caseSaveAsHonored = do
     [ step "initialize" [] Nothing
     , step "fixture.load" [] Nothing
     , stepSaveAs "session.open"
-        [("token", JStr "demo-token"), ("read_write", JBool True)] "alice"
+        [("token", JStr "haskoki-demo"), ("read_write", JBool True)] "alice"
     , step "session.login"
         [("session", JStr "alice"), ("role", JStr "USER"), ("pin", JStr "1234")]
         Nothing
@@ -888,7 +892,7 @@ caseExpectEnforced = do
   assertBool "mismatch named" ("expect.return mismatch" `isInfixOf` ceErr r)
   where
     openArgs async =
-      [ ("token", JStr "demo-token"), ("read_write", JBool True)
+      [ ("token", JStr "haskoki-demo"), ("read_write", JBool True)
       , ("asynchronous", JBool async)
       ]
     loginArgs = [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
@@ -948,7 +952,7 @@ caseEveryVerbExpectation = do
     , step "async.complete" compArgs (Just "CKR_PENDING")
     , step "async.complete" compArgs (Just "CKR_PENDING")
     , step "async.complete" compArgs (Just "CKR_OK")
-    , step "token.remove" [("token", JStr "demo-token")] (Just "CKR_OK")
+    , step "token.remove" [("token", JStr "haskoki-demo")] (Just "CKR_OK")
     , JObj [("action", JStr "slot-event.wait")
       , ("arguments", JObj [("nonblocking", JBool True)])
       , ("expect", JObj [("event", JStr "token-state-change")])]
@@ -959,7 +963,7 @@ caseEveryVerbExpectation = do
     ("step[14] slot-event.wait -> event:token-state-change" `isInfixOf` ceOut r)
   where
     openArgs async =
-      [ ("token", JStr "demo-token"), ("read_write", JBool True)
+      [ ("token", JStr "haskoki-demo"), ("read_write", JBool True)
       , ("asynchronous", JBool async)
       ]
     loginArgs = [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")]
@@ -970,3 +974,80 @@ caseEveryVerbExpectation = do
 stepSaveAs :: String -> [(String, Json)] -> String -> Json
 stepSaveAs action args name = JObj
   [("action", JStr action), ("arguments", JObj args), ("save_as", JStr name)]
+
+-- | One scenario step builder with a 'note' object.
+stepNote :: String -> [(String, Json)] -> [(String, Json)] -> Json
+stepNote action args note = JObj
+  [("action", JStr action), ("arguments", JObj args), ("note", JObj note)]
+
+fullLogin :: [(String, Json)] -> [(String, Json)]
+fullLogin rest = [("session", JStr "s1"), ("role", JStr "USER")] ++ rest
+
+caseWrongPinExpected :: IO ()
+caseWrongPinExpected = do
+  let login pin expect = JObj [("action", JStr "session.login")
+        , ("arguments", JObj (fullLogin [("pin", JStr pin)]))
+        , ("expect", JObj [("return", JStr expect)])]
+      prefix = [step "initialize" [] Nothing, step "fixture.load" [] Nothing
+               , step "session.open" [] Nothing]
+  r <- runTempScenario "badpin" (prefix ++ [login "0000" "CKR_PIN_INCORRECT"])
+  assertEqual ("wrong PIN is an expected refusal: " ++ ceErr r) 0 (ceCode r)
+  assertBool "refusal observed"
+    ("session.login -> CKR_PIN_INCORRECT" `isInfixOf` ceOut r)
+  r2 <- runTempScenario "badpinok" (prefix ++ [login "0000" "CKR_OK"])
+  assertEqual "expecting OK fails" 1 (ceCode r2)
+  assertBool "mismatch named" ("expect.return mismatch" `isInfixOf` ceErr r2)
+  r3 <- runTempScenario "goodpin" (prefix ++ [login "1234" "CKR_OK"])
+  assertEqual ("right PIN still passes: " ++ ceErr r3) 0 (ceCode r3)
+
+caseTokenAbsent :: IO ()
+caseTokenAbsent = do
+  let open tok expect = JObj [("action", JStr "session.open")
+        , ("arguments", JObj [("token", JStr tok)])
+        , ("expect", JObj [("return", JStr expect)])]
+      prefix = [step "initialize" [] Nothing, step "fixture.load" [] Nothing]
+  r <- runTempScenario "notoken" (prefix ++ [open "missing" "CKR_TOKEN_NOT_PRESENT"])
+  assertEqual ("absent token is an expected refusal: " ++ ceErr r) 0 (ceCode r)
+  assertBool "detail echoes the label"
+    ("token=missing" `isInfixOf` ceOut r)
+  r2 <- runTempScenario "notokenok" (prefix ++ [open "missing" "CKR_OK"])
+  assertEqual "expecting OK fails" 1 (ceCode r2)
+  r3 <- runTempScenario "notedopen" (prefix
+    ++ [stepNote "session.open" [] [("why", JStr "step annotation")]])
+  assertEqual ("per-step note runs: " ++ ceErr r3) 0 (ceCode r3)
+
+caseTokenRemoveAbsent :: IO ()
+caseTokenRemoveAbsent = do
+  let remove tok expect = JObj [("action", JStr "token.remove")
+        , ("arguments", JObj [("token", JStr tok)])
+        , ("expect", JObj [("return", JStr expect)])]
+      prefix = [step "initialize" [] Nothing, step "fixture.load" [] Nothing]
+  r <- runTempScenario "noremove" (prefix ++ [remove "missing" "CKR_TOKEN_NOT_PRESENT"])
+  assertEqual ("absent remove target refuses: " ++ ceErr r) 0 (ceCode r)
+  r2 <- runTempScenario "noremoveok" (prefix ++ [remove "missing" "CKR_OK"])
+  assertEqual "expecting OK fails" 1 (ceCode r2)
+
+caseCapacityZero :: IO ()
+caseCapacityZero = do
+  let signWith cap expect = JObj [("action", JStr "sign")
+        , ("arguments", JObj [("session", JStr "s1")
+          , ("data_base64", JStr "eA=="), ("output_capacity", JNum cap)])
+        , ("expect", JObj [("return", JStr expect)])]
+      prefix = [step "initialize" [] Nothing, step "fixture.load" [] Nothing
+        , step "session.open" [("asynchronous", JBool False)] Nothing
+        , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+          , ("pin", JStr "1234")] Nothing
+        , step "sign.init" [("session", JStr "s1")
+          , ("fixture_key", JStr "demo-signing-key")
+          , ("mechanism", JStr "CKM_RSA_PKCS")] Nothing]
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "zerocap" Nothing
+    (prefix ++ [signWith 0 "CKR_BUFFER_TOO_SMALL"])
+  assertEqual ("zero capacity answers too-small: " ++ ceErr r) 0 (ceCode r)
+  r2 <- runTempScenarioFull (fixture "maximal-demo.toml") "zerocapok" Nothing
+    (prefix ++ [signWith 0 "CKR_OK"])
+  assertEqual "expecting OK fails" 1 (ceCode r2)
+  r3 <- runTempScenarioFull (fixture "maximal-demo.toml") "sizedcap" Nothing
+    (prefix ++ [signWith 256 "CKR_OK"])
+  assertEqual ("sized capacity signs: " ++ ceErr r3) 0 (ceCode r3)
+  assertBool "consumption echoed"
+    (("bytes=1 capacity=256") `isInfixOf` ceOut r3)

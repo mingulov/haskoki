@@ -39,6 +39,7 @@ import qualified Data.ByteString.Char8 as BC8
 import Data.List (intercalate, sort)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import System.IO.Error (tryIOError)
@@ -52,6 +53,7 @@ import Haskoki.Runtime.Storage.SQLite (resolveStorePath, resolveStorePathTracked
 import Haskoki.Runtime.Control
   ( Json (..)
   , Scenario (..)
+  , base64DecodedLength
   , parseJson
   , validateScenario
   )
@@ -339,8 +341,9 @@ runScenario cfgPath scPath = do
               Just steps -> execScenario cfg sc steps
 
 -- | Parse the raw steps into validated runner values (actions,
--- arguments, and per-action extras). Total: malformed input refuses
--- instead of degrading to defaults (unreachable after
+-- arguments, and per-action extras). A step 'note' is admitted and
+-- dropped (validation owns its shape). Total: malformed input
+-- refuses instead of degrading to defaults (unreachable after
 -- 'validateScenario', which rejects first with detail).
 runSteps :: Json -> Maybe [RunStep]
 runSteps (JObj kvs) = case lookup "steps" kvs of
@@ -363,7 +366,7 @@ runSteps (JObj kvs) = case lookup "steps" kvs of
           "slot-event.wait" -> expectClause "event" ekvs
           _ -> expectClause "return" ekvs
         _ -> Nothing
-      if all (\(k, _) -> k `elem` ["action", "arguments", "save_as", "expect"]) skvs
+      if all (\(k, _) -> k `elem` ["action", "arguments", "save_as", "expect", "note"]) skvs
         then Just (RunStep act args save expect)
         else Nothing
     toStep _ = Nothing
@@ -407,10 +410,12 @@ execScenario cfg sc steps = do
       eLine <- execStep cfg reg tr rn i st
       case eLine of
         Left err -> pure (Left ("step[" ++ show i ++ "] " ++ rsAction st ++ ": " ++ err))
-        Right (rn', res) -> case checkStepExpect st res of
+        Right (rn', res, detail) -> case checkStepExpect st res of
           Left err -> pure (Left ("step[" ++ show i ++ "] " ++ rsAction st ++ ": " ++ err))
           Right () -> go rn' reg tr rest
-            (("step[" ++ show i ++ "] " ++ rsAction st ++ " -> " ++ resultNote res) : acc)
+            (("step[" ++ show i ++ "] " ++ rsAction st ++ " -> " ++ resultNote res ++ detailSuffix detail) : acc)
+    detailSuffix "" = ""
+    detailSuffix d = " " ++ d
 
 -- | The effective token script (empty unless sim is enabled).
 simScript :: Config -> [(String, Int)]
@@ -445,46 +450,61 @@ fixtureUserPin, fixtureSoPin :: String
 fixtureUserPin = "1234"
 fixtureSoPin = "5678"
 
+-- | The slot-0 token label of the config: the first @[tokens]@
+-- catalog label, or the home-token default when the section is
+-- absent (the slot-0 stability anchor keeps both spellings equal).
+slotZeroLabel :: Config -> String
+slotZeroLabel cfg = case tcEntries (cfgTokens cfg) of
+  ((label, _, _) : _) -> label
+  [] -> "haskoki-demo"
+
 -- | Execute one step (@i@ is the step index for fault-window
 -- checks), producing an explicit result for centralized
--- expectation checking. Unknown verbs cannot arrive (validated),
--- so the fallback is an internal error, never code execution.
--- @session.open@ honors @save_as@ (a duplicate name refuses
--- without mutation). Program errors (unknown session, unarmed
--- sign) precede device faults: an in-window step reports
--- @CKR_DEVICE_ERROR@ instead of running, without consuming any
--- pending poll.
-execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult))
+-- expectation checking plus a detail string echoing the consumed
+-- values (@""@ when the action has nothing to echo). Unknown verbs
+-- cannot arrive (validated), so the fallback is an internal error,
+-- never code execution. @session.open@ honors @save_as@ (a
+-- duplicate name refuses without mutation). Program errors
+-- (unknown session, unarmed sign) precede device faults: an
+-- in-window step reports @CKR_DEVICE_ERROR@ instead of running,
+-- without consuming any pending poll.
+execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult, String))
 execStep cfg reg tr rn i st = case rsAction st of
   "initialize" -> do
     emit tr "C_Initialize" 0 "initialized"
-    pure (Right (rn, StepReturn "CKR_OK"))
+    pure (Right (rn, StepReturn "CKR_OK", ""))
   "fixture.load" -> do
     _ <- insertToken reg (SlotId 0)
     emit tr "C_InitToken" 0 "fixture-loaded"
-    pure (Right (rn, StepReturn "CKR_OK"))
+    pure (Right (rn, StepReturn "CKR_OK", ""))
   "session.open" -> do
-    let name = case rsSaveAs st of
-          Just saved -> saved
-          Nothing -> saveName (rnNextSession rn)
-        isAsync = case lookup "asynchronous" (rsArgs st) of
-          Just (JBool b) -> b
-          _ -> False
-        sid = SessionId (rnNextSession rn)
-    -- The effective namespace covers literal names plus the live
-    -- "s1" alias (named sessions exist, no literal s1): binding
-    -- that alias refuses, as validation already enforced.
-    let aliasLive = not (Map.null (rnSessions rn)) && Map.notMember "s1" (rnSessions rn)
-    if Map.member name (rnSessions rn) || (name == "s1" && aliasLive)
-      then pure (Left ("duplicate session name: " ++ name))
+    let tok = fromMaybe (slotZeroLabel cfg) $ case lookup "token" (rsArgs st) of
+          Just (JStr t) -> Just t
+          _ -> Nothing
+    if tok /= slotZeroLabel cfg
+      then pure (Right (rn, StepReturn "CKR_TOKEN_NOT_PRESENT", "token=" ++ tok))
       else do
-        registerSessionSlot reg sid (SlotId 0)
-        emit tr "C_OpenSession" 0 ("session=" ++ name)
-        let ls = LogicalSession sid isAsync False False 0 0
-            rn' = rn { rnSessions = Map.insert name ls (rnSessions rn)
-                     , rnNextSession = rnNextSession rn + 1
-                     , rnOrder = rnOrder rn ++ [name] }
-        pure (Right (rn', StepReturn "CKR_OK"))
+        let name = case rsSaveAs st of
+              Just saved -> saved
+              Nothing -> saveName (rnNextSession rn)
+            isAsync = case lookup "asynchronous" (rsArgs st) of
+              Just (JBool b) -> b
+              _ -> False
+            sid = SessionId (rnNextSession rn)
+        -- The effective namespace covers literal names plus the live
+        -- "s1" alias (named sessions exist, no literal s1): binding
+        -- that alias refuses, as validation already enforced.
+        let aliasLive = not (Map.null (rnSessions rn)) && Map.notMember "s1" (rnSessions rn)
+        if Map.member name (rnSessions rn) || (name == "s1" && aliasLive)
+          then pure (Left ("duplicate session name: " ++ name))
+          else do
+            registerSessionSlot reg sid (SlotId 0)
+            emit tr "C_OpenSession" 0 ("session=" ++ name)
+            let ls = LogicalSession sid isAsync False False 0 0
+                rn' = rn { rnSessions = Map.insert name ls (rnSessions rn)
+                         , rnNextSession = rnNextSession rn + 1
+                         , rnOrder = rnOrder rn ++ [name] }
+            pure (Right (rn', StepReturn "CKR_OK", "token=" ++ tok))
   "session.login" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
@@ -495,37 +515,42 @@ execStep cfg reg tr rn i st = case rsAction st of
                  || (role == "SO" && pin == fixtureSoPin)
         emit tr "C_Login" (if okPin then 0 else 0xA0) ("session=" ++ name)
         if okPin
-          then pure (Right (rn { rnSessions = Map.insert name (ls { lsLoggedIn = True }) (rnSessions rn) }, StepReturn "CKR_OK"))
-          else pure (Left "login pin incorrect")
+          then pure (Right (rn { rnSessions = Map.insert name (ls { lsLoggedIn = True }) (rnSessions rn) }, StepReturn "CKR_OK", "role=" ++ role))
+          else pure (Right (rn, StepReturn "CKR_PIN_INCORRECT", "role=" ++ role))
   "sign.init" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
       Right (name, ls) -> do
         emit tr "C_SignInit" 0 ("session=" ++ name)
-        pure (Right (rn { rnSessions = Map.insert name (ls { lsSignArmed = True }) (rnSessions rn) }, StepReturn "CKR_OK"))
+        pure (Right (rn { rnSessions = Map.insert name (ls { lsSignArmed = True }) (rnSessions rn) }, StepReturn "CKR_OK", ""))
   "sign" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
       Right (name, ls) -> do
         if not (lsSignArmed ls)
           then pure (Left "sign without sign.init")
-          else if inFault rn i
-            then do
-              emit tr "C_Sign" 0x30 ("session=" ++ name)
-              pure (Right (rn, StepReturn "CKR_DEVICE_ERROR"))
-            else do
-              -- pending_polls applies ONLY to async-eligible ops in
-              -- async sessions: a sync session never pends, no matter
-              -- what the scenario file carries.
-              let polls = acPendingPolls (cfgAsync cfg)
-                  wantPending = lsAsync ls && acEnabled (cfgAsync cfg) && polls > 0
-                  calls' = lsSignCalls ls + 1
-              emit tr "C_Sign" (if wantPending then 0x204 else 0) ("session=" ++ name)
-              if wantPending
-                then do
-                  let ls' = ls { lsSignCalls = calls', lsPendingLeft = polls }
-                  pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_PENDING"))
-                else pure (Right (rn { rnSessions = Map.insert name (ls { lsSignCalls = calls' }) (rnSessions rn) }, StepReturn "CKR_OK"))
+          else case signConsumption st of
+            Left err -> pure (Left err)
+            Right (len, cap)
+              | cap == 0 ->
+                  pure (Right (rn, StepReturn "CKR_BUFFER_TOO_SMALL", "bytes=" ++ show len ++ " capacity=0"))
+              | inFault rn i -> do
+                  emit tr "C_Sign" 0x30 ("session=" ++ name)
+                  pure (Right (rn, StepReturn "CKR_DEVICE_ERROR", ""))
+              | otherwise -> do
+                  -- pending_polls applies ONLY to async-eligible ops in
+                  -- async sessions: a sync session never pends, no matter
+                  -- what the scenario file carries.
+                  let polls = acPendingPolls (cfgAsync cfg)
+                      wantPending = lsAsync ls && acEnabled (cfgAsync cfg) && polls > 0
+                      calls' = lsSignCalls ls + 1
+                      detail = "bytes=" ++ show len ++ " capacity=" ++ show cap
+                  emit tr "C_Sign" (if wantPending then 0x204 else 0) ("session=" ++ name)
+                  if wantPending
+                    then do
+                      let ls' = ls { lsSignCalls = calls', lsPendingLeft = polls }
+                      pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_PENDING", detail))
+                    else pure (Right (rn { rnSessions = Map.insert name (ls { lsSignCalls = calls' }) (rnSessions rn) }, StepReturn "CKR_OK", detail))
   "async.complete" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
@@ -533,21 +558,27 @@ execStep cfg reg tr rn i st = case rsAction st of
         if inFault rn i
           then do
             emit tr "C_Sign" 0x30 ("session=" ++ name)
-            pure (Right (rn, StepReturn "CKR_DEVICE_ERROR"))
+            pure (Right (rn, StepReturn "CKR_DEVICE_ERROR", ""))
           else do
             let left_ = lsPendingLeft ls
             -- polls = pending completes before the final OK.
             if left_ > 0
               then do
                 emit tr "C_Sign" 0x204 ("session=" ++ name)
-                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = left_ - 1 }) (rnSessions rn) }, StepReturn "CKR_PENDING"))
+                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = left_ - 1 }) (rnSessions rn) }, StepReturn "CKR_PENDING", ""))
               else do
                 emit tr "C_Sign" 0 ("session=" ++ name)
-                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = 0 }) (rnSessions rn) }, StepReturn "CKR_OK"))
+                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = 0 }) (rnSessions rn) }, StepReturn "CKR_OK", ""))
   "token.remove" -> do
-    _ <- removeToken reg (SlotId 0)
-    emit tr "C_WaitForSlotEvent" 0 "token-removed"
-    pure (Right (rn, StepReturn "CKR_OK"))
+    let tok = fromMaybe (slotZeroLabel cfg) $ case lookup "token" (rsArgs st) of
+          Just (JStr t) -> Just t
+          _ -> Nothing
+    if tok /= slotZeroLabel cfg
+      then pure (Right (rn, StepReturn "CKR_TOKEN_NOT_PRESENT", "token=" ++ tok))
+      else do
+        _ <- removeToken reg (SlotId 0)
+        emit tr "C_WaitForSlotEvent" 0 "token-removed"
+        pure (Right (rn, StepReturn "CKR_OK", "token=" ++ tok))
   "slot-event.wait" -> do
     let nonblocking = case lookup "nonblocking" (rsArgs st) of
           Just (JBool b) -> b
@@ -556,12 +587,12 @@ execStep cfg reg tr rn i st = case rsAction st of
     case w of
       WaitEvent _ -> do
         emit tr "C_WaitForSlotEvent" 0 "event"
-        pure (Right (rn, StepEvent "token-state-change"))
+        pure (Right (rn, StepEvent "token-state-change", ""))
       WaitNoEvent -> pure (Left "expected a slot event, queue empty")
       WaitFinalized -> pure (Left "instance finalized while waiting")
   "finalize" -> do
     emit tr "C_Finalize" 0 "finalized"
-    pure (Right (rn { rnFinalized = True }, StepReturn "CKR_OK"))
+    pure (Right (rn { rnFinalized = True }, StepReturn "CKR_OK", ""))
   -- Sim verbs: test-gated like scenario.load (the gate refuses
   -- without mutation when the instance is not test-enabled).
   "token.insert" -> withSimGate $ do
@@ -570,7 +601,7 @@ execStep cfg reg tr rn i st = case rsAction st of
         | n >= 0 && n <= 0xFFFFFFFF -> do
             _ <- insertToken reg (SlotId (fromInteger n))
             emit tr "C_WaitForSlotEvent" 0 "token-inserted"
-            pure (Right (rn, StepReturn "CKR_OK"))
+            pure (Right (rn, StepReturn "CKR_OK", ""))
       _ -> pure (Left "token.insert needs an integer 'slot' in 0..2^32-1")
   "async.delay" -> withSimGate $ do
     case sessionOf rn st of
@@ -580,14 +611,14 @@ execStep cfg reg tr rn i st = case rsAction st of
           | p >= 0 && p <= 1000000 -> do
               emit tr "C_Sign" 0x204 ("session=" ++ name)
               let ls' = ls { lsPendingLeft = lsPendingLeft ls + fromInteger p }
-              pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK"))
+              pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK", ""))
         _ -> pure (Left "async.delay needs integer 'polls' in 0..1000000")
   "fault.window" -> withSimGate $ do
     case (lookup "start" (rsArgs st), lookup "ticks" (rsArgs st)) of
       (Just (JNum s), Just (JNum t))
         | s >= 0 && t >= 0 && s <= 1000000 && t <= 1000000 -> do
             emit tr "C_Sign" 0 "fault-window"
-            pure (Right (rn { rnFault = Just (fromInteger s, fromInteger t) }, StepReturn "CKR_OK"))
+            pure (Right (rn { rnFault = Just (fromInteger s, fromInteger t) }, StepReturn "CKR_OK", ""))
       _ -> pure (Left "fault.window needs integer 'start'/'ticks' in 0..1000000")
   other -> pure (Left ("unknown action (rejected, never executed): " ++ other))
   where
@@ -618,6 +649,23 @@ sessionOf rn st =
 -- | Default save slot name (positional: first session is "s1").
 saveName :: Int -> String
 saveName n = "s" ++ show n
+
+-- | The consumed sign inputs: decoded payload length and output
+-- capacity. A 'Left' is unreachable after 'validateScenario',
+-- which requires both keys with strict base64 and the admitted
+-- range.
+signConsumption :: RunStep -> Either String (Int, Integer)
+signConsumption st = do
+  payload <- case lookup "data_base64" (rsArgs st) of
+    Just (JStr s) -> Right s
+    _ -> Left "sign needs a string 'data_base64'"
+  len <- case base64DecodedLength payload of
+    Just n -> Right n
+    Nothing -> Left "sign 'data_base64' must be strict base64"
+  cap <- case lookup "output_capacity" (rsArgs st) of
+    Just (JNum n) -> Right n
+    _ -> Left "sign needs an integer 'output_capacity'"
+  pure (len, cap)
 
 -- | The one total expectation check, applied after every step's
 -- explicit result. A mismatch fails the run (the caller prefixes

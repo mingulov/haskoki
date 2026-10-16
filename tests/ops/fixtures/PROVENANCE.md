@@ -36,3 +36,7 @@ documentary `note` object; validation drops them.
 `fixture.load`; the fresh-store assumption recorded in the top-level note.
 `sim-scenario.json`: the retired `only_if_new_store` argument dropped from
 `fixture.load`; the fresh-store assumption recorded in the top-level note.
+`scenario.json`: the `token` arguments now name the served slot-0 label
+(`session.open` and `token.remove`); other labels refuse at execution.
+`sim-scenario.json`: the `token` arguments now name the served slot-0 label
+(`session.open` and `token.remove`); other labels refuse at execution.

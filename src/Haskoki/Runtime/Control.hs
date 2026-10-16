@@ -733,7 +733,9 @@ knownVerbs =
 -- value shapes, and required keys). Step extras validate per
 -- action: 'save_as' only on 'session.open' (a non-empty string),
 -- 'expect' carrying the clause its action produces ('return'
--- everywhere except slot-event.wait, 'event' only there).
+-- everywhere except slot-event.wait, 'event' only there). A step
+-- may also carry a 'note' object, validated and dropped like the
+-- top-level one.
 -- Effective session names are unique (positional slots count too,
 -- and the live @"s1"@ alias occupies its name). Duplicate keys
 -- reject at every level: lookup takes the first, so a second entry
@@ -787,8 +789,11 @@ validateScenario (JObj kvs) = do
         go seen ((k, _) : rest)
           | k `elem` seen = Just k
           | otherwise = go (k : seen) rest
-    checkField (k, _)
+    checkField (k, v)
       | k `elem` ["action", "arguments", "save_as", "expect"] = Right ()
+      | k == "note" = case v of
+          JObj _ -> Right ()
+          _ -> Left "scenario 'note' must be an object"
       | otherwise = Left ("unknown scenario step field: " ++ k)
     checkTopField (k, v)
       | k `elem` ["name", "rules", "steps"] = Right ()

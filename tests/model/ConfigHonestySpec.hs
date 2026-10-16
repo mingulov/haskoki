@@ -372,7 +372,7 @@ runTempAsync tag enabled polls completes = withTimeout ("scenario " ++ tag) $
       [ step "initialize" []
       , step "fixture.load" []
       , step "session.open"
-          [ ("token", JStr "demo-token"), ("read_write", JBool True)
+          [ ("token", JStr "haskoki-demo"), ("read_write", JBool True)
           , ("asynchronous", JBool True)
           ]
       , step "sign.init" [("session", JStr "s1")
