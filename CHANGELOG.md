@@ -93,6 +93,18 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   `CKR_OPERATION_NOT_INITIALIZED`. The session check now runs before
   the cursor lookup, and refusals leave the output buffer and count
   untouched.
+- Byte-operation derives now read the base key's effective
+  `CKA_EXTRACTABLE`: a base without stored protection flags counts
+  as unextractable, so a derive template asking
+  `CKA_EXTRACTABLE=true` over such a base fails with
+  `CKR_TEMPLATE_INCONSISTENT`. Set `CKA_SENSITIVE=false` and
+  `CKA_EXTRACTABLE=true` explicitly on the base to keep deriving
+  readable children from it.
+- Public keys report `CKA_SENSITIVE=false` and
+  `CKA_EXTRACTABLE=true` when the template omits them, and public
+  key material always reads back, whatever protection flags the
+  template stored. Explicit flags on a public template are stored
+  and reported, with no sealing effect.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and

@@ -34,6 +34,7 @@ import Haskoki.Attribute
   , PartialReads (..)
   , Shape (..)
   , attributeTypeByName
+  , decodeValue
   , encodeValue
   , getAttributes
   , shapeOf
@@ -72,7 +73,7 @@ import Haskoki.Model
   , emptyModel
   , lookupSession
   )
-import Haskoki.Object (resolveHandle)
+import Haskoki.Object (planGetAttributes, resolveHandle)
 import Haskoki.Operation.Cipher (pkcs7Pad, pkcs7Unpad)
 import Haskoki.Operation
   ( CipherSpec (..)
@@ -367,6 +368,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "RSA keypair stamps components and round-trips" caseRsaKeygen
   , testCase "RSA keypair stamps modulus bits on the public half" caseRsaModulusBits
   , testCase "RSA keypair generations are distinct" caseRsaKeygenDistinct
+  , testCase "generated public halves read without protection flags"
+      caseGeneratedPublicReads
   , testCase "RSA keygen bounds refuse out-of-window specs" caseRsaKeygenBounds
   , testCase "RSA exponent plans, agrees and refuses" caseRsaExponentPlanner
   , testCase "RSA stamping refuses mismatched halves" caseRsaStampMismatch
@@ -664,6 +667,58 @@ caseKemKeygen = withSynth $ \answer -> do
       assertBool "priv material nonempty" (not (BS.null q))
       assertBool "halves differ" (p /= q)
     _ -> assertFailure "keypair halves lack stored material"
+
+-- | Generated public halves read back under minimal templates: no
+-- protection flags are minted or needed. Each leg pins its public
+-- template carries none, then reads the public value straight off
+-- the finished pair. The RSA leg also reads the stamped modulus
+-- (the synthetic EC halves are opaque, so no point is stamped
+-- there).
+caseGeneratedPublicReads :: IO ()
+caseGeneratedPublicReads = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, kemH) <- mint answer m0 st "ML-KEM" mlKemKeyPairGenMech kemPubTmpl kemPrivTmpl
+  (m2, mldsaH) <- mint answer m1 st "ML-DSA" mldsaKeyPairGenMech mldsaPubTmpl mldsaPrivTmpl
+  (m3, dhH) <- mint answer m2 st "DH" dhKeyPairGenMech dhPubTmpl dhPrivTmpl
+  (m4, dsaH) <- mint answer m3 st "DSA" dsaKeyPairGenMech dsaPubTmpl dsaPrivTmpl
+  (m5, ecH) <- mint answer m4 st "EC" ecKeyPairGenMech ecPubTmpl ecPrivTmpl
+  (m6, rsaH) <- mint answer m5 st "RSA" rsaKeyPairGenMech rsaPubTmpl rsaPrivTmpl
+  mapM_ (readValue m6 st)
+    [ ("ML-KEM", kemH), ("ML-DSA", mldsaH), ("DH", dhH)
+    , ("DSA", dsaH), ("EC", ecH), ("RSA", rsaH)
+    ]
+  Just rsaPub <- pure (resolveHandle m6 rsaH)
+  case Map.lookup AttrModulus (osAttrs rsaPub) of
+    Just (ValBytes n) -> do
+      got <- readAttr m6 st "RSA modulus" rsaH AttrModulus
+      assertEqual "RSA modulus" (Just (ValBytes n)) got
+    other -> assertFailure ("RSA public lacks modulus: " ++ show other)
+  where
+    mint answer m st tag mech pubT privT = do
+      assertBool (tag ++ ": public template carries no protection flags")
+        (all (\(t, _) -> t /= AttrSensitive && t /= AttrExtractable) pubT)
+      case planGenerateKeyPair defaultRules m st mech pubT privT of
+        KeyEffect pw fx -> do
+          res <- answer m fx
+          c <- finishCommit m st pw res 2
+          pubH <- handleOf (pcOutputs c !! 0)
+          m' <- expectRight (publishDelta m (pcDelta c))
+          pure (m', pubH)
+        other -> assertFailure (tag ++ ": pair plan is not an effect: " ++ show other)
+          >> undefined
+    readValue m st (tag, h) = do
+      Just ost <- pure (resolveHandle m h)
+      Just mat <- pure (keyBytesOf ost)
+      got <- readAttr m st (tag ++ " public value") h AttrValue
+      assertEqual (tag ++ " public value") (Just (ValBytes mat)) got
+    readAttr m st tag h t = case planGetAttributes m st h [t] of
+      Immediate c -> case pcOutputs c of
+        [o] -> pure (decodeValue t (outBytes o))
+        _ -> assertFailure (tag ++ ": read outputs arity") >> undefined
+      Reject rej -> assertFailure (tag ++ ": read rejected: " ++ show (rejCode rej))
+        >> undefined
+      Execute _ _ -> assertFailure (tag ++ ": read must not execute") >> undefined
 
 caseKemLengthQuery :: IO ()
 caseKemLengthQuery = withSynth $ \answer -> do

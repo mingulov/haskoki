@@ -390,15 +390,40 @@ isKeyClass attrs = case Map.lookup AttrClass attrs of
   Just (ValULong c) -> c == ckoSecretKey || c == ckoPrivateKey || c == ckoPublicKey
   _ -> False
 
--- | The reported key attributes a key object lacks:
--- non-sensitive, unextractable, with the weakest history/origin
--- claim (no false never-extracted assurance for legacy rows).
--- Key-generation mechanism reads @CK_UNAVAILABLE_INFORMATION@: it
--- carries a valid value only when @CKA_LOCAL@ is true.
+-- | Whether stored attributes describe a public key object. A map
+-- without a class is not one.
+isPublicKeyClass :: Map AttributeType AttributeValue -> Bool
+isPublicKeyClass attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c) -> c == ckoPublicKey
+  _ -> False
+
+-- | The reported key attributes a private or secret key object
+-- lacks: non-sensitive, unextractable, with the weakest
+-- history/origin claim (no false never-extracted assurance for
+-- legacy rows). Key-generation mechanism reads
+-- @CK_UNAVAILABLE_INFORMATION@: it carries a valid value only when
+-- @CKA_LOCAL@ is true.
 keyDefaults :: [(AttributeType, AttributeValue)]
 keyDefaults =
   [ (AttrSensitive, ValBool False)
   , (AttrExtractable, ValBool False)
+  , (AttrAlwaysSensitive, ValBool False)
+  , (AttrNeverExtractable, ValBool False)
+  , (AttrLocal, ValBool False)
+  -- maxBound is CK_UNAVAILABLE_INFORMATION: KGM is valid only when
+  -- LOCAL is TRUE (PKCS#11 Table 26).
+  , (AttrKeyGenMechanism, ValULong maxBound)
+  ]
+
+-- | The reported key attributes a public key object lacks:
+-- non-sensitive and extractable. Public material is always
+-- readable (the seal never applies to public keys), so the
+-- default tells the truth. Caller-supplied values are stored and
+-- reported, but never seal.
+publicKeyDefaults :: [(AttributeType, AttributeValue)]
+publicKeyDefaults =
+  [ (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool True)
   , (AttrAlwaysSensitive, ValBool False)
   , (AttrNeverExtractable, ValBool False)
   , (AttrLocal, ValBool False)
@@ -412,12 +437,15 @@ keyDefaults =
 -- lacks is filled in: the flags with the enforced defaults above,
 -- @CKA_LABEL@ with the PKCS#11 empty default. Key objects
 -- additionally own the key attributes and gain 'keyDefaults' for
--- the ones they lack. Stored values always win. The view is
--- computed per call and never stored, so stored records and their
--- durable bytes are unchanged. @CKA_UNIQUE_ID@ is not modeled and
--- stays unreported. Non-storage objects pass through unchanged.
+-- the ones they lack; public keys gain 'publicKeyDefaults'
+-- instead. Stored values always win. The view is computed per call
+-- and never stored, so stored records and their durable bytes are
+-- unchanged. @CKA_UNIQUE_ID@ is not modeled and stays unreported.
+-- Non-storage objects pass through unchanged.
 effectiveAttrs :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 effectiveAttrs attrs
+  | isPublicKeyClass attrs =
+      Map.union attrs (Map.union storageDefaults publicKeyDefaultMap)
   | isKeyClass attrs = Map.union attrs (Map.union storageDefaults keyDefaultMap)
   | isStorageObject attrs = Map.union attrs storageDefaults
   | otherwise = attrs
@@ -426,6 +454,7 @@ effectiveAttrs attrs
       ((AttrLabel, ValBytes BS.empty)
         : [(t, ValBool d) | (t, d) <- storageFlagDefaults])
     keyDefaultMap = Map.fromList keyDefaults
+    publicKeyDefaultMap = Map.fromList publicKeyDefaults
 
 -- | The object's token flag (absent or wrongly shaped = session object).
 objectToken :: ObjectState -> Bool
@@ -1301,10 +1330,9 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
 -- the DSA/DH public value @y@ through @CKA_VALUE@ — so a public
 -- DSA/DH object whose value parses as an SPKI reads @y@ instead
 -- of the DER. Anything else (private halves, secrets, opaque
--- synthetic values, unparseable DER) passes through untouched;
--- sealing still applies to the projected read (the projection
--- runs before 'getAttributes', so a sealed flag redacts @y@
--- exactly like the stored value).
+-- synthetic values, unparseable DER) passes through untouched.
+-- The projection runs before 'getAttributes'; the seal never
+-- applies to these public objects, so @y@ always reads.
 projectPublicValue :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 projectPublicValue attrs = case (classOf, keyTypeOf, Map.lookup AttrValue attrs) of
   (Just c, Just k, Just (ValBytes der))

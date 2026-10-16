@@ -36,6 +36,7 @@ import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Data.Word (Word64)
 
+import Haskoki.Attribute.Generated (mustClassId)
 import Haskoki.Types (ReturnCode (..), redactShown)
 
 -- | Attribute inventory: exactly the types the object flows
@@ -208,11 +209,18 @@ historyAttrs =
 
 -- | Whether the payload ('AttrValue') of the given attribute map is
 -- sealed: sensitive or unextractable. Either flag alone seals it.
+-- Public keys never seal: sensitivity and extractability protect
+-- private and secret key values only, so whatever flags a public
+-- object carries, its material stays readable.
 payloadSealed :: Map AttributeType AttributeValue -> Bool
-payloadSealed attrs = isTrue AttrSensitive || isFalse AttrExtractable
+payloadSealed attrs
+  | isPublicKey = False
+  | otherwise = isTrue AttrSensitive || isFalse AttrExtractable
   where
     isTrue t = Map.lookup t attrs == Just (ValBool True)
     isFalse t = Map.lookup t attrs == Just (ValBool False)
+    isPublicKey =
+      Map.lookup AttrClass attrs == Just (ValULong (mustClassId "CKO_PUBLIC_KEY"))
 
 -- | Bound on external byte-array attribute encodings (4 MiB;
 -- pinned single source of truth, ConfigSpec pins the value).

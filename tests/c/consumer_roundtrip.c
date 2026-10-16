@@ -2300,7 +2300,7 @@ int main(int argc, char **argv) {
       CK_OBJECT_HANDLE dhPubA = 0, dhPrivA = 0, dhPubB = 0, dhPrivB = 0;
       CK_OBJECT_HANDLE dhS1 = 0, dhS2 = 0, dhBad = 0;
       CK_MECHANISM dhkgm, dhdm;
-      CK_ATTRIBUTE dhPubT[8], dhPrivT[4], dhShortT[5];
+      CK_ATTRIBUTE dhPubT[6], dhPrivT[4], dhShortT[5];
       CK_ATTRIBUTE dhDtmpl[] = {
         { CKA_CLASS, &dhseccls, sizeof(dhseccls) },
         { CKA_KEY_TYPE, &dhgenkt, sizeof(dhgenkt) },
@@ -2330,14 +2330,6 @@ int main(int argc, char **argv) {
       dhPubT[5].type = CKA_DERIVE;
       dhPubT[5].pValue = &bTrue;
       dhPubT[5].ulValueLen = sizeof(bTrue);
-      /* Explicitly readable: absent flags report unextractable,
-       * which would seal the public value this leg forwards. */
-      dhPubT[6].type = CKA_SENSITIVE;
-      dhPubT[6].pValue = &bFalse;
-      dhPubT[6].ulValueLen = sizeof(bFalse);
-      dhPubT[7].type = CKA_EXTRACTABLE;
-      dhPubT[7].pValue = &bTrue;
-      dhPubT[7].ulValueLen = sizeof(bTrue);
       dhPrivT[0].type = CKA_CLASS;
       dhPrivT[0].pValue = &scls;
       dhPrivT[0].ulValueLen = sizeof(scls);
@@ -2353,10 +2345,10 @@ int main(int argc, char **argv) {
       dhkgm.mechanism = CKM_DH_PKCS_KEY_PAIR_GEN;
       dhkgm.pParameter = NULL_PTR;
       dhkgm.ulParameterLen = 0;
-      rv = f->C_GenerateKeyPair(ssess, &dhkgm, dhPubT, 8, dhPrivT, 4,
+      rv = f->C_GenerateKeyPair(ssess, &dhkgm, dhPubT, 6, dhPrivT, 4,
                                 &dhPubA, &dhPrivA);
       CHECKC(rv == CKR_OK && dhPubA != 0 && dhPrivA != 0, "DH pair A mints");
-      rv = f->C_GenerateKeyPair(ssess, &dhkgm, dhPubT, 8, dhPrivT, 4,
+      rv = f->C_GenerateKeyPair(ssess, &dhkgm, dhPubT, 6, dhPrivT, 4,
                                 &dhPubB, &dhPrivB);
       CHECKC(rv == CKR_OK && dhPubB != 0 && dhPrivB != 0, "DH pair B mints");
       /* CKA_VALUE of a DH public key is an unsigned big integer: its

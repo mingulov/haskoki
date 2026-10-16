@@ -103,6 +103,7 @@ spec = testGroup "objects and attributes"
   , testCase "key defaults: find matches the effective protection" caseKeyEffectiveFind
   , testCase "key defaults: protection ratchets on legacy keys" caseKeyEffectiveRatchets
   , testCase "key defaults: data objects unchanged" caseDataUnchanged
+  , testCase "key defaults: public keys stay readable" casePublicKeysStayReadable
   , testCase "find: template match returns handles" caseFindFlow
   , testCase "find: sealed payloads never match a value guess" caseFindSealedNoOracle
   , testCase "find: contradictory template rejected, nothing bound" caseFindContradiction
@@ -720,6 +721,34 @@ caseDataUnchanged = do
   (pcL, _) <- runCommit m1 (findReq sid [(AttrLabel, ValBytes "")])
   hits <- findHandles pcL
   assertEqual "data label default still matches" [h] hits
+
+-- | Public key material never seals: a legacy public row (no
+-- protection flags stored) reads its value and reports the public
+-- defaults, and a public row carrying explicit sealing flags still
+-- reads its value while reporting the stored marks.
+casePublicKeysStayReadable :: IO ()
+casePublicKeysStayReadable = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid publicRsa)
+  h <- commitHandle pc
+  (pcV, _) <- runCommit m1 (getReq sid h [AttrValue])
+  assertEqual "legacy public value reads" CKR_OK (pcCode pcV)
+  (pcE, _) <- runCommit m1 (getReq sid h [AttrSensitive, AttrExtractable])
+  assertEqual "legacy public reports the public defaults"
+    [encodeValue (ValBool False), encodeValue (ValBool True)]
+    [outBytes o | o <- pcOutputs pcE]
+  (pcF, _) <- runCommit m1 (findReq sid [(AttrExtractable, ValBool True)])
+  found <- findHandles pcF
+  assertEqual "legacy public matches reported true" [h] found
+  (pcS, m2) <- runCommit m1 (createReq sid
+    (publicRsa ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool False)]))
+  hs <- commitHandle pcS
+  (pcSV, _) <- runCommit m2 (getReq sid hs [AttrValue])
+  assertEqual "flagged public value reads" CKR_OK (pcCode pcSV)
+  (pcSE, _) <- runCommit m2 (getReq sid hs [AttrSensitive, AttrExtractable])
+  assertEqual "flagged public reports stored marks"
+    [encodeValue (ValBool True), encodeValue (ValBool False)]
+    [outBytes o | o <- pcOutputs pcSE]
 
 caseFindFlow :: IO ()
 caseFindFlow = do
@@ -1877,6 +1906,17 @@ secretAes keyBytes =
   [ (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
   , (AttrKeyType, ValULong (mustKeyTypeId "CKK_AES"))
   , (AttrValue, ValBytes keyBytes)
+  , (AttrToken, ValBool False)
+  ]
+
+-- | A minimal RSA public-key template: class, key type, the two
+-- import components and the session mark. No protection flags.
+publicRsa :: [(AttributeType, AttributeValue)]
+publicRsa =
+  [ (AttrClass, ValULong (mustClassId "CKO_PUBLIC_KEY"))
+  , (AttrKeyType, ValULong (mustKeyTypeId "CKK_RSA"))
+  , (AttrModulus, ValBytes (BS.pack [0xDE, 0xAD, 0xBE, 0xEF]))
+  , (AttrPublicExponent, ValBytes (BS.pack [1, 0, 1]))
   , (AttrToken, ValBool False)
   ]
 
