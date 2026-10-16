@@ -556,9 +556,8 @@ static void case_prod_aead(void)
 
 static int g_argc;
 
-/* A digest handle freed twice is reported as a use-after-free first (the
- * shim reads the handle while releasing it), so the control frees the
- * result buffer the handle produced: a plain double free. */
+/* A result buffer freed twice: the plain double-free report. The handle
+ * controls below cover repeat destruction of a handle. */
 static void case_neg_double_free(void)
 {
     unsigned char *out = NULL;
@@ -569,6 +568,26 @@ static void case_neg_double_free(void)
     REQ(rc == 32 && out != NULL, "final");
     hsk_ossl4_free(out, (size_t)rc);
     OPENSSL_free(out);
+}
+
+/* A handle freed twice. Production destruction is unconditional, so
+ * ASan reports the second free (as a use-after-free of the handle, or as
+ * a double free). A registry that absorbed repeat frees in the
+ * production configuration would make these controls exit cleanly. */
+static void case_neg_handle_double_free(void)
+{
+    hsk_ossl4_md_t *h = hsk_ossl4_digest_init(g_lib, "SHA256", "");
+    REQ(h != NULL, "init");
+    hsk_ossl4_digest_free(h);
+    hsk_ossl4_digest_free(h);
+}
+
+static void case_neg_env_double_free(void)
+{
+    hsk_ossl4_env_t *e = hsk_ossl4_env_new();
+    REQ(e != NULL && hsk_ossl4_env_load(e, "default") == 0, "env");
+    hsk_ossl4_env_free(e);
+    hsk_ossl4_env_free(e);
 }
 
 static void case_neg_heap_overflow(void)
@@ -750,7 +769,7 @@ static void copy_fault_run(hsk_ossl4_test_gate_t *g, int arm, int measure)
     if (arm)
         hsk_ossl4_test_gate_arm_checkpoint(g, 1);
     g_seam = (hsk_ossl4_test_gate_poll(g) == 1);
-    if (measure) {
+    if (measure && g_track) {
         size_t nz = 0;
         int ok = 0;
         long n;
@@ -974,7 +993,9 @@ static int seam_warm(int kind, const seam_keys_t *k)
 }
 
 /* The noted allocation of `which` was freed exactly once, cleansed over
- * its whole extent, canary intact. */
+ * its whole extent, canary intact. Only the tracking allocator logs frees:
+ * on the plain allocator the case checks that the buffer was noted and
+ * leaves the boundaries and the free to ASan. */
 static void check_target(int which)
 {
     void *p = NULL;
@@ -982,6 +1003,8 @@ static void check_target(int which)
     int ok = 0;
     long n;
     REQ(hsk_ossl4_test_seam_target(which, &p, &alloc) == 1, "no-target");
+    if (!g_track)
+        return;
     n = trk_freed(p, alloc, &nz, &ok);
     g_target_frees = n;
     g_nonzero = (long)nz;
@@ -1142,31 +1165,33 @@ static const case_t cases[] = {
     { "prod-xdh", case_prod_xdh, 0, 0, 0 },
     { "prod-aead", case_prod_aead, 0, 0, 0 },
     { "neg-double-free", case_neg_double_free, 0, 0, 1 },
+    { "neg-handle-double-free", case_neg_handle_double_free, 0, 0, 1 },
+    { "neg-env-double-free", case_neg_env_double_free, 0, 0, 1 },
     { "neg-heap-overflow", case_neg_heap_overflow, 0, 0, 1 },
     { "neg-ubsan", case_neg_ubsan, 0, 0, 1 },
 #ifdef HSK_OSSL4_TEST_HOOKS
     { "live-1000", case_live_1000, 1, 0, 0 },
     { "credit-gone", case_credit_gone, 1, 0, 0 },
     { "address-reuse", case_address_reuse, 1, 1, 0 },
-    { "copy-fault", case_copy_fault, 1, 1, 0 },
+    { "copy-fault", case_copy_fault, 1, 0, 0 },
     { "adoption-alloc", case_adoption_alloc, 1, 0, 0 },
     { "adoption-load", case_adoption_load, 1, 0, 0 },
     { "final-fault", case_final_fault, 1, 0, 0 },
     { "exit-gate", case_exit_gate, 1, 0, 1 },
-    { "seam-bn-named", case_seam_bn_named, 1, 1, 0 },
-    { "seam-bn-explicit", case_seam_bn_explicit, 1, 1, 0 },
-    { "seam-derive-fail-shrink-ecdh", case_seam_fail_shrink_ecdh, 1, 1, 0 },
-    { "seam-derive-fail-grow-ecdh", case_seam_fail_grow_ecdh, 1, 1, 0 },
-    { "seam-derive-ok-shrink-ecdh", case_seam_ok_shrink_ecdh, 1, 1, 0 },
-    { "seam-derive-ok-grow-ecdh", case_seam_ok_grow_ecdh, 1, 1, 0 },
-    { "seam-derive-fail-shrink-xdh", case_seam_fail_shrink_xdh, 1, 1, 0 },
-    { "seam-derive-fail-grow-xdh", case_seam_fail_grow_xdh, 1, 1, 0 },
-    { "seam-derive-ok-shrink-xdh", case_seam_ok_shrink_xdh, 1, 1, 0 },
-    { "seam-derive-ok-grow-xdh", case_seam_ok_grow_xdh, 1, 1, 0 },
-    { "seam-derive-fail-shrink-dh", case_seam_fail_shrink_dh, 1, 1, 0 },
-    { "seam-derive-fail-grow-dh", case_seam_fail_grow_dh, 1, 1, 0 },
-    { "seam-derive-ok-shrink-dh", case_seam_ok_shrink_dh, 1, 1, 0 },
-    { "seam-derive-ok-grow-dh", case_seam_ok_grow_dh, 1, 1, 0 },
+    { "seam-bn-named", case_seam_bn_named, 1, 0, 0 },
+    { "seam-bn-explicit", case_seam_bn_explicit, 1, 0, 0 },
+    { "seam-derive-fail-shrink-ecdh", case_seam_fail_shrink_ecdh, 1, 0, 0 },
+    { "seam-derive-fail-grow-ecdh", case_seam_fail_grow_ecdh, 1, 0, 0 },
+    { "seam-derive-ok-shrink-ecdh", case_seam_ok_shrink_ecdh, 1, 0, 0 },
+    { "seam-derive-ok-grow-ecdh", case_seam_ok_grow_ecdh, 1, 0, 0 },
+    { "seam-derive-fail-shrink-xdh", case_seam_fail_shrink_xdh, 1, 0, 0 },
+    { "seam-derive-fail-grow-xdh", case_seam_fail_grow_xdh, 1, 0, 0 },
+    { "seam-derive-ok-shrink-xdh", case_seam_ok_shrink_xdh, 1, 0, 0 },
+    { "seam-derive-ok-grow-xdh", case_seam_ok_grow_xdh, 1, 0, 0 },
+    { "seam-derive-fail-shrink-dh", case_seam_fail_shrink_dh, 1, 0, 0 },
+    { "seam-derive-fail-grow-dh", case_seam_fail_grow_dh, 1, 0, 0 },
+    { "seam-derive-ok-shrink-dh", case_seam_ok_shrink_dh, 1, 0, 0 },
+    { "seam-derive-ok-grow-dh", case_seam_ok_grow_dh, 1, 0, 0 },
     { "canary-selftest", case_canary_selftest, 1, 1, 0 },
 #endif
 };
