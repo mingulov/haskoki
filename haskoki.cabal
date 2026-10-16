@@ -412,6 +412,7 @@ test-suite haskoki-model-tests
   hs-source-dirs:   tests/model tests/recipes tests/support
   other-modules:
     OwnershipCounters
+    StormBudget
     AdmissionSpec
     AsyncSpec
     ByteFormatSpec

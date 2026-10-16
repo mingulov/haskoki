@@ -363,6 +363,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "ML-DSA stamping lands CKA_SEED on agreement" caseMldsaStampSeed
   , testCase "EC keypair serves all covered curves" caseEcKeygenCurves
   , testCase "RSA keypair stamps components and round-trips" caseRsaKeygen
+  , testCase "RSA keypair stamps modulus bits on the public half" caseRsaModulusBits
   , testCase "RSA keypair generations are distinct" caseRsaKeygenDistinct
   , testCase "RSA keygen bounds refuse out-of-window specs" caseRsaKeygenBounds
   , testCase "RSA exponent plans, agrees and refuses" caseRsaExponentPlanner
@@ -2018,10 +2019,12 @@ caseRsaKeygen = do
       assertEqual "default exponent"
         (Just (ValBytes (BS.pack [1, 0, 1])))
         (Map.lookup AttrPublicExponent (osAttrs pub))
-      -- Generation params are not stored attributes.
-      assertBool "modulus bits dropped"
-        (Map.notMember AttrModulusBits (osAttrs pub))
-      assertBool "modulus bits dropped (priv)"
+      -- The public half carries the authoritative size; the private
+      -- half carries no size, per PKCS#11 3.2 section 6.1.
+      assertEqual "modulus bits stamped"
+        (Just (ValULong 2048))
+        (Map.lookup AttrModulusBits (osAttrs pub))
+      assertBool "modulus bits absent (priv)"
         (Map.notMember AttrModulusBits (osAttrs priv))
       -- The private half carries all eight CRT parts ...
       mapM_ (assertPresent (osAttrs priv))
@@ -2053,6 +2056,52 @@ caseRsaKeygen = do
     assertPresent attrs t = case Map.lookup t attrs of
       Just (ValBytes bs) | not (BS.null bs) -> pure ()
       other -> assertFailure ("missing component " ++ show t ++ ": " ++ show other)
+
+caseRsaModulusBits :: IO ()
+caseRsaModulusBits = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, pubH, privH) <- case planGenerateKeyPair defaultRules m0 st rsaKeyPairGenMech rsaPubTmpl rsaPrivTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      h1 <- handleOf (pcOutputs c !! 0)
+      h2 <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      pure (m', h1, h2)
+    other -> assertFailure ("RSA plan is not an effect: " ++ show other) >> undefined
+  Just pub <- pure (resolveHandle m1 pubH)
+  Just priv <- pure (resolveHandle m1 privH)
+  assertEqual "public modulus bits"
+    (Just (ValULong 2048))
+    (Map.lookup AttrModulusBits (osAttrs pub))
+  assertBool "private lacks modulus bits"
+    (Map.notMember AttrModulusBits (osAttrs priv))
+  case getAttributes (osAttrs pub) [AttrModulusBits] of
+    PartialReads code results -> do
+      assertEqual "public read code" CKR_OK code
+      assertEqual "public read value"
+        (Just (ResOk (ValULong 2048)))
+        (lookup AttrModulusBits results)
+  case getAttributes (osAttrs priv) [AttrModulusBits] of
+    PartialReads code _ ->
+      assertEqual "private read code" CKR_ATTRIBUTE_TYPE_INVALID code
+  -- Pub-from-priv stamps the same size from the SPKI half.
+  case (Map.lookup AttrModulus (osAttrs pub), Map.lookup AttrPublicExponent (osAttrs pub)) of
+    (Just (ValBytes n), Just (ValBytes e)) -> do
+      let po = pendingFromAttrs st (Map.fromList
+            [(AttrClass, ValULong ckoPublicKey), (AttrKeyType, ValULong ckkRsa)
+            , (AttrToken, ValBool False)])
+          spki = rsaPublicDer n e
+      case finishWork m1 st (PwDerivePub po ckkRsa) (GotBytes spki) of
+        Immediate c -> do
+          let StateDelta ops = pcDelta c
+          case [a | DeltaCreateObjectFull _ a _ _ <- ops] of
+            [stored] -> assertEqual "derived public modulus bits"
+              (Just (ValULong 2048)) (Map.lookup AttrModulusBits stored)
+            _ -> assertFailure "derived public arity"
+        other -> assertFailure ("derived public finish shape: " ++ show other)
+    _ -> assertFailure "generated public lacks components"
 
 caseRsaKeygenDistinct :: IO ()
 caseRsaKeygenDistinct = withSynth $ \answer -> do
@@ -2392,6 +2441,12 @@ caseDsaStamp = do
         (Just (ValBytes dsaP)) (Map.lookup AttrPrime (poAttrs priv'))
       assertEqual "priv inherits base"
         (Just (ValBytes dsaG)) (Map.lookup AttrBase (poAttrs priv'))
+      assertBool "key carries no prime bits"
+        (Map.notMember AttrPrimeBits (poAttrs pub'))
+      assertBool "key carries no subprime bits"
+        (Map.notMember AttrSubprimeBits (poAttrs pub'))
+      assertBool "priv carries no prime bits"
+        (Map.notMember AttrPrimeBits (poAttrs priv'))
     Nothing -> assertFailure "matching DSA halves must stamp"
   -- Disagreeing and opaque halves pass through unstamped (EC mirror).
   assertEqual "mismatched halves pass through" (Just (pub, priv))
@@ -2593,6 +2648,10 @@ caseDhStamp = do
         (Just (ValBytes dhP)) (Map.lookup AttrPrime (poAttrs priv'))
       assertEqual "priv inherits base"
         (Just (ValBytes dhG)) (Map.lookup AttrBase (poAttrs priv'))
+      assertBool "key carries no prime bits"
+        (Map.notMember AttrPrimeBits (poAttrs pub'))
+      assertBool "priv carries no prime bits"
+        (Map.notMember AttrPrimeBits (poAttrs priv'))
     Nothing -> assertFailure "matching DH halves must stamp"
   case stampPairComponents pub9 priv9 pubX privX of
     Just (pub', _) ->

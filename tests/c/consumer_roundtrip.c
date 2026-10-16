@@ -1158,6 +1158,7 @@ int main(int argc, char **argv) {
       CK_OBJECT_CLASS scls = CKO_PRIVATE_KEY;
       CK_KEY_TYPE rkt = CKK_RSA;
       CK_ULONG bits = 2048;
+      CK_ULONG rbits = 0;
       CK_BYTE ebuf[8];
       static CK_BYTE mod[256];
       CK_ATTRIBUTE pubT[] = {
@@ -1198,6 +1199,19 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK && get[0].ulValueLen == 3 && ebuf[0] == 1 &&
                  ebuf[1] == 0 && ebuf[2] == 1,
              "RSA pair default exponent reads 65537");
+      get[0].type = CKA_MODULUS_BITS;
+      get[0].pValue = &rbits;
+      get[0].ulValueLen = sizeof(rbits);
+      rv = f->C_GetAttributeValue(ksess, pub, get, 1);
+      CHECKC(rv == CKR_OK && rbits == 2048,
+             "RSA pair modulus bits read 2048");
+      get[0].type = CKA_MODULUS_BITS;
+      get[0].pValue = &rbits;
+      get[0].ulValueLen = sizeof(rbits);
+      rv = f->C_GetAttributeValue(ksess, priv, get, 1);
+      CHECKC(rv == CKR_ATTRIBUTE_TYPE_INVALID &&
+                 get[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
+             "RSA private modulus bits invalid");
       bits = 1024;
       pub = 0;
       priv = 0;

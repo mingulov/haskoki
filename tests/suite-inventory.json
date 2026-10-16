@@ -266,6 +266,7 @@
         "SlotPhaseSpec",
         "SnapshotSpec",
         "StandardSurfaceSpec",
+        "StormBudget",
         "TemplateRulesSpec",
         "TraceSpec",
         "ULongSpec"
@@ -540,6 +541,7 @@
         "StandardSurfaceSpec": [
           "Standard surface"
         ],
+        "StormBudget": [],
         "TemplateRulesSpec": [
           "Template rules"
         ],

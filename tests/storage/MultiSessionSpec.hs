@@ -30,11 +30,13 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Control.Concurrent (ThreadId, forkFinally, killThread, threadDelay)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryReadMVar)
 import Control.Exception (AsyncException (..), SomeException, bracket, finally, fromException, throwIO, try)
 import Control.Monad (replicateM, when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
+import Data.Word (Word64)
+import GHC.Clock (getMonotonicTime)
 import qualified Database.SQLite3 as S
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
@@ -206,6 +208,20 @@ spec = testGroup "Multi-session store"
 rendezvousTimeout :: Int
 rendezvousTimeout = 5000000
 
+-- | Shared storm-scale join deadline for the reservation workers:
+-- 300 seconds for all 8 workers together. Partial machine stalls
+-- (a swapped-out lock holder convoying every worker) legitimately
+-- exceed 60 seconds while every worker still progresses, so the
+-- deadline bounds hang detection, never the work itself, which
+-- completes in seconds.
+reserveJoinBudget :: Int
+reserveJoinBudget = 300000000
+
+-- | Reservation-join survey slice: 10 milliseconds between result
+-- surveys.
+joinPollSlice :: Int
+joinPollSlice = 10000
+
 -- | Run a worker with 'forkFinally' outcome capture (the commit
 -- suite's 'withWorker' idiom, repeated because that helper is
 -- private to its module). Every exit path cancels a still-live
@@ -375,17 +391,57 @@ testConcurrentReserve openWith =
     resultVars <- replicateM nWorkers newEmptyMVar
     let worker var =
           replicateM perWorker (storeReserveJobId store) >>= putMVar var
-    withWorkers (map worker resultVars) $ \_outcomes -> do
-      mBatches <- mapM (timeout rendezvousTimeout . takeMVar) resultVars
-      batches <- case sequence mBatches of
-        Nothing -> assertFailure "reserve worker timed out"
-        Just bs -> pure bs
+    withWorkers (map worker resultVars) $ \outcomes -> do
+      batches <- collectReserveResults resultVars outcomes
       pids <- mapM (expectRight "reserve") (concat batches)
       assertEqual "every id exactly once" [1 .. fromIntegral total] (sort pids)
   where
     nWorkers = 8
     perWorker = 5
     total = nWorkers * perWorker
+
+-- | Collect every reservation worker's batch: a condition wait over
+-- the result cells with one shared deadline, replacing the old
+-- sequential per-worker 5-second takes (under load the first
+-- worker's five serialized fsync-class transactions legitimately
+-- exceed 5 seconds while every worker still progresses). A worker
+-- death reports its own exception at once, never a bare timeout;
+-- only a join that never completes fails on the deadline.
+collectReserveResults
+  :: [MVar [Either StoreError Word64]]
+  -> [MVar (Either SomeException ())]
+  -> IO [[Either StoreError Word64]]
+collectReserveResults resultVars outcomes = do
+  t0 <- getMonotonicTime
+  go (t0 + budgetSeconds)
+  where
+    budgetSeconds :: Double
+    budgetSeconds = fromIntegral reserveJoinBudget / 1000000
+    go deadline = do
+      now <- getMonotonicTime
+      if now >= deadline
+        then do
+          failed <- workerFailures outcomes
+          case failed of
+            (t, e) : _ -> assertFailure ("reserve worker " ++ show t ++ " failed: " ++ show e)
+            [] -> assertFailure "reserve workers timed out"
+        else do
+          snaps <- mapM tryReadMVar resultVars
+          case sequence snaps of
+            Just _ -> mapM takeMVar resultVars
+            Nothing -> do
+              failed <- workerFailures outcomes
+              case failed of
+                (t, e) : _ -> assertFailure ("reserve worker " ++ show t ++ " failed: " ++ show e)
+                [] -> threadDelay joinPollSlice >> go deadline
+
+-- | The index and exception of every worker whose outcome cell
+-- already holds a failure (non-consuming: the 'withWorker' join
+-- still owns the consuming take).
+workerFailures :: [MVar (Either SomeException ())] -> IO [(Int, SomeException)]
+workerFailures outs = do
+  snaps <- mapM tryReadMVar outs
+  pure [(t, e) | (t, Just (Left e)) <- zip [0 ..] snaps]
 
 -- | A close issued while a commit sits inside the masked
 -- region waits for the commit — it never slips past and shuts

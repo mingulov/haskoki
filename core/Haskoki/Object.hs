@@ -43,6 +43,7 @@ module Haskoki.Object
   , planGetAttributes
   ) where
 
+import Data.Bits (countLeadingZeros)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.List (find)
@@ -598,7 +599,11 @@ certImmutable =
 -- (the same shape key generation stores). For those shapes,
 -- require the complete component set ('CKR_TEMPLATE_INCOMPLETE'
 -- when short), assemble the DER, and store it as the value
--- alongside the verbatim components. An explicit value next to
+-- alongside the verbatim components. An RSA public import
+-- additionally stamps the authoritative @CKA_MODULUS_BITS@ (the
+-- true bit width of the modulus, overwriting any supplied size);
+-- the private half carries no size, per PKCS#11 3.2 section 6.1.
+-- An explicit value next to
 -- components contradicts (inconsistent), except the EC private
 -- scalar, which arrives as the value and is consumed by the
 -- assembly. Malformed parts refuse as inconsistent; foreign curves
@@ -676,8 +681,9 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       n <- need AttrModulus
       e <- need AttrPublicExponent
       forbidValue
-      pure (Map.insert AttrValue
-        (ValBytes (rsaPublicDer n e)) attrs)
+      pure (Map.insert AttrModulusBits (ValULong (fromIntegral (bitsOf n)))
+        (Map.insert AttrValue
+          (ValBytes (rsaPublicDer n e)) attrs))
     ecPrivate = do
       params <- need AttrEcParams
       scalar <- need AttrValue
@@ -964,6 +970,14 @@ importMaterial attrs = case (classOf, keyTypeOf) of
         "wrong shape for attribute: AttrValue")
       Nothing -> Left (CKR_TEMPLATE_INCOMPLETE,
         "missing component: AttrValue")
+
+-- | True bit width of unsigned big-endian bytes (leading zero
+-- bits discounted, so short top octets measure honestly).
+bitsOf :: ByteString -> Int
+bitsOf bs = case BS.dropWhile (== 0) bs of
+  stripped
+    | BS.null stripped -> 0
+    | otherwise -> BS.length stripped * 8 - countLeadingZeros (BS.head stripped)
 
 -- | Plan object destruction: the handle must resolve and the
 -- object must be visible to the calling session, then one combined

@@ -47,6 +47,7 @@ spec :: TestTree
 spec = testGroup "key import"
   [ testCase "RSA private import assembles PKCS#8" caseRsaPrivate
   , testCase "RSA public import assembles SPKI" caseRsaPublic
+  , testCase "RSA public import derives modulus bits" caseRsaImportModulusBits
   , testCase "EC private import assembles PKCS#8" caseEcPrivate
   , testCase "EC public import assembles SPKI" caseEcPublic
   , testCase "DSA private import assembles PKCS#8" caseDsaPrivate
@@ -508,6 +509,27 @@ caseRsaPublic = do
   (_, _, attrs) <- doCreate m0 st rsaPubTmpl
   der <- storedValue attrs
   assertEqual "SPKI golden" rsaSpkiGold der
+
+caseRsaImportModulusBits :: IO ()
+caseRsaImportModulusBits = do
+  m0 <- seedModel
+  st <- getSession m0
+  (_, _, pubAttrs) <- doCreate m0 st rsaPubTmpl
+  assertEqual "public modulus bits"
+    (Just (ValULong 2048))
+    (Map.lookup AttrModulusBits pubAttrs)
+  case getAttributes pubAttrs [AttrModulusBits] of
+    PartialReads code results -> do
+      assertEqual "public read code" CKR_OK code
+      assertEqual "public read value"
+        (Just (ResOk (ValULong 2048)))
+        (lookup AttrModulusBits results)
+  (_, _, privAttrs) <- doCreate m0 st rsaPrivTmpl
+  assertBool "private lacks modulus bits"
+    (Map.notMember AttrModulusBits privAttrs)
+  case getAttributes privAttrs [AttrModulusBits] of
+    PartialReads code _ ->
+      assertEqual "private read code" CKR_ATTRIBUTE_TYPE_INVALID code
 
 caseEcPrivate :: IO ()
 caseEcPrivate = do

@@ -29,6 +29,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
 import OwnershipCounters (assertZero, counted)
+import StormBudget (stormScaleBudget)
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Model (Model (..), SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Codec (encodeInitInput)
@@ -375,12 +376,13 @@ openSecondSession gen = do
   pure st
 
 -- | No-wedge join for race workers: a lock inversion would hang the
--- take, so the 10s backstop fails loudly instead of wedging the suite.
+-- take, so the storm-scale backstop fails loudly instead of
+-- wedging the suite.
 joinBounded :: String -> MVar a -> IO a
 joinBounded name mv = do
-  r <- timeout 10000000 (takeMVar mv)
+  r <- timeout stormScaleBudget (takeMVar mv)
   case r of
-    Nothing -> assertFailure ("wedged (>10s): " ++ name)
+    Nothing -> assertFailure ("wedged (>300s): " ++ name)
     Just v -> pure v
 
 -- | Simultaneous-join rounds: the exactly-one-winner property

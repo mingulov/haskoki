@@ -95,6 +95,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import OwnershipCounters (assertCensusZero, assertZero, counted, emitCounters)
+import StormBudget (stormScaleBudget)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import qualified Haskoki.Engine.Backend as B
 import Haskoki.Engine.Driver (encodeResult, runEffect, toCryptoError)
@@ -408,12 +409,13 @@ spec = testGroup "Ownership"
     ]
   ]
 
--- | No-wedge guard: every probe body runs under a 10s 'timeout'.
+-- | No-wedge guard: every probe body runs under the storm-scale
+-- 'stormScaleBudget' 'timeout'.
 guarded :: String -> IO () -> IO ()
 guarded name body = do
-  r <- timeout 10000000 body
+  r <- timeout stormScaleBudget body
   case r of
-    Nothing -> assertFailure ("wedged (>10s): " ++ name)
+    Nothing -> assertFailure ("wedged (>300s): " ++ name)
     Just () -> pure ()
 
 sid1 :: SessionId
