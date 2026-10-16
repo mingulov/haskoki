@@ -59,7 +59,7 @@
       "origin_path": "tests/review/JavaTokenProbe.java",
       "introduced_by": "8fcb405",
       "compile": ["javac", "--release", "17", "-d", "@RUN@/java", "@SRC@/tests/journeys/java/JavaTokenProbe.java"],
-      "run": ["java", "--add-modules", "jdk.crypto.cryptoki,jdk.crypto.ec", "-cp", "@RUN@/java", "JavaTokenProbe", "@CFG@/sunpkcs11.cfg"]
+      "run": ["java", "--add-modules", "jdk.crypto.cryptoki,jdk.crypto.ec", "-cp", "@RUN@/java", "JavaTokenProbe", "@RUN@/cfg/sunpkcs11.cfg"]
     }
   },
   "legs": [

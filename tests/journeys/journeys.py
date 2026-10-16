@@ -1097,6 +1097,41 @@ def probe_setup_note(argv_raw, ctx):
     return None
 
 
+def ensure_provider_cfg(run_dir, ctx):
+    """Write the substituted provider cfg for Java legs.
+
+    The Java probe run template points at cfg/sunpkcs11.cfg under the
+    run root; the bytes come from the committed template with the
+    module path substituted. A missing template (synthetic source
+    roots in controls) means nothing to write.
+    """
+    src_root = ctx.get("src_root")
+    if src_root is None:
+        return
+    template = (Path(src_root) / "tests" / "journeys" / "sunpkcs11"
+                / "sunpkcs11.cfg")
+    try:
+        exists = template.is_file()
+    except OSError:
+        return
+    if not exists:
+        return
+    try:
+        text = template.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SetupRefusal(f"provider template unreadable: {exc}")
+    text = substitute_text(text, {"@MODULE@": ctx["module_path"]})
+    out = run_dir / "cfg" / "sunpkcs11.cfg"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SetupRefusal(f"cannot create cfg dir: {exc}")
+    try:
+        out.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise SetupRefusal(f"cannot write provider cfg: {exc}")
+
+
 def run_one_leg(run_dir, row, profile_rows, clients, ctx):
     name = row["name"]
     tag = safe_leg(name)
@@ -1119,6 +1154,7 @@ def run_one_leg(run_dir, row, profile_rows, clients, ctx):
         text = synthesize_config_text(name)
     cfg_path.write_text(text, encoding="utf-8")
     cfg_sha = sha256_file(cfg_path)
+    ensure_provider_cfg(run_dir, ctx)
     mapping = {
         "@MODULE@": ctx["module_path"],
         "@RUN@": str(run_dir),
@@ -2027,8 +2063,8 @@ def _der_oid(value):
 def _cert_spki(cert_bytes):
     """Full TLV bytes of the SPKI inside tbsCertificate.
 
-    The SPKI is the 7th child (index 6) of tbsCertificate, counting
-    the [0] version.
+    The SPKI is the 7th child (index 6) when the leading [0] version
+    is present, else the 6th child (index 5).
     """
     top = _der_children(cert_bytes, 0, len(cert_bytes))
     if len(top) != 1 or top[0][0] != 0x30:
@@ -2037,9 +2073,13 @@ def _cert_spki(cert_bytes):
     if not outer or outer[0][0] != 0x30:
         raise DerError("tbsCertificate shape")
     tbs = _der_children(outer[0][1], 0, len(outer[0][1]))
-    if len(tbs) < 7:
+    if not tbs:
         raise DerError("tbsCertificate children")
-    tag, _value, full = tbs[6]
+    # A leading 0xA0 tag means the [0] version is present.
+    index = 6 if tbs[0][0] == 0xA0 else 5
+    if len(tbs) <= index:
+        raise DerError("tbsCertificate children")
+    tag, _value, full = tbs[index]
     if tag != 0x30:
         raise DerError("subjectPublicKeyInfo shape")
     return full
@@ -2192,6 +2232,30 @@ FIXED_EC_SPKI_HEX = (
     "1e2f28eb0a73c04b96b1eb25bfc9fc7b018054f38c7d51b7939e7062599a"
     "6f358d6c95037ff34243583e86f3c0b60818d4b53a4bf8c7c15cdf963d16"
     "b5"
+)
+# A version-less certificate for the walker control. The DER was built
+# once by stripping the leading [0] version and the trailing extensions
+# from a fresh openssl P-256 self-signed certificate, so openssl still
+# parses it as Version 1. The SPKI below came from that DER via the
+# openssl CLI (`x509 -pubkey` then `pkey -outform DER`), never from the
+# walker. Both are frozen; the input bytes must not churn.
+V1_CERT_HEX = (
+    "308201263081cd021471d23441c44dc7e10fdd72230736afdc2ae3d7ea30"
+    "0a06082a8648ce3d04030230163114301206035504030c0b7434612d7631"
+    "70726f6265301e170d3236313031363130343232365a170d333631303133"
+    "3130343232365a30163114301206035504030c0b7434612d763170726f62"
+    "653059301306072a8648ce3d020106082a8648ce3d030107034200046406"
+    "2c73fa3b6c60d105721ec50584ced67426ae1308ee2233a4358fda7d59f5"
+    "bf8b0adaf815a5a7272cbd8d1637389f020c88711cc1764cdb6c74da682c"
+    "88fc300a06082a8648ce3d04030203480030450220316678f51fae38adfc"
+    "e2f6aeb63747b47b2eef13c52cdb1ec709fa143678963a022100a036965a"
+    "35df2d68726fd55eda2e53613021c292ba7a8da182ccfe5d3c9ccd28"
+)
+V1_SPKI_HEX = (
+    "3059301306072a8648ce3d020106082a8648ce3d0301070342000464062c"
+    "73fa3b6c60d105721ec50584ced67426ae1308ee2233a4358fda7d59f5bf"
+    "8b0adaf815a5a7272cbd8d1637389f020c88711cc1764cdb6c74da682c88"
+    "fc"
 )
 RSA_ENCRYPTION_OID = "1.2.840.113549.1.1.1"
 EC_PUBLIC_KEY_OID = "1.2.840.10045.2.1"
@@ -3692,6 +3756,102 @@ def check_probe_provenance(tmp):
     return None
 
 
+def check_sunpkcs11_cfg_written(tmp):
+    here = Path(__file__).resolve().parent
+    try:
+        table = load_json(here / "legs.json")
+    except (OSError, ValueError) as exc:
+        return f"committed leg table unreadable: {exc}"
+    probes = table.get("probes")
+    if not isinstance(probes, dict):
+        return "committed leg table lacks a probes block"
+    entry = probes.get("java-token-probe")
+    if not isinstance(entry, dict):
+        return "committed leg table lacks the Java probe entry"
+    run = entry.get("run")
+    if not isinstance(run, list):
+        return "Java probe entry lacks a run template"
+    if "@RUN@/cfg/sunpkcs11.cfg" not in run:
+        return ("Java probe run template lacks "
+                "@RUN@/cfg/sunpkcs11.cfg")
+    if any(isinstance(item, str) and "@CFG@/sunpkcs11.cfg" in item
+           for item in run):
+        return "Java probe run template still uses the file path"
+    ctx = _run_check_ctx(Path(tmp),
+                         module_path="/opt/fixture/lib/libhaskoki.so")
+    row = _run_check_row("sunpkcs11-probe",
+                         [sys.executable, "-c", "pass"])
+    run_dir, record = _run_check_leg(tmp, row, ctx)
+    if record.get("status") != "pass":
+        return ("synthetic leg did not pass: "
+                f"{record.get('failure_stage')}")
+    try:
+        text = (run_dir / "cfg" / "sunpkcs11.cfg").read_text(
+            encoding="utf-8")
+    except OSError as exc:
+        return f"engine did not write cfg/sunpkcs11.cfg: {exc}"
+    if "@MODULE@" in text:
+        return "substituted cfg still holds its placeholder"
+    want_lib = "library = " + ctx["module_path"]
+    if want_lib not in text:
+        return "substituted cfg lacks the module library line"
+    try:
+        template = (find_src_root() / "tests" / "journeys"
+                    / "sunpkcs11" / "sunpkcs11.cfg").read_text(
+                        encoding="utf-8")
+    except OSError as exc:
+        return f"provider template unreadable: {exc}"
+    want = substitute_text(template, {"@MODULE@": ctx["module_path"]})
+    if text != want:
+        return "substituted cfg bytes differ from the template"
+    return None
+
+
+def check_spki_v1_match(tmp):
+    proc = _spki_cli(tmp, bytes.fromhex(V1_CERT_HEX),
+                     bytes.fromhex(V1_SPKI_HEX))
+    if proc.returncode != 0:
+        return ("version-less certificate against its pinned SPKI "
+                f"exited {proc.returncode}: "
+                f"{(proc.stderr or '').strip()[:120]}")
+    if "SPKI-MATCH" not in (proc.stdout or ""):
+        return ("version-less certificate against its pinned SPKI "
+                "lacks SPKI-MATCH")
+    return None
+
+
+def check_issue_cert(tmp):
+    tmp = Path(tmp)
+    pub = tmp / "issue-pub.der"
+    out = tmp / "issue-out"
+    try:
+        pub.write_bytes(bytes.fromhex(FIXED_EC_SPKI_HEX))
+    except OSError as exc:
+        return f"cannot write the pinned SPKI: {exc}"
+    proc = subprocess.run(
+        [sys.executable, "-I", str(Path(__file__).resolve()),
+         "issue-cert", "--pub", str(pub), "--out-dir", str(out),
+         "--cn", "journey-app"],
+        capture_output=True, text=True, timeout=120)
+    # A missing openssl tool fails here, never passes silently: any
+    # non-zero exit is an error string.
+    if proc.returncode != 0:
+        detail = (((proc.stderr or "").strip() + " "
+                   + (proc.stdout or "").strip()).strip()[:200]
+                   or "openssl step failed")
+        return ("issue-cert over the pinned EC SPKI exited "
+                f"{proc.returncode}: {detail}")
+    if "SPKI-MATCH" not in (proc.stdout or ""):
+        return "issue-cert over the pinned EC SPKI lacks SPKI-MATCH"
+    try:
+        leaf_bytes = (out / "leaf.der").read_bytes()
+    except OSError as exc:
+        return f"issue-cert leaf unreadable: {exc}"
+    if not leaf_bytes:
+        return "issue-cert leaf is empty"
+    return None
+
+
 def run_path_checks():
     """Yield (label, check) for live run-path behavior.
 
@@ -3732,6 +3892,12 @@ def run_path_checks():
     yield ("truncated certificate", check_spki_truncated)
     yield ("probe bytes differ from provenance",
            check_probe_provenance)
+    yield ("engine writes the substituted provider cfg",
+           check_sunpkcs11_cfg_written)
+    yield ("version-less certificate matches its pinned SPKI",
+           check_spki_v1_match)
+    yield ("issue-cert over the pinned EC SPKI",
+           check_issue_cert)
 
 
 def self_test():
