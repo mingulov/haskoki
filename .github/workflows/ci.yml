@@ -219,6 +219,7 @@ jobs:
           python3 scripts/check-seed-honesty.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
+          python3 scripts/test-release-nm-gate.py
           python3 scripts/test-demo-shards.py
           python3 scripts/publish-coverage.py --check
       - name: Build and test
