@@ -195,10 +195,10 @@ The [B3 inventory](b3-docs-inventory.md) lists the module sets read from
 
 | Set | Count | Source |
 |---|---|---:|
-| Main library `exposed-modules` | 30 | `haskoki.cabal:160-190` |
-| Main library `other-modules` | 1 | `Haskoki.FFI.OpenSSL4.Raw` |
+| Main library `exposed-modules` | 30 | `haskoki.cabal:161-191` |
+| Main library `other-modules` | 2 | `Haskoki.FFI.OpenSSL4.Raw`, `Haskoki.Runtime.Attach` |
 | `haskoki-core` (`private` component) | 67 | `haskoki.cabal:81-148` |
-| Foreign library `other-modules` | 25 | `haskoki.cabal:244-269` |
+| Foreign library `other-modules` | 26 | `haskoki.cabal:250-276` |
 
 Two facts from that survey matter here: the `Haskoki.PKCS11` facade
 (`initialize`, `finalize`, `getInfo`, `getSlotList`) always answers

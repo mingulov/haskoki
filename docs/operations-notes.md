@@ -445,6 +445,33 @@ is separate from the successful-store SQLite restart proof in
 `tests/c/async_routed.c`. See the [qualification reference](pkcs11-oracle-triage.md#public-async-operations)
 for the native and external-checker scopes.
 
+### Detached attachment claims
+
+Attachment state for persistent detached jobs lives in one claim
+authority per open store handle, keyed by token and persistent id
+(`Haskoki.Runtime.Attach`), not in each detach context. Claims are
+exclusive across contexts over one handle: a context that loses a
+race cannot retire or cancel the winner, and a cross-token join still
+answers unknown. Retiring a context retires only the tables it served.
+Retiring a table that context never served only refuses later claims
+from that context; it never changes shared state. Opaque marks are
+keyed by table and job, apply only to non-terminal jobs, and clear on
+a successful detach or on retirement of the serving table.
+`markJobOpaque` stays exported as a documented fault-injection API.
+
+Documented boundaries:
+
+- Closing a store while attachments are live is not supported.
+  Reopening is covered once the owner is fully retired; a reopened
+  handle starts with an empty authority. There is no exactly-once
+  claim across process death.
+- A stale foreign active claim is not reclaimed: a claim held by
+  another context that never retires stays held, and this context
+  does not take it over.
+- When a context retires a table it never served, that table's
+  opaque marks stay in the shared authority until the serving context
+  retires the table.
+
 ## Async expiry/GC
 
 Terminal job records are retained under two per-table limits: 4096 records

@@ -25,6 +25,10 @@ The contract layers capabilities: open\/load\/commit\/close\/inspect,
 the commit protocol (fault injection, quarantine, reload),
 adversarial validation, detached-job records, and token reset.
 -}
+-- Each open 'Store' handle owns one detached-job claim authority
+-- ("Haskoki.Runtime.Attach"); a reopened handle starts empty, so
+-- closing a store while detached attachments are live is a
+-- documented boundary (see docs/operations-notes.md).
 module Haskoki.Runtime.Storage
   ( -- * Limits
     StoreLimits (..)

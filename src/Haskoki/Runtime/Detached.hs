@@ -249,6 +249,13 @@ import Haskoki.Types
 -- in-progress claims roll back, and its late claims and commits
 -- are refused, so no join publishes a live binding after its
 -- table closed.
+-- Boundaries: closing the store while attachments are live is
+-- unsupported (reopen after the owner is fully retired; nothing is
+-- exactly-once across process death); a stale active claim held by
+-- another context that never retires is not reclaimed; and a
+-- table retired by a context that never served it leaves its
+-- opaque marks in the shared authority until the serving context
+-- retires it.
 data DetachCtx = DetachCtx
   { dcStore :: !Store
   , dcToken :: !TokenId

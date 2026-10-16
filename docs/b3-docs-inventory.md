@@ -11,10 +11,10 @@ and the onboarding docs checked against the artifacts named in section 5.
 
 | Component | Visibility | Modules | Notes |
 |---|---|---:|---|
-| Main library, `exposed-modules` | public | 30 | `haskoki.cabal:160-190` |
-| Main library, `other-modules` | private | 1 | `Haskoki.FFI.OpenSSL4.Raw` (`haskoki.cabal:192-193`), provider-only bindings |
+| Main library, `exposed-modules` | public | 30 | `haskoki.cabal:161-191` |
+| Main library, `other-modules` | private | 2 | `Haskoki.FFI.OpenSSL4.Raw` (provider-only bindings) and `Haskoki.Runtime.Attach` (store-owned detached claim authority) (`haskoki.cabal:195-197`) |
 | `haskoki-core` | `private` component | 67 | `haskoki.cabal:78-156`; module list at `:81-148`; not the package public API |
-| Foreign library `haskoki`, `other-modules` | bundled, not imported | 25 | `haskoki.cabal:244-269`; compiled into `libhaskoki.so` |
+| Foreign library `haskoki`, `other-modules` | bundled, not imported | 26 | `haskoki.cabal:250-276`; compiled into `libhaskoki.so` |
 
 Main-library exposed set (30): `Haskoki`, `Haskoki.PKCS11`,
 `Haskoki.Engine.Backend`, `Haskoki.Engine.Driver`, `Haskoki.Engine.OpenSSL4`,
