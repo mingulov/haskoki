@@ -28,7 +28,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
-import Haskoki.CallWork (checkedCallWork)
+import Haskoki.CallWork (callWorkEffect, checkedCallWork)
 import Haskoki.Engine.Backend
   ( BackendEnv
   , CryptoBackend (..)
@@ -2650,15 +2650,17 @@ caseGcmCheckedVector = withBackend $ \env -> do
   m1 <- runCommit m0 iReq
   let eReq = (mkRequest F_Encrypt (Just sid))
         { reqInput = pt, reqRegions = [RegionBytes "ct" (IntentBuffer 64)] }
-  (res, eff@(O.EffectCrypto fx)) <- case planCall defaultRules m1 eReq of
+  (res, eff) <- case planCall defaultRules m1 eReq of
     Execute r e@(O.EffectCrypto _) -> pure (r, e)
     other -> assertFailure ("expected Execute, got: " ++ show other)
-  -- Stage 4: the planned triple checks.
-  case checkedCallWork sid res eff of
-    Right _ -> pure ()
+  -- Stage 4: the planned triple checks; the checked value drives
+  -- stage 5.
+  cw <- case checkedCallWork sid res eff of
+    Right c -> pure c
     Left mm -> assertFailure ("traced triple must check: " ++ show mm)
   -- Stage 5: the real backend seals the pinned vector.
-  sealed <- runEffect env resolver128 fx >>= expectBytes
+  sealed <- case callWorkEffect cw of
+    O.EffectCrypto fx -> runEffect env resolver128 fx >>= expectBytes
   assertEqual "traced seal equals the independent vector"
     (wantCt <> wantTag) sealed
   -- Stage 6: finish + commit carry the sealed bytes.
@@ -2676,13 +2678,14 @@ caseGcmCheckedVector = withBackend $ \env -> do
         { reqInput = sealed
         , reqRegions = [RegionBytes "pt" (IntentBuffer 64)]
         }
-  (dres, deff@(O.EffectCrypto dfx)) <- case planCall defaultRules mD1 dReq of
+  (dres, deff) <- case planCall defaultRules mD1 dReq of
     Execute r e@(O.EffectCrypto _) -> pure (r, e)
     other -> assertFailure ("expected Execute, got: " ++ show other)
-  case checkedCallWork sid2 dres deff of
-    Right _ -> pure ()
+  cwD <- case checkedCallWork sid2 dres deff of
+    Right c -> pure c
     Left mm -> assertFailure ("decrypt triple must check: " ++ show mm)
-  opened <- runEffect env resolver128 dfx >>= expectBytes
+  opened <- case callWorkEffect cwD of
+    O.EffectCrypto dfx -> runEffect env resolver128 dfx >>= expectBytes
   assertEqual "traced open recovers the plaintext" pt opened
 
 caseGcmTracedOverwrites :: IO ()
