@@ -77,6 +77,14 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
 - `haskoki-ctl store check --path FILE --config FILE` reports, without
   writing, whether the store opens with that config, and what migration or
   catalog fix it needs.
+- SQLite stores refuse to open, with `C_Initialize` failing closed, when
+  a non-empty `-wal` or `-shm` sibling exists. Haskoki never writes one,
+  so it comes from foreign tooling; the open refuses before any SQLite
+  connection, so no foreign frame is checkpointed into the store.
+- A store path that is a symlink is resolved once, and the lock and
+  journal sidecars follow the real file. A link whose target is missing
+  refuses at open instead of creating a store at the target; a missing
+  store under a symlinked parent directory is still created.
 - Identity refusal messages no longer say 'in this phase'; they name the
   absence of a relabel or slot-move command.
 - The test-only `storeResetToken` keeps the token's credential row.
