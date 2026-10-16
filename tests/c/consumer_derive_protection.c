@@ -402,21 +402,22 @@ int main(int argc, char **argv) {
       if (rv == CKR_OK && h != 0) {
         expect_flags(sess, h, CK_TRUE, CK_FALSE, "omitted extract");
         expect_sealed(sess, h, len32, "omitted extract");
-        /* History-attribute boundary: unmapped reads report typed. */
+        /* History attributes with no stored value report the
+         * effective view: false until creation stamps real history. */
         {
           CK_BBOOL hist = 0xa5;
           CK_ATTRIBUTE q[] = { { CKA_ALWAYS_SENSITIVE, &hist, sizeof(hist) } };
           rv = f->C_GetAttributeValue(sess, h, q, 1);
-          CHECK(rv == CKR_ATTRIBUTE_TYPE_INVALID,
-                "ALWAYS_SENSITIVE reads typed (rv=0x%lx)",
+          CHECK(rv == CKR_OK && hist == CK_FALSE,
+                "ALWAYS_SENSITIVE reads false (rv=0x%lx)",
                 (unsigned long)rv);
         }
         {
           CK_BBOOL hist = 0xa5;
           CK_ATTRIBUTE q[] = { { CKA_NEVER_EXTRACTABLE, &hist, sizeof(hist) } };
           rv = f->C_GetAttributeValue(sess, h, q, 1);
-          CHECK(rv == CKR_ATTRIBUTE_TYPE_INVALID,
-                "NEVER_EXTRACTABLE reads typed (rv=0x%lx)",
+          CHECK(rv == CKR_OK && hist == CK_FALSE,
+                "NEVER_EXTRACTABLE reads false (rv=0x%lx)",
                 (unsigned long)rv);
         }
         rv = f->C_DestroyObject(sess, h);

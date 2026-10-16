@@ -27,7 +27,10 @@ module Haskoki.Object
   , decodeHandle
   , resolveHandle
   , isStorageObject
+  , isKeyClass
+  , keyDefaults
   , effectiveAttrs
+  , flagOr
   , objectToken
   , objectPrivate
   , mergedIsToken
@@ -380,22 +383,49 @@ isStorageObject attrs = case Map.lookup AttrClass attrs of
   Just (ValULong c) -> c `notElem` nonStorageClasses
   _ -> False
 
+-- | Whether stored attributes describe a key object: the secret,
+-- private and public key classes. A map without a class is not one.
+isKeyClass :: Map AttributeType AttributeValue -> Bool
+isKeyClass attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c) -> c == ckoSecretKey || c == ckoPrivateKey || c == ckoPublicKey
+  _ -> False
+
+-- | The reported key attributes a key object lacks:
+-- non-sensitive, unextractable, with the weakest history/origin
+-- claim (no false never-extracted assurance for legacy rows).
+-- Key-generation mechanism reads @CK_UNAVAILABLE_INFORMATION@: it
+-- carries a valid value only when @CKA_LOCAL@ is true.
+keyDefaults :: [(AttributeType, AttributeValue)]
+keyDefaults =
+  [ (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool False)
+  , (AttrAlwaysSensitive, ValBool False)
+  , (AttrNeverExtractable, ValBool False)
+  , (AttrLocal, ValBool False)
+  -- maxBound is CK_UNAVAILABLE_INFORMATION: KGM is valid only when
+  -- LOCAL is TRUE (PKCS#11 Table 26).
+  , (AttrKeyGenMechanism, ValULong maxBound)
+  ]
+
 -- | The attribute view that reads and finds see. A storage object
 -- owns every common storage attribute, so each one its stored map
 -- lacks is filled in: the flags with the enforced defaults above,
--- @CKA_LABEL@ with the PKCS#11 empty default. Stored values always
--- win. The view is computed per call and never stored, so stored
--- records and their durable bytes are unchanged. @CKA_UNIQUE_ID@ is
--- not modeled and stays unreported. Non-storage objects pass through
--- unchanged.
+-- @CKA_LABEL@ with the PKCS#11 empty default. Key objects
+-- additionally own the key attributes and gain 'keyDefaults' for
+-- the ones they lack. Stored values always win. The view is
+-- computed per call and never stored, so stored records and their
+-- durable bytes are unchanged. @CKA_UNIQUE_ID@ is not modeled and
+-- stays unreported. Non-storage objects pass through unchanged.
 effectiveAttrs :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 effectiveAttrs attrs
+  | isKeyClass attrs = Map.union attrs (Map.union storageDefaults keyDefaultMap)
   | isStorageObject attrs = Map.union attrs storageDefaults
   | otherwise = attrs
   where
     storageDefaults = Map.fromList
       ((AttrLabel, ValBytes BS.empty)
         : [(t, ValBool d) | (t, d) <- storageFlagDefaults])
+    keyDefaultMap = Map.fromList keyDefaults
 
 -- | The object's token flag (absent or wrongly shaped = session object).
 objectToken :: ObjectState -> Bool
@@ -1160,15 +1190,12 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
     firstRefusal cur ((t, v) : rest) = case mutableAs cur t v of
       Just refusal -> Just refusal
       Nothing -> firstRefusal cur rest
-    -- Nothing = mutable, Just = refusal. A common storage flag that
-    -- is absent reads as its enforced default ('flagOr' and the
-    -- shared defaults). The ratchets here read an absent SENSITIVE
-    -- and an absent EXTRACTABLE as false. For SENSITIVE that matches
-    -- every other path. For EXTRACTABLE it matches the copy guard,
-    -- wrap and SSL3 derive, but not sealing or the byte-operation
-    -- protection, which treat an absent EXTRACTABLE as extractable;
-    -- that split is not settled here. A write of the value a flag
-    -- already reads as succeeds; a flip against the ratchet refuses.
+    -- Nothing = mutable, Just = refusal. Each ratchet compares
+    -- against the enforced value ('flagOr' with the shared
+    -- defaults): on keys that equals the reported value, so
+    -- writing what a read reports succeeds and only a flip
+    -- against the ratchet refuses. Non-key classes own no key
+    -- flags, so their enforcement is unchanged by construction.
     mutableAs :: Map AttributeType AttributeValue
       -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
     mutableAs cur t v
@@ -1240,7 +1267,7 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
       where
         view = effectiveAttrs (osAttrs ost)
         hit (AttrValue, _)
-          | payloadSealed (osAttrs ost) = False
+          | payloadSealed view = False
         hit (t, v) = Map.lookup t view == Just v
     currentHandle :: ObjectId -> ObjectState -> Maybe ExternalHandle
     currentHandle oid ost = listToMaybe

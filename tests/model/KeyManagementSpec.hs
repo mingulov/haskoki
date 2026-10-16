@@ -6575,6 +6575,15 @@ caseByteOpsProtection = withSynth $ \answer -> do
     KeyDenied (KeyDeny code _) ->
       assertEqual "wrap code" CKR_KEY_UNEXTRACTABLE code
     other -> assertFailure ("sealed child wrap must deny, got: " ++ show other)
+  -- A key with no stored flags wraps as unextractable: the absent
+  -- EXTRACTABLE reads as unextractable through the effective view.
+  (mFlagless, flaglessH) <- plantKey m6 st
+    [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkAes),
+     (AttrToken, ValBool False)] (BS.pack [96..111])
+  case planWrapKey mFlagless st aesCbcMech iv16 wrapH flaglessH IntentNull of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "flag-less wrap code" CKR_KEY_UNEXTRACTABLE code
+    other -> assertFailure ("flag-less wrap must deny, got: " ++ show other)
   -- History attributes are inventoried: the names map and the
   -- mechanism-id shape is unsigned-long. Caller templates carrying
   -- them refuse inconsistent at every creation entry (the derive
@@ -6608,6 +6617,32 @@ caseByteOpsProtection = withSynth $ \answer -> do
       assertEqual "plain omitted extractable"
         Nothing (Map.lookup AttrExtractable (poAttrs po))
     other -> assertFailure ("plain concat-key must plan, got: " ++ show other)
+  -- Over a protected base the omitted template stamps sealed.
+  case planDerive defaultRules m5 st concatKeyMech protBaseH
+      (encodeDeriveParams fKeyPlainAux [kidOmit 64]) of
+    KeyEffect (PwDerive (po : _) _) _ -> do
+      assertEqual "protected omitted sensitive"
+        (Just (ValBool True)) (Map.lookup AttrSensitive (poAttrs po))
+      assertEqual "protected omitted extractable"
+        (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
+    other -> assertFailure ("protected concat-key must plan, got: " ++ show other)
+  -- A base with no protection flags derives unextractable but
+  -- non-sensitive: the absent EXTRACTABLE reads as unextractable
+  -- through the effective view, the absent SENSITIVE as false.
+  (mAbsBase, absBaseH) <- plantKey m5 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] baseMat
+  case planDerive defaultRules mAbsBase st extractMech absBaseH
+      (encodeDeriveParams fExt [kidOmit 16]) of
+    KeyEffect (PwDerive (po : _) _) _ -> do
+      assertEqual "absent-base omitted sensitive"
+        Nothing (Map.lookup AttrSensitive (poAttrs po))
+      assertEqual "absent-base omitted extractable"
+        (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
+    other -> assertFailure ("absent-base derive must plan, got: " ++ show other)
   -- A history attribute in the derive template refuses
   -- inconsistent and allocates nothing.
   let histBefore = Map.size (mObjects m5)

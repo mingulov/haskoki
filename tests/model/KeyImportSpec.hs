@@ -662,13 +662,17 @@ casePublicValueReads = do
           _ -> assertFailure "read outputs arity" >> undefined
         Reject rej -> assertFailure ("read rejected: " ++ show (rejCode rej)) >> undefined
         Execute _ _ -> assertFailure "read must not execute" >> undefined
-  (m1, hDh, _) <- doCreate m0 st dhPubTmpl
+  -- Explicitly readable keys: absent flags seal since the key
+  -- view reports them unextractable, which would hide the
+  -- projection this case pins.
+  let readable tmpl = tmpl ++ [(AttrExtractable, ValBool True)]
+  (m1, hDh, _) <- doCreate m0 st (readable dhPubTmpl)
   vDh <- readValue m1 hDh
   assertEqual "DH pub reads y" (Just (ValBytes dhY)) vDh
-  (m2, hDsa, _) <- doCreate m1 st dsaPubTmpl
+  (m2, hDsa, _) <- doCreate m1 st (readable dsaPubTmpl)
   vDsa <- readValue m2 hDsa
   assertEqual "DSA pub reads y" (Just (ValBytes dsaY)) vDsa
-  (m3, hPriv, _) <- doCreate m2 st dhPrivTmpl
+  (m3, hPriv, _) <- doCreate m2 st (readable dhPrivTmpl)
   vPriv <- readValue m3 hPriv
   assertEqual "DH priv reads DER" (Just (ValBytes dhP8Gold)) vPriv
 

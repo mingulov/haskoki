@@ -256,7 +256,9 @@ import Haskoki.Object
   , TemplateError (..)
   , TemplateRule (..)
   , checkRules
+  , effectiveAttrs
   , findRule
+  , flagOr
   , mergedIsPrivate
   , mergedIsToken
   , objectVisible
@@ -2053,8 +2055,9 @@ pendingFromAttrs st attrs = PendingObject
 -- | Required byte-operation child protection (OASIS PKCS#11 3.2
 -- §6.43.3–§6.43.7): sensitivity is required when any input key is
 -- sensitive; nonextractability is required when any input key is
--- unextractable. Explicit source values decide (absent flags are
--- unprotected, matching the readback seal and the copy guard).
+-- unextractable. Source values decide through the effective view:
+-- a flag-less input counts as non-sensitive and unextractable,
+-- matching the readback seal and the copy guard.
 data ByteOpsProtection = ByteOpsProtection
   { bopSensitive :: !Bool
   , bopUnextractable :: !Bool
@@ -2075,8 +2078,8 @@ byteOpsProtectionOf base mAux = ByteOpsProtection
       || maybe False (isFalse AttrExtractable) mAux
   }
   where
-    isTrue t attrs = Map.lookup t attrs == Just (ValBool True)
-    isFalse t attrs = Map.lookup t attrs == Just (ValBool False)
+    isTrue t attrs = flagOr False t attrs
+    isFalse t attrs = not (flagOr False t attrs)
 
 -- | Resolve one validated byte-operation caller template against
 -- the required source protection: a template that explicitly
@@ -3547,7 +3550,8 @@ withWrapTarget model st h = case resolveHandle model h of
   Just ost
     | not (objectVisible st ost) -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
         "target not visible in this session")
-    | Map.lookup AttrExtractable (osAttrs ost) /= Just (ValBool True) ->
+    | Map.lookup AttrExtractable (effectiveAttrs (osAttrs ost))
+        /= Just (ValBool True) ->
         Left (KeyDeny CKR_KEY_UNEXTRACTABLE "target is not extractable")
     | otherwise -> case keyBytesOf ost of
         Just mat -> Right mat

@@ -99,6 +99,10 @@ spec = testGroup "objects and attributes"
   , testCase "copy: unsealing overrides rejected, sealed copies stay sealed" caseCopySealRatchet
   , testCase "copy: absent EXTRACTABLE cannot be copied to true" caseCopyExtractableAbsent
   , testCase "create/copy: history attributes in templates refused" caseCreateRefusesHistory
+  , testCase "key defaults: legacy key value seals" caseKeyEffectiveSeal
+  , testCase "key defaults: find matches the effective protection" caseKeyEffectiveFind
+  , testCase "key defaults: protection ratchets on legacy keys" caseKeyEffectiveRatchets
+  , testCase "key defaults: data objects unchanged" caseDataUnchanged
   , testCase "find: template match returns handles" caseFindFlow
   , testCase "find: sealed payloads never match a value guess" caseFindSealedNoOracle
   , testCase "find: contradictory template rejected, nothing bound" caseFindContradiction
@@ -642,6 +646,80 @@ caseCreateRefusesHistory = do
   (codeC, m3) <- runReject m2 (copyReq sid h [(AttrNeverExtractable, ValBool False)])
   assertEqual "history copy override refused" CKR_TEMPLATE_INCONSISTENT codeC
   assertEqual "no history copy created" nBeforeCopy (Map.size (mObjects m3))
+
+-- | A legacy key (no protection flags stored) seals: its absent
+-- EXTRACTABLE reads as unextractable, so the value redacts.
+caseKeyEffectiveSeal :: IO ()
+caseKeyEffectiveSeal = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid (secretAes (BS.replicate 16 7)))
+  h <- commitHandle pc
+  (rej, _) <- runRejectFull m1 (getReq sid h [AttrValue])
+  assertEqual "legacy key value seals" CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
+  assertEqual "no payload bytes escape" [] (rejOutputs rej)
+
+-- | Find matches a legacy key by its effective protection: the
+-- reported EXTRACTABLE=false hits, true misses, and the sealed
+-- payload never matches a value guess.
+caseKeyEffectiveFind :: IO ()
+caseKeyEffectiveFind = do
+  (sid, m0) <- openSession seeded
+  let keyBytes = BS.replicate 16 7
+  (pc, m1) <- runCommit m0 (createReq sid (secretAes keyBytes))
+  h <- commitHandle pc
+  (pcF, _) <- runCommit m1 (findReq sid [(AttrExtractable, ValBool False)])
+  hits <- findHandles pcF
+  assertEqual "effective false matches" [h] hits
+  (pcT, _) <- runCommit m1 (findReq sid [(AttrExtractable, ValBool True)])
+  misses <- findHandles pcT
+  assertEqual "effective true misses" [] misses
+  (pcV, _) <- runCommit m1 (findReq sid [(AttrValue, ValBytes keyBytes)])
+  oracle <- findHandles pcV
+  assertEqual "sealed value never matches" [] oracle
+
+-- | Set ratchets on a legacy key follow the reported values:
+-- EXTRACTABLE cannot flip up from its reported false, writing the
+-- reported SENSITIVE=false is a no-op, and the four stamped
+-- attributes refuse as immutable.
+caseKeyEffectiveRatchets :: IO ()
+caseKeyEffectiveRatchets = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid (secretAes (BS.replicate 16 7)))
+  h <- commitHandle pc
+  (codeE, _) <- runReject m1 (setReq sid h [(AttrExtractable, ValBool True)])
+  assertEqual "extractable cannot flip up" CKR_ATTRIBUTE_READ_ONLY codeE
+  (pcS, _) <- runCommit m1 (setReq sid h [(AttrSensitive, ValBool False)])
+  assertEqual "reported no-op writes" CKR_OK (pcCode pcS)
+  mapM_ (\(t, v) -> do
+    (code, _) <- runReject m1 (setReq sid h [(t, v)])
+    assertEqual ("stamped attribute is immutable: " ++ show t)
+      CKR_ATTRIBUTE_READ_ONLY code)
+    [ (AttrAlwaysSensitive, ValBool False)
+    , (AttrNeverExtractable, ValBool False)
+    , (AttrLocal, ValBool False)
+    , (AttrKeyGenMechanism, ValULong maxBound)
+    ]
+
+-- | Non-key classes are untouched by the key view: a data object
+-- with no flags still reads its value, still reports SENSITIVE
+-- unavailable, never matches a protection default in find, and
+-- still matches its reported label default.
+caseDataUnchanged :: IO ()
+caseDataUnchanged = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0
+    (createReq sid [classData, (AttrValue, ValBytes "payload")])
+  h <- commitHandle pc
+  (pcG, _) <- runCommit m1 (getReq sid h [AttrValue])
+  assertEqual "data value reads" CKR_OK (pcCode pcG)
+  (codeS, _) <- runReject m1 (getReq sid h [AttrSensitive])
+  assertEqual "data sensitive unavailable" CKR_ATTRIBUTE_TYPE_INVALID codeS
+  (pcF, _) <- runCommit m1 (findReq sid [(AttrSensitive, ValBool False)])
+  misses <- findHandles pcF
+  assertEqual "data misses protection default" [] misses
+  (pcL, _) <- runCommit m1 (findReq sid [(AttrLabel, ValBytes "")])
+  hits <- findHandles pcL
+  assertEqual "data label default still matches" [h] hits
 
 caseFindFlow :: IO ()
 caseFindFlow = do
