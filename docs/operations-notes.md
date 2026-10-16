@@ -379,12 +379,18 @@ standard-open cases in `tests/storage/StoreSpec.hs`).
 
 v0.5 stores use SQLite schema 3. A store written by v0.3 (schema 1) or
 v0.4 (schema 2) must be migrated once with `haskoki-ctl store migrate`.
-Until then every haskoki v0.5 open refuses it and writes nothing:
-`C_Initialize` returns `CKR_GENERAL_ERROR` (no reason reaches a C
-caller), and `haskoki-ctl store check` says why. Refused opens leave the
-database bytes, schema marker, tables and credential rows unchanged; the
-only file an open creates and removes is the `<store>.lock` sidecar
-(see `caseOldStoreRefuses` in `tests/storage/PreflightSpec.hs`).
+Until then every haskoki v0.5 open refuses it and, absent a hot journal
+or a `-wal`/`-shm` sibling, writes nothing: `C_Initialize` returns
+`CKR_GENERAL_ERROR` (no reason reaches a C caller), and `haskoki-ctl
+store check` says why. Refused opens leave the database bytes, schema
+marker, tables and credential rows unchanged; the only file an open
+creates and removes is the `<store>.lock` sidecar (see
+`caseOldStoreRefuses` in `tests/storage/PreflightSpec.hs`). The
+exceptions: a hot journal is rolled back by the serving open before it
+refuses (Interrupted migration, first route, depends on exactly that),
+and a non-empty `-wal` or `-shm` is refused before any SQLite
+connection opens, so nothing is checkpointed
+(`caseServingRefusesForeignWal` in `tests/storage/PreflightSpec.hs`).
 
 ### Rehearse on a copy, then upgrade
 
@@ -520,6 +526,11 @@ in `tests/storage/PreflightSpec.hs`).
    run is ignored, never fatal (`caseMigrateStaleReceiptTmpIgnored`);
    temporaries from provably-dead owners are removed when the next
    migration writes its receipt (`caseMigrateStaleReceiptTmpCleaned`).
+   That liveness check reads the local PID namespace only, so two
+   containers sharing one backup directory can delete each other's
+   live temporary (the loser reports `migrate-receipt-failed` for a
+   migration that actually committed): never share a backup directory
+   between PID namespaces; give each writer its own.
 
 If the transaction fails (for example, a full disk), it rolls back; the
 store is unchanged, the backup stays, and no receipt is written

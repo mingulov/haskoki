@@ -746,17 +746,21 @@ caseMigrateCliSchema3Cold = withScratch "ctl-migrate" $ \dir -> do
 
 -- A journal that is not a regular file (a symlink, FIFO or device)
 -- is refused without opening it: opening would hang on a FIFO or
--- misclassify a device. Each probe runs under a timeout so a hang
--- fails the test instead of the suite.
+-- misclassify a device. Each FIFO probe holds a writer first, so a
+-- regression that opens the journal reads zeros (cold, the wrong
+-- refusal) and fails instead of hanging the suite; the timeout is
+-- only a backstop. A device read is interruptible, so the /dev/zero
+-- probe keeps the timeout alone.
 caseCheckNonRegularJournal :: IO ()
 caseCheckNonRegularJournal = withScratch "ctl-check" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let journal = store ++ "-journal"
       runCheck = runCtl ["store", "check", "--path", store, "--config", cfgPath]
+      zeros = BS.replicate 512 0
   let fifo = dir </> "fifo"
   createNamedPipe fifo 0o600
   createSymbolicLink fifo journal
-  mc <- timeout 5000000 runCheck
+  mc <- withFifoWriter fifo zeros (timeout 5000000 runCheck)
   case mc of
     Nothing -> assertFailure "check hung on a symlinked FIFO journal"
     Just c -> do
@@ -765,7 +769,7 @@ caseCheckNonRegularJournal = withScratch "ctl-check" $ \dir -> do
         ("store-journal-present:" `isPrefixOf` ceErr c)
   removeFile journal
   createNamedPipe journal 0o600
-  mf <- timeout 5000000 runCheck
+  mf <- withFifoWriter journal zeros (timeout 5000000 runCheck)
   case mf of
     Nothing -> assertFailure "check hung on a FIFO journal"
     Just f -> do

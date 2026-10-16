@@ -388,15 +388,20 @@ caseSnapshotRefusesJournal = withScratch "snapshot" $ \dir -> do
 
 -- A journal that is not a regular file is refused without opening
 -- it: a symlink to a FIFO would block forever, a symlink to a
--- device misclassifies. Each probe runs under a timeout.
+-- device misclassifies. Each FIFO probe holds a writer first, so a
+-- regression that opens the journal reads zeros (cold, the wrong
+-- refusal) and fails instead of hanging the suite; the timeout is
+-- only a backstop. A device read is interruptible, so the /dev/zero
+-- probe keeps the timeout alone.
 caseSnapshotRefusesNonRegularJournal :: IO ()
 caseSnapshotRefusesNonRegularJournal = withScratch "snapshot" $ \dir -> do
   (store, _) <- copyReleasedFixture "v0.4.0.0" dir
   let journal = store ++ "-journal"
+      zeros = BS.replicate 512 0
   let fifo = dir </> "fifo"
   createNamedPipe fifo 0o600
   createSymbolicLink fifo journal
-  mr1 <- timeout 5000000 (readStoreSnapshot store)
+  mr1 <- withFifoWriter fifo zeros (timeout 5000000 (readStoreSnapshot store))
   case mr1 of
     Nothing -> assertFailure "snapshot hung on a symlinked FIFO journal"
     Just r1 -> case r1 of
@@ -404,7 +409,7 @@ caseSnapshotRefusesNonRegularJournal = withScratch "snapshot" $ \dir -> do
       other -> assertFailure ("symlink FIFO: " ++ show (fmap snapSchema other))
   removeFile journal
   createNamedPipe journal 0o600
-  mr2 <- timeout 5000000 (readStoreSnapshot store)
+  mr2 <- withFifoWriter journal zeros (timeout 5000000 (readStoreSnapshot store))
   case mr2 of
     Nothing -> assertFailure "snapshot hung on a FIFO journal"
     Just r2 -> case r2 of

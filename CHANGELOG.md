@@ -64,7 +64,9 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   is then the PIN authority: editing a configured PIN no longer changes
   what an existing token accepts.
 - SQLite stores move to schema 3. Stores written by v0.4.0.0 (schema 2)
-  or v0.3.x (schema 1) are refused at open, with nothing written, until
+  or v0.3.x (schema 1) are refused at open, with nothing written absent
+  a hot journal or a `-wal`/`-shm` sibling (a hot journal is rolled
+  back by the serving open before it refuses), until
   `haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR`
   migrates them once. An ordinary open never migrates; `store migrate` is
   the only path to schema 3. Migrate takes ownership, writes a verified

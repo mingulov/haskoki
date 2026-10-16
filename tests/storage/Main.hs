@@ -11,7 +11,7 @@ import qualified MultiSessionSpec
 import qualified PreflightSpec
 import qualified StoreCtlSpec
 import qualified StoreSpec
-import StoreFixtures (walChildMain)
+import StoreFixtures (fifoWriterMain, walChildMain)
 
 -- | The storage suite; re-invoked with @--holder@ it runs a lock
 -- holder child instead (see 'StoreSpec.spawnHolder').
@@ -31,6 +31,7 @@ main = do
   args <- getArgs
   case args of
     ["--wal-child", store, mode] -> walChildMain store mode
+    ["--fifo-writer", fifo, hexBytes] -> fifoWriterMain fifo hexBytes
     ["--holder", path, doneFile, readyFile] -> StoreSpec.holderMain path doneFile readyFile
     ["--migrate-child", store, cfg, backups, ready] -> PreflightSpec.migrateChildMain store cfg backups ready
     ["--migrate-child-small", store, cfg, backups, ready] -> PreflightSpec.migrateChildSmallMain store cfg backups ready
