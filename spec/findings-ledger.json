@@ -4219,8 +4219,8 @@
    "receipt": "tests/c/message_routed.c::gmac_shape_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "9a5be18",
-    "44de4c6"
+    "f28e84b",
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it; GMAC withdrew its message flags, so its 10 message test ids are no longer collected (full-lane total 10,993 -> 10,983; the 10,993 baseline is inferred from the October-era sample, no id list exists)"
   },
@@ -4239,8 +4239,8 @@
    "receipt": "tests/c/message_routed.c::hotp_message_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "d3d904c",
-    "023b415"
+    "8caf66f",
+    "08313bf"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it; HOTP's message tests are still collected and now xfail in both lanes (expected: no message routes, message init refuses CKR_MECHANISM_INVALID)"
   },
@@ -4259,8 +4259,8 @@
    "receipt": "tests/c/message_routed.c::gmac_shape_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "9a5be18",
-    "44de4c6"
+    "f28e84b",
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it; GMAC withdrew its message flags, so its 10 message test ids are no longer collected (full-lane total 10,993 -> 10,983; the 10,993 baseline is inferred from the October-era sample, no id list exists)"
   },
@@ -4279,8 +4279,8 @@
    "receipt": "tests/c/message_routed.c::hotp_message_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "d3d904c",
-    "023b415"
+    "8caf66f",
+    "08313bf"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it; HOTP's message tests are still collected and now xfail in both lanes (expected: no message routes, message init refuses CKR_MECHANISM_INVALID)"
   },
@@ -4299,7 +4299,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4318,7 +4318,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4337,7 +4337,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4356,8 +4356,8 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6",
-    "64fe39a"
+    "c123ee1",
+    "f520105"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4376,7 +4376,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4395,7 +4395,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4414,7 +4414,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4433,7 +4433,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4452,7 +4452,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4471,7 +4471,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4490,7 +4490,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4509,7 +4509,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4528,7 +4528,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4547,7 +4547,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4566,7 +4566,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4585,7 +4585,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4604,7 +4604,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4623,7 +4623,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4642,7 +4642,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4661,7 +4661,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4680,7 +4680,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   },
@@ -4699,7 +4699,7 @@
    "receipt": "tests/c/consumer_errors.c::refusal_code_legs",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "44de4c6"
+    "c123ee1"
    ],
    "refreeze_evidence": "compare run compare-20261015T224130Z-1-q1lX7H (demo image sha256 from explore-image-id.txt, checker 0.2.3, proxy v0.2.2), ws/evidence/v050-wp12/task7/explore-out: line absent from diff.txt (exclusion) or shared-findings.txt (finding); check-direct-full and check-proxy-full findings.txt also lack it"
   }
@@ -4707,13 +4707,13 @@
  "proxy_owned_divergences": [
   {
    "id": "proxy-divergence:digest-key-after-destroy-control-leg",
-   "commit": "64fe39a",
+   "commit": "f520105",
    "test": "tests/c/consumer_errors.c::refusal_code_legs",
    "note": "pkcs11-proxy-ng v0.2.2 refuses C_DigestKey on an unknown handle in its shim, so the backend digest stays active (CKR_OPERATION_ACTIVE on the next C_DigestInit); direct topology terminates it (PKCS#11 v3.1 section 5.12). The control leg is topology-aware. Proxy-owned; listed in docs/proxy-exclusions.md."
   },
   {
    "id": "proxy-divergence:hotp-otp-params-refused-by-shim",
-   "commit": "d3d904c",
+   "commit": "8caf66f",
    "test": "tests/c/consumer_roundtrip.c::proxied HOTP params are PARAM_INVALID",
    "note": "pkcs11-proxy-ng v0.2.2's shim refuses any parameterized CKM_HOTP (0x291 has no entry in its mechanism parameter registry, so the pointer inside CK_OTP_PARAMS is not marshalled) with CKR_MECHANISM_PARAM_INVALID before forwarding. The proxied leg asserts that refusal; the CK_OTP_PARAMS vectors and decoder refusals run direct only. Proxy-owned; listed in docs/proxy-exclusions.md."
   }
