@@ -79,7 +79,7 @@ import Control.Exception
   , try
   , uninterruptibleMask_
   )
-import Control.Monad (replicateM, replicateM_)
+import Control.Monad (replicateM, replicateM_, when)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
@@ -1236,12 +1236,24 @@ withGate = bracket acquire release
 -- the worker could publish 'Right' into the masked tail with
 -- 'ThreadKilled' still pending, misclassifying cancellation as
 -- success.
+--
+-- Fired kill after completion: 'killThread' blocking proves the
+-- throw was issued, not that the worker will raise it before the op
+-- returns. Under load (-N, full suite) the parked call returned,
+-- the op completed and the worker finished with the kill never
+-- raised: the killer then returned only because its target had
+-- finished. GHC allows that interleaving, and the transfer contract
+-- (cleanup before delivery) does not order delivery against
+-- completion. So once 'fire' has run, the worker waits for the kill
+-- after the op ('awaitFiredKill').
 withKillWorker :: Ptr TestGate -> IO a
   -> (MVar (Either SomeException a) -> IO () -> IO b) -> IO b
 withKillWorker g op body = do
   done <- newEmptyMVar
   killerDone <- newEmptyMVar
+  fired <- newIORef False
   let fire tid = do
+        writeIORef fired True
         ktid <- forkIO (killThread tid >> putMVar killerDone ())
         awaitBlocked ktid
       -- Release (wakes any parked waiter, and latches for a
@@ -1263,10 +1275,21 @@ withKillWorker g op body = do
         pure ()
   bracket
     (forkIOWithUnmask $ \unmask -> do
-      r <- try (unmask op <* allowInterrupt)
+      r <- try (unmask (op <* awaitFiredKill fired) <* allowInterrupt)
       putMVar done r)
     cleanup
     (\tid -> body done (fire tid))
+
+-- | After a fired kill, keep the worker waiting (interruptibly,
+-- bounded) once the op returns: a kill that is pending but not yet
+-- raised when the op completes still lands as 'ThreadKilled'
+-- instead of racing the result publication. A kill that never
+-- arrives lets the op's own result through after the bound, which
+-- fails the caller's 'assertThreadKilled'.
+awaitFiredKill :: IORef Bool -> IO ()
+awaitFiredKill fired = do
+  f <- readIORef fired
+  when f (threadDelay 5000000)
 
 -- | Barrier for the forked killer: against a parked worker its
 -- 'killThread' must block, so 'ThreadBlocked' proves entry —

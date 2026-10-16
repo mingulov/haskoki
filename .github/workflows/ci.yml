@@ -196,10 +196,11 @@ jobs:
               check-fork-stance check-test-wiring check-test-evidence check-test-execution \
               check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
-              check-smoke-surface check-history-codes check-actions-pinned \
+              check-smoke-surface check-history-codes check-ossl4-laziness check-actions-pinned \
               check-qualification-wiring check-findings-ledger; do
             python3 scripts/$g.py
           done
+          python3 scripts/check-ossl4-laziness.py --self-test
           # Final-review M-1: the pin gate defaults to ci.yml — cover
           # every workflow so later lanes cannot drift to a mutable tag.
           python3 scripts/check-actions-pinned.py .github/workflows/hpc.yml

@@ -68,6 +68,8 @@ python3 scripts/check-findings-ledger.py
 python3 scripts/check-findings-ledger.py --self-test
 python3 scripts/check-loader-norm.py
 python3 scripts/check-history-codes.py
+python3 scripts/check-ossl4-laziness.py
+python3 scripts/check-ossl4-laziness.py --self-test
 python3 scripts/check-actions-pinned.py
 # Final-review M-1: the gate defaults to ci.yml — pin every workflow
 # explicitly so hpc/prop-nightly cannot drift to a mutable tag.

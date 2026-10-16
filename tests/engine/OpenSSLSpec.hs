@@ -16,18 +16,21 @@ totality, and shim-hygiene assertions.
 module OpenSSLSpec (spec) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (evaluate)
 import Control.Monad (replicateM_)
 import Data.Bits ((.&.), shiftL, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
-import Data.List (isInfixOf, stripPrefix, tails)
+import Data.List (isInfixOf, isPrefixOf, stripPrefix, tails)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import System.Directory (doesFileExist)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Data.Word (Word32)
+import LazyWalk (lazyClosures)
 import Haskoki.Engine.Backend
   ( AeadSpec (..)
   , BackendCaps (..)
@@ -63,7 +66,7 @@ import Haskoki.Engine.Backend
   )
 import Haskoki.Der (dhParamsDer, dhParamsDerQ, dhPkcs8Fields, dhSpkiFields, integerToBE, mldsaPkcs8Fields, mldsaPrivateDer, mldsaSpkiFields, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPublicDer, mlkemSpkiFields, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomerySpkiFields, rsaSpkiFields, slhdsaPkcs8Fields, slhdsaSpkiFields)
 import Haskoki.Engine.Driver (cipherSpecFor, runEffect)
-import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
+import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..), ossl4StaticCapsBuild)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Recipe.Cipher (encodeCtrParams)
 import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
@@ -137,6 +140,9 @@ spec = testGroup "openssl4 engine"
   , testCase "unsupported algs rejected without fallback" caseUnsupported
   , testCase "guard runs before any native call" caseGuardBeforeNative
   , testCase "capability report is exactly the supported set" caseCaps
+  , testCase "capability report is published fully evaluated" caseCapsEvaluated
+  , testCase "static capability table is a normal-form CAF" caseStaticCapsEvaluated
+  , testCase "capability notes keep provider and cipher content" caseCapsNotes
   , testCase "private contexts are isolated" caseIsolation
   , testCase "shim has no pkcs11 provider or global cleanup" caseShimHygiene
   , testCase "invalid inputs fail typed, never crash" caseInvalidInputs
@@ -2125,7 +2131,7 @@ caseRsaKats = withBackend $ \env -> do
   assertEqual "rsa-sha256 kat" rsaSig256 sig
   expectOk "rsa-sha256 verify kat" =<< verify env sha256 pub rsaMsg rsaSig256
   expectAuthFailed "rsa-sha256 tampered" =<<
-    verify env sha256 pub rsaMsg (BS.init rsaSig256 <> "X")
+    verify env sha256 pub rsaMsg (tamperLast rsaSig256)
   expectAuthFailed "rsa-sha256 wrong msg" =<<
     verify env sha256 pub "wrong message" rsaSig256
   -- Raw KAT: block-type-1 over the input, no hashing.
@@ -2133,7 +2139,7 @@ caseRsaKats = withBackend $ \env -> do
   assertEqual "rsa-raw kat" rsaRawSig rsig
   expectOk "rsa-raw verify kat" =<< verify env SigRSA_Raw pub rsaRawMsg rsaRawSig
   expectAuthFailed "rsa-raw tampered" =<<
-    verify env SigRSA_Raw pub rsaRawMsg (BS.init rsaRawSig <> "X")
+    verify env SigRSA_Raw pub rsaRawMsg (tamperLast rsaRawSig)
   -- Every other bound digest roundtrips (sign is deterministic:
   -- signing twice agrees, and cross-digest verifies fail).
   mapM_ (roundtrip env priv pub)
@@ -2168,7 +2174,7 @@ caseRsaPssVectors = withBackend $ \env -> do
   expectOk "pss-sha256 verify cli vector" =<<
     verify env sha256 pub pssMsg pssSig256
   expectAuthFailed "pss-sha256 tampered" =<<
-    verify env sha256 pub pssMsg (BS.init pssSig256 <> "X")
+    verify env sha256 pub pssMsg (tamperLast pssSig256)
   expectAuthFailed "pss-sha256 wrong msg" =<<
     verify env sha256 pub "wrong message" pssSig256
   expectAuthFailed "pss-sha256 wrong salt rejected" =<<
@@ -2220,7 +2226,7 @@ caseRsaOaepVectors = withBackend $ \env -> do
   expectAuthFailed "oaep wrong label rejected" =<<
     pkeyDecrypt env sha256 priv oaepCtLabel
   expectAuthFailed "oaep tampered rejected" =<<
-    pkeyDecrypt env sha256 priv (BS.init oaepCt256 <> "X")
+    pkeyDecrypt env sha256 priv (tamperLast oaepCt256)
   -- Uniformity (Manger 2001): every modulus-wide invalid
   -- ciphertext is the same AuthFailed verdict — no reason-code
   -- partition across padding-failure shapes.
@@ -2321,10 +2327,10 @@ caseRsaX509Vectors = withBackend $ \env -> do
   -- mismatched messages verify to a verdict; the zero block is
   -- the identity.
   garbled <- expectOk "x509 tampered opens" =<<
-    pkeyDecrypt env RsaX509 priv (BS.init x509Ct <> "X")
+    pkeyDecrypt env RsaX509 priv (tamperLast x509Ct)
   assertBool "x509 tamper garbles" (garbled /= padded)
   expectAuthFailed "x509 tampered sig rejected" =<<
-    verify env SigRSA_X509 pub x509Msg (BS.init x509Sig <> "X")
+    verify env SigRSA_X509 pub x509Msg (tamperLast x509Sig)
   expectAuthFailed "x509 wrong msg rejected" =<<
     verify env SigRSA_X509 pub "tampered-data-32-bytes-payload!!!" x509Sig
   zeroPt <- expectOk "x509 zero opens" =<<
@@ -2383,7 +2389,7 @@ caseRsaX931Vectors = withBackend $ \env -> do
   assertEqual "x931 deterministic" s1 s2
   expectOk "x931 verify kat" =<< verify env raw pub x931Digest x931Sig
   expectAuthFailed "x931 tampered sig rejected" =<<
-    verify env raw pub x931Digest (BS.init x931Sig <> "X")
+    verify env raw pub x931Digest (tamperLast x931Sig)
   expectAuthFailed "x931 wrong digest rejected" =<<
     verify env raw pub (BS.replicate 32 0x55) x931Sig
   -- Every other hash-id length roundtrips (20/48/64 bytes).
@@ -2424,7 +2430,7 @@ casePoly1305Vector = withBackend $ \env -> do
   assertEqual "poly1305 tag length" 16 (BS.length tag)
   _ <- expectOk "poly1305 verify kat" =<< macVerify env MacPoly1305 key polyMsg polyTag
   expectAuthFailed "poly1305 tampered rejected" =<<
-    macVerify env MacPoly1305 key polyMsg (BS.init polyTag <> "X")
+    macVerify env MacPoly1305 key polyMsg (tamperLast polyTag)
   expectAuthFailed "poly1305 wrong msg rejected" =<<
     macVerify env MacPoly1305 key "tampered message" polyTag
   -- Key independence: a second key tags differently.
@@ -2488,21 +2494,21 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
   expectOk "verify cli t283" =<<
     verify env sT283 (KeyDer ecT283Pub) ecMsgT283 ecSigT283
   expectAuthFailed "p384 tampered" =<<
-    verify env s384 (KeyDer ecP384Pub) ecMsg384 (BS.init ecSig384 <> "X")
+    verify env s384 (KeyDer ecP384Pub) ecMsg384 (tamperLast ecSig384)
   -- Interop on BLAKE2B-512: the CLI's P-256 bytes verify.
   let sB2 = SigECDSA (mkEc "P-256" "DER") (Just D_BLAKE2B512)
   expectOk "verify cli blake2b512" =<<
     verify env sB2 (KeyDer ecB2Pub) ecMsgB2 ecSigB2
   expectAuthFailed "blake2b512 tampered" =<<
-    verify env sB2 (KeyDer ecB2Pub) ecMsgB2 (BS.init ecSigB2 <> "X")
+    verify env sB2 (KeyDer ecB2Pub) ecMsgB2 (tamperLast ecSigB2)
   expectAuthFailed "t283 tampered" =<<
-    verify env sT283 (KeyDer ecT283Pub) ecMsgT283 (BS.init ecSigT283 <> "X")
+    verify env sT283 (KeyDer ecT283Pub) ecMsgT283 (tamperLast ecSigT283)
   -- Raw interop: the CLI's raw P-256 bytes verify under the raw row.
   let sraw = SigECDSA (mkEc "P-256" "DER") Nothing
   expectOk "verify cli raw" =<<
     verify env sraw (KeyDer ecPubDer) ecRaw32 ecRawSig
   expectAuthFailed "raw tampered" =<<
-    verify env sraw (KeyDer ecPubDer) ecRaw32 (BS.init ecRawSig <> "X")
+    verify env sraw (KeyDer ecPubDer) ecRaw32 (tamperLast ecRawSig)
   -- Raw input bounds follow SEC1: 33 bytes on P-256 truncates
   -- to the leftmost 256 bits (a verdict input, never a refusal).
   sig33 <- expectOk "raw overlong sign truncates" =<<
@@ -5171,6 +5177,45 @@ caseGuardBeforeNative = do
     EngineFail (BackendInvalidState _ _) -> pure ()
     other -> assertFailure ("expected InvalidState, got: " ++ show other)
 
+-- | Regression for the whole-process model-test stall: GHC's RTS
+-- (seen on 9.10.3, 9.12.4 and 9.14.1; a GHC #26324 variant) can
+-- orphan a string-literal CAF black hole when two threads
+-- dup-evaluate the same lazily black-holed thunk, deadlocking every
+-- thread that needs it. Concurrent opens used to evaluate the
+-- capability tables' shared thunks in parallel (and concurrent
+-- capability readers could too), so the report must reach callers
+-- with no thunk left in it.
+caseCapsEvaluated :: IO ()
+caseCapsEvaluated = withBackend $ \env -> do
+  caps <- evaluate =<< queryCapabilities env
+  lz <- lazyClosures caps
+  assertBool ("published capability report holds " ++ show (length lz)
+              ++ " lazy closures, e.g. " ++ show (take 5 lz)) (null lz)
+
+-- | The open-independent capability table publishes only normal
+-- form: no thunk of it is ever shared between threads (GHC #27272).
+-- The test builds a fresh copy through the builder, so it does not
+-- depend on whichever open already forced the shared table.
+caseStaticCapsEvaluated :: IO ()
+caseStaticCapsEvaluated = do
+  caps <- evaluate (ossl4StaticCapsBuild ())
+  lz <- lazyClosures caps
+  assertBool ("static capability table holds " ++ show (length lz)
+              ++ " lazy closures after WHNF, e.g. " ++ show (take 5 lz)) (null lz)
+
+-- | The published notes keep their content: the provider note
+-- carries the open's property query, and a cipher note is present.
+caseCapsNotes :: IO ()
+caseCapsNotes = withBackend $ \env -> do
+  caps <- queryCapabilities env
+  case Map.lookup "provider" (bcParamNotes caps) of
+    Just note -> assertBool ("provider note: " ++ note)
+      ("default only; propquery " `isPrefixOf` note)
+    Nothing -> assertFailure "no provider note"
+  assertEqual "cipher note"
+    (Just "no padding; key 32 bytes, iv 16 bytes, input block-aligned")
+    (Map.lookup "AES-256-CBC" (bcParamNotes caps))
+
 caseCaps :: IO ()
 caseCaps = withBackend $ \env -> do
   caps <- queryCapabilities env
@@ -5458,3 +5503,8 @@ mkKem a = KemSpec { kemAlg = a }
 
 mkResId :: Word32 -> EngineResourceId
 mkResId = EngineResourceId
+
+-- | Change the last byte (always differs: +1 wraps on Word8). Replacing it
+-- with a fixed byte is a no-op when a randomized value already ends in it.
+tamperLast :: ByteString -> ByteString
+tamperLast bs = BS.init bs <> BS.singleton (BS.last bs + 1)

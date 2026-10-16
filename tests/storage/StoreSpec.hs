@@ -51,12 +51,12 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
+import System.Directory (canonicalizePath, createDirectory, doesDirectoryExist, doesFileExist, listDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, (</>))
-import System.IO.Error (catchIOError)
-import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, setFileMode)
+import System.FilePath (takeDirectory, takeExtension, (</>))
+import System.IO.Error (catchIOError, isAlreadyExistsError)
+import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, readSymbolicLink, setFileMode)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
 import System.Posix.Process (exitImmediately, getParentProcessID, getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
@@ -189,8 +189,8 @@ sqliteOpener = do
   let path = dir </> "store.db"
   pure (Opener "sqlite" (openSQLiteStore path) (removeDirectoryRecursive dir))
 
--- | Make a fresh scratch directory: pid-suffixed with exists-retry
--- (no new dependencies; concurrent runs cannot collide).
+-- | Make a fresh scratch directory: pid-suffixed, retrying the next name
+-- on an already-exists error (no new dependencies; concurrent runs cannot collide).
 makeTempDir :: String -> IO FilePath
 makeTempDir prefix = do
   base <- getTemporaryDirectory
@@ -202,9 +202,104 @@ makeTempDir prefix = do
       | n > 10000 = ioError (userError ("makeTempDir: exhausted names for " ++ stem))
       | otherwise = do
           let dir = base </> (stem ++ show n)
-          (createDirectory dir >> pure dir) `catchIOError` \_ -> do
-            exists <- doesDirectoryExist dir
-            if exists then tryNames base stem (n + 1) else ioError (userError ("makeTempDir: cannot create " ++ dir))
+          -- Decide from the error itself: a concurrent test may create and
+          -- already remove the same name, so a later existence check races.
+          (createDirectory dir >> pure dir) `catchIOError` \e ->
+            if isAlreadyExistsError e
+              then tryNames base stem (n + 1)
+              else ioError (userError ("makeTempDir: cannot create " ++ dir ++ ": " ++ show e))
+
+-- | Every fd the open store holds on its database and sidecar lock
+-- carries FD_CLOEXEC. Without it a concurrent fork+exec (any thread,
+-- or the host application spawning a child) inherits the fd and keeps
+-- the flock alive past 'storeClose'. Reads the live fd table (Linux
+-- @\/proc@, like the backend itself; skipped with a note elsewhere),
+-- so it checks the store's real fds, not a copy of the flags.
+-- Expected set: one sidecar lock fd, plus on the database path the
+-- guard fd and SQLite's own main-database fd.
+testHeldFdsCloexec :: IO ()
+testHeldFdsCloexec = do
+  haveProc <- doesDirectoryExist "/proc/self/fd"
+  if not haveProc
+    then putStrLn "SKIP: /proc/self/fd unavailable; cannot inspect fd flags"
+    else do
+      dir <- makeTempDir "haskoki-cloexec"
+      bracket_ (pure ()) (removeDirectoryRecursive dir) $ do
+        realDir <- canonicalizePath dir
+        let path = realDir </> "store.db"
+        bracket (either (assertFailure . show) pure =<< openSQLiteStore (dir </> "store.db"))
+                storeClose $ \_ -> do
+          fds <- listDirectory "/proc/self/fd"
+          held <- fmap concat $ mapM (\n -> do
+            tgt <- readSymbolicLink ("/proc/self/fd" </> n) `catchIOError` \_ -> pure ""
+            pure [(n, tgt) | tgt == path || tgt == path ++ ".lock"]) fds
+          flagsOf <- mapM (\(n, tgt) -> do
+            info <- readFile ("/proc/self/fdinfo" </> n)
+            let fl = [w | l <- lines info, ("flags:" : w : _) <- [words l]]
+            case fl of
+              [w] -> pure (n, tgt, read ("0o" ++ w) :: Int)
+              _ -> assertFailure ("no flags in fdinfo of fd " ++ n)) held
+          let count t = length [() | (_, g) <- held, g == t]
+          assertEqual "sidecar lock fds held" 1 (count (path ++ ".lock"))
+          assertEqual "database fds held (guard + SQLite main)" 2 (count path)
+          let o_cloexec = 0o2000000 :: Int
+          assertEqual "fds lacking close-on-exec" []
+            [(n, tgt) | (n, tgt, fl) <- flagsOf, fl `div` o_cloexec `mod` 2 == (0 :: Int)]
+
+-- | Source gate for the two-step open. A deterministic test cannot
+-- observe the fork window, so this is a best-effort tripwire that
+-- pins the shape that closes it (it is textual and line-based: it
+-- does not parse block comments or follow indirection). Rules:
+--   1. every 'openFd' in the SQLite backend takes @guardFlags@
+--      (on its own or the next line), and @guardFlags@ sets
+--      @cloexec = True@;
+--   2. no @setFdOption@, @F_SETFD@ or @cloexec = False@ in code
+--      under src\/ or ffi\/ (a later close-on-exec step, or an
+--      opt-out, reopens the window).
+-- If a legitimate refactor trips it, update the rule here.
+testOpenFdSourceGate :: IO ()
+testOpenFdSourceGate = do
+  root <- findPackageRoot "."
+  let backend = root </> "src/Haskoki/Runtime/Storage/SQLite.hs"
+  body <- readFile backend
+  files <- sourceFilesUnder [root </> "src", root </> "ffi"]
+  let stripComment l = go l
+        where go ('-' : '-' : _) = ""
+              go (c : cs) = c : go cs
+              go [] = []
+      codeLines txt = [(n, stripComment l, l) | (n, l) <- zip [1 :: Int ..] (lines txt)
+                      , not ("--" `isPrefixOf` dropWhile isSpace l)
+                      , not ("//" `isPrefixOf` dropWhile isSpace l)]
+      ls = zip [1 :: Int ..] (lines body)
+      code = codeLines body
+      calls = [n | (n, c, _) <- code, "openFd " `isInfixOf` c, not ("import " `isPrefixOf` c)]
+      nextTwo n = unwords [l | (m, l) <- ls, m == n || m == n + 1]
+      bad = [(n, l) | n <- calls, let l = nextTwo n, not ("guardFlags" `isInfixOf` l)]
+  assertBool "rule 1: found the backend's openFd calls (gate may need updating)" (length calls >= 4)
+  assertEqual "rule 1: openFd call not using guardFlags (line, text)" [] bad
+  assertBool "rule 1: guardFlags must be defined with cloexec = True on one line"
+    (any (\(_, c, _) -> "guardFlags = " `isInfixOf` c && "cloexec = True" `isInfixOf` c) code)
+  forbidden <- fmap concat $ mapM (\f -> do
+    txt <- readFile f
+    pure [(f, n, l) | (n, c, l) <- codeLines txt
+         , any (`isInfixOf` c) ["setFdOption", "F_SETFD", "cloexec = False"]]) files
+  assertEqual "rule 2: setFdOption / F_SETFD / cloexec = False (file, line, text)" [] forbidden
+  where
+    findPackageRoot d = do
+      ok <- doesFileExist (d </> "haskoki.cabal")
+      if ok then pure d
+        else if length d > 40 then assertFailure "haskoki.cabal not found above the working directory; run the suite from the package tree"
+        else findPackageRoot (d </> "..")
+    sourceFilesUnder = fmap concat . mapM walk
+    walk d = do
+      isDir <- doesDirectoryExist d
+      if not isDir then pure [] else do
+        es <- listDirectory d
+        fmap concat $ mapM (\e -> do
+          let f = d </> e
+          sub <- doesDirectoryExist f
+          if sub then walk f
+            else pure [f | takeExtension f `elem` [".hs", ".c", ".h"]]) es
 
 -- | Both backends run the shared contract, plus sqlite-only cases.
 spec :: TestTree
@@ -212,7 +307,9 @@ spec = testGroup "store contract"
   [ contractSpec "memory" memoryOpener
   , contractSpec "sqlite" sqliteOpener
   , testGroup "sqlite-only"
-      [ testCase "garbage file is rejected without rewrite" testGarbageRejected
+      [ testCase "held lock and guard fds are close-on-exec" testHeldFdsCloexec
+      , testCase "lock fds are opened close-on-exec, never set afterwards" testOpenFdSourceGate
+      , testCase "garbage file is rejected without rewrite" testGarbageRejected
       , testCase "future schema version rejected without rewrite" testFutureVersionRejected
       , testCase "version-1 database migrates explicitly" testV1Migrates
       , testCase "corrupt records diagnosed" testCorruptDiagnosed

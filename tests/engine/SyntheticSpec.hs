@@ -13,12 +13,16 @@ import Data.Bits (complement, popCount, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
+import Control.Exception (evaluate)
 import Data.IORef (newIORef, readIORef, writeIORef)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Numeric (showHex)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
+
+import LazyWalk (lazyClosures)
 
 import Haskoki.Der (coveredCurveNames, spkiPoint)
 import Haskoki.Engine.Backend
@@ -37,6 +41,7 @@ import Haskoki.Engine.Backend
   , DhSpec (..)
   , EcSpec (..)
   , EngineResult (..)
+  , forceCaps
   , KdfCaps (..)
   , KemCaps (..)
   , KemSpec (..)
@@ -59,6 +64,7 @@ import Haskoki.Engine.Backend
 import Haskoki.Engine.Driver (encodeResult, runEffect)
 import Haskoki.Engine.Synthetic
   ( FixtureMaterial (..)
+  , synthCapsBuild
   , OpNumber (..)
   , Seed (..)
   , Synthetic (..)
@@ -115,6 +121,8 @@ spec = testGroup "synthetic engine"
   , testCase "rng streams: same seed plus schedule" caseRng
   , testCase "fixture identities pinned" caseFixtures
   , testCase "capability report is exactly the synthetic set" caseCapsFull
+  , testCase "fresh synthetic capabilities hold no thunk" caseSynthCapsEvaluated
+  , testCase "forceCaps covers every String and Int field" caseForceCapsCoverage
   , testCase "driver bridge answers over synthetic" caseDriverBridge
   , testCase "Verify backend failure keeps its category" caseVerifyCategory
   , testCase "Verify category fix stays general-error" caseVerifyNeutral
@@ -609,7 +617,7 @@ caseSign = withSynth "11" $ \env -> do
   expectAuthFailed "wrong key rejected" =<<
     verify env ecdsaDer otherKey32 "msg" sig
   expectAuthFailed "tampered sig rejected" =<<
-    verify env ecdsaDer key32 "msg" (BS.init sig <> "X")
+    verify env ecdsaDer key32 "msg" (tamperLast sig)
   -- Encodings are explicit participants: DER and RAW both run, give
   -- different bytes, and never verify across (no silent conversion).
   sigR <- expectOk "sign raw" =<< sign env ecdsaRaw key32 "msg"
@@ -3326,3 +3334,50 @@ caseSpecialsRefuse = withSynth "15" $ \env -> do
   case rGcm of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("cipher GCM empty params: expected Failed, got: " ++ show other)
+
+-- | Change the last byte (always differs: +1 wraps on Word8). Replacing it
+-- with a fixed byte is a no-op when a randomized value already ends in it.
+tamperLast :: ByteString -> ByteString
+tamperLast bs = BS.init bs <> BS.singleton (BS.last bs + 1)
+
+-- | A freshly built synthetic capability table is published in
+-- normal form (GHC #27272: shared thunks that enter a string literal
+-- can deadlock concurrent readers on 2 or more capabilities).
+caseSynthCapsEvaluated :: IO ()
+caseSynthCapsEvaluated = do
+  caps <- evaluate (synthCapsBuild ())
+  lz <- lazyClosures caps
+  assertBool ("synthetic capability table holds " ++ show (length lz)
+              ++ " lazy closures, e.g. " ++ show (take 5 lz)) (null lz)
+
+-- | 'forceCaps' leaves no thunk in a record whose every String and
+-- Int field starts out lazy: names, each name set, the RC2 bit
+-- counts and the notes. The values come from an IORef, so nothing
+-- is a compile-time literal.
+caseForceCapsCoverage :: IO ()
+caseForceCapsCoverage = do
+  ref <- newIORef (7 :: Int)
+  n <- readIORef ref
+  let lazyStr tag = tag ++ show n
+      caps = BackendCaps
+        { bcName = lazyStr "name"
+        , bcVersion = lazyStr "version"
+        , bcDigests = DigestCaps { dcAlgs = Set.empty, dcMultipart = True, dcXof = False }
+        , bcCiphers = CipherCaps
+            { ccCiphers = Set.fromList [C_RC2_ECB (n + 1), C_RC2_CBC (n + 2)]
+            , ccAead = Set.fromList [lazyStr "aead"] }
+        , bcMacs = MacCaps { mcSpecs = Set.fromList [lazyStr "mac"] }
+        , bcSigs = SigCaps
+            { scSpecs = Set.fromList [lazyStr "sig"]
+            , scCurves = Set.fromList [lazyStr "curve"]
+            , scPqcSign = Set.empty }
+        , bcKems = KemCaps { kcAlgs = Set.empty }
+        , bcKdfs = KdfCaps { kcKdfs = Set.fromList [lazyStr "kdf"] }
+        , bcParamNotes = Map.fromList [(lazyStr "key", lazyStr "note")]
+        }
+  before <- lazyClosures =<< evaluate caps
+  assertBool "control: the unforced record holds thunks" (not (null before))
+  forced <- evaluate (forceCaps caps)
+  after <- lazyClosures forced
+  assertBool ("forceCaps left " ++ show (length after)
+              ++ " lazy closures, e.g. " ++ show (take 5 after)) (null after)

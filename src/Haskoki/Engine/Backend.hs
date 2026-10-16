@@ -39,6 +39,7 @@ module Haskoki.Engine.Backend
   , ResourceSaveability (..)
     -- * Capabilities
   , BackendCaps (..)
+  , forceCaps
   , DigestCaps (..)
   , CipherCaps (..)
   , MacCaps (..)
@@ -105,8 +106,10 @@ module Haskoki.Engine.Backend
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Set (Set)
+import qualified Data.Set as Set
 
 import Haskoki.Der (coveredCurveNames, edwardsCurveNames)
 import Haskoki.Types (EngineResourceId (..), redactShown)
@@ -899,6 +902,45 @@ data BackendCaps = BackendCaps
   , bcParamNotes :: !(Map String String) -- ^ secondary report: padding/hash-MGF
     -- pairs, saveability
   } deriving (Eq, Show)
+
+-- | Fully evaluate a capability record (every name, set element,
+-- note and integer field) and return it.
+--
+-- Why: GHC's RTS (seen on 9.10.3, 9.12.4 and 9.14.1; open upstream
+-- as GHC #27272, a relative of #26324) can orphan the black hole of
+-- a string literal CAF when two threads dup-evaluate the same lazily
+-- black-holed thunk and that thunk's evaluation first-enters the
+-- literal: the owner loses the continuation that would update it,
+-- and every thread needing the literal deadlocks. Capability
+-- records are shared by every concurrent open and every capability
+-- reader, so a record that is published holds no thunk for two
+-- threads to race on. Hosts are exposed only with at least 2 RTS
+-- capabilities.
+--
+-- Every 'String' and 'Int' reachable from 'BackendCaps' is forced
+-- here: names, the cipher, AEAD, MAC, signature, curve and KDF name
+-- sets, the RC2 bit counts and the note map. The digest, PQC and
+-- KEM sets hold nullary constructors, and the Bool fields are
+-- strict, so those are already in normal form. A new field of
+-- another shape must be added here (the engine tests walk the
+-- published records and fail on any reachable thunk).
+forceCaps :: BackendCaps -> BackendCaps
+forceCaps c =
+  strs [bcName c, bcVersion c]
+    `seq` Set.foldr (\spec r -> maybe () (`seq` ()) (rc2BitsOf spec) `seq` r) () (ccCiphers (bcCiphers c))
+    `seq` strSet (ccAead (bcCiphers c))
+    `seq` strSet (mcSpecs (bcMacs c))
+    `seq` strSet (scSpecs (bcSigs c))
+    `seq` strSet (scCurves (bcSigs c))
+    `seq` strSet (kcKdfs (bcKdfs c))
+    `seq` Map.foldrWithKey (\k v r -> str k `seq` str v `seq` r) () (bcParamNotes c)
+    `seq` c
+  where
+    str :: String -> ()
+    str = foldr seq ()
+    strs = foldr (\x r -> str x `seq` r) ()
+    strSet = Set.foldr (\x r -> str x `seq` r) ()
+
 
 -- ---------------------------------------------------------------------------
 -- The class
