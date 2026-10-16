@@ -1086,6 +1086,44 @@ planDestroyObject model st h = case resolveHandle model h of
         , pcReasons = ["destroyed object " ++ show (osId ost)]
         }
 
+-- | Derive the stored attributes of a copy. Non-key copies keep
+-- the merged map verbatim. Key copies additionally materialize the
+-- absent protection flags from the source-effective view: the two
+-- caller-settable flags where the merged map lacks them, and the
+-- history/origin rows per the copy rule (a true->false EXTRACTABLE
+-- flip forces NEVER_EXTRACTABLE false, since the key was
+-- extractable once; the other rows inherit the source-effective
+-- values). Public key copies carry no history rows: any
+-- ALWAYS/NEVER the merged map picked up from the source is dropped.
+deriveCopyAttrs
+  :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+  -> Map AttributeType AttributeValue
+deriveCopyAttrs srcAttrs over
+  | not (isKeyClass merged) = merged
+  | isPublicKeyClass merged =
+      fill [AttrSensitive, AttrExtractable, AttrLocal, AttrKeyGenMechanism]
+        (Map.delete AttrAlwaysSensitive (Map.delete AttrNeverExtractable merged))
+  | flipsDown =
+      Map.insert AttrNeverExtractable (ValBool False)
+        (fill [AttrSensitive, AttrExtractable, AttrAlwaysSensitive, AttrLocal, AttrKeyGenMechanism] merged)
+  | otherwise =
+      fill [AttrSensitive, AttrExtractable, AttrAlwaysSensitive, AttrNeverExtractable, AttrLocal, AttrKeyGenMechanism] merged
+  where
+    merged = Map.union over srcAttrs
+    srcEff = effectiveAttrs srcAttrs
+    flipsDown =
+      Map.lookup AttrExtractable srcEff == Just (ValBool True)
+        && Map.lookup AttrExtractable over == Just (ValBool False)
+    fill ts m = foldr insertMissing m ts
+    insertMissing t m
+      | Map.member t m = m
+      | otherwise = Map.insert t (srcEffOr t) m
+    srcEffOr t = case Map.lookup t srcEff of
+      Just v -> v
+      Nothing
+        | t == AttrKeyGenMechanism -> ValULong maxBound
+        | otherwise -> ValBool False
+
 -- | Plan object copy: the source handle must resolve and be
 -- visible to the calling session, the override template must be
 -- contradiction-free, and the merged attributes must still carry a
@@ -1094,12 +1132,15 @@ planDestroyObject model st h = case resolveHandle model h of
 -- or set extractable true on a source whose effective flag is not
 -- extractable, are rejected ('CKR_TEMPLATE_INCONSISTENT');
 -- sealed flags otherwise inherit, so a copy of a sealed object is
--- sealed too. Wrongly shaped overrides refuse before any rule;
--- TRUSTED=true overrides need the SO login; certificate sources
--- refuse overrides of the certificate-immutable set, and overrides
--- naming a history attribute refuse on any source (all
--- 'CKR_TEMPLATE_INCONSISTENT'). An explicit @CKA_COPYABLE=false@ on
--- the source prohibits the copy ('CKR_ACTION_PROHIBITED').
+-- sealed too. Stored key copies materialize absent protection from
+-- the source-effective view, with a true->false EXTRACTABLE flip
+-- forcing NEVER_EXTRACTABLE false. Wrongly shaped overrides refuse
+-- before any rule; TRUSTED=true overrides need the SO login;
+-- certificate sources refuse overrides of the certificate-immutable
+-- set, and overrides naming a history attribute refuse on any
+-- source (all 'CKR_TEMPLATE_INCONSISTENT'). An explicit
+-- @CKA_COPYABLE=false@ on the source prohibits the copy
+-- ('CKR_ACTION_PROHIBITED').
 planCopyObject
   :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)]
   -> PlanResult
@@ -1153,7 +1194,7 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                 templateReject (admitCode deny)
                   "read-only session cannot copy to token objects"
             | otherwise ->
-                let merged = Map.union over (osAttrs src)
+                let merged = deriveCopyAttrs (osAttrs src) over
                 in if Map.member AttrClass merged
               then
                 let oid = ObjectId (mNextObject model)

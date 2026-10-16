@@ -99,6 +99,10 @@ spec = testGroup "objects and attributes"
   , testCase "copy: unsealing overrides rejected, sealed copies stay sealed" caseCopySealRatchet
   , testCase "copy: absent EXTRACTABLE cannot be copied to true" caseCopyExtractableAbsent
   , testCase "create/copy: history attributes in templates refused" caseCreateRefusesHistory
+  , testCase "copy: legacy copies materialize the absent flags" caseCopyMaterializesAbsent
+  , testCase "copy: tightening keeps never-extractable false" caseCopyTightenKeepsNeverFalse
+  , testCase "copy: sensitizing keeps always-sensitive false" caseCopySensitizeKeepsAlwaysFalse
+  , testCase "copy: refused copies change nothing" caseRefusedCopyChangesNothing
   , testCase "key defaults: legacy key value seals" caseKeyEffectiveSeal
   , testCase "key defaults: find matches the effective protection" caseKeyEffectiveFind
   , testCase "key defaults: protection ratchets on legacy keys" caseKeyEffectiveRatchets
@@ -650,6 +654,102 @@ caseCreateRefusesHistory = do
   (codeC, m3) <- runReject m2 (copyReq sid h [(AttrNeverExtractable, ValBool False)])
   assertEqual "history copy override refused" CKR_TEMPLATE_INCONSISTENT codeC
   assertEqual "no history copy created" nBeforeCopy (Map.size (mObjects m3))
+
+-- | Copying a legacy key materializes the absent protection flags:
+-- the copy stores the source-effective values for all six key
+-- attributes, so the absent population only shrinks.
+caseCopyMaterializesAbsent :: IO ()
+caseCopyMaterializesAbsent = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid (secretAes (BS.replicate 16 7)))
+  h <- commitHandle pc
+  (pcC, m2) <- runCommit m1 (copyReq sid h [])
+  h2 <- commitHandle pcC
+  dst <- case resolveHandle m2 h2 of
+    Nothing -> assertFailure "materialized copy resolves"
+    Just ost -> pure (osAttrs ost)
+  mapM_ (\(t, v) -> assertEqual ("materialized " ++ show t)
+    (Just v) (Map.lookup t dst))
+    [ (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool False)
+    , (AttrAlwaysSensitive, ValBool False)
+    , (AttrNeverExtractable, ValBool False)
+    , (AttrLocal, ValBool False)
+    , (AttrKeyGenMechanism, ValULong maxBound)
+    ]
+
+-- | A copy that tightens EXTRACTABLE true->false stores the flip
+-- with NEVER_EXTRACTABLE false: the key was extractable once, so
+-- no false never-extracted assurance survives the tightening.
+caseCopyTightenKeepsNeverFalse :: IO ()
+caseCopyTightenKeepsNeverFalse = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0
+    (createReq sid (secretAes (BS.replicate 16 7) ++ [(AttrExtractable, ValBool True)]))
+  h <- commitHandle pc
+  (pc1, m2) <- runCommit m1 (copyReq sid h [])
+  h1 <- commitHandle pc1
+  mid <- case resolveHandle m2 h1 of
+    Nothing -> assertFailure "intermediate copy resolves"
+    Just ost -> pure (osAttrs ost)
+  assertEqual "intermediate keeps true" (Just (ValBool True))
+    (Map.lookup AttrExtractable mid)
+  assertEqual "intermediate never-extractable" (Just (ValBool False))
+    (Map.lookup AttrNeverExtractable mid)
+  (pc2, m3) <- runCommit m2 (copyReq sid h1 [(AttrExtractable, ValBool False)])
+  h2 <- commitHandle pc2
+  dst <- case resolveHandle m3 h2 of
+    Nothing -> assertFailure "tightened copy resolves"
+    Just ost -> pure (osAttrs ost)
+  assertEqual "tightened extractable" (Just (ValBool False))
+    (Map.lookup AttrExtractable dst)
+  assertEqual "tightened never-extractable" (Just (ValBool False))
+    (Map.lookup AttrNeverExtractable dst)
+
+-- | A copy that sensitizes keeps ALWAYS_SENSITIVE false: the copy
+-- inherits the source history, and the materialized source was
+-- born open.
+caseCopySensitizeKeepsAlwaysFalse :: IO ()
+caseCopySensitizeKeepsAlwaysFalse = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid (secretAes (BS.replicate 16 7)))
+  h <- commitHandle pc
+  (pc1, m2) <- runCommit m1 (copyReq sid h [])
+  h1 <- commitHandle pc1
+  mid <- case resolveHandle m2 h1 of
+    Nothing -> assertFailure "intermediate copy resolves"
+    Just ost -> pure (osAttrs ost)
+  assertEqual "intermediate always-sensitive" (Just (ValBool False))
+    (Map.lookup AttrAlwaysSensitive mid)
+  (pc2, m3) <- runCommit m2 (copyReq sid h1 [(AttrSensitive, ValBool True)])
+  h2 <- commitHandle pc2
+  dst <- case resolveHandle m3 h2 of
+    Nothing -> assertFailure "sensitized copy resolves"
+    Just ost -> pure (osAttrs ost)
+  assertEqual "sensitized sensitive" (Just (ValBool True))
+    (Map.lookup AttrSensitive dst)
+  assertEqual "sensitized always-sensitive" (Just (ValBool False))
+    (Map.lookup AttrAlwaysSensitive dst)
+
+-- | A refused copy changes nothing: the source map is identical
+-- afterwards and the object count is unchanged.
+caseRefusedCopyChangesNothing :: IO ()
+caseRefusedCopyChangesNothing = do
+  (sid, m0) <- openSession seeded
+  let tmpl = secretAes (BS.replicate 16 9) ++ [(AttrSensitive, ValBool True)]
+  (pc, m1) <- runCommit m0 (createReq sid tmpl)
+  h <- commitHandle pc
+  srcBefore <- case resolveHandle m1 h of
+    Nothing -> assertFailure "source resolves before the refused copy"
+    Just ost -> pure (osAttrs ost)
+  let nBefore = Map.size (mObjects m1)
+  (code, m2) <- runReject m1 (copyReq sid h [(AttrExtractable, ValBool True)])
+  assertEqual "unsealing copy refused" CKR_TEMPLATE_INCONSISTENT code
+  assertEqual "no copy created" nBefore (Map.size (mObjects m2))
+  srcAfter <- case resolveHandle m2 h of
+    Nothing -> assertFailure "source resolves after the refused copy"
+    Just ost -> pure (osAttrs ost)
+  assertEqual "source map unchanged" srcBefore srcAfter
 
 -- | A legacy key (no protection flags stored) seals: its absent
 -- EXTRACTABLE reads as unextractable, so the value redacts.
