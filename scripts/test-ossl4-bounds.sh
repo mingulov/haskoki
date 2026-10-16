@@ -34,6 +34,18 @@ EXTRA_LIB_DIRS=""
 if [ -d /opt/openssl-4.0.2/lib64 ]; then
   EXTRA_LIB_DIRS="--extra-lib-dirs=/opt/openssl-4.0.2/lib64"
 fi
+# The foreign-library stanza must never define the test-hook macro:
+# it is the shipped module's configuration.
+awk '/^foreign-library haskoki/{f=1;next} /^[^ \t-]/{f=0} f' haskoki.cabal \
+  | grep -q 'HSK_OSSL4_TEST_HOOKS' \
+  && fail "foreign-library stanza defines HSK_OSSL4_TEST_HOOKS"
+echo "STATIC: foreign-library stanza does not define HSK_OSSL4_TEST_HOOKS"
+# Cabal does not recompile a C source when only cc-options change, so
+# a stale object could hide a define that reached the shipped module.
+# Delete the foreign library's C objects: the check below then always
+# inspects objects built with the current flags.
+find dist-newstyle -path '*/f/haskoki/build/haskoki/haskoki-tmp/cbits/*.o' -delete \
+  2>/dev/null || true
 # shellcheck disable=SC2086
 cabal build $EXTRA_LIB_DIRS foreign-library:haskoki \
   || fail "foreign-library build failed"
