@@ -62,60 +62,68 @@ struct hsk_ossl4_env {
 };
 
 #ifdef HSK_OSSL4_TEST_HOOKS
+#include <stdio.h>
+
 /* --- TEST-ONLY live-sets (actual-destroy attribution + hardening) --------- */
 /*
- * Every digest handle and env rides its process-wide set:
+ * Every digest handle and env rides an exact process-wide set:
  * creation inserts (object, gate-or-NULL), destruction claims.
- * The claim hands the creating gate back so the destroy path
- * itself can note the ACTUAL native destruction (ungated: none).
- * A claim of an unknown handle with no pending overflow credit
- * records a double-free attempt and skips destruction (safe
- * no-op); an unknown handle WITH a pending credit (an overflowed
- * entry the set could not store) is destroyed normally,
- * preserving production behavior exactly — overflow can never
- * leak. Comparison is by pointer value only (never
- * dereferenced). Caveat: an address reused by a LATER object
- * between a destroy and a stale repeat could misattribute; the
- * transfer proof (the attempt counter stays zero) is what rules
- * out repeats, not this set alone.
+ * The set grows without bound (libc realloc by doubling, never
+ * OPENSSL_*, so the instrument stays out of OpenSSL allocation
+ * counts; a failed growth aborts), so every live object is
+ * tracked and every claim finds its own entry. The claim hands
+ * the creating gate back so the destroy path itself can note the
+ * ACTUAL native destruction (ungated: none). A claim of an
+ * unknown handle records a double-free attempt and skips
+ * destruction: it never destroys and never dereferences the
+ * pointer. Comparison is by pointer value only. Caveat: an
+ * address reused by a LATER object between a destroy and a stale
+ * repeat misattributes the stale free to the new owner, whose own
+ * free is then the unknown one; either way the attempt is
+ * counted. Attempts must be acknowledged: an attempt still
+ * counted at process exit makes the process exit 70.
  */
-#define HSK_TEST_LIVE_CAP 256
 typedef struct hsk_test_live {
     pthread_mutex_t mu;
-    const void *ptrs[HSK_TEST_LIVE_CAP];
-    hsk_ossl4_test_gate_t *gates[HSK_TEST_LIVE_CAP];
-    size_t n;
-    long doublefree; /* unknown destroys with no pending credit */
-    long noverflow; /* overflow inserts, monotonic */
-    long npending; /* overflowed-but-undestroyed credits */
+    const void **ptrs;
+    hsk_ossl4_test_gate_t **gates;
+    size_t n, cap;
+    long doublefree; /* unknown destroys, until acknowledged */
 } hsk_test_live_t;
 
 static hsk_test_live_t hsk_test_digests = {
-    PTHREAD_MUTEX_INITIALIZER, { 0 }, { 0 }, 0, 0, 0, 0
+    PTHREAD_MUTEX_INITIALIZER, NULL, NULL, 0, 0, 0
 };
 static hsk_test_live_t hsk_test_envs = {
-    PTHREAD_MUTEX_INITIALIZER, { 0 }, { 0 }, 0, 0, 0, 0
+    PTHREAD_MUTEX_INITIALIZER, NULL, NULL, 0, 0, 0
 };
 
 static void hsk_test_live_insert(hsk_test_live_t *s, const void *h,
                                  hsk_ossl4_test_gate_t *g)
 {
     pthread_mutex_lock(&s->mu);
-    if (s->n < HSK_TEST_LIVE_CAP) {
-        s->ptrs[s->n] = h;
-        s->gates[s->n] = g;
-        s->n++;
-    } else {
-        s->noverflow++;
-        s->npending++;
+    if (s->n == s->cap) {
+        size_t ncap = s->cap ? s->cap * 2 : 64;
+        const void **np = realloc((void *)s->ptrs, ncap * sizeof(*np));
+        hsk_ossl4_test_gate_t **ng;
+        if (np == NULL)
+            abort();
+        s->ptrs = np;
+        ng = realloc((void *)s->gates, ncap * sizeof(*ng));
+        if (ng == NULL)
+            abort();
+        s->gates = ng;
+        s->cap = ncap;
     }
+    s->ptrs[s->n] = h;
+    s->gates[s->n] = g;
+    s->n++;
     pthread_mutex_unlock(&s->mu);
 }
 
-/* Claims h for destruction, returning its gate (NULL when ungated
- * or overflow-credited). Returns nonzero when the caller must
- * destroy; a repeat claim records a double-free attempt and
- * returns zero (safe no-op). */
+/* Claims h for destruction, returning its gate (NULL when ungated).
+ * Returns nonzero when the caller must destroy; an unknown handle
+ * records a double-free attempt and returns zero (safe no-op). */
 static int hsk_test_live_claim(hsk_test_live_t *s, const void *h,
                                hsk_ossl4_test_gate_t **gate)
 {
@@ -133,18 +141,8 @@ static int hsk_test_live_claim(hsk_test_live_t *s, const void *h,
             break;
         }
     }
-    if (!destroy) {
-        if (s->npending > 0) {
-            /* An overflowed entry: destroy normally (production
-             * behavior preserved); its gate is unknown, so no
-             * per-gate note fires (the monotonic overflow count
-             * records the tracking gap instead). */
-            s->npending--;
-            destroy = 1;
-        } else {
-            s->doublefree++;
-        }
-    }
+    if (!destroy)
+        s->doublefree++;
     pthread_mutex_unlock(&s->mu);
     return destroy;
 }
@@ -5726,20 +5724,26 @@ void hsk_ossl4_free_gated(hsk_ossl4_test_gate_t *g, void *ptr, size_t len)
     hsk_ossl4_test_gate_note_buf(g, -1);
 }
 
+/* Sums the digest and env double-free attempts and zeroes them. */
+long hsk_ossl4_test_live_acknowledge(void)
+{
+    long r;
+    pthread_mutex_lock(&hsk_test_digests.mu);
+    r = hsk_test_digests.doublefree;
+    hsk_test_digests.doublefree = 0;
+    pthread_mutex_unlock(&hsk_test_digests.mu);
+    pthread_mutex_lock(&hsk_test_envs.mu);
+    r += hsk_test_envs.doublefree;
+    hsk_test_envs.doublefree = 0;
+    pthread_mutex_unlock(&hsk_test_envs.mu);
+    return r;
+}
+
 long hsk_ossl4_test_digest_doublefree(void)
 {
     long r;
     pthread_mutex_lock(&hsk_test_digests.mu);
     r = hsk_test_digests.doublefree;
-    pthread_mutex_unlock(&hsk_test_digests.mu);
-    return r;
-}
-
-long hsk_ossl4_test_digest_untracked(void)
-{
-    long r;
-    pthread_mutex_lock(&hsk_test_digests.mu);
-    r = hsk_test_digests.noverflow;
     pthread_mutex_unlock(&hsk_test_digests.mu);
     return r;
 }
@@ -5753,13 +5757,19 @@ long hsk_ossl4_test_env_doublefree(void)
     return r;
 }
 
-long hsk_ossl4_test_env_untracked(void)
+/* Exit-time gate: an attempt nobody acknowledged is a real double
+ * free; fail the process loudly instead of letting it pass. */
+__attribute__((destructor)) static void hsk_test_live_exit_gate(void)
 {
-    long r;
-    pthread_mutex_lock(&hsk_test_envs.mu);
-    r = hsk_test_envs.noverflow;
-    pthread_mutex_unlock(&hsk_test_envs.mu);
-    return r;
+    long n = hsk_ossl4_test_digest_doublefree() +
+             hsk_ossl4_test_env_doublefree();
+    if (n > 0) {
+        fprintf(stderr,
+                "hsk_ossl4 test live-set: %ld unacknowledged double-free "
+                "attempt(s)\n",
+                n);
+        _exit(70);
+    }
 }
 
 #endif /* HSK_OSSL4_TEST_HOOKS */

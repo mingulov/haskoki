@@ -8,9 +8,7 @@ hsk_ossl4_env_load_gated
 hsk_ossl4_env_new_gated
 hsk_ossl4_free_gated
 hsk_ossl4_test_digest_doublefree
-hsk_ossl4_test_digest_untracked
 hsk_ossl4_test_env_doublefree
-hsk_ossl4_test_env_untracked
 hsk_ossl4_test_gate_arm_alloc_fail
 hsk_ossl4_test_gate_arm_checkpoint
 hsk_ossl4_test_gate_buf_outstanding
@@ -25,3 +23,4 @@ hsk_ossl4_test_gate_park
 hsk_ossl4_test_gate_parked
 hsk_ossl4_test_gate_poll
 hsk_ossl4_test_gate_release
+hsk_ossl4_test_live_acknowledge

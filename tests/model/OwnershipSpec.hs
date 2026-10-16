@@ -339,6 +339,8 @@ spec = testGroup "Ownership"
         (counted "m1-native-transfers" "gated-digest-alloc" (guarded "gated-digest-alloc" caseGatedDigestAllocFail))
     , testCase "gated normal paths match production, zero outstanding"
         (counted "m1-native-transfers" "gated-normal-zero" (guarded "gated-normal-zero" caseGatedNormalZero))
+    , testCase "more than 256 live digests free exactly once"
+        (guarded "gated-live-300" caseGatedLive300)
     ]
   , testGroup "publication contract"
     [ testCase "faulted publish drains releases, fails terminal, sink untouched"
@@ -1180,11 +1182,7 @@ foreign import ccall unsafe "hsk_ossl4_test_gate_env_outstanding" c_gateEnvOutst
   :: Ptr TestGate -> IO CLong
 foreign import ccall unsafe "hsk_ossl4_test_digest_doublefree" c_digestDoublefree
   :: IO CLong
-foreign import ccall unsafe "hsk_ossl4_test_digest_untracked" c_digestUntracked
-  :: IO CLong
 foreign import ccall unsafe "hsk_ossl4_test_env_doublefree" c_envDoublefree
-  :: IO CLong
-foreign import ccall unsafe "hsk_ossl4_test_env_untracked" c_envUntracked
   :: IO CLong
 
 withGate :: (Ptr TestGate -> IO a) -> IO a
@@ -1377,20 +1375,16 @@ assertOutstandingZero g = do
 assertDigestCountersClean :: IO ()
 assertDigestCountersClean = do
   df <- c_digestDoublefree
-  du <- c_digestUntracked
-  emitCounters [("digest_doublefree", show df), ("digest_untracked", show du)]
+  emitCounters [("digest_doublefree", show df)]
   assertEqual "no digest double-free" 0 df
-  assertEqual "complete digest tracking" 0 du
 
 -- | The env live-set twin: identically zero under the fixed
--- transfer (no double-free, complete tracking).
+-- transfer (no double-free).
 assertEnvCountersClean :: IO ()
 assertEnvCountersClean = do
   ef <- c_envDoublefree
-  eu <- c_envUntracked
-  emitCounters [("env_doublefree", show ef), ("env_untracked", show eu)]
+  emitCounters [("env_doublefree", show ef)]
   assertEqual "no env double-free" 0 ef
-  assertEqual "complete env tracking" 0 eu
 
 expectGatedOk :: Show a => String -> B.EngineResult a -> IO a
 expectGatedOk label r = case r of
@@ -1574,6 +1568,17 @@ caseGatedNormalZero = withGate $ \g -> withRealBackend $ \env -> do
       assertBool "priv half non-empty" (not (BS.null priv))
       assertBool "pub half non-empty" (not (BS.null pub))
     _ -> assertFailure ("EC keygen shape: " ++ show kg)
+  assertOutstandingZero g
+  assertDigestCountersClean
+
+caseGatedLive300 :: IO ()
+caseGatedLive300 = withGate $ \g -> withRealBackend $ \env -> do
+  rids <- replicateM 300 (expectGatedOk "gated init" =<< digestInitGated g env B.D_SHA256)
+  live <- c_gateDigestOutstanding g
+  assertEqual "all 300 attributed to the gate" 300 live
+  mapM_ (\rid -> expectGatedOk "update" =<< B.digestUpdate env rid "abc") rids
+  finals <- mapM (\rid -> expectGatedOk "gated final" =<< digestFinalGated g env rid) rids
+  assertBool "every final is SHA-256(abc)" (all (== sha256abc) finals)
   assertOutstandingZero g
   assertDigestCountersClean
 

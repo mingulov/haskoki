@@ -763,19 +763,18 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
  * rather than echoing Haskell-side bookkeeping. A leaked object
  * strands a +1 exactly where the leak occurred.
  *
- * Digest handles and envs additionally ride process-wide
+ * Digest handles and envs additionally ride exact process-wide
  * live-sets: creation inserts (object, gate-or-NULL), and only
  * the matching destroy claims it (returning the creating gate
- * for the -1). A claim of an unknown handle with no pending
- * overflow credit records a double-free attempt and skips
- * destruction (safe no-op). An unknown handle WITH a pending
- * credit (an overflowed entry the set could not store) is
- * destroyed normally, preserving production behavior exactly:
- * overflow can never leak, and only per-gate attribution of
- * those entries is lost (counted separately; tests assert zero).
- * The attempt counters are identically zero under the fixed
- * ownership transfer, so tests assert them without needing
- * cross-test quiescence.
+ * for the -1). The sets hold every live object, however many.
+ * A claim of an unknown handle records a double-free attempt
+ * and skips destruction (safe no-op; the pointer is never
+ * dereferenced). Attempts stay counted until a test
+ * acknowledges them with hsk_ossl4_test_live_acknowledge; an
+ * attempt still counted at process exit makes the process exit
+ * 70. They are identically zero under the fixed ownership
+ * transfer, so tests assert them without needing cross-test
+ * quiescence.
  *
  * CHECKPOINT protocol (async-kill tests): a parked call is a
  * plain safe foreign call, so a parked waiter CANNOT be killed
@@ -885,17 +884,14 @@ void hsk_ossl4_free_gated(hsk_ossl4_test_gate_t *g, void *ptr, size_t len);
  * Identically zero under the fixed transfer; tests assert it. */
 long hsk_ossl4_test_digest_doublefree(void);
 
-/* Digest live-set overflows since process start (entries created
- * past capacity). Tests assert zero (complete tracking). */
-long hsk_ossl4_test_digest_untracked(void);
-
 /* Env double-free attempts since process start (same convention
  * as the digest twin). Tests assert zero. */
 long hsk_ossl4_test_env_doublefree(void);
 
-/* Env live-set overflows since process start. Tests assert
- * zero (complete tracking). */
-long hsk_ossl4_test_env_untracked(void);
+/* Returns the summed digest and env double-free attempts and
+ * zeroes them. A test that provokes attempts on purpose must
+ * acknowledge them, or the process exits 70 at exit. */
+long hsk_ossl4_test_live_acknowledge(void);
 
 #endif /* HSK_OSSL4_TEST_HOOKS */
 
