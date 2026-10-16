@@ -774,9 +774,13 @@
     },
     {
       "aliases": [],
-      "applies_to": "unreviewed",
+      "applies_to": [
+        "CKO_PUBLIC_KEY",
+        "CKO_PRIVATE_KEY",
+        "CKO_SECRET_KEY"
+      ],
       "canonical_name": "CKA_LOCAL",
-      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "notes": "Reviewed: boolean creation-history row (PKCS#11 v3.2 Table 26); stamped true on generated keys and false on imported, unwrapped, derived and KEM-output keys; caller templates may not set it.",
       "numeric_id": "0x00000163",
       "source_refs": [
         {
@@ -784,13 +788,16 @@
           "source_id": "S-PD-32"
         }
       ],
-      "value_type": "unreviewed"
+      "value_type": "bool"
     },
     {
       "aliases": [],
-      "applies_to": "unreviewed",
+      "applies_to": [
+        "CKO_PRIVATE_KEY",
+        "CKO_SECRET_KEY"
+      ],
       "canonical_name": "CKA_NEVER_EXTRACTABLE",
-      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "notes": "Reviewed: boolean creation-history row (PKCS#11 v3.2 Table 28 and section 5.7.1); true when the key was born unextractable; reported on private and secret keys only; caller templates may not set it.",
       "numeric_id": "0x00000164",
       "source_refs": [
         {
@@ -798,13 +805,16 @@
           "source_id": "S-PD-32"
         }
       ],
-      "value_type": "unreviewed"
+      "value_type": "bool"
     },
     {
       "aliases": [],
-      "applies_to": "unreviewed",
+      "applies_to": [
+        "CKO_PRIVATE_KEY",
+        "CKO_SECRET_KEY"
+      ],
       "canonical_name": "CKA_ALWAYS_SENSITIVE",
-      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "notes": "Reviewed: boolean creation-history row (PKCS#11 v3.2 Table 28 and section 5.7.1); true when the key was born sensitive; reported on private and secret keys only; caller templates may not set it.",
       "numeric_id": "0x00000165",
       "source_refs": [
         {
@@ -812,13 +822,17 @@
           "source_id": "S-PD-32"
         }
       ],
-      "value_type": "unreviewed"
+      "value_type": "bool"
     },
     {
       "aliases": [],
-      "applies_to": "unreviewed",
+      "applies_to": [
+        "CKO_PUBLIC_KEY",
+        "CKO_PRIVATE_KEY",
+        "CKO_SECRET_KEY"
+      ],
       "canonical_name": "CKA_KEY_GEN_MECHANISM",
-      "notes": "Catalog-only (generator note): identity from the byte-locked headers; semantics unreviewed, no template enforcement.",
+      "notes": "Reviewed: ulong creation-history row (PKCS#11 v3.2 Table 26); stamped with the generating mechanism on generated keys and unavailable elsewhere; caller templates may not set it.",
       "numeric_id": "0x00000166",
       "source_refs": [
         {
@@ -826,7 +840,7 @@
           "source_id": "S-PD-32"
         }
       ],
-      "value_type": "unreviewed"
+      "value_type": "ulong"
     },
     {
       "aliases": [],
