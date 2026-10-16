@@ -80,7 +80,7 @@ module Haskoki.FFI.Async
   , resolveJobHandle
   , encodeJobHandle
   , decodeJobHandle
-  , registerCtx
+  , registerFixtureCtx
   , registerBorrowedCtx
   , retireCtx
   , setEnterTestHook
@@ -412,8 +412,9 @@ data CtxEntry
 -- pointer escapes; the winning slot-close retires before it frees.
 -- Borrowed views register at creation and retire at release the
 -- same way. A live entry always names a live pointer; a tombstone
--- always refuses without dereferencing; an absent key was never
--- registered (a foreign value). A hook runs after its pointer's
+-- always refuses without dereferencing; an absent key (never
+-- registered: a foreign value, or a hook-only park) refuses the
+-- same way, before any dereference. A hook runs after its pointer's
 -- null check and before its registry lookup — the exact interval
 -- a racing close can complete in — so a barrier test parks a
 -- caller there deterministically. Scoped per pointer (never
@@ -541,11 +542,13 @@ ctxReclaimStats =
 ctxKey :: StablePtr AsyncCtx -> Ptr ()
 ctxKey sp = castPtr (castStablePtrToPtr sp)
 
--- | Register a hand-built owned context under its pointer: tests
--- register their pointers this way before driving them through the
--- exports. The opens adopt through 'registerOwnedCtx' instead.
-registerCtx :: StablePtr AsyncCtx -> AsyncTable -> IO ()
-registerCtx = registerOwnedCtx
+-- | TEST-ONLY: register a hand-built fixture context under its
+-- pointer. Tests register their pointers this way before driving
+-- them through the exports. No caller under @ffi/@ or @src/@ may
+-- use this; production opens adopt through 'registerOwnedCtx'
+-- (via 'adoptCtx').
+registerFixtureCtx :: StablePtr AsyncCtx -> AsyncTable -> IO ()
+registerFixtureCtx = registerOwnedCtx
 
 -- | Register an owned context under its pointer: the production
 -- adoption step ('aaRegisterCtx' of 'asyncAcquisition'), run masked
@@ -662,8 +665,9 @@ lookupEnterHook sp = mask_ $ alloca $ \pHook -> do
 -- waits it out before freeing), the close claims first (and this
 -- call refuses at the gate without dereferencing), or the close
 -- completes first (and this call meets the tombstone and refuses
--- without dereferencing). A stale live-table reference still
--- refuses, because the claim flag persists past retirement.
+-- without dereferencing). An absent or hook-only key refuses the
+-- same way, before any dereference. A stale live-table reference
+-- still refuses, because the claim flag persists past retirement.
 -- Callers hold the mask; every step here is non-blocking except
 -- a test-armed hook, so production entry never parks while
 -- masked.
@@ -688,19 +692,7 @@ enterCtx ctx
             then Just <$> deRefStablePtr ctx
             else pure Nothing
         Just CtxRetired -> pure Nothing
-        Nothing -> enterCtxUnregistered ctx
-
--- | Entry for pointers never registered: foreign values. Owned
--- contexts always register, borrowed views register at creation,
--- and every close retires — so a stale owned or borrowed pointer
--- meets 'CtxRetired', never this path. The legacy
--- dereference-then-admit stands for foreign values: the gate
--- still refuses retired tables.
-enterCtxUnregistered :: StablePtr AsyncCtx -> IO (Maybe AsyncCtx)
-enterCtxUnregistered ctx = do
-  c <- deRefStablePtr ctx
-  ok <- enterTableUse (acTable c)
-  pure (if ok then Just c else Nothing)
+        Nothing -> pure Nothing
 
 -- | Encode a job id as its opaque handle token under the table's
 -- exact salt: the high 32 bits carry the salt, the low 32 the

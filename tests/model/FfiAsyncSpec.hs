@@ -54,6 +54,7 @@ import Control.Exception
   , bracket
   , finally
   , fromException
+  , mask_
   , throwIO
   , try
   )
@@ -126,7 +127,7 @@ import Haskoki.FFI.Async
   , openAsyncCtxWith
   , openStoreBoxWith
   , registerBorrowedCtx
-  , registerCtx
+  , registerFixtureCtx
   , residueAnomalies
   , residueCount
   , resolveJobHandle
@@ -290,6 +291,9 @@ spec = testGroup "FFI acquisition"
       , testCase "closer killed in the backend gate wait frees the env once on retry" (counted "m3-standalone-ownership" "closer-killed-in-the-backend-gate-wait-frees-the-env-once-on-retry" (caseCloserKilledInBackendGateWait))
       , testCase "store failure in retirement still closes and keeps the record joinable" (counted "m3-standalone-ownership" "store-failure-in-retirement-still-closes-and-keeps-the-record-joinable" (caseStoreFailureInRetirement))
       , testCase "table close phases move only forward after teardown starts" (counted "m3-standalone-ownership" "table-close-phases-move-only-forward-after-teardown-starts" (caseTableClosePhasesMoveOnlyForward))
+      , testCase "unknown registry key refuses before dereference" (counted "m3-standalone-ownership" "unknown-registry-key-refuses-before-dereference" (caseUnknownKeyRefusesBeforeDereference))
+      , testCase "hook-only registry key refuses after its hook" (counted "m3-standalone-ownership" "hook-only-registry-key-refuses-after-its-hook" (caseHookOnlyRefusesAfterHook))
+      , testCase "close of an unknown key nulls the slot only" (counted "m3-standalone-ownership" "close-of-an-unknown-key-nulls-the-slot-only" (caseCloseUnknownNullsSlotOnly))
       ]
   ]
 
@@ -702,7 +706,7 @@ caseCloseWaitsForEntered = do
   done <- newEmptyMVar
   setJoinTestHook dc (putMVar entered () >> takeMVar proceed)
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
   _ <- forkIO $ do
     r <- try $ alloca $ \pHandleOut -> alloca $ \pNeedOut -> do
@@ -767,7 +771,7 @@ caseAdmittedCallsRun = do
   dc <- mkFfiDetached _store
   ctx <- mkFfiGen dc
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
       startOn pHandleOut = BS.useAsCString "abc" $ \p ->
         haskokiAsyncStart sp sess 2 (castPtr p) 3 32 1 pHandleOut
@@ -1125,7 +1129,7 @@ caseCloseKillRetryCompletes = do
   j0 <- startFfiDigest ctx "abc" 32 1
   h <- allocJobHandle ctx j0
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   alloca $ \pSlot -> do
     poke pSlot sp
     admitted <- enterTableUse (acTable ctx)
@@ -1178,7 +1182,7 @@ caseEnterCloseRace = do
   dc <- mkFfiDetached _store
   ctx <- mkFfiGen dc
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   alloca $ \pSlot -> do
     poke pSlot sp
     entered <- newEmptyMVar
@@ -1266,7 +1270,7 @@ reuseBorrowed _ _ 0 =
 reuseBorrowed dc borrowed n = do
   owned <- mkFfiGen dc
   spOwned <- newStablePtr owned
-  registerCtx spOwned (acTable owned)
+  registerFixtureCtx spOwned (acTable owned)
   let ownedBits = castStablePtrToPtr spOwned
   alloca $ \pSlot -> do
     poke pSlot spOwned
@@ -1296,7 +1300,7 @@ caseOwnedToBorrowedReuse = do
   -- The live index cannot be reused underneath the assertion.
   owned <- mkFfiGen dc
   spOwned <- newStablePtr owned
-  registerCtx spOwned (acTable owned)
+  registerFixtureCtx spOwned (acTable owned)
   retireCtx spOwned
   rvStale <- haskokiAsyncCancel spOwned nullJob
   assertEqual "retired owned refuses" rvGeneral rvStale
@@ -1338,7 +1342,7 @@ caseEnterBarrierCloseTombstones = do
   dc <- mkFfiDetached _store
   ctx <- mkFfiGen dc
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   alloca $ \pSlot -> do
     poke pSlot sp
     entered <- newEmptyMVar
@@ -1381,11 +1385,11 @@ caseRetireClearsHook = do
   dc <- mkFfiDetached _store
   ctx <- mkFfiGen dc
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   fired <- newEmptyMVar
   setEnterTestHook sp (Just (putMVar fired ()))
   retireCtx sp
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   rv <- haskokiAsyncCancel sp nullJob
   assertEqual "re-registered pointer admits" rvBad rv
   mFired <- tryTakeMVar fired
@@ -1424,7 +1428,7 @@ caseRegistryRootsReclaim = do
   ctx <- mkFfiGen dc
   mapM_ (\_ -> do
     sp <- newStablePtr ctx
-    registerCtx sp (acTable ctx)
+    registerFixtureCtx sp (acTable ctx)
     retireCtx sp
     freeStablePtr sp) [1 .. 50 :: Int]
   mapM_ (\_ -> do
@@ -1433,7 +1437,7 @@ caseRegistryRootsReclaim = do
     retireCtx sp
     freeStablePtr sp) [1 .. 50 :: Int]
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   mapM_ (\_ -> do
     setEnterTestHook sp (Just (pure ()))
     setEnterTestHook sp Nothing) [1 .. 50 :: Int]
@@ -1468,10 +1472,10 @@ caseReclaimOverlappingReuse = do
   dc <- mkFfiDetached _store
   ctx <- mkFfiGen dc
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   ctxAcquireBorrowTest sp
   retireCtx sp
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   retireCtx sp
   p <- ctxPendingReclaims
   assertBool ("two stacked roots queued, saw " ++ show p) (p >= 2)
@@ -1725,6 +1729,13 @@ foreign import ccall unsafe "hsk_ossl4_test_gate_parked" c_ownGateParked
   :: Ptr TestGate -> IO CInt
 foreign import ccall unsafe "hsk_ossl4_test_env_doublefree" c_ownEnvDoublefree
   :: IO CLong
+
+foreign import ccall unsafe "haskoki_ctx_lookup_acquire" c_absentLookup
+  :: Ptr () -> Ptr (Ptr ()) -> IO CInt
+foreign import ccall unsafe "haskoki_ctx_hook_acquire" c_absentHookLookup
+  :: Ptr () -> Ptr (Ptr ()) -> IO CInt
+foreign import ccall unsafe "haskoki_ctx_release" c_absentRelease
+  :: Ptr () -> IO ()
 
 -- | Barrier for a sibling parked in a gate checkpoint: the park is
 -- straight-line code past the arm, so this either observes it or
@@ -2078,7 +2089,7 @@ caseCloserKilledInStoreWait = do
     other -> assertFailure ("join failed: " ++ show other)
   h <- allocJobHandle ctx jB
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   (counting, readCounts) <- countingAcquisition
   -- Arm only after setup: detach reserves through the same probe.
   writeIORef armed True
@@ -2181,7 +2192,7 @@ caseCloserKilledInLeaseWait = do
   j0 <- startFfiDigest ctx "abc" 32 1
   h <- allocJobHandle ctx j0
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   entered <- newEmptyMVar
   proceed <- newEmptyMVar
   alloca $ \pSlot -> do
@@ -2378,7 +2389,7 @@ caseStoreFailureInRetirement = do
     other -> assertFailure ("join failed: " ++ show other)
   h <- allocJobHandle ctx jB
   sp <- newStablePtr ctx
-  registerCtx sp (acTable ctx)
+  registerFixtureCtx sp (acTable ctx)
   alloca $ \pSlot -> do
     poke pSlot sp
     writeIORef armed True
@@ -2498,3 +2509,151 @@ caseTableClosePhasesMoveOnlyForward = do
   assertBool "claim after close loses" (not afterClose)
   (liveAfter, _, _) <- tableStats table
   assertZero "live_jobs" "no live jobs" liveAfter
+
+-- | Allocate a key the registry reads as absent with no hook. The
+-- allocator may hand back a freed index whose tombstone still
+-- stands, so colliding keys stay live while the search continues;
+-- the fresh absent key returns with the colliders for the caller to
+-- free. Bounded; parallel churn never exhausts it.
+freshAbsentKey :: AsyncCtx -> IO (StablePtr AsyncCtx, [StablePtr AsyncCtx])
+freshAbsentKey ctx = go (1000 :: Int) []
+  where
+    go 0 _ = assertFailure "no absent registry key within the bound"
+    go n acc = mask_ $ do
+      sp <- newStablePtr ctx
+      let key = castPtr (castStablePtrToPtr sp)
+      kind <- alloca $ \pOut -> c_absentLookup key pOut
+      case kind of
+        0 -> do
+          hooked <- alloca $ \pHook -> c_absentHookLookup key pHook
+          if hooked == 0
+            then pure (sp, acc)
+            else c_absentRelease key >> go (n - 1) (sp : acc)
+        1 -> c_absentRelease key >> go (n - 1) (sp : acc)
+        2 -> c_absentRelease key >> go (n - 1) (sp : acc)
+        _ -> go (n - 1) (sp : acc)
+
+-- | An unknown registry key refuses before dereference: a valid
+-- pointer to a fixture context that is never registered, driven
+-- through the job-start export, reports the same code as a retired
+-- tombstone and mints no job.
+caseUnknownKeyRefusesBeforeDereference :: IO ()
+caseUnknownKeyRefusesBeforeDereference = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  spTomb <- newStablePtr ctx
+  registerFixtureCtx spTomb (acTable ctx)
+  retireCtx spTomb
+  (spUnknown, colliders) <- freshAbsentKey ctx
+  let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
+      startOn sp pHandleOut = BS.useAsCString "abc" $ \p ->
+        haskokiAsyncStart sp sess 2 (castPtr p) 3 32 1 pHandleOut
+  (do
+    rvTomb <- alloca $ \pHandleOut -> do
+      poke pHandleOut nullJob
+      rv <- startOn spTomb pHandleOut
+      hOut <- peek pHandleOut
+      assertBool "tombstone mints no handle" (isNull hOut)
+      pure rv
+    assertEqual "tombstone refuses" rvGeneral rvTomb
+    (liveTomb, _, _) <- tableStats (acTable ctx)
+    assertZero "live_jobs" "tombstone mints no job" liveTomb
+    (rvUnknown, hUnknown) <- alloca $ \pHandleOut -> do
+      poke pHandleOut nullJob
+      rv <- startOn spUnknown pHandleOut
+      hOut <- peek pHandleOut
+      pure (rv, hOut)
+    assertEqual "unknown refuses like the tombstone" rvTomb rvUnknown
+    assertBool "unknown mints no handle" (isNull hUnknown)
+    (liveAfter, termAfter, nextAfter) <- tableStats (acTable ctx)
+    assertZero "live_jobs" "unknown mints no job" liveAfter
+    assertEqual "no terminal minted" 0 termAfter
+    assertEqual "no id consumed" 0 nextAfter
+    nLive <- asyncLiveHandles ctx
+    assertZero "live_handles" "no handles" nLive
+    ) `finally`
+      (freeStablePtr spUnknown >> mapM_ freeStablePtr colliders
+        >> freeStablePtr spTomb >> asyncCloseCtx ctx)
+
+-- | A hook-only registry key refuses after its hook: arming a hook
+-- on a never-registered key parks the hook without admitting, the
+-- export fires the hook once and then refuses like a tombstone,
+-- minting no job.
+caseHookOnlyRefusesAfterHook :: IO ()
+caseHookOnlyRefusesAfterHook = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  (spHook, colliders) <- freshAbsentKey ctx
+  fired <- newEmptyMVar
+  setEnterTestHook spHook (Just (putMVar fired ()))
+  let sess = CULong (fromIntegral (unSessionId (acSession ctx)))
+      startOn pHandleOut = BS.useAsCString "abc" $ \p ->
+        haskokiAsyncStart spHook sess 2 (castPtr p) 3 32 1 pHandleOut
+  (do
+    (rv, hOut) <- alloca $ \pHandleOut -> do
+      poke pHandleOut nullJob
+      r <- startOn pHandleOut
+      h <- peek pHandleOut
+      pure (r, h)
+    mFired <- timeout 10000000 (takeMVar fired)
+    case mFired of
+      Nothing -> assertFailure "entry hook never fired"
+      Just () -> pure ()
+    mSecond <- tryTakeMVar fired
+    case mSecond of
+      Nothing -> pure ()
+      Just () -> assertFailure "entry hook fired twice for one call"
+    assertEqual "hook-only refuses" rvGeneral rv
+    assertBool "hook-only mints no handle" (isNull hOut)
+    (liveAfter, termAfter, nextAfter) <- tableStats (acTable ctx)
+    assertZero "live_jobs" "hook-only mints no job" liveAfter
+    assertEqual "no terminal minted" 0 termAfter
+    assertEqual "no id consumed" 0 nextAfter
+    nLive <- asyncLiveHandles ctx
+    assertZero "live_handles" "no handles" nLive
+    ) `finally`
+      (setEnterTestHook spHook Nothing >> freeStablePtr spHook
+        >> mapM_ freeStablePtr colliders >> asyncCloseCtx ctx)
+
+-- | Closing an unknown key reclaims the slot only: the slot nulls,
+-- the table gate stays open with no borrowers, and the backend
+-- stays open. Pins the slot-reclaim path.
+caseCloseUnknownNullsSlotOnly :: IO ()
+caseCloseUnknownNullsSlotOnly = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  (spUnknown, colliders) <- freshAbsentKey ctx
+  (counting, readCounts) <- countingAcquisition
+  (spExport, colliders2) <- freshAbsentKey ctx
+  (do
+    alloca $ \pSlot -> do
+      poke pSlot spUnknown
+      closeCtxSlotWith counting pSlot
+      after <- peek pSlot
+      assertBool "slot nulled" (isNull after)
+    gate <- inspectTableGate (acTable ctx)
+    assertEqual "gate stays open" (0, False) gate
+    c <- readCounts
+    assertEqual "backend stays open" 0 (acBackendCloses c)
+    assertEqual "no retirement" 0 (acRetirements c)
+    assertEqual "no context free" 0 (acCtxFrees c)
+    alloca $ \pSlot -> do
+      poke pSlot spExport
+      haskokiAsyncClose pSlot
+      after <- peek pSlot
+      assertBool "export slot nulled" (isNull after)
+    gate2 <- inspectTableGate (acTable ctx)
+    assertEqual "gate still open" (0, False) gate2
+    (liveAfter, termAfter, nextAfter) <- tableStats (acTable ctx)
+    assertZero "live_jobs" "no jobs" liveAfter
+    assertEqual "no terminal minted" 0 termAfter
+    assertEqual "no id consumed" 0 nextAfter
+    nLive <- asyncLiveHandles ctx
+    assertZero "live_handles" "no handles" nLive
+    ) `finally`
+      (freeStablePtr spUnknown >> mapM_ freeStablePtr colliders
+        >> freeStablePtr spExport >> mapM_ freeStablePtr colliders2
+        >> asyncCloseCtx ctx)
