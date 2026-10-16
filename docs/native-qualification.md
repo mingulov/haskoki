@@ -32,12 +32,12 @@ Evidence:
 - Mutation proof: a common stanza carrying the define, imported by the
   foreign library. The earlier gate passed on the stale module. The current
   gate fails statically; with the static rule removed it rebuilds and fails
-  on the 32 exported hook symbols. The revert passes.
+  on the 33 exported hook symbols. The revert passes.
 - `nm "$(cabal list-bin exe:haskoki-ctl)" | grep -c hsk_ossl4_` prints 0.
 
 ## 2. Symbol and behavior inventory
 
-`tests/c/ossl4_test_symbols.txt` is the byte-sorted list of 32 names. The
+`tests/c/ossl4_test_symbols.txt` is the byte-sorted list of 33 names. The
 shipped library must contain none of them (gated by
 `scripts/test-ossl4-bounds.sh`); the test library contains all of them.
 
@@ -46,7 +46,7 @@ shipped library must contain none of them (gated by
 | `hsk_ossl4_{digest,digest_init,digest_init_sized,digest_sized,digest_final,digest_xof,env_load,env_new,free}_gated` | 9 | absent | present | Wrappers of the production entry points bound to a test gate. They consume an armed allocation fault (failing without allocating), let `env_load` stop at an armed checkpoint, attribute the handles they create to the gate, and count each creation and each real destroy or free in the gate's outstanding counters. |
 | gate and counter functions: `test_gate_{new,free,park,parked,poll,release,arm_alloc_fail,arm_checkpoint,note_buf,note_digest,note_env,buf_outstanding,digest_outstanding,env_outstanding}`, `test_digest_doublefree`, `test_env_doublefree` | 16 | absent | present | Rendezvous and fault-arming points for the ownership cases, and three independent outstanding counters (buffers, digest handles, env handles). The two `doublefree` entries are read-only: they return the number of repeat frees the digest and env live-sets have counted. |
 | `hsk_ossl4_test_live_acknowledge` | 1 | absent | present | Acknowledges an expected repeat free so the exit-time check does not fail the process. |
-| seam functions: `test_seam_{reset,arm_bn_fail,arm_derive,bn_calls,fired,target}` | 6 | absent | present | Arm and observe the forced BN-conversion and derive-length paths (section 4). |
+| seam functions: `test_seam_{reset,arm_bn_fail,arm_decrypt,arm_derive,bn_calls,fired,target}` | 7 | absent | present | Arm and observe the forced BN-conversion, derive-length and OAEP-decrypt-length paths (section 4). |
 
 Destruction behavior:
 
@@ -83,12 +83,15 @@ no-op) in production:
 |---|---|---|
 | `HSK_BN2NATIVEPAD` | `BN_bn2nativepad` | DH public key packing (named and explicit group paths: y, then p, g, y, and q). |
 | `HSK_PKEY_DERIVE_OUT` | `EVP_PKEY_derive` | The second (output) derive in the ECDH, XDH and DH derives. |
-| `HSK_SEAM_NOTE` | no-op | Records the PACK and SECRET buffers (`HSK_OSSL4_SEAM_PACK`, `HSK_OSSL4_SEAM_SECRET`) so the harness can check extent and canaries. |
+| `HSK_PKEY_DECRYPT_OUT` | `EVP_PKEY_decrypt` | The output decrypt in the OAEP decrypt. |
+| `HSK_SEAM_NOTE` | no-op | Records the PACK, SECRET and OAEP buffers (`HSK_OSSL4_SEAM_PACK`, `HSK_OSSL4_SEAM_SECRET`, `HSK_OSSL4_SEAM_OAEP`) so the harness can check extent and canaries. |
 
-Forced paths: a BN conversion that fails after the buffer is allocated, and a
+Forced paths: a BN conversion that fails after the buffer is allocated, a
 derive that reports a length different from the allocation (shorter or
-longer), each with the derive both failing and succeeding. The harness checks
-the exact extent, canary bytes around the allocation, and exact free counts.
+longer), each with the derive both failing and succeeding, and an OAEP
+decrypt that reports failure with a moved length (shorter or longer). The
+harness checks the exact extent, canary bytes around the allocation, and
+exact free counts.
 
 Success-path extent change (production behavior): after a successful derive,
 a reported length above the allocation fails closed and the whole allocation
@@ -104,7 +107,7 @@ tail was left as the derive wrote it. The KAT and consumer suites
 builds are the same flags without the sanitizers). It first probes for
 libcrypto, compile, run and LeakSanitizer. It then runs each variant's case
 list in both memory modes, `track` (the tracking allocator) and `plain`
-(OpenSSL's default allocator): 132 runs. `address-reuse` and
+(OpenSSL's default allocator): 140 runs. `address-reuse` and
 `canary-selftest` run in `track` mode only, because they test the tracker
 itself. It runs seven negative controls:
 

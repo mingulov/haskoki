@@ -1122,6 +1122,63 @@ DERIVE_CASES(ecdh, K_ECDH)
 DERIVE_CASES(xdh, K_XDH)
 DERIVE_CASES(dh, K_DH_NAMED)
 
+/* A failed OAEP decrypt cleanses the allocation it made, not the length
+ * the failing call reported: the seam fills the buffer and moves the
+ * reported length by delta, so cleansing the reported length overruns
+ * (grow) or leaves a dirty tail byte (shrink). */
+static void oaep_fail_case(int grow)
+{
+    EVP_PKEY *rsa = NULL;
+    unsigned char *priv = NULL;
+    size_t privlen = 0;
+    unsigned char *in = NULL, *out = NULL;
+    size_t k = 0;
+    long before, rc;
+    long delta = grow ? 1 : -1;
+    int ksize;
+    trk_quarantine = 1; /* unique addresses: one free per allocation */
+    rsa = gen_from("RSA", NULL);
+    REQ(rsa != NULL, "keys");
+    ksize = EVP_PKEY_get_size(rsa);
+    REQ(ksize > 0, "key-size");
+    k = (size_t)ksize;
+    REQ(priv_der(rsa, &priv, &privlen), "priv-der");
+    in = OPENSSL_malloc(k);
+    REQ(in != NULL, "input");
+    memset(in, 0, k);
+    /* Warmup: an unarmed decrypt populates the libctx caches before the
+     * live mark (all-zero input is never valid OAEP padding). Drop the
+     * note the warmup recorded. */
+    rc = hsk_ossl4_rsa_oaep_decrypt(g_lib, "SHA256", "SHA256", NULL, 0, "",
+                                    priv, privlen, in, k, &out);
+    REQ(rc == HSK_OSSL4_ERR_AUTHFAIL && out == NULL, "warmup");
+    hsk_ossl4_test_seam_reset();
+    before = mark_live();
+    if (!g_noarm)
+        hsk_ossl4_test_seam_arm_decrypt(delta);
+    rc = hsk_ossl4_rsa_oaep_decrypt(g_lib, "SHA256", "SHA256", NULL, 0, "",
+                                    priv, privlen, in, k, &out);
+    seam_fired_check();
+    REQ(*g_reason == 0, g_reason);
+    REQ(rc == HSK_OSSL4_ERR_AUTHFAIL, "rc-code");
+    REQ(out == NULL, "out-set");
+    check_target(HSK_OSSL4_SEAM_OAEP);
+    REQ_LIVE(before);
+    OPENSSL_free(in);
+    OPENSSL_free(priv);
+    EVP_PKEY_free(rsa);
+}
+
+static void case_seam_oaep_fail_shrink(void)
+{
+    oaep_fail_case(0);
+}
+
+static void case_seam_oaep_fail_grow(void)
+{
+    oaep_fail_case(1);
+}
+
 /* The detector itself: a partly cleansed block and a one-byte overrun
  * must both be reported. */
 static void case_canary_selftest(void)
@@ -1192,6 +1249,8 @@ static const case_t cases[] = {
     { "seam-derive-fail-grow-dh", case_seam_fail_grow_dh, 1, 0, 0 },
     { "seam-derive-ok-shrink-dh", case_seam_ok_shrink_dh, 1, 0, 0 },
     { "seam-derive-ok-grow-dh", case_seam_ok_grow_dh, 1, 0, 0 },
+    { "seam-oaep-fail-shrink", case_seam_oaep_fail_shrink, 1, 0, 0 },
+    { "seam-oaep-fail-grow", case_seam_oaep_fail_grow, 1, 0, 0 },
     { "canary-selftest", case_canary_selftest, 1, 1, 0 },
 #endif
 };

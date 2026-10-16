@@ -3840,19 +3840,24 @@ end:
 
 /* --- derive seams (test configuration only) --------------------------------
  * The test configuration routes the BN export in the finite-field DH peer
- * pack and the second (output) derive through seams, so the tests can force
- * the faults that no provider produces on demand. The shipped module calls
- * the OpenSSL functions directly. */
+ * pack, the second (output) derive, and the OAEP output decrypt through
+ * seams, so the tests can force the faults that no provider produces on
+ * demand. The shipped module calls the OpenSSL functions directly. */
 #ifdef HSK_OSSL4_TEST_HOOKS
 static int hsk_seam_bn2nativepad(const BIGNUM *a, unsigned char *to, int n);
 static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l);
+static int hsk_seam_pkey_decrypt(EVP_PKEY_CTX *c, unsigned char *o, size_t *l,
+                                 const unsigned char *in, size_t inlen);
 static void hsk_seam_note(int which, void *p, size_t n);
 #define HSK_BN2NATIVEPAD(a, to, n) hsk_seam_bn2nativepad((a), (to), (n))
 #define HSK_PKEY_DERIVE_OUT(c, k, l) hsk_seam_pkey_derive((c), (k), (l))
+#define HSK_PKEY_DECRYPT_OUT(c, o, l, i, n) \
+    hsk_seam_pkey_decrypt((c), (o), (l), (i), (n))
 #define HSK_SEAM_NOTE(w, p, n) hsk_seam_note((w), (p), (n))
 #else
 #define HSK_BN2NATIVEPAD(a, to, n) BN_bn2nativepad((a), (to), (n))
 #define HSK_PKEY_DERIVE_OUT(c, k, l) EVP_PKEY_derive((c), (k), (l))
+#define HSK_PKEY_DECRYPT_OUT(c, o, l, i, n) EVP_PKEY_decrypt((c), (o), (l), (i), (n))
 #define HSK_SEAM_NOTE(w, p, n) ((void)0)
 #endif
 
@@ -5368,6 +5373,7 @@ long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *buf = NULL;
     size_t buflen = 0;
+    size_t alloc = 0;
     long rc = HSK_OSSL4_ERR_NATIVE;
 
     if (ctx == NULL || mdname == NULL || mgfname == NULL || propq == NULL ||
@@ -5402,13 +5408,17 @@ long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
         rc = hsk_ossl4_oaep_fail();
         goto end;
     }
-    buf = OPENSSL_malloc(buflen > 0 ? buflen : 1);
+    /* The output call may write buflen even on failure; the cleanse below
+     * uses the allocation size, never the reported length. */
+    alloc = buflen > 0 ? buflen : 1;
+    buf = OPENSSL_malloc(alloc);
     if (buf == NULL) {
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (EVP_PKEY_decrypt(pctx, buf, &buflen, in, inlen) <= 0) {
-        OPENSSL_clear_free(buf, buflen > 0 ? buflen : 1);
+    HSK_SEAM_NOTE(HSK_OSSL4_SEAM_OAEP, buf, alloc);
+    if (HSK_PKEY_DECRYPT_OUT(pctx, buf, &buflen, in, inlen) <= 0) {
+        OPENSSL_clear_free(buf, alloc);
         buf = NULL;
         rc = hsk_ossl4_oaep_fail();
         goto end;
@@ -5419,7 +5429,7 @@ long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
 
 end:
     if (buf != NULL)
-        OPENSSL_clear_free(buf, buflen > 0 ? buflen : 1);
+        OPENSSL_clear_free(buf, alloc);
     EVP_PKEY_CTX_free(pctx);
     EVP_MD_free(mgfmd);
     EVP_MD_free(md);
@@ -5834,13 +5844,16 @@ typedef struct {
     int derive_armed;
     long derive_delta;
     int derive_succeed;
+    int decrypt_armed;
+    long decrypt_delta;
     long fired;
-    void *ptr[2];
-    size_t alloc[2];
+    void *ptr[3];
+    size_t alloc[3];
 } hsk_seam_state_t;
 
 static hsk_seam_state_t hsk_seam = { PTHREAD_MUTEX_INITIALIZER, 0, 0, 0, 0,
-                                     0, 0, { NULL, NULL }, { 0, 0 } };
+                                     0, 0, 0, 0, { NULL, NULL, NULL },
+                                     { 0, 0, 0 } };
 
 void hsk_ossl4_test_seam_reset(void)
 {
@@ -5850,9 +5863,11 @@ void hsk_ossl4_test_seam_reset(void)
     hsk_seam.derive_armed = 0;
     hsk_seam.derive_delta = 0;
     hsk_seam.derive_succeed = 0;
+    hsk_seam.decrypt_armed = 0;
+    hsk_seam.decrypt_delta = 0;
     hsk_seam.fired = 0;
-    hsk_seam.ptr[0] = hsk_seam.ptr[1] = NULL;
-    hsk_seam.alloc[0] = hsk_seam.alloc[1] = 0;
+    hsk_seam.ptr[0] = hsk_seam.ptr[1] = hsk_seam.ptr[2] = NULL;
+    hsk_seam.alloc[0] = hsk_seam.alloc[1] = hsk_seam.alloc[2] = 0;
     pthread_mutex_unlock(&hsk_seam.mu);
 }
 
@@ -5870,6 +5885,14 @@ void hsk_ossl4_test_seam_arm_derive(long delta, int succeed)
     hsk_seam.derive_armed = 1;
     hsk_seam.derive_delta = delta;
     hsk_seam.derive_succeed = succeed;
+    pthread_mutex_unlock(&hsk_seam.mu);
+}
+
+void hsk_ossl4_test_seam_arm_decrypt(long delta)
+{
+    pthread_mutex_lock(&hsk_seam.mu);
+    hsk_seam.decrypt_armed = 1;
+    hsk_seam.decrypt_delta = delta;
     pthread_mutex_unlock(&hsk_seam.mu);
 }
 
@@ -5894,7 +5917,7 @@ long hsk_ossl4_test_seam_fired(void)
 int hsk_ossl4_test_seam_target(int which, void **ptr, size_t *alloc)
 {
     int r = 0;
-    if (which < 0 || which > 1)
+    if (which < 0 || which > 2)
         return 0;
     pthread_mutex_lock(&hsk_seam.mu);
     if (hsk_seam.ptr[which] != NULL) {
@@ -5955,9 +5978,31 @@ static int hsk_seam_pkey_derive(EVP_PKEY_CTX *c, unsigned char *k, size_t *l)
     }
 }
 
+static int hsk_seam_pkey_decrypt(EVP_PKEY_CTX *c, unsigned char *o, size_t *l,
+                                 const unsigned char *in, size_t inlen)
+{
+    int armed;
+    long delta;
+    pthread_mutex_lock(&hsk_seam.mu);
+    armed = hsk_seam.decrypt_armed;
+    delta = hsk_seam.decrypt_delta;
+    if (armed) {
+        hsk_seam.decrypt_armed = 0;
+        hsk_seam.fired++;
+    }
+    pthread_mutex_unlock(&hsk_seam.mu);
+    if (!armed)
+        return EVP_PKEY_decrypt(c, o, l, in, inlen);
+    /* A provider that wrote the plaintext, then reported failure
+     * with a changed length. */
+    memset(o, 0x5A, *l);
+    *l = (size_t)((long)*l + delta);
+    return 0;
+}
+
 static void hsk_seam_note(int which, void *p, size_t n)
 {
-    if (which < 0 || which > 1)
+    if (which < 0 || which > 2)
         return;
     pthread_mutex_lock(&hsk_seam.mu);
     hsk_seam.ptr[which] = p;
