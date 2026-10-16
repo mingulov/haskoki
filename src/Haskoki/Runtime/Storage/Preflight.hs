@@ -26,6 +26,7 @@ module Haskoki.Runtime.Storage.Preflight
   , backupCandidates
   , renderReceipt
   , renderMigrateError
+  , renderMigrateErrorAfterClear
   ) where
 
 import Control.Exception (IOException, bracket, finally, fromException, mask, throwIO, try)
@@ -728,3 +729,21 @@ renderMigrateError e = case e of
     ++ " (docs/operations-notes.md, Upgrade, backup and recovery)")
   MigrateReceiptFailed bak why -> ("migrate-receipt-failed", "the migration committed; the "
     ++ "receipt was not written (" ++ why ++ "). Backup at " ++ bak)
+
+-- | Like 'renderMigrateError', but for a migration run that already
+-- cleared a cold journal: the post-clear refusals must not claim
+-- nothing was written or the store was unchanged. The tags are
+-- unchanged; anything that can only fail before the clear renders
+-- exactly as before.
+renderMigrateErrorAfterClear :: MigrateError -> (String, String)
+renderMigrateErrorAfterClear e = case e of
+  MigrateBackupExists p -> ("migrate-backup-exists",
+    "every backup name is taken (first: " ++ p
+      ++ "); the store database was not changed (a cold journal was removed; see above)")
+  MigrateBackupFailed why -> ("migrate-backup-failed", why
+    ++ "; the store database was not changed (a cold journal was removed; see above)")
+  MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction rolled back ("
+    ++ snd (renderStoreRefusal se)
+    ++ "); the store database was not changed (a cold journal was removed; see above). Backup kept at "
+    ++ bak)
+  _ -> renderMigrateError e

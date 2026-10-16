@@ -247,9 +247,10 @@ migrateSelectedWith hooks0 path cfg dir = do
         r <- trySync (migrateStoreWith hooks path cfg dir) :: IO (Either SomeException (Either MigrateError MigrateOutcome))
         cleared <- readIORef clearedRef
         let coldLine = if cleared then "cold-journal-removed: yes\n" else ""
+            render = if cleared then renderMigrateErrorAfterClear else renderMigrateError
         pure $ case r of
           Left ex -> (1, coldLine, line (renderUnexpectedFailure ex))
-          Right (Left me) -> (1, coldLine, line (renderMigrateError me))
+          Right (Left me) -> (1, coldLine, line (render me))
           Right (Right MigrateNotNeeded) -> (0, coldLine ++ line ("migrate-not-needed",
             "the store is at schema " ++ show sqliteSchemaVersion
               ++ " and every token has a credential row; nothing was written"), "")

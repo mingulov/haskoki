@@ -13,6 +13,8 @@ import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
+import qualified Data.Text as T
+import qualified Database.SQLite3 as S
 import Foreign.C.String (withCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
@@ -31,13 +33,13 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Ctl (CtlExit (..), ctlHelp, runCtl)
 import Haskoki.Ctl.Store (renderCheckUnexpectedFailure, renderUnexpectedFailure, storeCheckCommand, storeMigrateCommandWith)
-import Haskoki.Runtime.Storage.Preflight (MigrateHooks (..), noMigrateHooks)
+import Haskoki.Runtime.Storage.Preflight (MigrateHooks (..), backupCandidates, noMigrateHooks)
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
 import Haskoki.FFI.Standard (openStdStore)
 import Haskoki.Runtime.Catalog (asyncHomeEntry)
 import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage (CommitResult (..), CredentialRecord (..), Store (..), StoreError (..), emptyDelta)
-import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
+import Haskoki.Runtime.Storage.SQLite (MigrationHooks (..), noMigrationHooks, openSQLiteStore)
 import Haskoki.Types (TokenId (..))
 
 import StoreFixtures
@@ -113,6 +115,9 @@ spec = testGroup "Store commands"
   , testCase "inspect: through a symlink, an offline store names the target" caseInspectSymlinkOffline
   , testCase "reset: through a symlink, a live owner at the target refuses" caseResetSymlinkLive
   , testCase "reset: through a symlink, an offline store removes the target" caseResetSymlinkOffline
+  , testCase "migrate: after a clear, backup-exists stays honest about the store" caseMigrateClearBackupExistsHonest
+  , testCase "migrate: after a clear, backup-failed stays honest about the store" caseMigrateClearBackupFailedHonest
+  , testCase "migrate: after a clear, a failed transaction stays honest about the store" caseMigrateClearTxnFailedHonest
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -1380,3 +1385,70 @@ caseResetSymlinkOffline = withScratch "store-ctl" $ \dir -> do
   assertBool "target lock removed" (not lockLeft)
   entries <- listDirectory dir
   assertBool "symlink left dangling" ("link.sqlite" `elem` entries)
+
+-- Hooks with a fixed clock, so every backup name is known up front.
+epochClock :: MigrateHooks
+epochClock = noMigrateHooks { mhClock = pure 1700000000 }
+
+-- After clearing a cold journal, an exhausted backup namespace must
+-- not claim nothing was written: the database is unchanged, but the
+-- journal is gone.
+caseMigrateClearBackupExistsHonest :: IO ()
+caseMigrateClearBackupExistsHonest = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  BS.writeFile journal (BS.replicate 512 0)
+  mapM_ (\c -> writeFile c "taken") (backupCandidates store backups 2 1700000000)
+  (code, out, err) <- storeMigrateCommandWith epochClock
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 1" 1 code
+  assertBool "tag" ("migrate-backup-exists:" `isPrefixOf` err)
+  assertBool "clearing reported" ("cold-journal-removed: yes" `elem` lines out)
+  gone <- not <$> doesFileExist journal
+  assertBool "journal removed" gone
+  assertBool "no nothing-written claim" (not ("nothing was written" `isInfixOf` err))
+  assertBool "database unchanged" ("the store database was not changed" `isInfixOf` err)
+  assertBool "names the clearing" ("cold journal was removed" `isInfixOf` err)
+
+-- After clearing a cold journal, a backup failure must not claim
+-- the store was unchanged: the database is, but the journal is gone.
+caseMigrateClearBackupFailedHonest :: IO ()
+caseMigrateClearBackupFailedHonest = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  BS.writeFile journal (BS.replicate 512 0)
+  let failing = noMigrateHooks { mhDigest = \_ -> pure (Left "SHA-256 engine unavailable: test") }
+  (code, out, err) <- storeMigrateCommandWith failing
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 1" 1 code
+  assertBool "tag" ("migrate-backup-failed:" `isPrefixOf` err)
+  assertBool "clearing reported" ("cold-journal-removed: yes" `elem` lines out)
+  gone <- not <$> doesFileExist journal
+  assertBool "journal removed" gone
+  assertBool "no store-unchanged claim" (not ("; the store was not changed" `isInfixOf` err))
+  assertBool "database unchanged" ("the store database was not changed" `isInfixOf` err)
+  assertBool "names the clearing" ("cold journal was removed" `isInfixOf` err)
+
+-- After clearing a cold journal, a rolled-back transaction must not
+-- claim the store was unchanged either: the backup is still kept.
+caseMigrateClearTxnFailedHonest :: IO ()
+caseMigrateClearTxnFailedHonest = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.3.1.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  BS.writeFile journal (BS.replicate 512 0)
+  let full = noMigrateHooks { mhSQLite = noMigrationHooks { mgAfterBegin = \db -> do
+        n <- pragmaInt db "PRAGMA page_count"
+        S.exec db (T.pack ("PRAGMA max_page_count = " ++ show n)) } }
+  (code, out, err) <- storeMigrateCommandWith full
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 1" 1 code
+  assertBool "tag" ("migrate-failed:" `isPrefixOf` err)
+  assertBool "clearing reported" ("cold-journal-removed: yes" `elem` lines out)
+  gone <- not <$> doesFileExist journal
+  assertBool "journal removed" gone
+  assertBool "no store-unchanged claim" (not ("; the store was not changed" `isInfixOf` err))
+  assertBool "database unchanged" ("the store database was not changed" `isInfixOf` err)
+  assertBool "backup kept" ("Backup kept at" `isInfixOf` err)
