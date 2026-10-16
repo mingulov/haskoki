@@ -21,8 +21,14 @@
  *   - restart persistence: changed PINs survive Finalize +
  *     Initialize; a relabel needs the catalog updated to match
  *     (the operator flow: rewrite config, restart, serve on)
- *   - linearization: barrier-start login-vs-SetPIN load stays
- *     clean (every call answers, sessions conserve, one PIN wins)
+ *   - linearization: barrier-start load stays clean. The
+ *     same-value leg races login-vs-SetPIN(A->A): every call
+ *     answers, sessions conserve, and the stale leg pins the
+ *     strike counter. The replace legs race two distinct
+ *     transitions (A->B vs A->C, then winner->D/E): exactly one
+ *     racer wins, the loser is refused on the superseded old
+ *     credential, and the durable credential advances with no
+ *     torn state.
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module and drives it through the pinned 3.2
@@ -641,7 +647,7 @@ static void phase_restart(void) {
   CHECKC(rv == CKR_OK, "restart: sibling session closes");
 }
 
-/* ---------- phase: concurrent login-vs-PIN-change ---------- */
+/* ---------- phase: idempotent same-value race ---------- */
 
 #define RACE_WORKERS 4
 #define RACE_ITERS 25
@@ -684,7 +690,8 @@ static void *race_worker(void *arg) {
    * logged in, so every same-value change below must answer OK
    * no matter how the gate orders the interleavings — and
    * nobody logs out mid-race. */
-  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "race-pin!", 9);
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                      strlen("pin-alpha-01"));
   if (rv == CKR_OK) {
     __sync_fetch_and_add(&g_race_login_ok, 1);
   } else if (rv == CKR_USER_ALREADY_LOGGED_IN) {
@@ -693,8 +700,10 @@ static void *race_worker(void *arg) {
     race_note_bad();
   }
   for (iter = 0; iter < RACE_ITERS; iter++) {
-    rv = g_api->C_SetPIN(sess, (CK_UTF8CHAR_PTR) "race-pin!", 9,
-                         (CK_UTF8CHAR_PTR) "race-pin!", 9);
+    rv = g_api->C_SetPIN(sess, (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                         strlen("pin-alpha-01"),
+                         (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                         strlen("pin-alpha-01"));
     if (rv != CKR_OK) race_note_bad();
   }
   rv = g_api->C_CloseSession(sess);
@@ -702,7 +711,7 @@ static void *race_worker(void *arg) {
   return NULL;
 }
 
-static void phase_race(void) {
+static void phase_race_idempotent(void) {
   CK_RV rv;
   CK_SESSION_HANDLE sess = 0;
   pthread_t workers[RACE_WORKERS];
@@ -716,7 +725,8 @@ static void phase_race(void) {
   rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "scoped-pin", 10);
   CHECKC(rv == CKR_OK, "race: staging login");
   rv = g_api->C_SetPIN(sess, (CK_UTF8CHAR_PTR) "scoped-pin", 10,
-                       (CK_UTF8CHAR_PTR) "race-pin!", 9);
+                       (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                       strlen("pin-alpha-01"));
   CHECKC(rv == CKR_OK, "race: staging PIN set");
   rv = g_api->C_Logout(sess);
   CHECKC(rv == CKR_OK, "race: staging logout");
@@ -776,19 +786,21 @@ static void phase_race(void) {
   if (rv != CKR_OK) return;
   rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
   CHECKC(rv == CKR_OK, "race: SO login after stale lockout");
-  rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "race-done!", 10);
+  rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                        strlen("pin-alpha-01"));
   CHECKC(rv == CKR_OK, "race: SO recovery resets the PIN");
   rv = g_api->C_Logout(sess);
   CHECKC(rv == CKR_OK, "race: SO logout");
 
-  /* The token serves on afterwards: sessions conserved, one
-   * PIN wins, counters settled. */
-  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "race-done!", 10);
-  CHECKC(rv == CKR_OK, "race: PIN serves after the race");
+  /* The token serves on A afterwards: sessions conserved,
+   * counters settled, ready for the replace race. */
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                      strlen("pin-alpha-01"));
+  CHECKC(rv == CKR_OK, "race: PIN serves after the idempotent race");
   rv = g_api->C_Logout(sess);
-  CHECKC(rv == CKR_OK, "race: logout after the race");
+  CHECKC(rv == CKR_OK, "race: logout after the idempotent race");
   rv = g_api->C_CloseSession(sess);
-  CHECKC(rv == CKR_OK, "race: session closes after the race");
+  CHECKC(rv == CKR_OK, "race: session closes after the idempotent race");
 }
 
 static void *stale_worker(void *arg) {
@@ -822,6 +834,136 @@ static void *stale_worker(void *arg) {
   rv = g_api->C_CloseSession(sess);
   if (rv != CKR_OK) race_note_bad();
   return NULL;
+}
+
+/* ---------- phase: distinct-value replace races ---------- */
+
+#define REPLACE_WORKERS 2
+
+static pthread_barrier_t g_replace_start;
+static CK_RV g_replace_rv[REPLACE_WORKERS];
+static const char *g_replace_old = "pin-alpha-01";
+static const char *g_replace_new[REPLACE_WORKERS] = { "pin-bravo-02",
+                                                      "pin-charlie-03" };
+
+static void *replace_worker(void *arg) {
+  long id = (long)arg;           /* 0 -> B, 1 -> C */
+  CK_SESSION_HANDLE sess = 0;
+  int brc;
+  /* public RW session; NO login: the old PIN authenticates */
+  if (open_rw(0, &sess) != CKR_OK) { race_note_bad(); return NULL; }
+  brc = pthread_barrier_wait(&g_replace_start);
+  if (brc != 0 && brc != PTHREAD_BARRIER_SERIAL_THREAD) {
+    race_note_bad();
+    g_api->C_CloseSession(sess);
+    return NULL;
+  }
+  g_replace_rv[id] = g_api->C_SetPIN(sess, (CK_UTF8CHAR_PTR)g_replace_old,
+    strlen(g_replace_old), (CK_UTF8CHAR_PTR)g_replace_new[id],
+    strlen(g_replace_new[id]));
+  if (g_api->C_CloseSession(sess) != CKR_OK) race_note_bad();
+  return NULL;
+}
+
+/* Run one replace race over the current old/new pair: exactly
+ * one racer wins (CKR_OK), the other is refused with
+ * CKR_PIN_INCORRECT on the superseded old credential, in
+ * either order. Returns nonzero when the barrier ran. */
+static int run_replace_race(const char *tag) {
+  pthread_t workers[REPLACE_WORKERS];
+  long i;
+  int created = 0;
+  int ok = 0;
+  int refused = 0;
+
+  g_race_bad = 0;
+  if (pthread_barrier_init(&g_replace_start, NULL, REPLACE_WORKERS) != 0) {
+    CHECKC(0, "race: replace barrier init");
+    return 0;
+  }
+  for (i = 0; i < REPLACE_WORKERS; i++) {
+    if (pthread_create(&workers[i], NULL, replace_worker, (void *)i) != 0)
+      break;
+    created++;
+  }
+  for (i = 0; i < created; i++) pthread_join(workers[i], NULL);
+  pthread_barrier_destroy(&g_replace_start);
+  for (i = 0; i < created; i++) {
+    if (g_replace_rv[i] == CKR_OK) {
+      ok++;
+    } else if (g_replace_rv[i] == CKR_PIN_INCORRECT) {
+      refused++;
+    }
+  }
+  CHECKC(created == REPLACE_WORKERS && g_race_bad == 0 && ok == 1 && refused == 1,
+         "race: %s: one winner, one old-credential refusal", tag);
+  return created == REPLACE_WORKERS;
+}
+
+static void phase_race_replace(void) {
+  CK_RV rv;
+  CK_SESSION_HANDLE sess = 0;
+  const char *w;
+  const char *l;
+
+  /* Leg one: two distinct transitions off A behind one
+   * barrier. Exactly one wins; the loser finds the old
+   * credential superseded and is refused. */
+  if (!run_replace_race("replace")) return;
+  w = (g_replace_rv[0] == CKR_OK) ? g_replace_new[0] : g_replace_new[1];
+  l = (g_replace_rv[0] == CKR_OK) ? g_replace_new[1] : g_replace_new[0];
+
+  /* Post-race probes, fixed order: the strike budget peaks
+   * at two and never locks. The winner login first resets
+   * the loser's strike; the two refusals accrue one strike
+   * each; the closing winner login resets again. */
+  rv = open_rw(0, &sess);
+  CHECKC(rv == CKR_OK && sess != 0, "race: probe session opens");
+  if (rv != CKR_OK) return;
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR)w, strlen(w));
+  CHECKC(rv == CKR_OK, "race: winner serves after the replace race");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "race: logout after the winner probe");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR)"pin-alpha-01",
+                      strlen("pin-alpha-01"));
+  CHECKC(rv == CKR_PIN_INCORRECT, "race: superseded PIN refuses");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR)l, strlen(l));
+  CHECKC(rv == CKR_PIN_INCORRECT, "race: loser value refuses");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR)w, strlen(w));
+  CHECKC(rv == CKR_OK, "race: winner serves again after the refusals");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "race: logout after the replace probes");
+  rv = g_api->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "race: probe session closes");
+
+  /* Leg two: the chained race off the winner composes the
+   * ordering (element-wise: whole-array assignment is
+   * illegal C). */
+  g_replace_old = w;
+  g_replace_new[0] = "pin-delta-04";
+  g_replace_new[1] = "pin-echo-05";
+  if (!run_replace_race("chained")) return;
+
+  /* SO recovery hands slot 0 on with the agreed PIN; the
+   * phases after depend on it. */
+  rv = open_rw(0, &sess);
+  CHECKC(rv == CKR_OK && sess != 0, "race: handoff recovery session opens");
+  if (rv != CKR_OK) return;
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+  CHECKC(rv == CKR_OK, "race: SO login before the handoff");
+  rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "race-done!", 10);
+  CHECKC(rv == CKR_OK, "race: SO recovery resets the PIN");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "race: SO logout");
+
+  /* The token serves on afterwards: sessions conserved, one
+   * PIN wins, counters settled. */
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "race-done!", 10);
+  CHECKC(rv == CKR_OK, "race: PIN serves after the race");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "race: logout after the race");
+  rv = g_api->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "race: session closes after the race");
 }
 
 /* ---------- phase: relabel + catalog update + restart ---------- */
@@ -955,7 +1097,8 @@ static void run_scenario(void) {
   phase_lockout_recovery();
   phase_reset_scoping();
   phase_restart();
-  phase_race();
+  phase_race_idempotent();
+  phase_race_replace();
   phase_relabel();
   phase_pin_rewrite();
 }
