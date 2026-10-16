@@ -176,7 +176,7 @@ import Haskoki.Runtime.Storage.Memory
   , openMemoryStore
   )
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
-import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
+import Haskoki.Session (tokenAuthNew)
 import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Types
   ( EngineResourceId (..)

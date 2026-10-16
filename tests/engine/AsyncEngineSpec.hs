@@ -1192,13 +1192,13 @@ caseAsyncBorrowedOwnership envLock = do
   sqlCfg <- stdAsyncConfig envLock "borrowed-sqlite" True
   loads <- newIORef (0 :: Int)
   closes <- newIORef (0 :: Int)
-  let counted = stdAcquisition { saOpenStore = \env config -> do
+  let countedAcq = stdAcquisition { saOpenStore = \env config -> do
         result <- saOpenStore stdAcquisition env config
         pure $ fmap (fmap (\ss -> ss { stdStore = (stdStore ss)
           { storeLoadJobs = modifyIORef' loads (+ 1) >> storeLoadJobs (stdStore ss)
           , storeClose = modifyIORef' closes (+ 1) >> storeClose (stdStore ss)
           } })) result }
-  bracket (openStdInstanceWith counted sqlCfg) haskokiStdClose $ \ctx -> do
+  bracket (openStdInstanceWith countedAcq sqlCfg) haskokiStdClose $ \ctx -> do
     assertBool "SQLite Standard opened" (castStablePtrToPtr ctx /= nullPtr)
     inst <- deRefStablePtr ctx
     ss <- maybe (assertFailure "missing owned store") pure (siStore inst)

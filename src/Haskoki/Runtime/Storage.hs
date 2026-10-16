@@ -123,7 +123,7 @@ import qualified Data.Map.Strict as Map
 import Data.Word (Word8, Word64)
 
 import Control.Exception (Exception)
-import Control.Monad (guard, mapM_)
+import Control.Monad (guard)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Maybe (listToMaybe)
 import qualified Data.Text as T

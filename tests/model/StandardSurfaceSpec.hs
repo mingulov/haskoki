@@ -87,7 +87,6 @@ import Haskoki.Model
   )
 import Haskoki.Operation
   ( DataGate (..)
-  , MsgFamily (..)
   , MsgState (..)
   , OpAuth (..)
   , SlotKind (..)

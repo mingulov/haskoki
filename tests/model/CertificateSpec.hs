@@ -952,10 +952,6 @@ createReq :: SessionId -> [(AttributeType, AttributeValue)] -> Request
 createReq sid tmpl =
   (mkRequest F_CreateObject (Just sid)) { reqInput = encodeTemplate tmpl }
 
-destroyReq :: SessionId -> ExternalHandle -> Request
-destroyReq sid h =
-  (mkRequest F_DestroyObject (Just sid)) { reqHandle = Just h }
-
 copyReq :: SessionId -> ExternalHandle -> [(AttributeType, AttributeValue)] -> Request
 copyReq sid h tmpl =
   (mkRequest F_CopyObject (Just sid))
@@ -977,12 +973,6 @@ setReq sid h tmpl =
 
 loginReq :: SessionId -> Request
 loginReq sid = (mkRequest F_Login (Just sid)) { reqInput = "user:ok" }
-
-logoutReq :: SessionId -> Request
-logoutReq sid = mkRequest F_Logout (Just sid)
-
-closeReq :: SessionId -> Request
-closeReq sid = mkRequest F_CloseSession (Just sid)
 
 loginAs :: Model -> SessionId -> IO Model
 loginAs model sid = snd <$> runCommit model (loginReq sid)

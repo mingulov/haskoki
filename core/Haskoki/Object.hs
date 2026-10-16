@@ -150,11 +150,6 @@ validateTemplate entries = case checkDuplicates entries of
     Nothing
       | Map.member AttrClass m -> Right m
       | otherwise -> Left TemplateIncomplete
-  where
-    wrongShape [] = Nothing
-    wrongShape ((t, v) : rest)
-      | shapeMatches t v = wrongShape rest
-      | otherwise = Just t
 
 -- ---------------------------------------------------------------------------
 -- Template rules

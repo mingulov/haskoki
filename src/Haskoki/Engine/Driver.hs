@@ -521,7 +521,6 @@ import Haskoki.Registry.Generated
   , ckm_MD5
   , ckm_RIPEMD160
   , ckm_RSA_PKCS
-  , ckm_RSA_X_509
   , ckm_SHA224
   , ckm_SHA256
   , ckm_SHA384
