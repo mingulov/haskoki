@@ -38,11 +38,25 @@ sha_of() { if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else printf ''; 
 
 write_receipt() {
   _gate=$1; _reason=$2
-  _sha=$(git -c safe.directory="$PWD" rev-parse HEAD 2>/dev/null || printf 'unknown')
-  if [ -z "$(git -c safe.directory="$PWD" status --porcelain -- cbits tests/c scripts/test-native-sanitizers.sh 2>/dev/null)" ]; then
-    _dirty=false
+  # Inside the container a worktree's git directory is not mounted: git then
+  # fails, and the commit comes from HASKOKI_SAN_SHA (40 hex) and the
+  # cleanliness from HASKOKI_SAN_DIRTY (true|false), both supplied by the
+  # caller on the host. Without either the receipt says unknown / dirty.
+  if _sha=$(git -c safe.directory="$PWD" rev-parse HEAD 2>/dev/null); then
+    if [ -z "$(git -c safe.directory="$PWD" status --porcelain -- cbits tests/c scripts/test-native-sanitizers.sh 2>/dev/null)" ]; then
+      _dirty=false
+    else
+      _dirty=true
+    fi
   else
-    _dirty=true
+    case ${HASKOKI_SAN_SHA:-} in
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) _sha=$HASKOKI_SAN_SHA ;;
+      *) _sha=unknown ;;
+    esac
+    case ${HASKOKI_SAN_DIRTY:-} in
+      false) _dirty=false ;;
+      *) _dirty=true ;;
+    esac
   fi
   _img=${HASKOKI_IMAGE_ID:-host (no container)}
   _cc=$($CC --version 2>/dev/null | head -1)
