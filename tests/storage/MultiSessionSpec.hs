@@ -13,11 +13,12 @@ same cases.
 module MultiSessionSpec (spec) where
 
 import qualified Data.Map.Strict as Map
+import Data.Bits (complement, rotateR, shiftL, shiftR, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import Data.Char (chr)
-import Data.Word (Word8)
+import Data.Word (Word8, Word32, Word64)
 import Data.List (isInfixOf, sort, sortOn)
 import Foreign.C.Types (CULong (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
@@ -40,6 +41,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTime)
+import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
@@ -76,6 +78,7 @@ import Haskoki.Runtime.Storage
   , CredentialRecord (..)
   , FaultInjector (..)
   , FaultPoint (..)
+  , JobRecord (..)
   , ObjectPut (..)
   , ObjectRecord (..)
   , Store (..)
@@ -85,6 +88,7 @@ import Haskoki.Runtime.Storage
   , TokenRecord (..)
   , defaultLimits
   , emptyDelta
+  , encodeHex16
   , noFaults
   , objectToRecord
   , planSlotMoves
@@ -97,6 +101,7 @@ import Haskoki.Runtime.Config
   ( Config (..)
   , StorageCfg (..)
   , StorageKind (..)
+  , TokensCfg (..)
   , defaultConfig
   , parseConfig
   )
@@ -136,10 +141,12 @@ import Haskoki.Types
 import StoreSpec
   ( awaitHolderExit
   , demoJobPending
+  , demoJobResult
   , expectCreated
   , expectInspect
   , expectJust
   , expectRight
+  , freshObject
   , makeTempDir
   , releaseHolder
   , seedStore
@@ -217,6 +224,11 @@ spec = testGroup "Multi-session store"
       [ testCase "injected body failure keeps the old credential, label and generation" caseInitTokenBodyFailure
       , testCase "injected cleanup failure quarantines the connection until reopen" caseInitTokenCleanupFailure
       , testCase "injected unknown COMMIT keeps the token quarantined, never replays" caseInitTokenCommitUnknown
+      ]
+  , testGroup "provision journey"
+      [ testCase "fresh processes run provision, change, lockout, recovery and reset" caseProvisionJourneyFresh
+      , testCase "sibling rows survive the journey byte-equal" caseProvisionSiblingIsolation
+      , testCase "a completed change refuses the stale PIN in a fresh process" caseProvisionStaleRefused
       ]
   ]
 
@@ -1940,3 +1952,470 @@ caseInitTokenCommitUnknown =
     assertNonHomeOld cfg path before durableBefore
     withAuthInstanceOnCfg stdAcquisition cfg $ \ctx ->
       callInitToken ctx 1 "6789" "ops-relabelled" >>= assertEqual "control: the same InitToken succeeds" (CULong 0)
+
+-- ---------------------------------------------------------------------------
+-- Fresh-process provision/change/lock/recover/reset journey
+-- ---------------------------------------------------------------------------
+
+-- | Fixture PINs: fixed strings (lengths travel with the values,
+-- never hardcoded).
+pinAlpha, pinBravo, pinCharlie, pinDelta :: String
+pinAlpha = "pin-alpha-01"
+pinBravo = "pin-bravo-02"
+pinCharlie = "pin-charlie-03"
+pinDelta = "pin-delta-04"
+
+-- | A return code as the decimal text the child reports.
+rvText :: ReturnCode -> String
+rvText rc = let CULong n = stdRvOf rc in show n
+
+-- | The journey store config: the two-token catalog over a SQLite
+-- file (slot 0 demo, slot 1 ops).
+journeyConfig :: FilePath -> Config
+journeyConfig path = defaultConfig
+  { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True
+  , cfgTokens = (cfgTokens defaultConfig)
+      { tcEntries = [("haskoki-demo", "5678", "1234"), ("haskoki-ops", "6789", "2345")] }
+  }
+
+-- | Load the two journey token rows by slot, pinning the positional
+-- identities (slot 0 is token 1, slot 1 is token 2).
+journeyTokens :: FilePath -> IO (TokenRecord, TokenRecord)
+journeyTokens path = do
+  eSt <- openSQLiteStore path
+  st <- either (assertFailure . show) pure eSt
+  loaded <- either (assertFailure . show) pure =<< storeLoadTokens st
+  storeClose st
+  case (findSlot (SlotId 0) loaded, findSlot (SlotId 1) loaded) of
+    (Just demo, Just ops) -> do
+      assertEqual "demo token id" (TokenId 1) (trId demo)
+      assertEqual "ops token id" (TokenId 2) (trId ops)
+      pure (demo, ops)
+    _ -> assertFailure "expected one token row per slot"
+  where
+    findSlot slot rows = case [t | (t, _) <- rows, trSlot t == slot] of
+      [t] -> Just t
+      _ -> Nothing
+
+-- | Read one token's durable auth straight from the file.
+journeyTokenAuth :: FilePath -> TokenId -> IO TokenAuth
+journeyTokenAuth path tid = do
+  eSt <- openSQLiteStore path
+  st <- either (assertFailure . show) pure eSt
+  loaded <- either (assertFailure . show) pure =<< storeLoadTokens st
+  storeClose st
+  case [trAuth t | (t, _) <- loaded, trId t == tid] of
+    [auth] -> pure auth
+    _ -> assertFailure ("expected one row for " ++ show tid)
+
+-- | PIN-observing helper: 'TokenAuth' carries counters and lock
+-- flags only; PIN bytes live in 'CredentialRecord'
+-- ('crSoPin'/'crUserPin') via 'storeLoadCredentials'. Returns
+-- SHA-256 digests, so comparisons never log credential bytes.
+journeyCredentialHash :: FilePath -> TokenId -> IO (ByteString, Maybe ByteString)
+journeyCredentialHash path tid = do
+  eSt <- openSQLiteStore path
+  st <- either (assertFailure . show) pure eSt
+  creds <- either (assertFailure . show) pure =<< storeLoadCredentials st
+  storeClose st
+  case [c | c <- creds, crToken c == tid] of
+    [c] -> pure (sha256 (crSoPin c), sha256 <$> crUserPin c)
+    _ -> assertFailure ("expected one credential row for " ++ show tid)
+
+-- | Spawn one provision child over the path with the given script,
+-- join it, and return its exact result lines. The parent holds no
+-- live instance or store across the spawn (one owner at a time);
+-- every child must exit 0.
+runProvisionChild :: FilePath -> FilePath -> FilePath -> String -> IO [String]
+runProvisionChild dir path result script = do
+  reaped <- newIORef False
+  bracket
+    (spawnHolderEnv
+      [ ("HASKOKI_HOLDER_MODE", "provision")
+      , ("HASKOKI_PROVISION_SCRIPT", script)
+      , ("HASKOKI_PROVISION_RESULT", result)
+      ]
+      path (dir </> "holder.done") (dir </> "holder.ready"))
+    (releaseHolder reaped)
+    $ \ph -> do
+        awaitHolderExit reaped ph "provision child"
+        lines <$> readFile result
+
+-- | The five journey legs: each pair is one child's script and its
+-- exact expected result lines (the second case replays the same
+-- legs, so they live here, not pasted per case).
+journeyChildren :: [(String, [String])]
+journeyChildren = [child1, child2, child3, child4, child5]
+  where
+    child1 =
+      ( "open,login/user/1234,set-pin/1234/" ++ pinBravo ++ ",logout,login-state,close"
+      , [ "open=0"
+        , "login/user/1234=0"
+        , "set-pin/1234/" ++ pinBravo ++ "=0"
+        , "logout=0"
+        , "login-state=0"
+        , "close=0"
+        ]
+      )
+    child2 =
+      ( "open,set-pin/" ++ pinBravo ++ "/" ++ pinCharlie ++ ",login/user/" ++ pinCharlie ++ ",logout,close"
+      , [ "open=0"
+        , "set-pin/" ++ pinBravo ++ "/" ++ pinCharlie ++ "=0"
+        , "login/user/" ++ pinCharlie ++ "=0"
+        , "logout=0"
+        , "close=0"
+        ]
+      )
+    child3 =
+      ( "open,login/user/bad001,login/user/bad002,login/user/bad003,lock-check/" ++ pinCharlie
+      , [ "open=0"
+        , "login/user/bad001=" ++ rvText CKR_PIN_INCORRECT
+        , "login/user/bad002=" ++ rvText CKR_PIN_INCORRECT
+        , "login/user/bad003=" ++ rvText CKR_PIN_LOCKED
+        , "lock-check/" ++ pinCharlie ++ "=" ++ rvText CKR_PIN_LOCKED
+        ]
+      )
+    child4 =
+      ( "open,login/so/5678,init-pin/" ++ pinDelta ++ ",logout,login/user/" ++ pinDelta ++ ",logout,close"
+      , [ "open=0"
+        , "login/so/5678=0"
+        , "init-pin/" ++ pinDelta ++ "=0"
+        , "logout=0"
+        , "login/user/" ++ pinDelta ++ "=0"
+        , "logout=0"
+        , "close=0"
+        ]
+      )
+    child5 =
+      ( "open,close,init-token/haskoki-demo/5678,open,login-state"
+      , [ "open=0"
+        , "close=0"
+        , "init-token/haskoki-demo/5678=0"
+        , "open=0"
+        , "login-state=0"
+        ]
+      )
+
+-- | One journey leg by number (1-5).
+journeyChild :: Int -> (String, [String])
+journeyChild n = journeyChildren !! (n - 1)
+
+-- | Re-token a minted object row with a fresh id and label/value
+-- attributes (object ids are globally keyed, so every journey row
+-- carries a distinct id, label, and value).
+retokenJourneyObject :: ObjectRecord -> TokenId -> ObjectId -> String -> ObjectRecord
+retokenJourneyObject rec tok oid name = rec
+  { orId = oid
+  , orToken = tok
+  , orAttrs = Map.insert AttrLabel (ValBytes (BC8.pack name))
+      (Map.insert AttrValue (ValBytes (BC8.pack (name ++ "-bytes"))) (orAttrs rec))
+  }
+
+-- | The journey object rows: 'ObjectId' 3 (@"third"@, as minted)
+-- plus 4 (@"fourth"@) on the first token, 5 (@"fifth"@) and 6
+-- (@"sixth"@) on the second.
+journeyObjects :: TokenId -> TokenId -> IO ([ObjectRecord], [ObjectRecord])
+journeyObjects tokDemo tokOps = do
+  minted <- freshObject tokDemo
+  pure
+    ( [ minted, retokenJourneyObject minted tokDemo (ObjectId 4) "fourth" ]
+    , [ retokenJourneyObject minted tokOps (ObjectId 5) "fifth"
+      , retokenJourneyObject minted tokOps (ObjectId 6) "sixth"
+      ]
+    )
+
+-- | This token's objects and jobs, sorted by id (the witness shape
+-- for sibling-untouched comparisons).
+journeySlotRows :: FilePath -> TokenId -> IO ([ObjectRecord], [JobRecord])
+journeySlotRows path tid = do
+  eSt <- openSQLiteStore path
+  st <- either (assertFailure . show) pure eSt
+  loaded <- either (assertFailure . show) pure =<< storeLoadTokens st
+  jobs <- either (assertFailure . show) pure =<< storeLoadJobs st
+  storeClose st
+  pure
+    ( sortOn orId [o | (_, os) <- loaded, o <- os, orToken o == tid]
+    , sortOn jrPersistentId [j | j <- jobs, jrToken j == tid]
+    )
+
+-- | Five fresh processes run provision/change/lock/SO-recover/reset
+-- on slot 0 while slot-1 rows stay byte-equal and sessions come
+-- back public: a logged-in change, a public change, a three-strike
+-- lockout, SO recovery, and a reset that drops only its own
+-- token's rows and unsets only its own user PIN.
+caseProvisionJourneyFresh :: IO ()
+caseProvisionJourneyFresh =
+  bracket (makeTempDir "haskoki-provision-journey") removeDirectoryRecursive $ \dir -> do
+    assertSha256Kat
+    let path = dir </> "journey.db"
+        cfg = journeyConfig path
+    withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()
+    (tokDemo, tokOps) <- journeyTokens path
+    (demoObjs, opsObjs) <- journeyObjects (trId tokDemo) (trId tokOps)
+    eSt <- openSQLiteStore path
+    st <- either (assertFailure . show) pure eSt
+    rSeed <- storeCommit st emptyDelta
+      { sdPutObjects = map (ObjectPut Nothing) (demoObjs ++ opsObjs)
+      , sdPutJobs =
+          [ demoJobPending 101 (trId tokDemo) (trGeneration tokDemo)
+          , demoJobResult 102 (trId tokDemo) (trGeneration tokDemo)
+          , demoJobPending 201 (trId tokOps) (trGeneration tokOps)
+          , demoJobResult 202 (trId tokOps) (trGeneration tokOps)
+          ]
+      }
+    storeClose st
+    assertEqual "seed journey rows" Committed rSeed
+    witnessBefore <- journeySlotRows path (trId tokOps)
+    -- Leg 1: a logged-in change to B.
+    let (script1, expected1) = journeyChild 1
+    childOut1 <- runProvisionChild dir path (dir </> "result-1") script1
+    assertEqual "leg 1 lines" expected1 childOut1
+    (soHash1, userHash1) <- journeyCredentialHash path (trId tokDemo)
+    assertEqual "leg 1: SO PIN unchanged" (sha256 (BC8.pack "5678")) soHash1
+    assertEqual "leg 1: user PIN is B" (Just (sha256 (BC8.pack pinBravo))) userHash1
+    witnessAfter1 <- journeySlotRows path (trId tokOps)
+    assertEqual "leg 1: slot-1 rows unchanged" witnessBefore witnessAfter1
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      h1 <- openAuthSessionOn ctx 1
+      sessionLoginOf ctx h1 >>= assertEqual "leg 1: slot-1 session public" (CULong 0)
+    -- Leg 2: a public change to C (no prior login).
+    let (script2, expected2) = journeyChild 2
+    childOut2 <- runProvisionChild dir path (dir </> "result-2") script2
+    assertEqual "leg 2 lines" expected2 childOut2
+    (soHash2, userHash2) <- journeyCredentialHash path (trId tokDemo)
+    assertEqual "leg 2: SO PIN unchanged" (sha256 (BC8.pack "5678")) soHash2
+    assertEqual "leg 2: user PIN is C" (Just (sha256 (BC8.pack pinCharlie))) userHash2
+    -- Leg 3: three strikes lock the role; the right PIN then locks too.
+    let (script3, expected3) = journeyChild 3
+    childOut3 <- runProvisionChild dir path (dir </> "result-3") script3
+    assertEqual "leg 3 lines" expected3 childOut3
+    auth3 <- journeyTokenAuth path (trId tokDemo)
+    assertEqual "leg 3: user locked" True (taUserLocked auth3)
+    assertEqual "leg 3: three attempts" 3 (taUserAttempts auth3)
+    -- Leg 4: SO recovery sets D and clears the lock.
+    let (script4, expected4) = journeyChild 4
+    childOut4 <- runProvisionChild dir path (dir </> "result-4") script4
+    assertEqual "leg 4 lines" expected4 childOut4
+    (soHash4, userHash4) <- journeyCredentialHash path (trId tokDemo)
+    assertEqual "leg 4: SO PIN unchanged" (sha256 (BC8.pack "5678")) soHash4
+    assertEqual "leg 4: user PIN is D" (Just (sha256 (BC8.pack pinDelta))) userHash4
+    auth4 <- journeyTokenAuth path (trId tokDemo)
+    assertEqual "leg 4: lock cleared" False (taUserLocked auth4)
+    assertEqual "leg 4: attempts reset" 0 (taUserAttempts auth4)
+    -- Leg 5: reset drops only its own rows and unsets only its own user PIN.
+    let (script5, expected5) = journeyChild 5
+    childOut5 <- runProvisionChild dir path (dir </> "result-5") script5
+    assertEqual "leg 5 lines" expected5 childOut5
+    (slot0Objs, slot0Jobs) <- journeySlotRows path (trId tokDemo)
+    assertEqual "leg 5: slot-0 objects dropped" [] slot0Objs
+    assertEqual "leg 5: slot-0 jobs dropped" [] slot0Jobs
+    (soHash5, userHash5) <- journeyCredentialHash path (trId tokDemo)
+    assertEqual "leg 5: SO PIN unchanged" (sha256 (BC8.pack "5678")) soHash5
+    assertEqual "leg 5: user PIN unset" Nothing userHash5
+    witnessAfter5 <- journeySlotRows path (trId tokOps)
+    assertEqual "leg 5: slot-1 rows still unchanged" witnessBefore witnessAfter5
+    withAuthInstanceOnCfg stdAcquisition cfg $ \ctx -> do
+      h0 <- openAuthSession ctx
+      loginAs ctx h0 1 pinDelta >>= assertEqual "leg 5: user PIN uninitialized" (CULong 0x102)
+      sessionLoginOf ctx h0 >>= assertEqual "leg 5: slot-0 session public" (CULong 0)
+      h1 <- openAuthSessionOn ctx 1
+      sessionLoginOf ctx h1 >>= assertEqual "leg 5: slot-1 session public" (CULong 0)
+
+-- | The same five legs replayed over a store whose slot-1 rows are
+-- snapshotted at the raw-table level: slot-1 rows stay byte-equal
+-- end to end. A perturbed copy of the snapshot must mismatch, so
+-- the equality is a witnessed comparison, never a degenerate
+-- empty pass.
+caseProvisionSiblingIsolation :: IO ()
+caseProvisionSiblingIsolation =
+  bracket (makeTempDir "haskoki-provision-isolation") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "isolation.db"
+        cfg = journeyConfig path
+    withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()
+    (tokDemo, tokOps) <- journeyTokens path
+    (_, opsObjs) <- journeyObjects (trId tokDemo) (trId tokOps)
+    eSt <- openSQLiteStore path
+    st <- either (assertFailure . show) pure eSt
+    rSeed <- storeCommit st emptyDelta
+      { sdPutObjects = map (ObjectPut Nothing) opsObjs
+      , sdPutJobs =
+          [ demoJobPending 201 (trId tokOps) (trGeneration tokOps)
+          , demoJobResult 202 (trId tokOps) (trGeneration tokOps)
+          ]
+      }
+    storeClose st
+    assertEqual "seed slot-1 rows" Committed rSeed
+    before <- slotSnapshot path (trId tokOps)
+    mapM_ (\n -> do
+      let (script, expected) = journeyChild n
+      out <- runProvisionChild dir path (dir </> ("result-" ++ show n)) script
+      assertEqual ("isolation leg " ++ show n) expected out) [1, 2, 3, 4, 5]
+    after <- slotSnapshot path (trId tokOps)
+    assertTablesEqual before after
+    control <- try (assertTablesEqual before (perturbSnapshot before)) :: IO (Either SomeException ())
+    case control of
+      Left _ -> pure ()
+      Right () -> assertFailure "control: a perturbed snapshot must mismatch"
+
+-- | This token's raw rows across the token-owned tables
+-- (@store_meta@ excluded: its job-id high-water mark is global,
+-- not per-token).
+slotSnapshot :: FilePath -> TokenId -> IO [(Text, [[S.SQLData]])]
+slotSnapshot path tid = do
+  dump <- dumpTables path
+  let want = S.SQLText (T.pack (encodeHex16 (unTokenId tid)))
+  pure [(t, filter (elem want) rows) | (t, rows) <- dump, t /= "store_meta"]
+
+-- | Flip one byte in the first flippable cell of a snapshot copy
+-- (the control: an empty snapshot has no flippable cell, so it
+-- comes back unchanged and the control comparison passes, which
+-- the caller treats as failure).
+perturbSnapshot :: [(Text, [[S.SQLData]])] -> [(Text, [[S.SQLData]])]
+perturbSnapshot [] = []
+perturbSnapshot ((t, rows) : rest) =
+  case perturbRows rows of
+    Just rows' -> (t, rows') : rest
+    Nothing -> (t, rows) : perturbSnapshot rest
+
+-- | Flip one byte in the first flippable row ('Nothing' when no
+-- row carries a flippable cell).
+perturbRows :: [[S.SQLData]] -> Maybe [[S.SQLData]]
+perturbRows [] = Nothing
+perturbRows (r : rs) = case perturbCells r of
+  Nothing -> (r :) <$> perturbRows rs
+  Just r' -> Just (r' : rs)
+
+-- | Flip one byte in the first flippable cell ('Nothing' for an
+-- empty or null-only row).
+perturbCells :: [S.SQLData] -> Maybe [S.SQLData]
+perturbCells [] = Nothing
+perturbCells (S.SQLBlob bs : cs) = case BS.uncons bs of
+  Nothing -> (S.SQLBlob bs :) <$> perturbCells cs
+  Just (b, rest) -> Just (S.SQLBlob (BS.cons (b + 1) rest) : cs)
+perturbCells (S.SQLText t : cs) = case T.uncons t of
+  Nothing -> (S.SQLText t :) <$> perturbCells cs
+  Just (c, rest) -> Just (S.SQLText (T.cons (if c == 'X' then 'Y' else 'X') rest) : cs)
+perturbCells (S.SQLInteger n : cs) = Just (S.SQLInteger (n + 1) : cs)
+perturbCells (S.SQLFloat x : cs) = Just (S.SQLFloat (x + 1) : cs)
+perturbCells (S.SQLNull : cs) = (S.SQLNull :) <$> perturbCells cs
+
+-- | A completed change leaves no stale grant behind: after one
+-- child moves the user PIN 1234 -> A -> B, a fresh process finds
+-- A refused and B serving.
+caseProvisionStaleRefused :: IO ()
+caseProvisionStaleRefused =
+  bracket (makeTempDir "haskoki-provision-stale") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "stale.db"
+        cfg = journeyConfig path
+        scriptA = "open,set-pin/1234/" ++ pinAlpha ++ ",set-pin/" ++ pinAlpha ++ "/" ++ pinBravo ++ ",close"
+        expectedA =
+          [ "open=0"
+          , "set-pin/1234/" ++ pinAlpha ++ "=0"
+          , "set-pin/" ++ pinAlpha ++ "/" ++ pinBravo ++ "=0"
+          , "close=0"
+          ]
+        scriptB = "open,login/user/" ++ pinAlpha ++ ",login/user/" ++ pinBravo ++ ",close"
+        expectedB =
+          [ "open=0"
+          , "login/user/" ++ pinAlpha ++ "=" ++ rvText CKR_PIN_INCORRECT
+          , "login/user/" ++ pinBravo ++ "=0"
+          , "close=0"
+          ]
+    withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()
+    outA <- runProvisionChild dir path (dir </> "result-1") scriptA
+    assertEqual "establish A then B" expectedA outA
+    outB <- runProvisionChild dir path (dir </> "result-2") scriptB
+    assertEqual "stale A refused, B serves" expectedB outB
+
+-- | SHA-256 over short inputs (FIPS 180-4; a test-local
+-- change detector so failure output carries digests, never
+-- credential bytes). The storage suite has no digest dependency
+-- and shells out to nothing, so the function lives here; it is
+-- verified against the system @sha256sum@ over every PIN literal
+-- used in this module plus @"abc"@ and the empty input, and
+-- 'assertSha256Kat' pins it in the suite.
+sha256 :: ByteString -> ByteString
+sha256 input = BS.pack (concatMap be32 finalState)
+  where
+    be32 :: Word32 -> [Word8]
+    be32 w = map fromIntegral [w `shiftR` 24, w `shiftR` 16, w `shiftR` 8, w]
+    be64 :: Word64 -> [Word8]
+    be64 n = map fromIntegral [n `shiftR` s | s <- [56, 48, 40, 32, 24, 16, 8, 0]]
+    bytes = BS.unpack input
+    bitLen = fromIntegral (length bytes) * 8 :: Word64
+    padLen = (55 - length bytes) `mod` 64
+    padded = bytes ++ [0x80] ++ replicate padLen 0x00 ++ be64 bitLen
+    blocks = chunksOf 64 padded
+    finalState = tupleToList (foldl compress hInit (map (extend . map toW32 . chunksOf 4) blocks))
+    toW32 [a, b, c, d] =
+      (fromIntegral a `shiftL` 24) .|. (fromIntegral b `shiftL` 16)
+        .|. (fromIntegral c `shiftL` 8) .|. fromIntegral d
+    toW32 _ = 0
+    tupleToList (a, b, c, d, e, f, g, h) = [a, b, c, d, e, f, g, h]
+
+-- | Split a list into chunks (a 'sha256' helper).
+chunksOf :: Int -> [a] -> [[a]]
+chunksOf _ [] = []
+chunksOf n xs = take n xs : chunksOf n (drop n xs)
+
+-- | The SHA-256 initial state (a 'sha256' helper).
+hInit :: (Word32, Word32, Word32, Word32, Word32, Word32, Word32, Word32)
+hInit = (0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19)
+
+-- | The SHA-256 round constants (a 'sha256' helper).
+kTable :: [Word32]
+kTable =
+  [ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5
+  , 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174
+  , 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da
+  , 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967
+  , 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85
+  , 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070
+  , 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3
+  , 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ]
+
+-- | Extend sixteen block words to the sixty-four-word schedule (a
+-- 'sha256' helper).
+extend :: [Word32] -> [Word32]
+extend seed = go seed 16
+  where
+    go ws i
+      | i > 63 = ws
+      | otherwise =
+          let v15 = ws !! (i - 15)
+              v2 = ws !! (i - 2)
+              s0 = rotateR v15 7 `xor` rotateR v15 18 `xor` (v15 `shiftR` 3)
+              s1 = rotateR v2 17 `xor` rotateR v2 19 `xor` (v2 `shiftR` 10)
+          in go (ws ++ [ws !! (i - 16) + s0 + ws !! (i - 7) + s1]) (i + 1)
+
+-- | Compress one block into the running state (a 'sha256' helper).
+compress
+  :: (Word32, Word32, Word32, Word32, Word32, Word32, Word32, Word32)
+  -> [Word32]
+  -> (Word32, Word32, Word32, Word32, Word32, Word32, Word32, Word32)
+compress (a0, b0, c0, d0, e0, f0, g0, h0) ws =
+  let (a, b, c, d, e, f, g, h) = foldl step (a0, b0, c0, d0, e0, f0, g0, h0) (zip kTable ws)
+  in (a0 + a, b0 + b, c0 + c, d0 + d, e0 + e, f0 + f, g0 + g, h0 + h)
+  where
+    step (a, b, c, d, e, f, g, h) (k, w) =
+      let s1 = rotateR e 6 `xor` rotateR e 11 `xor` rotateR e 25
+          ch = (e .&. f) `xor` (complement e .&. g)
+          t1 = h + s1 + ch + k + w
+          s0 = rotateR a 2 `xor` rotateR a 13 `xor` rotateR a 22
+          maj = (a .&. b) `xor` (a .&. c) `xor` (b .&. c)
+          t2 = s0 + maj
+      in (t1 + t2, a, b, c, d + t1, e, f, g)
+
+-- | The embedded digest is the real SHA-256 (FIPS 180-4 digest of
+-- @"abc"@): without this pin a drifted oracle would still agree
+-- with itself on both sides of every comparison.
+assertSha256Kat :: IO ()
+assertSha256Kat = assertEqual "sha256 KAT" expected (sha256 "abc")
+  where
+    expected = BS.pack
+      [ 0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea
+      , 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23
+      , 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c
+      , 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+      ]
