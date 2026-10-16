@@ -1569,8 +1569,8 @@ markResolved dc table jid st = do
 -- 'retireLiveTableFor' so a closing table never cancels a
 -- sibling's attachments. A synchronous Store throw during the
 -- durable marks reports like a failed load: the attachments
--- still resolve canceled in memory, each carrying the throw as
--- its mark error.
+-- still resolve canceled in memory, rows already committed
+-- keeping their mark errors and the rest carrying the throw.
 retireLiveTable :: DetachCtx -> IO [(Word64, Maybe StoreError)]
 retireLiveTable dc = do
   retireMatching dc Nothing
@@ -1596,7 +1596,8 @@ retireLiveTable dc = do
 -- or marked it (see 'retireMatching'); sibling tables' marks
 -- stay. A synchronous Store throw during the durable marks
 -- reports like a failed load: the attachments still resolve
--- canceled in memory, each carrying the throw as its mark error.
+-- canceled in memory, rows already committed keeping their mark
+-- errors and the rest carrying the throw.
 retireLiveTableFor
   :: DetachCtx -> AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireLiveTableFor dc tid = retireMatching dc (Just tid)
@@ -1666,18 +1667,11 @@ retireMatching dc mTid = do
   if null actives
     then pure []
     else do
-      r <- try (do
-        eJobs <- storeLoadJobs (dcStore dc)
-        case eJobs of
-          Left err -> do
-            mapM_ (\pid -> setTerminal dc pid JobCanceled) actives
-            pure [(pid, Just err) | pid <- actives]
-          Right jobs -> mapM (retireOne jobs) actives)
-      case r of
-        Right out -> pure out
+      eJobs <- try (storeLoadJobs (dcStore dc))
+      case eJobs of
         Left e -> case (fromException e :: Maybe SomeAsyncException) of
           Just _ -> throwIO e
-          -- A synchronous Store throw reports like a failed load:
+          -- A synchronous load throw reports like a failed load:
           -- the attachments still resolve canceled in memory, each
           -- carrying the throw as its mark error, so retirement
           -- never fails a close.
@@ -1685,7 +1679,28 @@ retireMatching dc mTid = do
             mapM_ (\pid -> setTerminal dc pid JobCanceled) actives
             let err = StoreIO (displayException e)
             pure [(pid, Just err) | pid <- actives]
+        Right (Left err) -> do
+          mapM_ (\pid -> setTerminal dc pid JobCanceled) actives
+          pure [(pid, Just err) | pid <- actives]
+        Right (Right jobs) -> go jobs actives []
   where
+    go :: [JobRecord] -> [Word64] -> [(Word64, Maybe StoreError)]
+      -> IO [(Word64, Maybe StoreError)]
+    go _ [] acc = pure (reverse acc)
+    go jobs (pid : rest) acc = do
+      r <- try (retireOne jobs pid)
+      case r of
+        Right out -> go jobs rest (out : acc)
+        Left e -> case (fromException e :: Maybe SomeAsyncException) of
+          Just _ -> throwIO e
+          -- A synchronous commit throw keeps the rows already
+          -- committed and reports only the rest: the current and
+          -- later attachments still resolve canceled in memory,
+          -- each carrying the throw as its mark error.
+          Nothing -> do
+            mapM_ (\p -> setTerminal dc p JobCanceled) (pid : rest)
+            let err = StoreIO (displayException e)
+            pure (reverse acc ++ [(p, Just err) | p <- pid : rest])
     -- | Roll one retired claim back to what it replaced.
     rollbackClaimed
       :: (Word64, ClaimPrior) -> Map Word64 Attachment -> Map Word64 Attachment

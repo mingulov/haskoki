@@ -1445,11 +1445,22 @@ asyncCloseCtx ctx = mask_ $ do
 -- reclaim the slot while leaking the pointer. The re-register
 -- runs through the production step, never injected, so the throw
 -- arm stays total; a throwing tail step must report before
--- running its effect. No canary test plants an exception between
--- the tail steps: the transfer is one uninterruptible block with
--- no interruptible operation inside, verified by construction,
--- and the TEST-ONLY close step ('aaCloseStep') parks before it so
--- the revert check covers the ordering.
+-- running its effect. The re-register bypasses the injected
+-- record, so after a throw and retry the record's registrations
+-- minus retirements is short by one (the free-throw shape shows
+-- two retirements with no matching registration); balance asserts
+-- on these paths must allow for that. A racing second close
+-- during the throw arm can strand the entry under a fault double
+-- only: when free throws after retire, a concurrent close that
+-- reads the tombstone before compensation re-registers reclaims
+-- its slot, and the re-registered live entry then has no slot
+-- naming it. Production tail steps never throw, so this needs
+-- both an injected throw and a racing closer. No canary test
+-- plants an exception between the tail steps: the transfer is one
+-- uninterruptible block with no interruptible operation inside,
+-- verified by construction, and the TEST-ONLY close step
+-- ('aaCloseStep') parks before it so the revert check covers the
+-- ordering.
 transferCtxClose
   :: AsyncTable -> Maybe (StablePtr AsyncCtx) -> IO () -> IO ()
 transferCtxClose table mSp after = uninterruptibleMask_ $

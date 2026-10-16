@@ -1104,7 +1104,7 @@ OWNERSHIP_CASES = [
     ("m6-store-wide-counter", 1, False),
     ("m7-attached-async", 37, True),
     ("m7-retirement", 5, False),
-    ("m3-standalone-ownership", 29, True),
+    ("m3-standalone-ownership", 31, True),
 ]
 # Appended by their own WPs; the driver lists them but never counts them.
 OWNERSHIP_PENDING = ["wp09-pending"]
