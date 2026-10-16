@@ -331,7 +331,7 @@ admitLegacyUnstepped res = case resStep res of
 
 -- | INTERNAL TEST-ONLY: build call work without checking. Hand-built
 -- fixtures predate pinned steps; they construct here and submit
--- through 'Haskoki.Runtime.Async.startFixtureJob'. Normal submission
+-- through the fixture submit entrypoint. Normal submission
 -- never calls this: production triples come from 'checkedCallWork'.
 mkFixtureCallWork :: SessionId -> Reservation -> EffectRequest -> CallWork
 mkFixtureCallWork sid res eff = CallWork sid res eff

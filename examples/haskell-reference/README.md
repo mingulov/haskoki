@@ -101,18 +101,21 @@ leg. The tests live in `tests/engine/RoutingE2ESpec.hs`:
 - `gcm checked parameters drive the backend vector end to end` seals
   the pinned independent vector (key `00..0f`, nonce `00..0b`, AAD
   `"aad-data"`) and asserts every stage against hand-derived bytes.
-- `gcm traced drops fail closed` drops the IV byte, the tag width,
-  the AAD byte and the key width in turn (each re-seal must diverge
-  from the pinned seal, and the four mutant seals plus the base seal
-  must differ pairwise), and flips the direction (which must fail
-  authentication) — or an input is not flowing to the backend.
+- `gcm traced overwrites fail closed` overwrites the first IV byte,
+  the tag width, the first AAD byte and the key width in turn (each
+  re-seal must diverge from the pinned seal, and the four mutant
+  seals plus the base seal must differ pairwise), and flips the
+  direction through a decrypt plan (which must fail authentication);
+  the check fails if any perturbation leaves the seal unchanged.
 
 Run them with:
 
 ```sh
 E=$(cabal list-bin haskoki:test:haskoki-engine-tests)
-/tmp/claude-1000/hk-lock "$E" -p '$2 == "Routed end-to-end" && /gcm (checked|traced)/'
+"$E" -p '$2 == "Routed end-to-end" && (/gcm checked/ || /gcm traced/)'
 ```
+
+Serialise heavy test runs as your setup requires.
 
 The mechanism-variant KAT in `tests/model/LogoutOracleMain.hs` stays
 the outer-framing control: it pins the frame bytes and the cipher

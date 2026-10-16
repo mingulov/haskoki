@@ -158,7 +158,7 @@ spec = testGroup "Routed end-to-end"
   , testCase "routed hmac verify E2E, verdict commits" caseVerifyE2E
   , testCase "Multipart digest feeds the backend" caseDigestStreamsFeeds
   , testCase "gcm checked parameters drive the backend vector end to end" caseGcmCheckedVector
-  , testCase "gcm traced drops fail closed" caseGcmTracedDrops
+  , testCase "gcm traced overwrites fail closed" caseGcmTracedOverwrites
   ]
 
 -- ---------------------------------------------------------------------------
@@ -2685,8 +2685,8 @@ caseGcmCheckedVector = withBackend $ \env -> do
   opened <- runEffect env resolver128 dfx >>= expectBytes
   assertEqual "traced open recovers the plaintext" pt opened
 
-caseGcmTracedDrops :: IO ()
-caseGcmTracedDrops = withBackend $ \env -> do
+caseGcmTracedOverwrites :: IO ()
+caseGcmTracedOverwrites = withBackend $ \env -> do
   let key128 = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
       nonce = hex "000102030405060708090a0b"
       aad = "aad-data" :: ByteString
@@ -2699,9 +2699,9 @@ caseGcmTracedDrops = withBackend $ \env -> do
       -- Byte surgery on the pinned image: tagLen 0-7, ivLen 8-15,
       -- iv 16-27, aad 28-35.
       pokeByte i v bs = BS.take i bs <> BS.singleton v <> BS.drop (i + 1) bs
-      ivDrop = pokeByte 16 0xFF base
+      ivOverwrite = pokeByte 16 0xFF base
       tag8 = pokeByte 7 8 base
-      aadDrop = pokeByte 28 0x58 base
+      aadOverwrite = pokeByte 28 0x58 base
       resolver128 oid
         | oid == aesOid = Just key128
         | otherwise = resolver oid
@@ -2729,19 +2729,35 @@ caseGcmTracedDrops = withBackend $ \env -> do
   -- Live control: the unmutated chain seals the vector.
   sealBase <- sealWith resolver128 base
   assertEqual "unmutated seal is the vector" wantFull sealBase
-  -- Each dropped input diverges from the pinned seal.
-  sealIv <- sealWith resolver128 ivDrop
-  assertBool "dropped IV changes the seal" (sealIv /= wantFull)
+  -- Each overwritten input diverges from the pinned seal.
+  sealIv <- sealWith resolver128 ivOverwrite
+  assertBool "overwritten IV changes the seal" (sealIv /= wantFull)
   sealTag8 <- sealWith resolver128 tag8
   assertEqual "tag-8 seal length" (16 + 8) (BS.length sealTag8)
-  assertBool "dropped tag width changes the seal" (sealTag8 /= wantFull)
-  sealAad <- sealWith resolver128 aadDrop
-  assertBool "dropped AAD changes the seal" (sealAad /= wantFull)
+  assertBool "overwritten tag width changes the seal" (sealTag8 /= wantFull)
+  sealAad <- sealWith resolver128 aadOverwrite
+  assertBool "overwritten AAD changes the seal" (sealAad /= wantFull)
   seal192 <- sealWith resolver192 base
   assertBool "key width selects the mode" (seal192 /= wantFull)
-  -- Direction: decrypting the plaintext fails authentication.
-  decFail <- runEffect env resolver128
-    (FxCipher DirDecrypt aesGcmMech (Just aesOid) base pt)
+  -- Direction: a decrypt plan over the encrypt frame fails
+  -- authentication, proving the planner's direction flows from
+  -- F_DecryptInit rather than the backend alone.
+  (sD, mD0) <- openModel
+  let frameD = encodeInitInput aesGcmMech [OpEncrypt, OpDecrypt] False base
+      diReqD = (mkRequest F_DecryptInit (Just sD))
+        { reqHandle = Just aesHandle, reqInput = frameD }
+  mD1 <- runCommit mD0 diReqD
+  let dReqD = (mkRequest F_Decrypt (Just sD))
+        { reqInput = pt
+        , reqRegions = [RegionBytes "pt" (IntentBuffer 64)]
+        }
+  (rD, eD@(O.EffectCrypto fD)) <- case planCall defaultRules mD1 dReqD of
+    Execute r e@(O.EffectCrypto _) -> pure (r, e)
+    other -> assertFailure ("expected Execute, got: " ++ show other)
+  case checkedCallWork sD rD eD of
+    Right _ -> pure ()
+    Left mm -> assertFailure ("direction-flip triple must check: " ++ show mm)
+  decFail <- runEffect env resolver128 fD
   case decFail of
     GotCryptoError (CryptoAuthFailed _) -> pure ()
     other -> assertFailure
