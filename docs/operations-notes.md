@@ -272,21 +272,19 @@ positional layout still matches the durable one.
 
 A SQLite open reconciles the catalog against the durable
 identities before anything publishes. Matches proceed; unknown
-identities seed with generation zero and fresh auth; every
-drift refuses the whole open. The reconciler is pure, and the
-SQLite open before it only reads an existing store (a version-1
-store migrates inside the first commit, below), so a refused open
-leaves the database file unchanged:
+identities seed with generation zero, fresh auth and a credential
+row; every drift refuses the whole open, and a refused open writes
+nothing (see Upgrade, backup and recovery).
 
 | Drift | Refusal | Operator action |
 |---|---|---|
-| stored token missing from the catalog | `RefuseStoredUnconfigured` | restore the entry with its pinned id; removal-by-config is not supported |
-| durable label differs | `RefuseLabelChanged` | restore the durable label; relabeling is not supported |
+| stored token missing from the catalog | `RefuseStoredUnconfigured` | restore the entry with its pinned id; a token cannot be removed by editing the catalog |
+| durable label differs | `RefuseLabelChanged` | restore the durable label (no relabel command exists) |
 | durable slot differs (reorder, shifting insert) | `RefuseSlotChanged` | restore the slot, or move explicitly first |
 | duplicate desired identity | `RefuseDuplicateDesired` | give each entry its own id |
 
-Additional slots move only through the explicit `planSlotMoves`
-operation: one atomic delta, validated against the projected
+Additional slots move only through `planSlotMoves`, a Haskell library
+operation (no installed command): one atomic delta, validated against the projected
 layout (unknown tokens, occupied targets, clashing targets,
 duplicated movers, negative slots, and home-anchor violations
 refuse; see `renderSlotMoveRefusal`). Swaps and rotation chains
@@ -301,35 +299,15 @@ interrupted fixture in `tests/storage/CommitSpec.hs`).
 Versions: configuration keeps `schema_version = 1`
 (`token_ids` is optional and additive), durable documents keep
 `format_version = 1` (the token document already separates
-`token_id` from `slot`; the new credential document starts at
-its own `format_version = 1`), and the SQLite schema moves to
-`schema_version = 2` by one explicit migration: a version-1
-database opens without any write, and gains the empty
-`credentials` table and the advanced marker inside its first
-commit transaction, together with that commit's data, with no
-row rewritten or reinterpreted (see `migrateV1InTxn` in
-`src/Haskoki/Runtime/Storage/SQLite.hs` and the version-1 cases
-in `tests/storage/StoreSpec.hs`). Anything but version 1 or 2
-refuses at open without writing; unknown document versions
-refuse on decode, as before. Binary rollback across the bump
-refuses loudly: a version-1 binary meets `schema_version = 2`
-and declines, so operators upgrade every serving binary first.
-
-Migration happens only when an open succeeds. Opening a version-1
-store reads it without writing. A version-1 store holding tokens
-always refuses: a label, slot, stored-unconfigured or
-duplicate-identity drift reports first, and otherwise every token
-lacks a credential row (version 1 has no `credentials` table), so
-the open refuses as migration-required. Either way the database
-file and its `-journal` stay byte-identical and the file stays at
-`schema_version = 1`, still openable by the binary that wrote it.
-Only the ownership sidecar `<db>.lock` is created and removed
-again. An empty version-1 store opens, and its seed commit
-migrates it and writes the seeded tokens and their credential rows
-in one transaction; if that commit fails, the file stays at version
-1. The async process-level store open follows the same rule: its
-home-token refusal writes nothing. Back up the database file before
-upgrading all the same.
+`token_id` from `slot`; the credential document carries its own
+`format_version = 1`). The SQLite schema is 3: versions 1 and 2
+refuse at open without writing and move to 3 only through
+`haskoki-ctl store migrate` (see Upgrade, backup and recovery);
+anything else refuses (`store-unsupported-version` from
+`store check`, `StoreSchemaVersion` at the SQLite layer, pinned by
+`caseUnknownVersionsRefuse` and `caseNewerSchemaRefusedEverywhere`
+in `tests/storage/PreflightSpec.hs`). v0.3.1.0 and v0.4.0.0 binaries
+refuse schema 3 (checked by `scripts/qualify-store-upgrade.sh`).
 
 On a SQLite store, PIN values are durable from the moment a token
 exists: the open that creates a token row writes its credential
@@ -342,23 +320,21 @@ refused and the stored one keeps serving. `C_InitToken`,
 the way to move a PIN. In memory mode the catalog PINs seed each
 interval, as before.
 
-A store written before this (v0.4 and earlier) can hold tokens
-with no credential row. The open refuses such a store as
-migration-required before any write, so the file stays
-byte-identical; the catalog PINs never stand in for a missing
-row. The refusal fails `C_Initialize` with `CKR_GENERAL_ERROR`
-and does not print the token ids itself:
-`haskoki-ctl store check --path FILE --config FILE`
-names every token without a row without opening the file for
-writing, and
+A store written before this (v0.4 and earlier) is refused at open
+as migration-required (the schema; see Upgrade, backup and
+recovery), and a schema-3 store with a rowless token refuses as
+`StdStoreMigrationRequired`. The open names nothing to a C caller;
+`haskoki-ctl store check --path FILE --config FILE` names the tokens;
 `haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR`
-records the configured PINs as those tokens' rows after taking
-a backup. Identity refusals (a reorder, a removal, a relabel)
-report first. There is no token-editor surface here, and no path
-reassigns one token's objects to another token's credential
-silently (every reassignment-shaped change above refuses
-loudly instead; `C_InitToken` destroys only its own token's
-objects, jobs, and credential).
+records the configured PINs as those tokens' rows after a verified
+backup. Identity refusals report first: `store check` reports them next
+to the required actions (`casePlanDrift`,
+`caseMigrateRefusesIdentityDrift` in
+`tests/storage/PreflightSpec.hs`). There is no token-editor surface
+here, and no path reassigns one token's objects to another token's
+credential silently (every reassignment-shaped change above refuses
+loudly instead; `C_InitToken` destroys only its own token's objects,
+jobs, and credential).
 
 Reinitializing a token is an authorized operation: every seated
 token carries an SO PIN (the durable row on a SQLite store;
@@ -387,18 +363,223 @@ observes. `CKF_TOKEN_INITIALIZED` stays set on every token,
 matching the always-reinit behavior. To rotate the SO PIN
 itself, log in as SO and use `C_SetPIN`.
 
-Two boundaries stay outside this contract. Binary rollback is
-excluded: a moved store keeps versions every predecessor
-accepts, but predecessors predate reconciliation and would
-serve the moved layout positionally, so operators upgrade
-every serving binary before moving tokens and never roll one
-back across a move (a future format bump is the mechanism
-that would make such rollback refuse loudly). And the C
+Two boundaries stay outside this contract. Binary rollback across
+schema 3 refuses loudly (old binaries do not open a migrated store;
+`scripts/qualify-store-upgrade.sh` checks the refusal and the unchanged
+file); rolling back means restoring the pre-migration backup. A moved
+store under schema 2 or older is history: v0.5 never serves it until
+migrated. And the C
 initialization path reports store-open failures generically,
 with no diagnostic sink there, as with every other
 store-open failure; Haskell callers receive the typed
 refusal above through `openStdStore` (see the
 standard-open cases in `tests/storage/StoreSpec.hs`).
+
+## Upgrade, backup and recovery
+
+v0.5 stores use SQLite schema 3. A store written by v0.3 (schema 1) or
+v0.4 (schema 2) must be migrated once with `haskoki-ctl store migrate`.
+Until then every haskoki v0.5 open refuses it and writes nothing:
+`C_Initialize` returns `CKR_GENERAL_ERROR` (no reason reaches a C
+caller), and `haskoki-ctl store check` says why. Refused opens leave the
+database bytes, schema marker, tables and credential rows unchanged; the
+only file an open creates and removes is the `<store>.lock` sidecar
+(see `caseOldStoreRefuses` in `tests/storage/PreflightSpec.hs`).
+
+### Rehearse on a copy, then upgrade
+
+Stop every process that has the store open, then:
+
+```sh
+STORE=/srv/haskoki/token.sqlite          # your store
+CONFIG=/srv/haskoki/backend.toml         # the config that serves it
+mkdir -p /tmp/rehearsal
+cp "$STORE" /tmp/rehearsal/token.sqlite
+sed "s#^path = .*#path = \"/tmp/rehearsal/token.sqlite\"#" "$CONFIG" > /tmp/rehearsal/backend.toml
+haskoki-ctl store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehearsal/backend.toml
+mkdir /tmp/rehearsal/backups
+haskoki-ctl store migrate --path /tmp/rehearsal/token.sqlite \
+  --config /tmp/rehearsal/backend.toml --backup-dir /tmp/rehearsal/backups
+haskoki-ctl store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehearsal/backend.toml
+```
+
+The first check prints the plan and exits 1 with
+`store-migration-required`. The migrate prints the receipt and
+`migrate-done`. The second check prints `verdict: ok` and exits 0. Then
+create the real backup directory, run the same two commands on `$STORE`
+with `$CONFIG` and `--backup-dir /srv/haskoki-backups`, and start the
+service.
+
+`--config` must name the same store as `--path`: a config written for
+another file is refused as `config-mismatch`. That is why the rehearsal
+writes its own config for the copy (see `caseConfigSelects` in
+`tests/storage/PreflightSpec.hs` and `caseCheckConfigMismatch` in
+`tests/storage/StoreCtlSpec.hs`).
+
+### What check and migrate report
+
+| Exit | Meaning |
+|---|---|
+| 0 | check: the store opens as-is with this config. migrate: migrated, or `migrate-not-needed` (nothing written). |
+| 1 | a diagnosed refusal; one stderr line `<tag>: <detail>` |
+| 2 | usage error |
+
+Tags: `store-migration-required`, `store-identity-refused`, `store-live`,
+`store-journal-present`, `store-journal-cold`, `store-unsupported-version`,
+`store-corrupt`, `store-full`, `store-missing`, `store-unreadable`,
+`config-invalid`, `config-mismatch`, `migrate-unsafe-backup-dir`,
+`migrate-store-changed`, `migrate-backup-exists`, `migrate-backup-failed`,
+`migrate-failed`, `migrate-verify-failed`, `migrate-receipt-failed`.
+Output and receipts name token ids (as 16 hex digits, the same text as the
+token serial), labels, versions, paths and reasons. They never print a PIN
+or key byte (`caseCheckNoPins`, `caseMigrateCliNoPins` in
+`tests/storage/StoreCtlSpec.hs`).
+
+`store check` never writes: it opens the database read-only, never
+creates or removes `<store>.lock`, and refuses a store a live process
+holds (`caseCheckLive`, `caseSnapshotReadOnlyDir`).
+
+`store inspect` is the other read-only reader: it reports lock state plus
+table counts over a `SELECT`-only connection and never creates the sidecar
+(`inspectStore` in `src/Haskoki/Ctl.hs`, `caseInspect` in
+`tests/storage/StoreCtlSpec.hs`). The two disagree on liveness by design:
+`store inspect` judges the sidecar pid through `/proc` only
+(`readLockState`), while `store check` also probes the database kernel
+lock (`probeOwner` in `src/Haskoki/Runtime/Storage/SQLite.hs`), so a store
+whose kernel lock is held but whose sidecar is absent reports `offline`
+under `inspect` and `store-live` under `check` (see `casePlanLiveOwner`
+in `tests/storage/PreflightSpec.hs`).
+
+### What migrate does
+
+1. Refuses, writing nothing, when: the config does not select this
+   store; the backup directory is missing, not a real directory (a
+   symlink is refused), not writable, or the store's own directory; a
+   process holds the store; an interrupted write left
+   `<store>-journal` (hot, unknown, or a non-empty `-wal`/`-shm`
+   sibling from foreign tooling; see `caseCheckWalShm` in
+   `tests/storage/StoreCtlSpec.hs`); the catalog does not match the
+   stored tokens (labels, slots, ids; restore the catalog the store was
+   written with); or the store changed after the check.
+2. Takes the store's ownership lock for the rest of the run.
+3. Writes a new backup `<store>.pre-migrate.schema<N>.<epoch>.bak`
+   (mode 0600; an existing name is never overwritten, the next free
+   `-1`..`-99` name is used), verifies it byte for byte and by reading
+   it as a store, and records its SHA-256.
+4. In one SQLite transaction: creates the `credentials` table (schema
+   1 only), writes a credential row for every stored token that has
+   none, taking the SO and user PIN of that token's catalog entry in
+   `--config`, and sets `schema_version = 3`. A token that already has
+   a row keeps it unchanged: PINs changed in-band (`C_InitPIN`,
+   `C_SetPIN`, `C_InitToken`) survive (`caseMigrateV04`). Tokens that
+   are configured but not stored are not created; the next open seeds
+   them with their catalog PINs. A schema-3 store with rowless tokens
+   is also a migrate input: the plan freezes rows with no version move
+   (`casePlanV3Rowless`), and the transaction leaves the marker at 3
+   (`caseOwnedFreezesAtV3`, `caseMigrateSchema3Rowless` in
+   `tests/storage/PreflightSpec.hs`).
+5. Reads the store back, then writes `<backup>.receipt` (ids, versions,
+   backup path, size and SHA-256; no PINs). The receipt keys are
+   `haskoki-store-migration-receipt`, `store`, `schema-from`,
+   `schema-to`, `frozen-credentials`, `preserved-credentials`, `backup`,
+   `backup-bytes`, `backup-sha256`, `backup-epoch-seconds`,
+   `completed-epoch-seconds` (read after the commit and its read-back;
+   see `caseMigrateClockReadings`) and `cold-journal-removed`
+   (`yes`/`no`; see Interrupted migration below). The receipt is written
+   through a unique temporary plus `link` so a taken name is never
+   overwritten; on filesystems without hard links it falls back to a
+   direct exclusive write of the final name (`writeReceipt` and
+   `isLinkUnsupported` in `src/Haskoki/Runtime/Storage/Preflight.hs`,
+   `caseMigrateReceiptLinkFallback` in
+   `tests/storage/PreflightSpec.hs`).
+
+If the transaction fails (for example, a full disk), it rolls back; the
+store is unchanged, the backup stays, and no receipt is written
+(`caseMigrateTxnFailureKeepsStore`). Free the space and run migrate
+again; it writes a new backup. The backup directory needs room for one
+copy of the store.
+
+### Interrupted migration
+
+If migrate is killed mid-transaction, `<store>-journal` remains. Do not
+delete it. The journal is classified by its first 8 bytes: hot carries
+the SQLite journal magic, cold is all zero, anything else (including a
+short or unreadable file) is unknown and fails closed (`classifyJournal`
+in `src/Haskoki/Runtime/Storage/SQLite.hs`).
+
+A hot journal (or a non-empty `-wal`/`-shm` sibling, or an unknown
+header) stays refused: `store check` and `store migrate` report
+`store-journal-present` and touch neither file. Either start the
+serving haskoki once: its open rolls the interrupted transaction back
+(the store returns to its pre-migration bytes) and refuses as
+migration-required; then run check and migrate again. Or restore the
+backup the interrupted run wrote, moving the store and its journal
+aside together first (`caseKilledMigrationRecovers`,
+`caseKilledRestoreMovesJournal`).
+
+A cold journal is refused distinctly: `store check` reports
+`store-journal-cold` and names `store migrate` as the remedy, touching
+neither file. `store migrate` clears a cold journal under exclusive
+locks (the owner probe passes, single-writer ownership is held, a SQLite
+`RESERVED` lock is taken, the journal is still cold on re-read; see
+`clearColdJournal` in `src/Haskoki/Runtime/Storage/SQLite.hs`) and then
+migrates, recording `cold-journal-removed: yes` in the receipt and on
+stdout (`caseMigrateClearsColdJournal`,
+`caseKilledSmallMigrationClears` in `tests/storage/PreflightSpec.hs`).
+A cold journal while another connection holds `RESERVED` stays refused
+(`caseColdJournalReservedRefuses`). A migration with no cold journal
+records `cold-journal-removed: no`
+(`caseMigrateReceiptColdJournalNo`).
+
+### Restore from a backup
+
+Stop the owner. Move the current store aside (with its `-journal`, if
+present; keep both), copy the backup to the store path, and run
+`store check`. A pre-migration backup is a schema 1 or 2 store again:
+old binaries open it, and v0.5 needs `store migrate` again. Restoring
+brings back the credentials as they were when the backup was taken:
+PINs changed since then revert, and nothing prevents rolling back to an
+older credential state (`caseRestoreBringsBackOldCredentials`).
+
+### Old binaries and downgrade
+
+After migration, v0.3.1.0 and v0.4.0.0 refuse the store
+(`schema_version = 3` is not theirs; `C_Initialize` fails and the file
+is unchanged, checked by `scripts/qualify-store-upgrade.sh`). To go back,
+restore the pre-migration backup; changes made since are lost. A store
+with a schema newer than this build is refused by open, check and
+migrate alike (`store-unsupported-version`).
+
+### Stores created through the async open
+
+A store created through the async open (the detached-job API) carries
+its home token under the label `haskoki-async`. No parser-valid config
+can name that label (slot 0 is anchored to `haskoki-demo`; see
+`parseTokenIds` and `RefuseHomeAnchor`), so the ordinary open refuses
+such a store and the C surface reports only `CKR_GENERAL_ERROR`: a v0.4
+store refuses as migration-required (the schema), a schema-3 store with
+matching rows refuses on the label (`casePlanAsyncV04` and
+`casePlanAsyncSeededV3` in `tests/storage/PreflightSpec.hs`). Plan and
+migrate it by adding `--async-home` to the check and migrate commands
+above, which replaces the loaded config's catalog with the async home
+entry (`asyncHomeConfig` and `asyncHomeEntry` in
+`src/Haskoki/Runtime/Catalog.hs`; see `caseCheckAsyncHome` in
+`tests/storage/StoreCtlSpec.hs` and `caseMigrateAsyncV04` in
+`tests/storage/PreflightSpec.hs`). `--async-home` is a standalone switch
+only; it is never taken as the value of another flag
+(`caseCheckAsyncHomeValue`, `caseMigrateCliAsyncHomeValue` in
+`tests/storage/StoreCtlSpec.hs`).
+
+### Catalog drift and quarantine
+
+An identity refusal (a stored token missing from the catalog, a changed
+label, a changed slot) is fixed by restoring the catalog the store was
+written with: its labels, slots and `token_ids`. There is no token
+editor, relabel or slot-move command. `planSlotMoves` is a Haskell
+library operation, not an installed command. A quarantined token
+(`StoreQuarantined`, after a write whose outcome could not be verified)
+is a runtime state, not a migration matter: an authoritative reload
+clears it, and a restart reloads from the durable rows.
 
 ## Public 3.2 async routing
 

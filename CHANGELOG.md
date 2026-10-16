@@ -63,16 +63,20 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   SO and user PIN) in the same transaction as the token. The stored row
   is then the PIN authority: editing a configured PIN no longer changes
   what an existing token accepts.
-- A SQLite store holding tokens without a credential row (written by
-  v0.4 or earlier, including every schema-1 store with tokens) refuses
-  to open as migration-required before any write: the file stays
-  byte-identical. Identity refusals report first. The open fails
-  `C_Initialize`; `haskoki-ctl store check` names the tokens and
-  `haskoki-ctl store migrate` migrates such a store.
-- Opening a schema-1 SQLite store no longer migrates it at open. The
-  open only reads; the schema moves to version 2 inside the first
-  commit transaction, so a refused open leaves a schema-1 file at
-  schema 1.
+- SQLite stores move to schema 3. Stores written by v0.4.0.0 (schema 2)
+  or v0.3.x (schema 1) are refused at open, with nothing written, until
+  `haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR`
+  migrates them once. An ordinary open never migrates; `store migrate` is
+  the only path to schema 3. Migrate takes ownership, writes a verified
+  backup and a receipt, records the configured PINs only for tokens without
+  a credential row (PINs changed in-band are kept), and moves the schema in
+  one transaction. v0.4.0.0 and v0.3.1.0 binaries refuse a migrated store;
+  restore the backup to go back.
+- `haskoki-ctl store check --path FILE --config FILE` reports, without
+  writing, whether the store opens with that config, and what migration or
+  catalog fix it needs.
+- Identity refusal messages no longer say 'in this phase'; they name the
+  absence of a relabel or slot-move command.
 - The test-only `storeResetToken` keeps the token's credential row.
 
 New documents: `docs/native-qualification.md` (native shim qualification

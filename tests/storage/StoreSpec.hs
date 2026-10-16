@@ -38,8 +38,8 @@ import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, from
 import Control.Monad (replicateM_, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
-import Data.Char (isSpace)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.Char (isAlphaNum, isSpace)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isPrefixOf, sort)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map.Strict as Map
@@ -52,17 +52,17 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (canonicalizePath, createDirectory, doesDirectoryExist, doesFileExist, listDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile, renameFile)
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removeFile, renameFile)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, takeExtension, (</>))
-import System.IO.Error (catchIOError, isAlreadyExistsError)
-import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, readSymbolicLink, setFileMode)
+import System.FilePath (takeExtension, (</>))
+import System.IO.Error (catchIOError)
+import System.Posix.Files (createSymbolicLink, fileExist, readSymbolicLink)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
 import System.Posix.Process (exitImmediately, getParentProcessID, getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
-import System.Posix.Types (Fd, FileMode, ProcessID)
-import System.Process (CreateProcess (..), ProcessHandle, createProcess, getPid, getProcessExitCode, proc, readProcess)
+import System.Posix.Types (Fd, ProcessID)
+import System.Process (CreateProcess (..), ProcessHandle, createProcess, proc)
 import System.Timeout (timeout)
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -125,6 +125,11 @@ import Haskoki.Runtime.Storage
   , tokensWithoutCredentials
   )
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
+import StoreFixtures
+  ( StoreState (..), assertUnchanged, awaitHolderExit, captureState, claimReap, closeAcquired
+  , expectStdNeedsMigration, loadConfigOrFail, makeTempDir, openReconciled, rawExec, rawTexts
+  , reapedPid, releaseHolder, spawnedPid, storePackageRoot, waitBounded, withFileMode
+  , writeStoreConfig )
 import Haskoki.FFI.Standard
   ( ObjectProjection (..)
   , StdInstance
@@ -137,11 +142,10 @@ import Haskoki.FFI.Standard
   , haskokiStdLogout
   , haskokiStdOpenSession
   , openStdInstance
-  , openStdStore
   , openStdStoreWith
   )
 import Haskoki.Runtime.Async (newAsyncTable)
-import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, effectiveCatalog, identityCatalog, tokenSerial)
+import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, effectiveCatalog, homeCatalogEntry, identityCatalog, tokenSerial)
 import Haskoki.Runtime.Detached (markJobOpaque, openDetached)
 import Haskoki.Runtime.Config
   ( Config (..)
@@ -203,26 +207,6 @@ sqliteOpener = do
   let path = dir </> "store.db"
   pure (Opener "sqlite" (openSQLiteStore path) (removeDirectoryRecursive dir))
 
--- | Make a fresh scratch directory: pid-suffixed, retrying the next name
--- on an already-exists error (no new dependencies; concurrent runs cannot collide).
-makeTempDir :: String -> IO FilePath
-makeTempDir prefix = do
-  base <- getTemporaryDirectory
-  pid <- getProcessID
-  tryNames base (prefix ++ "-" ++ show pid ++ "-") (0 :: Int)
-  where
-    tryNames :: FilePath -> String -> Int -> IO FilePath
-    tryNames base stem n
-      | n > 10000 = ioError (userError ("makeTempDir: exhausted names for " ++ stem))
-      | otherwise = do
-          let dir = base </> (stem ++ show n)
-          -- Decide from the error itself: a concurrent test may create and
-          -- already remove the same name, so a later existence check races.
-          (createDirectory dir >> pure dir) `catchIOError` \e ->
-            if isAlreadyExistsError e
-              then tryNames base stem (n + 1)
-              else ioError (userError ("makeTempDir: cannot create " ++ dir ++ ": " ++ show e))
-
 -- | Every fd the open store holds on its database and sidecar lock
 -- carries FD_CLOEXEC. Without it a concurrent fork+exec (any thread,
 -- or the host application spawning a child) inherits the fd and keeps
@@ -269,13 +253,20 @@ testHeldFdsCloexec = do
 --      @cloexec = True@;
 --   2. no @setFdOption@, @F_SETFD@ or @cloexec = False@ in code
 --      under src\/ or ffi\/ (a later close-on-exec step, or an
---      opt-out, reopens the window).
+--      opt-out, reopens the window);
+--   3. the offline preflight (Storage\/Preflight.hs), which opens the
+--      store and its backups, follows rule 1 with the same @guardFlags@;
+--   4. neither module reads a file through a GHC 'Handle' open
+--      (@readFile@ and its ByteString form do not set O_CLOEXEC); they
+--      read through the backend's close-on-exec reader.
 -- If a legitimate refactor trips it, update the rule here.
 testOpenFdSourceGate :: IO ()
 testOpenFdSourceGate = do
   root <- findPackageRoot "."
   let backend = root </> "src/Haskoki/Runtime/Storage/SQLite.hs"
+      preflight = root </> "src/Haskoki/Runtime/Storage/Preflight.hs"
   body <- readFile backend
+  pbody <- readFile preflight
   files <- sourceFilesUnder [root </> "src", root </> "ffi"]
   let stripComment l = go l
         where go ('-' : '-' : _) = ""
@@ -284,13 +275,21 @@ testOpenFdSourceGate = do
       codeLines txt = [(n, stripComment l, l) | (n, l) <- zip [1 :: Int ..] (lines txt)
                       , not ("--" `isPrefixOf` dropWhile isSpace l)
                       , not ("//" `isPrefixOf` dropWhile isSpace l)]
-      ls = zip [1 :: Int ..] (lines body)
       code = codeLines body
-      calls = [n | (n, c, _) <- code, "openFd " `isInfixOf` c, not ("import " `isPrefixOf` c)]
-      nextTwo n = unwords [l | (m, l) <- ls, m == n || m == n + 1]
-      bad = [(n, l) | n <- calls, let l = nextTwo n, not ("guardFlags" `isInfixOf` l)]
-  assertBool "rule 1: found the backend's openFd calls (gate may need updating)" (length calls >= 4)
-  assertEqual "rule 1: openFd call not using guardFlags (line, text)" [] bad
+      callsIn txt = [n | (n, c, _) <- codeLines txt, "openFd " `isInfixOf` c, not ("import " `isPrefixOf` c)]
+      unguarded txt =
+        let ls = zip [1 :: Int ..] (lines txt)
+            nextTwo n = unwords [l | (m, l) <- ls, m == n || m == n + 1]
+        in [(n, l) | n <- callsIn txt, let l = nextTwo n, not ("guardFlags" `isInfixOf` l)]
+      handleReads txt = [(n, l) | (n, c, l) <- codeLines txt, not ("import " `isPrefixOf` c)
+                        , any (`elem` ["readFile", "BS.readFile", "BC8.readFile"]) (identifiers c)]
+      identifiers = words . map (\ch -> if isAlphaNum ch || ch `elem` ("_'." :: String) then ch else ' ')
+  assertBool "rule 1: found the backend's openFd calls (gate may need updating)" (length (callsIn body) >= 4)
+  assertEqual "rule 1: openFd call not using guardFlags (line, text)" [] (unguarded body)
+  assertBool "rule 3: found the preflight's openFd calls (gate may need updating)" (length (callsIn pbody) >= 2)
+  assertEqual "rule 3: preflight openFd call not using guardFlags (line, text)" [] (unguarded pbody)
+  assertEqual "rule 4: backend Handle read (line, text)" [] (handleReads body)
+  assertEqual "rule 4: preflight Handle read (line, text)" [] (handleReads pbody)
   assertBool "rule 1: guardFlags must be defined with cloexec = True on one line"
     (any (\(_, c, _) -> "guardFlags = " `isInfixOf` c && "cloexec = True" `isInfixOf` c) code)
   forbidden <- fmap concat $ mapM (\f -> do
@@ -325,10 +324,9 @@ spec = testGroup "store contract"
       , testCase "lock fds are opened close-on-exec, never set afterwards" testOpenFdSourceGate
       , testCase "garbage file is rejected without rewrite" testGarbageRejected
       , testCase "future schema version rejected without rewrite" testFutureVersionRejected
-      , testCase "version-1 database migrates explicitly" testV1Migrates
-      , testCase "version-1 store opened and read writes nothing" testV1ReadOnlyOpenWritesNothing
-      , testCase "version-1 migration rolls back with a failed first commit" testV1FailedCommitStaysV1
+      , testCase "version-1 database refuses without writing" testV1RefusesWithoutWriting
       , testCase "async store open refuses a version-1 store without writing" testV1AsyncRefusalWritesNothing
+      , testCase "async store open seeds the home credential and reopens" testAsyncOpenSeedsHomeCredential
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
       , testCase "raw columns contain no pointers or handles" testRawColumnsClean
       , testCase "live schema matches spec/storage-schema.sql" testSchemaShape
@@ -396,7 +394,6 @@ spec = testGroup "store contract"
       , testCase "identity drift refuses before missing credentials" caseOpenIdentityRefusalPrecedesMigration
       , testCase "a schema-1 legacy store refuses before any write" caseOpenSchema1LegacyRefusesWithoutWrite
       , testCase "a schema-1 identity refusal writes nothing" caseOpenSchema1IdentityRefusalWithoutWrite
-      , testCase "an empty schema-1 store migrates and seeds" caseOpenSchema1EmptyMigratesAndSeeds
       , testCase "publication resolves moved slots through the reconciled layout" caseProjectionUsesReconciledLayout
       ]
   ]
@@ -946,7 +943,7 @@ testFutureVersionRejected =
         storeClose s
         assertFailure "future schema version opened"
       Left (StoreSchemaVersion expected found) -> do
-        assertEqual "expected version" 2 expected
+        assertEqual "expected version" 3 expected
         assertEqual "found version" "999" found
       Left other -> assertFailure ("wrong error: " ++ show other)
     bytesAfter <- BS.readFile path
@@ -954,50 +951,24 @@ testFutureVersionRejected =
     lockLeft <- doesFileExist (path ++ ".lock")
     assertBool "no stranded lock" (not lockLeft)
 
--- | Acceptance (explicit migration): a version-1 database opens
--- WITHOUT writing (the open only reads it), and its first commit
--- migrates it to version 2 inside that commit's own transaction —
--- the empty @credentials@ table is created and the marker
--- advances — while no existing row is rewritten or reinterpreted
--- (a marker meta row survives byte-identical). Afterwards the
--- store serves credentials and reopens cleanly at version 2.
-testV1Migrates :: IO ()
-testV1Migrates =
-  bracket (makeTempDir "haskoki-storage-migrate") removeDirectoryRecursive $ \dir -> do
+-- | Acceptance (ordinary open never migrates): a version-1
+-- database refuses as migration-required through every reader and
+-- the open writes nothing: not a byte of the file, not the schema
+-- marker, not a table, and no lock or journal is left behind. A
+-- marker meta row stands for rows the open must not reinterpret.
+testV1RefusesWithoutWriting :: IO ()
+testV1RefusesWithoutWriting =
+  bracket (makeTempDir "haskoki-storage-v1-refuse") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "store.db"
     mapM_ (rawExec path . T.pack)
       (v1SchemaDdl ++ ["INSERT INTO store_meta(key, value) VALUES ('p6-migration-marker', 'kept')"])
-    before <- diskHashes path
+    before <- captureState path
     eStore <- openSQLiteStore path
-    s <- either (\e -> assertFailure ("version-1 open: " ++ show e)) pure eStore
-    eMeta <- storeLoadMeta s
-    meta <- either (\e -> assertFailure ("load meta: " ++ show e)) pure eMeta
-    assertEqual "marker readable before migration" (Just "kept") (lookup "p6-migration-marker" meta)
-    storeClose s
-    afterOpen <- diskHashes path
-    assertEqual "the open alone writes nothing" before afterOpen
-    stateOpen <- rawSchemaState path
-    assertEqual "the open alone leaves version 1" ("1", False) stateOpen
-    -- The first commit migrates and lands in one transaction.
-    eStore2 <- openSQLiteStore path
-    s2 <- either (\e -> assertFailure ("second version-1 open: " ++ show e)) pure eStore2
-    let tok = TokenRecord (TokenId 7) (SlotId 0) (Generation 1) "migrated" tokenAuthNew
-        cred = CredentialRecord (TokenId 7) "so-pin-1" (Just "user-pin-1")
-    r <- storeCommit s2 emptyDelta { sdPutTokens = [tok], sdPutCredentials = [cred] }
-    assertEqual "the first commit lands on a version-1 store" Committed r
-    eMeta2 <- storeLoadMeta s2
-    meta2 <- either (\e -> assertFailure ("load meta after commit: " ++ show e)) pure eMeta2
-    assertEqual "marker survives migration" (Just "kept") (lookup "p6-migration-marker" meta2)
-    storeClose s2
-    stateMigrated <- rawSchemaState path
-    assertEqual "version advanced to 2 with the credentials table" ("2", True) stateMigrated
-    -- The migrated store reopens cleanly and serves the credential.
-    eStore3 <- openSQLiteStore path
-    s3 <- either (\e -> assertFailure ("reopen: " ++ show e)) pure eStore3
-    eCreds <- storeLoadCredentials s3
-    creds <- either (\e -> assertFailure ("load credentials: " ++ show e)) pure eCreds
-    assertEqual "credential survives reopen" [cred] creds
-    storeClose s3
+    case eStore of
+      Left (StoreNeedsMigration 1 3) -> pure ()
+      Left other -> assertFailure ("wrong refusal: " ++ show other)
+      Right s -> storeClose s >> assertFailure "a version-1 database opened"
+    assertUnchanged "version-1 database after a refused open" before path
 
 -- | The version-1 schema. Frozen history (copied from the
 -- pre-provisioning @spec/storage-schema.sql@), not a live
@@ -1014,22 +985,6 @@ v1SchemaDdl =
   , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '1')"
   , "INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001')"
   ]
-
--- | SHA-256 of the database file and of every SQLite sidecar that
--- can carry database bytes (@-journal@, @-wal@, @-shm@), with
--- "absent" for a missing one. The @.lock@ ownership sidecar is the
--- documented transient lock artifact, not database bytes.
-diskHashes :: FilePath -> IO [(String, String)]
-diskHashes path = mapM one ["", "-journal", "-wal", "-shm"]
-  where
-    one suffix = do
-      let p = path ++ suffix
-      exists <- doesFileExist p
-      if exists
-        then do
-          out <- readProcess "sha256sum" [p] ""
-          pure ("store.db" ++ suffix, takeWhile (not . isSpace) out)
-        else pure ("store.db" ++ suffix, "absent")
 
 -- | The schema marker and whether the @credentials@ table exists,
 -- read on a plain connection (SELECTs only).
@@ -1059,90 +1014,66 @@ seedSchema1 path toks = do
   state <- rawSchemaState path
   assertEqual "fixture is schema 1 without a credentials table" ("1", False) state
 
--- | AC-05 (refusal before any write): a version-1 store holding a
--- token opens, loads every surface and closes without changing a
--- byte. Every caller that refuses after reading (the standard
--- open's identity and migration-required checks, the async open's
--- home-token check) therefore leaves the version-1 file intact and
--- openable by the binary that wrote it.
-testV1ReadOnlyOpenWritesNothing :: IO ()
-testV1ReadOnlyOpenWritesNothing =
-  bracket (makeTempDir "haskoki-storage-v1-read") removeDirectoryRecursive $ \dir -> do
-    let path = dir </> "store.db"
-        tok = TokenRecord (TokenId 2) (SlotId 1) (Generation 0) "haskoki-ops" tokenAuthNew
-    seedSchema1 path [tok]
-    before <- diskHashes path
-    s <- openSQLiteStore path >>= either (\e -> assertFailure ("version-1 open: " ++ show e)) pure
-    loaded <- storeLoadTokens s >>= either (\e -> assertFailure ("load tokens: " ++ show e)) pure
-    assertEqual "the version-1 token loads" [TokenId 2] [trId t | (t, _) <- loaded]
-    creds <- storeLoadCredentials s >>= either (\e -> assertFailure ("load credentials: " ++ show e)) pure
-    assertEqual "a version-1 store holds no credential rows" [] creds
-    jobs <- storeLoadJobs s >>= either (\e -> assertFailure ("load jobs: " ++ show e)) pure
-    assertEqual "no jobs" 0 (length jobs)
-    _ <- storeLoadMeta s >>= either (\e -> assertFailure ("load meta: " ++ show e)) pure
-    _ <- storeInspect s >>= either (\e -> assertFailure ("inspect: " ++ show e)) pure
-    storeClose s
-    hashesAfter <- diskHashes path
-    assertEqual "open, reads and close leave every byte (SHA-256)" before hashesAfter
-    state <- rawSchemaState path
-    assertEqual "still schema 1 without a credentials table" ("1", False) state
-    lockLeft <- doesFileExist (path ++ ".lock")
-    assertBool "no stranded lock" (not lockLeft)
-
--- | The migration rides the first commit's transaction: a first
--- commit whose body fails (an injected TEMP trigger on the store's
--- own connection refuses the token insert) rolls the migration
--- back with it, so the file stays version 1, byte for byte. A
--- clean retry then migrates and commits.
-testV1FailedCommitStaysV1 :: IO ()
-testV1FailedCommitStaysV1 =
-  bracket (makeTempDir "haskoki-storage-v1-fail") removeDirectoryRecursive $ \dir -> do
-    let path = dir </> "store.db"
-        tok = TokenRecord (TokenId 7) (SlotId 0) (Generation 1) "migrated" tokenAuthNew
-        cred = CredentialRecord (TokenId 7) "so-pin-1" (Just "user-pin-1")
-        failTokenInsert db = S.exec db (T.pack (concat
-          [ "CREATE TEMP TRIGGER IF NOT EXISTS haskoki_test_fail_token_insert"
-          , " BEFORE INSERT ON main.tokens"
-          , " BEGIN SELECT RAISE(ABORT, 'haskoki-test: injected token insert failure'); END" ]))
-        hooks = noSQLiteTestHooks { sthBeforeBegin = failTokenInsert }
-    seedSchema1 path []
-    before <- diskHashes path
-    s <- openSQLiteStoreWithHooks path defaultLimits noFaults hooks
-      >>= either (\e -> assertFailure ("hooked version-1 open: " ++ show e)) pure
-    r <- storeCommit s emptyDelta { sdPutTokens = [tok], sdPutCredentials = [cred] }
-    case r of
-      NotCommitted _ -> pure ()
-      other -> assertFailure ("an injected body failure must not commit: " ++ show other)
-    storeClose s
-    hashesAfter <- diskHashes path
-    assertEqual "the failed first commit leaves every byte (SHA-256)" before hashesAfter
-    state <- rawSchemaState path
-    assertEqual "still schema 1 without a credentials table" ("1", False) state
-    s2 <- openSQLiteStore path >>= either (\e -> assertFailure ("retry open: " ++ show e)) pure
-    r2 <- storeCommit s2 emptyDelta { sdPutTokens = [tok], sdPutCredentials = [cred] }
-    assertEqual "the clean retry commits" Committed r2
-    storeClose s2
-    state2 <- rawSchemaState path
-    assertEqual "the retry migrated to version 2" ("2", True) state2
-
--- | The async process-level store open refuses a non-empty store
--- without its home token; on a version-1 file that refusal writes
--- nothing (the open no longer migrates first).
+-- | The async process-level store open refuses a version-1 store:
+-- the SQLite open rejects the old schema before the home-token
+-- check is reached, and the refusal writes nothing.
 testV1AsyncRefusalWritesNothing :: IO ()
 testV1AsyncRefusalWritesNothing =
   bracket (makeTempDir "haskoki-storage-v1-async") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "store.db"
         tok = TokenRecord (TokenId 2) (SlotId 1) (Generation 0) "haskoki-ops" tokenAuthNew
     seedSchema1 path [tok]
-    before <- diskHashes path
+    before <- captureState path
     box <- withCString path haskokiAsyncStoreOpen
     when (castStablePtrToPtr box /= nullPtr) $ do
       alloca $ \slot -> poke slot box >> haskokiAsyncStoreClose slot
-      assertFailure "async open accepted a store without its home token"
-    hashesAfter <- diskHashes path
-    assertEqual "the refused async open leaves every byte (SHA-256)" before hashesAfter
+      assertFailure "async open accepted a version-1 store"
+    assertUnchanged "refused async open" before path
     state <- rawSchemaState path
     assertEqual "still schema 1 without a credentials table" ("1", False) state
+
+-- | The async open creates a complete schema-3 store: the home
+-- token's credential row (the home catalog entry's PINs) is
+-- committed in the same transaction as the token, the store
+-- reopens through the async surface unchanged, and the standard
+-- open never classifies it as migration-required (a label verdict
+-- against the standard catalog is an identity refusal, not a
+-- legacy one).
+testAsyncOpenSeedsHomeCredential :: IO ()
+testAsyncOpenSeedsHomeCredential =
+  bracket (makeTempDir "haskoki-storage-async-home") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        (_, soPin, userPin) = homeCatalogEntry
+        closeBox box = alloca $ \slot -> poke slot box >> haskokiAsyncStoreClose slot
+    box <- withCString path haskokiAsyncStoreOpen
+    when (castStablePtrToPtr box == nullPtr) $ assertFailure "async open of a fresh path refused"
+    closeBox box
+    created <- captureState path
+    assertEqual "schema 3" ["3"] (ssSchema created)
+    assertEqual "exactly one credential row" 1 (length (ssCredentials created))
+    s <- openSQLiteStore path >>= either (\e -> assertFailure ("reopen: " ++ show e)) pure
+    creds <- storeLoadCredentials s >>= either (\e -> assertFailure ("load credentials: " ++ show e)) pure
+    storeClose s
+    assertEqual "the credential is the home catalog entry's PINs"
+      [CredentialRecord (TokenId 1) (BC8.pack soPin) (Just (BC8.pack userPin))] creds
+    -- Reopen through the async surface: serves, writes nothing.
+    box2 <- withCString path haskokiAsyncStoreOpen
+    when (castStablePtrToPtr box2 == nullPtr) $ assertFailure "async reopen refused"
+    closeBox box2
+    assertUnchanged "async reopen" created path
+    -- The standard open's verdict is never a legacy one.
+    cfgPath <- writeStoreConfig (dir </> "c.toml") path [homeLabel] [soPin] [userPin]
+    cfg <- loadConfigOrFail cfgPath
+    r <- openReconciled path cfg
+    case r of
+      Left (StdStoreSQLite (StoreNeedsMigration _ _)) -> assertFailure "async-created store needs migration"
+      Left (StdStoreMigrationRequired ids) -> assertFailure ("async-created store is rowless: " ++ show ids)
+      Left (StdStoreIdentityRefusal _) -> pure ()
+      Left other -> assertFailure ("unexpected refusal: " ++ show other)
+      Right acq -> closeAcquired acq
+    assertUnchanged "standard open of an async-created store" created path
+  where
+    (homeLabel, _, _) = homeCatalogEntry
 
 -- | Acceptance 4 (corrupt records): garbage in each decodable
 -- surface diagnoses 'StoreCorrupt' at load (open itself stays
@@ -1173,13 +1104,6 @@ testCorruptDiagnosed = do
           Left other -> assertFailure (label ++ ": wrong error: " ++ show other)
           Right _ -> assertFailure (label ++ ": corrupt record loaded")
         storeClose s1
-
--- | Run one raw statement against a closed database file.
-rawExec :: FilePath -> T.Text -> IO ()
-rawExec path sql = do
-  db <- S.open (T.pack path)
-  S.exec db sql
-  S.close db
 
 -- | Acceptance 5 (detached-job records): a pending recipe and a
 -- prepared result both round-trip byte-exact across close/reopen.
@@ -1612,20 +1536,6 @@ testRawColumnsClean =
     mapM_ (\t -> assertBool ("raw numbers: " ++ take 40 t) (numbersClean t))
       (tokDocs ++ attrDocs ++ jobDocs)
 
--- | Read one text column from every row of a raw query.
-rawTexts :: S.Database -> T.Text -> IO [String]
-rawTexts db sql =
-  bracket (S.prepare db sql) S.finalize collect
-  where
-    collect stmt = do
-      r <- S.step stmt
-      case r of
-        S.Done -> pure []
-        S.Row -> do
-          cols <- S.columns stmt
-          rest <- collect stmt
-          pure ([T.unpack t | S.SQLText t <- cols] ++ rest)
-
 -- | Read one blob column from every row of a raw query.
 rawBlobs :: S.Database -> T.Text -> IO [String]
 rawBlobs db sql =
@@ -1639,23 +1549,6 @@ rawBlobs db sql =
           cols <- S.columns stmt
           rest <- collect stmt
           pure ([BC8.unpack b | S.SQLBlob b <- cols] ++ rest)
-
--- | The package root, resolved CWD-independently (same
--- funnel-cwd hardening as the model suite: walk up from the test
--- binary's own directory to haskoki.cabal).
-storePackageRoot :: IO FilePath
-storePackageRoot = do
-  exeDir <- takeDirectory <$> getExecutablePath
-  ascend exeDir
-  where
-    ascend dir = do
-      here <- doesFileExist (dir </> "haskoki.cabal")
-      if here
-        then pure dir
-        else let parent = takeDirectory dir
-             in if parent == dir
-                  then assertFailure "schema-shape: haskoki.cabal not found"
-                  else ascend parent
 
 -- | Normalize DDL for comparison: collapse whitespace runs and
 -- drop spaces adjacent to parens/commas. Sound here because no
@@ -2019,68 +1912,6 @@ spawnHolderEnv extra path doneFile readyFile = do
     ((proc exe ["--holder", path, doneFile, readyFile])
       { close_fds = True, env = Just merged })
   pure ph
-
--- | The spawned child's pid for the lock-ownership handshake;
--- fails fast when the child already exited before handshaking.
-spawnedPid :: ProcessHandle -> String -> IO ProcessID
-spawnedPid ph tag = do
-  mPid <- getPid ph
-  case mPid of
-    Just pid -> pure pid
-    Nothing -> assertFailure (tag ++ ": holder child exited before handshake")
-
--- | Claim the exactly-once right to reap a holder child: True
--- for the first claimer (it owns signal+reap), False once the
--- child has been reaped. A reaped numeric pid may be recycled by
--- an unrelated process, so it must never be signaled again.
-claimReap :: IORef Bool -> IO Bool
-claimReap ref = atomicModifyIORef' ref (\done -> (True, not done))
-
--- | Bounded wait on a holder child (10ms non-blocking polls), so
--- a wedged child cannot hang the suite. Nothing on timeout; every
--- error is swallowed on the release path.
-waitBounded :: ProcessHandle -> Int -> IO (Maybe ExitCode)
-waitBounded _ 0 = pure Nothing
-waitBounded ph n = do
-  mSt <- catchIOError (getProcessExitCode ph) (\_ -> pure Nothing)
-  case mSt of
-    Just st -> pure (Just st)
-    Nothing -> threadDelay 10000 >> waitBounded ph (n - 1)
-
--- | Bracket release for a holder child: exactly-once SIGKILL plus
--- a bounded wait. A no-op when the body already reaped the child.
--- The kill targets only our own unreaped child (its pid cannot be
--- recycled before we reap it), never a recycled numeric pid.
--- Every failure is swallowed: the release must not mask the test
--- verdict.
-releaseHolder :: IORef Bool -> ProcessHandle -> IO ()
-releaseHolder reaped ph = do
-  ours <- claimReap reaped
-  when ours $ do
-    catchIOError (getPid ph >>= maybe (pure ()) (signalProcess sigKILL)) (\_ -> pure ())
-    _ <- waitBounded ph 500
-    pure ()
-
--- | Bounded join on a holder child (10s cap) with checked exit
--- status; marks the child reaped so the bracket release skips it.
-awaitHolderExit :: IORef Bool -> ProcessHandle -> String -> IO ()
-awaitHolderExit reaped ph tag = do
-  mSt <- waitBounded ph 1000
-  case mSt of
-    Nothing -> assertFailure (tag ++ ": holder child did not exit within 10s")
-    Just st -> do
-      _ <- claimReap reaped
-      case st of
-        ExitSuccess -> pure ()
-        other -> assertFailure (tag ++ ": holder child failed: " ++ show other)
-
--- | Run with a path's mode overridden, restoring it afterwards
--- (a denied mode must never strand an undeletable fixture, even
--- when the action throws).
-withFileMode :: FilePath -> FileMode -> IO a -> IO a
-withFileMode p mode action = do
-  st <- getFileStatus p
-  bracket_ (setFileMode p mode) (setFileMode p (fileMode st)) action
 
 -- | Run with @HASKOKI_PROC_ROOT@ overridden, restoring it afterwards.
 withProcRoot :: FilePath -> IO a -> IO a
@@ -2616,27 +2447,6 @@ testLivenessMapping = do
   t PidUnknown $ livenessFromProbes ProbeUnknown ProbePresent (Just ProbePresent) ProbeAbsent
   t PidUnknown $ livenessFromProbes ProbePresent ProbeAbsent Nothing ProbeAbsent
   t PidUnknown $ livenessFromProbes ProbePresent ProbeUnknown (Just ProbePresent) ProbeAbsent
-
--- | A provably-dead pid: spawn a fresh process with no inherited
--- store descriptors, reap it, and confirm @\/proc@ has no entry
--- (a reused pid is retried). A raw fork can keep another parallel
--- test's database guard locked after that test closes its store.
-reapedPid :: IO Int
-reapedPid = go (0 :: Int)
-  where
-    go n
-      | n > 50 = assertFailure "could not reap a dead pid"
-      | otherwise = do
-          reaped <- newIORef False
-          bracket spawnReaper (releaseHolder reaped) $ \ph -> do
-            pid <- spawnedPid ph "dead-pid"
-            awaitHolderExit reaped ph "dead-pid"
-            alive <- fileExist ("/proc/" ++ show (fromIntegral pid :: Int))
-            if alive then go (n + 1) else pure (fromIntegral pid)
-    spawnReaper :: IO ProcessHandle
-    spawnReaper = do
-      (_, _, _, ph) <- createProcess ((proc "/bin/true" []) { close_fds = True })
-      pure ph
 
 foreign import ccall unsafe "sys/file.h flock" test_c_flock :: CInt -> CInt -> IO CInt
 
@@ -3891,19 +3701,6 @@ withOpenFile use =
   bracket (makeTempDir "haskoki-open-reconcile") removeDirectoryRecursive $ \dir ->
     use (dir </> "store.db")
 
--- | Open the store file at the path through the production
--- acquisition (the same 'openStdStore' the instance open
--- threads): typed reconciliation errors, no assembly.
-openReconciled :: FilePath -> Config -> IO (Either StdStoreError (Maybe StdStore))
-openReconciled path cfg = do
-  env <- newEnv (rulesFromConfig cfg)
-  openStdStore env cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
-
--- | Close an acquired store handle, if any.
-closeAcquired :: Maybe StdStore -> IO ()
-closeAcquired Nothing = pure ()
-closeAcquired (Just ss) = storeClose (stdStore ss)
-
 -- | Hand-built object fixture: one minimal token object
 -- shape per token (attributes stay minimal; ownership is what
 -- the open cases pin).
@@ -4198,74 +3995,29 @@ catalogSeeds cfg = case reconcileIdentities (desiredTokens cfg) [] of
   Left refusal -> assertFailure ("empty-store plan refused: " ++ show refusal)
   Right plan -> pure (planSeeds plan)
 
--- | Expect a refused standard open to leave the database file and
--- its sidecars byte-identical (SHA-256), at schema 1, with no
--- stranded lock.
-expectSchema1Untouched :: FilePath -> [(String, String)] -> IO ()
-expectSchema1Untouched path before = do
-  hashesAfter <- diskHashes path
-  assertEqual "refused open leaves every byte (SHA-256)" before hashesAfter
-  state <- rawSchemaState path
-  assertEqual "still schema 1 without a credentials table" ("1", False) state
-  lockLeft <- doesFileExist (path ++ ".lock")
-  assertBool "no stranded lock" (not lockLeft)
-
 -- | AC-04/AC-05 on a schema-1 store: a version-1 file holding the
--- catalog's tokens has no @credentials@ table, so every token is
--- without a row. The open refuses it as migration-required, naming
--- every token, BEFORE any write: the database file and its
--- sidecars stay byte-identical and the schema stays 1.
+-- catalog's tokens refuses as migration-required BEFORE identity
+-- and before any write: bytes, marker, tables and credential
+-- authority stay, with no lock or journal left behind.
 caseOpenSchema1LegacyRefusesWithoutWrite :: IO ()
 caseOpenSchema1LegacyRefusesWithoutWrite = withOpenFile $ \path -> do
   cfg <- parseCatalog positionalDoc
   seedSchema1 path =<< catalogSeeds cfg
-  before <- diskHashes path
-  eAcq <- openReconciled path cfg
-  case eAcq of
-    Left (StdStoreMigrationRequired got) ->
-      assertEqual "refusal names every token" [TokenId 1, TokenId 2, TokenId 3] got
-    Left err -> assertFailure ("schema-1 legacy open refused for the wrong reason: " ++ show err)
-    Right mAcq -> do
-      closeAcquired mAcq
-      assertFailure "schema-1 legacy store opened without credentials"
-  expectSchema1Untouched path before
+  before <- captureState path
+  openReconciled path cfg >>= expectStdNeedsMigration 1
+  assertUnchanged "schema-1 legacy store" before path
 
--- | Identity drift on a schema-1 store reports first (the identity
--- refusal, not migration-required) and also writes nothing.
+-- | Identity drift on a schema-1 store: the schema refusal precedes
+-- identity, so the verdict is migration-required and the open
+-- writes nothing.
 caseOpenSchema1IdentityRefusalWithoutWrite :: IO ()
 caseOpenSchema1IdentityRefusalWithoutWrite = withOpenFile $ \path -> do
   cfg <- parseCatalog positionalDoc
   seedSchema1 path =<< catalogSeeds cfg
-  before <- diskHashes path
+  before <- captureState path
   cfgSwap <- parseCatalog swappedDoc
-  eAcq <- openReconciled path cfgSwap
-  case eAcq of
-    Left (StdStoreIdentityRefusal msg) ->
-      assertBool "refusal names the explicit move" ("planSlotMoves" `isInfixOf` msg)
-    Left err -> assertFailure ("schema-1 identity drift refused for the wrong reason: " ++ show err)
-    Right mAcq -> do
-      closeAcquired mAcq
-      assertFailure "reordered schema-1 open accepted"
-  expectSchema1Untouched path before
-
--- | Control: an empty schema-1 store has no token to refuse, so the
--- open succeeds; its seed commit migrates the schema and seeds the
--- tokens with their credentials in that one transaction.
-caseOpenSchema1EmptyMigratesAndSeeds :: IO ()
-caseOpenSchema1EmptyMigratesAndSeeds = withOpenFile $ \path -> do
-  cfg <- parseCatalog positionalDoc
-  seedSchema1 path []
-  eAcq <- openReconciled path cfg
-  case eAcq of
-    Left err -> assertFailure ("empty schema-1 open must seed: " ++ show err)
-    Right mAcq -> closeAcquired mAcq
-  state <- rawSchemaState path
-  assertEqual "the seed commit migrated to version 2" ("2", True) state
-  loaded <- fileLoaded path
-  assertEqual "three tokens seeded" [TokenId 1, TokenId 2, TokenId 3] [trId t | (t, _) <- loaded]
-  creds <- fileCredentials path
-  assertEqual "three credentials seeded with them"
-    [TokenId 1, TokenId 2, TokenId 3] [tid | (tid, _, _) <- creds]
+  openReconciled path cfgSwap >>= expectStdNeedsMigration 1
+  assertUnchanged "schema-1 store under a drifted catalog" before path
 
 -- | A reordered catalog refuses at the production open with
 -- the actionable message; the file survives byte-exact and

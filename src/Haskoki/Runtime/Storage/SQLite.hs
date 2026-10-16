@@ -24,12 +24,11 @@ the lock path cannot fork a live owner via a replacement lock;
 release unlinks only the owned lock inode.
 
 An empty database initializes transactionally from the schema in
-@spec\/storage-schema.sql@ (four tables, indexes, meta rows); an
+@spec\/storage-schema.sql@ (five tables, indexes, meta rows); an
 existing database is verified (tables present, @schema_version@
-exactly @2@, or exactly @1@) and never silently refixtured. A
-version-1 database opens without a single write; its migration to
-version 2 rides the first commit transaction, so an open that is
-refused after reading leaves the file byte-identical. A foreign or
+exactly @3@). Versions 1 and 2 refuse as migration-required and are
+never migrated by an open: the open writes nothing, and only the
+explicit @haskoki-ctl store migrate@ moves a store to version 3. A foreign or
 garbage file is rejected with a diagnosis and left byte-identical.
 
 SQLite configuration (design 08, section 6): foreign keys on, a
@@ -62,18 +61,34 @@ module Haskoki.Runtime.Storage.SQLite
   , livenessFromProbes
   , PidLiveness (..)
   , ProcProbe (..)
+  , FileIdentity (..)
+  , StoreSnapshot (..)
+  , readStoreSnapshot
+  , OwnerState (..)
+  , probeOwner
+  , guardFlags
+  , readFileCloexec
+  , OwnedStoreFile
+  , ownedPath
+  , withOwnedStoreFile
+  , clearColdJournal
+  , SQLiteMigration (..)
+  , MigrationHooks (..)
+  , noMigrationHooks
+  , migrateOwned
   ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, putMVar, readMVar, takeMVar)
-import Control.Exception (SomeException, bracket, bracket_, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Exception (SomeException, bracket, bracketOnError, bracket_, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (when)
 import Data.Bits (shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
-import Data.List (nub)
+import qualified Data.ByteString.Char8 as BC8
+import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
@@ -84,10 +99,12 @@ import Database.SQLite3.Direct (getAutoCommit)
 import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
-import System.Posix.Files (deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, removeLink, setFdSize, setFileMode)
-import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdWrite, openFd)
+import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, removeLink, setFdSize, setFileMode)
+import System.IO (hClose)
+import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWrite, openFd)
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (Fd, ProcessID)
+import System.Posix.Unistd (fileSynchronise)
 
 import Haskoki.Runtime.Attach (ClaimAuthority, newClaimAuthority)
 import Haskoki.Runtime.Storage
@@ -140,14 +157,13 @@ import Haskoki.Runtime.Storage
   )
 import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), SlotId (..), TokenId (..))
 
--- | The schema version this backend creates and accepts.
--- Version 2 adds the @credentials@ table (one provisioned
--- credential row per token); a version-1 database opens without
--- writing and migrates explicitly inside its first commit
--- transaction ('migrateV1InTxn'), and anything else refuses
--- without writing.
+-- | The schema version this backend creates and serves. Version 3
+-- marks a store written by a credential-seeding build; versions 1
+-- and 2 refuse at open WITHOUT writing ('StoreNeedsMigration') and
+-- only the explicit @haskoki-ctl store migrate@ moves them to 3;
+-- anything else refuses ('StoreSchemaVersion').
 sqliteSchemaVersion :: Int
-sqliteSchemaVersion = 2
+sqliteSchemaVersion = 3
 
 -- | One open SQLite store: the connection, its guard lock, the
 -- per-handle lifecycle state, the owned paths, the held-open
@@ -173,11 +189,6 @@ data SQLiteConn = SQLiteConn
   , sqLimits :: !StoreLimits
   , sqHooks :: !SQLiteTestHooks
   , sqClaims :: !ClaimAuthority
-  , sqSchemaV1 :: !(IORef Bool)
-    -- ^ The database was opened at schema version 1 and its
-    -- migration has not been confirmed yet: the next commit
-    -- transaction migrates it first ('migrateV1InTxn'). Read and
-    -- written only under the connection guard.
   }
 
 -- | Test-only hooks run on the store's OWN connection (a second
@@ -283,14 +294,13 @@ openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
           closeQuietFd dbFd
           releaseQuiet lockFd lockPath
           pure (Left err)
-        Right (db, schemaV1) ->
+        Right db ->
           (do lock <- newMVar ()
               closed <- newMVar HandleOpen
               qVar <- newMVar []
               openTxn <- newIORef Nothing
               sVar <- newIORef zeroStats
               claims <- newClaimAuthority
-              v1Ref <- newIORef schemaV1
               let conn = SQLiteConn
                     { sqDb = db
                     , sqLock = lock
@@ -306,7 +316,6 @@ openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
                     , sqLimits = limits
                     , sqHooks = hooks
                     , sqClaims = claims
-                    , sqSchemaV1 = v1Ref
                     }
               pure (Right (mkStore conn)))
             `onException` closeQuiet db
@@ -335,6 +344,13 @@ procRootFromEnv = do
 -- writer.
 guardFlags :: OpenFileFlags
 guardFlags = defaultFileFlags { cloexec = True }
+
+-- | All bytes of a file, read through a 'guardFlags' descriptor. A GHC
+-- 'Handle' open ('readFile', 'BS.readFile') does not set O_CLOEXEC, so
+-- a concurrent fork+exec could inherit it.
+readFileCloexec :: FilePath -> IO ByteString
+readFileCloexec p = bracket open hClose BS.hGetContents
+  where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
 
 -- | Take single-writer ownership via an O_EXCL sidecar lock carrying
 -- our pid. An existing lock owned by a live pid fails explicitly;
@@ -385,7 +401,7 @@ claimFresh dbPath lockPath procRoot attempts fd pid = do
 -- compare as text, avoiding any orphan 'Read' instances.
 inspectLock :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
 inspectLock dbPath lockPath procRoot pid attempts = do
-  eContent <- tryIOError (readFile lockPath)
+  eContent <- tryIOError (BC8.unpack <$> readFileCloexec lockPath)
   case eContent of
     Left _ -> pure (Left (StoreSecondWriter ("store is locked and the owner is unreadable: " ++ lockPath)))
     Right content -> case reads content of
@@ -651,11 +667,10 @@ releaseQuiet fd lockPath = do
 -- one owner: the inner helpers never close it, so no interleaving
 -- can double-close the raw pointer; this function's case analysis
 -- closes once on each failure path and hands the handle off
--- untouched on success, paired with whether it is a version-1
--- database whose migration is still pending.
+-- untouched on success.
 openAndInit
-  :: (IO (Either StoreError (S.Database, Bool)) -> IO (Either StoreError (S.Database, Bool)))
-  -> Fd -> FilePath -> Bool -> IO (Either StoreError (S.Database, Bool))
+  :: (IO (Either StoreError S.Database) -> IO (Either StoreError S.Database))
+  -> Fd -> FilePath -> Bool -> IO (Either StoreError S.Database)
 openAndInit restore guardFd path created = do
   eSt <- tryStoreIO (getFdStatus guardFd)
   case eSt of
@@ -682,7 +697,7 @@ openAndInit restore guardFd path created = do
       case eCfg of
         Left err -> pure (Left err)
         Right ()
-          | fresh -> fmap (\d -> (d, False)) <$> initSchema db guardFd dbPath
+          | fresh -> initSchema db guardFd dbPath
           | otherwise -> verifyExisting db dbPath
 
 -- | Test seam: when @HASKOKI_OPEN_PAUSE@ names a directory AND
@@ -790,79 +805,48 @@ removeIfOurs guardFd path = do
     _ <- tryIOError (removeLink path)
     pure ()
 
--- | Verify an existing database: the version-1 tables present
--- and the schema version exactly ours, or exactly its
--- predecessor (opened read-only in effect: it migrates inside its
--- first commit transaction). Anything else fails. Verification
--- only reads: it never writes a single byte. Never closes the
--- handle (owned by 'openAndInit'). The flag reports a version-1
--- database.
-verifyExisting :: S.Database -> FilePath -> IO (Either StoreError (S.Database, Bool))
+-- | Judge an existing file's schema from its table names and its
+-- @schema_version@ rows. Shared by the serving open and the
+-- read-only snapshot, so both judge a file identically. 'Right' is
+-- 1, 2 or 3 with a matching table shape; never writes.
+classifySchema :: FilePath -> [Text] -> Either StoreError [[S.SQLData]] -> Either StoreError Int
+classifySchema path names eRows
+  | not (all (`elem` names) ["store_meta", "tokens", "objects", "detached_jobs"]) =
+      Left (StoreIO (path ++ ": not a haskoki store (missing tables)"))
+  | otherwise = do
+      rows <- eRows
+      case rows of
+        [[S.SQLText v]] -> case T.unpack v of
+          "1" | hasCreds -> Left (StoreCorrupt (path ++ ": schema version 1 with a credentials table"))
+              | otherwise -> Right 1
+          "2" | hasCreds -> Right 2
+              | otherwise -> Left (StoreCorrupt (path ++ ": schema version 2 without credentials table"))
+          "3" | hasCreds -> Right 3
+              | otherwise -> Left (StoreCorrupt (path ++ ": schema version 3 without credentials table"))
+          other -> Left (StoreSchemaVersion sqliteSchemaVersion other)
+        _ -> Left (StoreCorrupt (path ++ ": corrupt store metadata"))
+  where
+    hasCreds = "credentials" `elem` names
+
+-- | Verify an existing database: only the current schema serves.
+-- An older schema refuses as migration-required and anything else
+-- refuses as unsupported or corrupt, in every case WITHOUT writing a
+-- byte. Never closes the handle (owned by 'openAndInit').
+verifyExisting :: S.Database -> FilePath -> IO (Either StoreError S.Database)
 verifyExisting db path = do
   eTables <- queryRows db "SELECT name FROM sqlite_master WHERE type = 'table'" []
   case eTables of
     Left err -> pure (Left err)
     Right rows -> do
       let names = [t | [S.SQLText t] <- rows]
-          want = ["store_meta", "tokens", "objects", "detached_jobs"]
-      if all (`elem` names) want
-        then checkVersion db path names
-        else pure (Left (StoreIO (path ++ ": not a haskoki store (missing tables)")))
-
--- | Check the integer schema version, reading only. Exactly ours
--- proceeds (a version-2 database without its @credentials@ table
--- is corruption, never silently repaired); exactly its
--- predecessor opens WITHOUT migrating (a version-1 database that
--- already carries a @credentials@ table is refused rather than
--- adopting unknown bytes): the migration waits for the first
--- commit ('migrateV1InTxn'), so an open that a caller refuses
--- after reading leaves the version-1 bytes intact. Anything else
--- is rejected, never migrated silently. Never closes the handle
--- (owned by 'openAndInit').
-checkVersion :: S.Database -> FilePath -> [Text] -> IO (Either StoreError (S.Database, Bool))
-checkVersion db path names = do
-  eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
-  case eVer of
-    Left err -> pure (Left err)
-    Right [[S.SQLText v]]
-      | v == T.pack (show sqliteSchemaVersion) ->
-          if "credentials" `elem` names
-            then pure (Right (db, False))
-            else pure (Left (StoreCorrupt (path ++ ": schema version 2 without credentials table")))
-      | v == T.pack (show (sqliteSchemaVersion - 1)) ->
-          if "credentials" `elem` names
-            then pure (Left (StoreCorrupt (path ++ ": schema version 1 with a credentials table")))
-            else pure (Right (db, True))
-      | otherwise -> pure
-          (Left (StoreSchemaVersion sqliteSchemaVersion (T.unpack v)))
-    Right _ -> pure (Left (StoreCorrupt (path ++ ": corrupt store metadata")))
-
--- | Migrate a version-1 database to version 2 INSIDE the caller's
--- open write transaction (the first commit after a version-1
--- open): create the empty @credentials@ table (the exact
--- 'schemaStatements' text, so the migrated schema matches a fresh
--- one in @sqlite_master@) and advance the version marker. The
--- marker is re-read inside the transaction, so a migration that an
--- earlier commit already landed (an outcome the handle could not
--- confirm) is never repeated. No row is rewritten or
--- reinterpreted. A failure fails the whole transaction, which
--- rolls back with the commit's own data: the version-1 bytes stay
--- intact for a retry.
-migrateV1InTxn :: S.Database -> IO (Either StoreError ())
-migrateV1InTxn db = do
-  eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
-  case eVer of
-    Left err -> pure (Left err)
-    Right [[S.SQLText v]]
-      | v == T.pack (show sqliteSchemaVersion) -> pure (Right ())
-      | v == T.pack (show (sqliteSchemaVersion - 1)) -> do
-          eMig <- trySQLite $ do
-            S.exec db createCredentialsTable
-            S.exec db (T.concat ["UPDATE store_meta SET value = '"
-              , T.pack (show sqliteSchemaVersion), "' WHERE key = 'schema_version'"])
-          pure (either (\err -> Left (StoreIO ("schema migration 1->2 failed: " ++ show err))) Right eMig)
-      | otherwise -> pure (Left (StoreSchemaVersion sqliteSchemaVersion (T.unpack v)))
-    Right _ -> pure (Left (StoreCorrupt "corrupt store metadata"))
+      eVer <- if "store_meta" `elem` names
+        then queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
+        else pure (Right [])
+      pure $ case classifySchema path names eVer of
+        Left err -> Left err
+        Right v
+          | v == sqliteSchemaVersion -> Right db
+          | otherwise -> Left (StoreNeedsMigration v sqliteSchemaVersion)
 
 -- | The schema (mirrors @spec\/storage-schema.sql@).
 schemaStatements :: [Text]
@@ -875,15 +859,14 @@ schemaStatements =
   , "CREATE INDEX jobs_by_token ON detached_jobs(token_id)"
   , createCredentialsTable
   , "INSERT INTO store_meta(key, value) VALUES ('store_format', 'haskoki-demo-v1')"
-  , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '2')"
+  , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '3')"
   , "INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001')"
   ]
 
 -- | The @credentials@ table: one provisioned credential row per
 -- token, owned by its token (@ON DELETE CASCADE@, mirroring the
--- object and job tables). Shared by fresh schemas and the
--- version-1 migration ('migrateV1InTxn'), so both spell it
--- identically.
+-- object and job tables). Shared by fresh schemas and the explicit
+-- migration, so both spell it identically.
 createCredentialsTable :: Text
 createCredentialsTable =
   "CREATE TABLE credentials (token_id TEXT PRIMARY KEY NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
@@ -901,12 +884,12 @@ mkStore :: SQLiteConn -> Store
 mkStore conn = Store
   { storeLoadTokens = withLive conn Left loadTokens
   , storeLoadJobs = withLive conn Left loadJobs
-  , storeLoadCredentials = withLive conn Left (loadCredentialsConn conn)
+  , storeLoadCredentials = withLive conn Left (loadCredentials)
   , storeCommit = protocolDelta conn
   , storeResetToken = resetTokenConn conn
   , storeReserveJobId = reserveJobIdConn conn
   , storeClose = closeConn conn
-  , storeInspect = withLive conn Left (inspectConn conn)
+  , storeInspect = withLive conn Left inspectConn
   , storeQuarantined = readMVar (sqQuarantine conn)
   , storeReload = reloadConn conn
   , storeStats = readIORef (sqStats conn)
@@ -1397,7 +1380,7 @@ protocolLocked conn db delta0 = do
       case firstQuarantined q affected of
         Just (tid, why) -> pure (NotCommitted (StoreQuarantined tid why))
         Nothing -> do
-          eValid <- validateDelta conn db (sqLimits conn) delta
+          eValid <- validateDelta db (sqLimits conn) delta
           case eValid of
             Left err -> pure (NotCommitted err)
             Right () -> do
@@ -1442,25 +1425,14 @@ protocolLocked conn db delta0 = do
       case eBegin of
         Left err -> pure (Left (TxnRolledBack err))
         Right () -> do
-          eBody <- firstStep migratePending (runBody d)
+          eBody <- runBody d
           case eBody of
             Left err -> Left <$> endFailedTxn conn db AtBody err
             Right doomed -> do
               eCommit <- trySQLite (S.exec db "COMMIT")
               case eCommit of
                 Left err -> Left <$> endFailedTxn conn db AtCommit err
-                Right () -> do
-                  writeIORef (sqSchemaV1 conn) False
-                  pure (Right doomed)
-    -- A version-1 database migrates first, inside this same
-    -- transaction: the migration lands with the commit's data or
-    -- not at all.
-    migratePending :: IO (Either StoreError ())
-    migratePending = do
-      v1 <- readIORef (sqSchemaV1 conn)
-      if v1 then migrateV1InTxn db else pure (Right ())
-    firstStep :: IO (Either StoreError ()) -> IO (Either StoreError b) -> IO (Either StoreError b)
-    firstStep pre body = pre >>= either (pure . Left) (const body)
+                Right () -> pure (Right doomed)
     -- The observed outcome is discarded; a reload decides. Present
     -- verifies committed (every table). Anything else — a failed
     -- reload, or a reload that does not hold the whole delta —
@@ -1484,7 +1456,7 @@ protocolLocked conn db delta0 = do
           eLoaded <- loadTokens db
           eJobs <- loadJobs db
           eMeta <- loadMeta db
-          eCreds <- loadCredentialsConn conn db
+          eCreds <- loadCredentials db
           case (eLoaded, eJobs, eMeta, eCreds) of
             (Right loaded, Right jobs, Right meta, Right creds)
               | reconcileReload d loaded == ReconciledPresent
@@ -1643,11 +1615,11 @@ tokensForDelta db delta = do
 -- token references, slot uniqueness, then expected revisions
 -- against the stored revision map. Runs under the connection
 -- guard, so the validated state is the committed-against state.
-validateDelta :: SQLiteConn -> S.Database -> StoreLimits -> StoreDelta -> IO (Either StoreError ())
-validateDelta conn db limits delta = do
+validateDelta :: S.Database -> StoreLimits -> StoreDelta -> IO (Either StoreError ())
+validateDelta db limits delta = do
   eLoaded <- loadTokens db
   eJobs <- loadJobs db
-  eCreds <- loadCredentialsConn conn db
+  eCreds <- loadCredentials db
   case (eLoaded, eJobs, eCreds) of
     (Left err, _, _) -> pure (Left err)
     (_, Left err, _) -> pure (Left err)
@@ -1746,7 +1718,7 @@ reloadConn conn = withConn conn (pure (Left storeClosed)) $ \db -> do
     Left err -> pure (Left err)
     Right () -> do
       eLoaded <- loadTokens db
-      eCreds <- loadCredentialsConn conn db
+      eCreds <- loadCredentials db
       case (eLoaded, eCreds) of
         (Right _, Right _) ->
           modifyMVar_ (sqQuarantine conn) (\_ -> pure []) >> pure (Right ())
@@ -1880,24 +1852,6 @@ loadCredentials db = do
     Left err -> pure (Left err)
     Right rows -> pure (mapM decodeCredentialRow rows)
 
--- | 'loadCredentials' through the handle: a version-1 database
--- (opened without writing, migration pending) has no
--- @credentials@ table and therefore no credential rows. The table
--- itself decides, not the flag alone, so a migration that landed
--- under an unconfirmed commit outcome still reads its rows.
-loadCredentialsConn :: SQLiteConn -> S.Database -> IO (Either StoreError [CredentialRecord])
-loadCredentialsConn conn db = do
-  v1 <- readIORef (sqSchemaV1 conn)
-  if not v1
-    then loadCredentials db
-    else do
-      eTable <- queryRows db
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'credentials'" []
-      case eTable of
-        Left err -> pure (Left err)
-        Right [] -> pure (Right [])
-        Right _ -> loadCredentials db
-
 -- | Decode one credential row: the document first, then the
 -- redundant key column must agree with it (any mismatch is
 -- corruption).
@@ -1930,11 +1884,11 @@ loadMeta db = do
 -- then re-encode, so inspection always shows canonical form). A
 -- failed load reports the error instead of a silent empty
 -- list, so corruption stays diagnosed.
-inspectConn :: SQLiteConn -> S.Database -> IO (Either StoreError [StoredDoc])
-inspectConn conn db = do
+inspectConn :: S.Database -> IO (Either StoreError [StoredDoc])
+inspectConn db = do
   eLoaded <- loadTokens db
   eJobs <- loadJobs db
-  eCreds <- loadCredentialsConn conn db
+  eCreds <- loadCredentials db
   case (eLoaded, eJobs, eCreds) of
     (Right toks, Right jobs, Right creds) -> pure $ Right $
       [ StoredDoc "tokens" (show (unTokenId (trId t))) (encodeTokenRecord t)
@@ -2212,3 +2166,416 @@ decodeBlobW64 bs
   | otherwise = Just (BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0 bs)
 
 -- Identifier projections ('unTokenId' et al.) come from 'Haskoki.Types'.
+
+-- ---------------------------------------------------------------
+-- Read-only snapshot and owner probe
+
+-- | Device, inode, size and mtime (seconds) of a file.
+data FileIdentity = FileIdentity
+  { fiDevice :: !Integer, fiInode :: !Integer, fiSize :: !Integer, fiMtime :: !Integer }
+  deriving (Eq, Show)
+
+-- | What a read-only look at a store found. Credential rows are
+-- reduced to their token ids: no PIN byte leaves this function.
+data StoreSnapshot = StoreSnapshot
+  { snapSchema :: !Int                 -- 1, 2 or 3
+  , snapTokens :: ![TokenRecord]       -- token-id ascending
+  , snapObjectCount :: !Int
+  , snapJobCount :: !Int
+  , snapCredentialTokens :: ![TokenId] -- ascending; [] for schema 1
+  , snapMeta :: ![(String, String)]    -- sorted
+  , snapFile :: !FileIdentity
+  } deriving (Eq, Show)
+
+-- | Whether some owner holds the store.
+data OwnerState
+  = OwnerAbsent        -- ^ no sidecar lock; kernel lock free
+  | OwnerStale !Int    -- ^ sidecar names a dead pid; kernel lock free (left in place)
+  | OwnerLive !String  -- ^ live, unknowable or kernel-held owner (fail closed): the reason
+  deriving (Eq, Show)
+
+fileIdentity :: FileStatus -> FileIdentity
+fileIdentity st = FileIdentity
+  (toInteger (deviceID st)) (toInteger (fileID st)) (toInteger (fileSize st))
+  (truncate (toRational (modificationTime st)))
+
+-- | What the rollback journal beside a store is: missing (or empty,
+-- which SQLite ignores, as today), cold (SQLite treats it as not
+-- hot), hot (an interrupted write SQLite would roll back), or
+-- unknown (anything else: fail closed).
+data JournalClass = JournalAbsent | JournalCold | JournalHot | JournalUnknown
+  deriving (Eq, Show)
+
+-- | SQLite's rollback-journal magic, the first 8 header bytes of a
+-- hot journal: d9d505f9 20a163d7.
+journalMagic :: ByteString
+journalMagic = BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]
+
+-- | Classify the rollback journal beside a store by its size and its
+-- first 8 bytes: hot carries the journal magic, cold is all zero,
+-- anything else -- including a short file or an unreadable one -- is
+-- unknown and fails closed. An empty journal reads as absent, as
+-- SQLite ignores it.
+classifyJournal :: FilePath -> IO JournalClass
+classifyJournal path = do
+  e <- tryIOError (getSymbolicLinkStatus journal)
+  case e of
+    Left _ -> pure JournalAbsent
+    Right st
+      | fileSize st <= 0 -> pure JournalAbsent
+      | otherwise -> do
+          eHead <- tryIOError (readFirst8 journal)
+          pure (case eHead of
+            Right h | h == journalMagic -> JournalHot
+            Right h | h == BS.replicate 8 0 -> JournalCold
+            _ -> JournalUnknown)
+  where
+    journal = path ++ "-journal"
+
+-- | The first 8 bytes of a file (fewer if it is short), read through
+-- a close-on-exec descriptor.
+readFirst8 :: FilePath -> IO ByteString
+readFirst8 p = bracket open hClose (`BS.hGet` 8)
+  where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
+
+-- | A sibling the rollback-journal store never writes itself: a
+-- non-empty @-wal@ or @-shm@ file can only come from foreign tooling
+-- and refuses the snapshot like a hot journal. Zero-byte files are
+-- ignored, as zero-byte journals are.
+foreignSidecar :: FilePath -> IO (Maybe FilePath)
+foreignSidecar path = do
+  w <- nonEmpty (path ++ "-wal")
+  s <- nonEmpty (path ++ "-shm")
+  pure (case (w, s) of
+    (Just p, _) -> Just p
+    (_, Just p) -> Just p
+    _ -> Nothing)
+  where
+    nonEmpty p = do
+      e <- tryIOError (getSymbolicLinkStatus p)
+      pure (case e of
+        Right st | fileSize st > 0 -> Just p
+        _ -> Nothing)
+
+-- | A journal or foreign sibling that refuses the snapshot: a hot or
+-- unknown journal, a cold journal (refused distinctly), else a
+-- non-empty @-wal@ or @-shm@ file.
+journalBlocked :: FilePath -> IO (Maybe StoreError)
+journalBlocked path = do
+  cls <- classifyJournal path
+  case cls of
+    JournalHot -> pure (Just (StoreJournalPresent journal))
+    JournalUnknown -> pure (Just (StoreJournalPresent journal))
+    JournalCold -> pure (Just (StoreJournalCold journal))
+    JournalAbsent -> maybe Nothing (Just . StoreJournalPresent) <$> foreignSidecar path
+  where
+    journal = path ++ "-journal"
+
+-- | Read a store WITHOUT writing it: no ownership, no sidecar, a
+-- read-only connection (never creates the file, never recovers a
+-- journal, never migrates). Decodes every record the serving open
+-- decodes, so a corrupt file fails here too; keeps only ids and
+-- counts. Refuses a hot or unknown journal, a cold journal
+-- (distinctly), a foreign -wal/-shm sibling, and a file that changed
+-- while read.
+readStoreSnapshot :: FilePath -> IO (Either StoreError StoreSnapshot)
+readStoreSnapshot path = do
+  eSt0 <- tryIOError (getFileStatus path)
+  case eSt0 of
+    Left _ -> pure (Left (StoreIO ("no store file at " ++ path)))
+    Right st0
+      | not (isRegularFile st0) -> pure (Left (StoreIO (path ++ ": not a regular file")))
+      | otherwise -> do
+          blocked <- journalBlocked path
+          case blocked of
+            Just err -> pure (Left err)
+            Nothing -> do
+              eDb <- trySQLite (S.open2 (T.pack path) [S.SQLOpenReadOnly] S.SQLVFSDefault)
+              case eDb of
+                Left err -> pure (Left err)
+                Right db -> do
+                  r <- snapshotDb db `finally` closeQuiet db
+                  eSt1 <- tryIOError (getFileStatus path)
+                  blocked1 <- journalBlocked path
+                  pure $ case (r, eSt1, blocked1) of
+                    (Left err, _, _) -> Left err
+                    (_, Left _, _) -> Left (StoreIO (path ++ ": vanished while read"))
+                    (Right _, Right _, Just err) -> Left err
+                    (Right mk, Right st1, Nothing)
+                      | fileIdentity st0 /= fileIdentity st1 ->
+                          Left (StoreIO (path ++ ": changed while read; retry with the owner stopped"))
+                      | otherwise -> Right (mk (fileIdentity st1))
+  where
+    snapshotDb db = do
+      eTables <- queryRows db "SELECT name FROM sqlite_master WHERE type = 'table'" []
+      case eTables of
+        Left err -> pure (Left err)
+        Right rows -> do
+          let names = [t | [S.SQLText t] <- rows]
+          eVer <- if "store_meta" `elem` names
+            then queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
+            else pure (Right [])
+          case classifySchema path names eVer of
+            Left err -> pure (Left err)
+            Right v -> do
+              eToks <- loadTokens db
+              eJobs <- loadJobs db
+              eCreds <- if v >= 2 then loadCredentials db else pure (Right [])
+              eMeta <- loadMeta db
+              pure $ do
+                toks <- eToks
+                jobs <- eJobs
+                creds <- eCreds
+                meta <- eMeta
+                Right (StoreSnapshot v (map fst toks) (sum (map (length . snd) toks))
+                  (length jobs) (sort (map crToken creds)) (sort meta))
+
+-- | Whether some owner holds the store, without taking anything: the
+-- sidecar pid ('pidLiveness', fail closed on unknowable), then a
+-- shared non-blocking kernel lock on a read-only database fd,
+-- released at once. Never creates, removes or rewrites a lock.
+probeOwner :: FilePath -> IO OwnerState
+probeOwner path = do
+  procRoot <- procRootFromEnv
+  me <- getProcessID
+  let lockPath = path ++ ".lock"
+  eLock <- tryIOError (getSymbolicLinkStatus lockPath)
+  sidecar <- case eLock of
+    Left e | isDoesNotExistError e -> pure (Right Nothing)
+           | otherwise -> pure (Left "the lock file cannot be examined")
+    Right _ -> do
+      eContent <- tryIOError (readFileCloexec lockPath)
+      case eContent of
+        Left _ -> pure (Left "the lock file is unreadable")
+        Right content -> case reads (BC8.unpack content) of
+          [(n, _) :: (Int, String)]
+            | n == fromIntegral me -> pure (Left "this process holds the store")
+            | otherwise -> do
+                live <- pidLiveness procRoot n
+                pure $ case live of
+                  PidAlive -> Left ("pid " ++ show n ++ " holds the lock")
+                  PidUnknown -> Left ("pid " ++ show n ++ " holds the lock; its liveness is unknowable")
+                  PidDead -> Right (Just n)
+          _ -> pure (Left "the lock file names no pid")
+  case sidecar of
+    Left why -> pure (OwnerLive why)
+    Right stale -> do
+      held <- kernelLockHeld path
+      pure $ case (held, stale) of
+        (Left why, _) -> OwnerLive why
+        (Right True, _) -> OwnerLive "the database kernel lock is held"
+        (Right False, Nothing) -> OwnerAbsent
+        (Right False, Just n) -> OwnerStale n
+
+-- | Try a SHARED non-blocking flock on a read-only fd and drop it at
+-- once. A missing file has no holder; any other failure to probe is a
+-- 'Left' reason the caller treats as live (fail closed), never as a
+-- held lock. A lock that reads held is retried briefly (five attempts
+-- over 20 ms): a forked child that has not exec'd yet keeps an
+-- inherited copy past the owner's close, and that transient holder
+-- must not refuse the probe. A truly live owner stays held through
+-- every attempt. The fd is closed on every path, including an
+-- asynchronous exception during the waits (the waits stay
+-- interruptible under the mask).
+kernelLockHeld :: FilePath -> IO (Either String Bool)
+kernelLockHeld path = mask_ $ do
+  eFd <- tryIOError (openFd path ReadOnly guardFlags)
+  case eFd of
+    Left e
+      | isDoesNotExistError e -> pure (Right False)
+      | otherwise -> pure (Left "the database cannot be opened to probe its lock")
+    Right fd -> do
+      held <- attempt fd 0 `finally` closeQuietFd fd
+      pure (Right held)
+  where
+    attempt :: Fd -> Int -> IO Bool
+    attempt fd n = do
+      ok <- (== 0) <$> c_flock (fromIntegral fd) (lockSh .|. lockNb)
+      if ok || n >= 4 then pure (not ok) else threadDelay 5000 >> attempt fd (n + 1)
+
+lockSh :: CInt
+lockSh = 1 -- LOCK_SH: shared
+
+-- ---------------------------------------------------------------------------
+-- Owned migration
+-- ---------------------------------------------------------------------------
+
+-- | An existing store held with full single-writer ownership: the
+-- sidecar lock plus the database kernel guard, exactly as the
+-- serving open takes them, without opening the serving store.
+data OwnedStoreFile = OwnedStoreFile { osfPath :: !FilePath, osfDbFd :: !Fd }
+
+ownedPath :: OwnedStoreFile -> FilePath
+ownedPath = osfPath
+
+-- | What a migration does. 'smFrom' is the schema version the plan
+-- saw (1, 2 or 3; 3 only freezes rows and leaves the marker alone).
+data SQLiteMigration = SQLiteMigration
+  { smFrom :: !Int
+  , smFreeze :: ![CredentialRecord]
+  } deriving (Eq, Show)
+
+-- | Test seams: right after BEGIN IMMEDIATE, and after the body but
+-- before COMMIT.
+data MigrationHooks = MigrationHooks
+  { mgAfterBegin :: S.Database -> IO ()
+  , mgBeforeCommit :: S.Database -> IO ()
+  }
+
+noMigrationHooks :: MigrationHooks
+noMigrationHooks = MigrationHooks (\_ -> pure ()) (\_ -> pure ())
+
+-- | Hold full single-writer ownership of an EXISTING store, run the
+-- action, and release on every path. Never creates the database; a
+-- live owner is refused ('StoreSecondWriter'). The sidecar is the
+-- only file created, and it is removed on release.
+withOwnedStoreFile :: FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
+withOwnedStoreFile path act = mask $ \restore -> do
+  exists <- fileExist path
+  if not exists then pure (Left (StoreIO ("no store file at " ++ path))) else do
+    procRoot <- procRootFromEnv
+    let lockPath = path ++ ".lock"
+    eOwn <- takeOwnership path lockPath procRoot 3
+    case eOwn of
+      Left err -> pure (Left err)
+      Right lockFd -> do
+        eFd <- tryIOError (openFd path ReadOnly guardFlags)
+          `onException` releaseQuiet lockFd lockPath
+        case eFd of
+          Left e
+            | isDoesNotExistError e -> releaseQuiet lockFd lockPath
+                >> pure (Left (StoreIO ("store vanished while taking ownership: " ++ path)))
+            | otherwise -> releaseQuiet lockFd lockPath
+                >> pure (Left (StoreIO ("store database cannot be opened: " ++ path)))
+          Right fd0 -> do
+            eGuard <- takeDbGuard path fd0 `onException` releaseQuiet lockFd lockPath
+            case eGuard of
+              Left err -> releaseQuiet lockFd lockPath >> pure (Left err)
+              Right dbFd -> do
+                let release = closeQuietFd dbFd >> releaseQuiet lockFd lockPath
+                r <- restore (act (OwnedStoreFile path dbFd)) `onException` release
+                release
+                pure (Right r)
+
+-- | Remove a cold rollback journal, only when every guard holds: the
+-- owner probe passes, this call holds single-writer ownership (the
+-- sidecar plus the database kernel guard), a plain connection takes a
+-- SQLite RESERVED lock (@BEGIN IMMEDIATE@ fails while any other
+-- connection writes), and the re-read journal is still cold. Removing
+-- it cannot change what SQLite reads: the zeroed magic already makes
+-- SQLite treat the journal as not hot. Anything else refuses, fail
+-- closed: a live owner reports live, a busy database or a changed
+-- journal reports the cold journal again.
+clearColdJournal :: FilePath -> IO (Either StoreError ())
+clearColdJournal path = do
+  owner <- probeOwner path
+  case owner of
+    OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
+    _ -> do
+      owned <- withOwnedStoreFile path clearOwned
+      pure (either Left id owned)
+  where
+    journal = path ++ "-journal"
+    clearOwned _owned = do
+      eDb <- trySQLite (S.open (T.pack path))
+      case eDb of
+        Left err -> pure (Left err)
+        Right db -> do
+          r <- clearWith db `onException` (rollbackQuiet db >> closeQuiet db)
+          closeQuiet db
+          pure r
+    clearWith db = do
+      eBegin <- tryBegin db
+      case eBegin of
+        Left err
+          | S.sqlError err == S.ErrorBusy -> pure (Left (StoreJournalCold journal))
+          | S.sqlError err == S.ErrorFull -> pure (Left (StoreFull (show err)))
+          | otherwise -> pure (Left (StoreIO (show err)))
+        Right () -> do
+          cls <- classifyJournal path
+          case cls of
+            JournalCold -> do
+              eRm <- tryIOError (removeLink journal)
+              case eRm of
+                Left e -> do
+                  rollbackQuiet db
+                  pure (Left (StoreIO ("cannot remove the cold journal " ++ journal ++ ": " ++ show e)))
+                Right () -> do
+                  eSync <- tryIOError (syncParentDir journal)
+                  eCommit <- trySQLite (S.exec db "COMMIT")
+                  pure (case (eCommit, eSync) of
+                    (Left err, _) -> Left err
+                    (Right (), Left e) -> Left (StoreIO ("cannot sync the store directory: " ++ show e))
+                    (Right (), Right ()) -> Right ())
+            _ -> do
+              rollbackQuiet db
+              pure (Left (StoreJournalCold journal))
+    tryBegin :: S.Database -> IO (Either S.SQLError ())
+    tryBegin db = try (S.exec db "BEGIN IMMEDIATE")
+
+-- | fsync the directory holding a path, so an unlink in it is durable.
+syncParentDir :: FilePath -> IO ()
+syncParentDir p = bracket (openFd (parentDir p) ReadOnly guardFlags) closeFd fileSynchronise
+  where
+    parentDir q = case dropWhile (/= '/') (reverse q) of
+      [] -> "."
+      [_] -> "/"
+      (_ : rest) -> reverse rest
+
+-- | Migrate an owned store to 'sqliteSchemaVersion' in ONE
+-- transaction: re-read the marker (it must still be 'smFrom'),
+-- create the credentials table for version 1, INSERT every frozen
+-- row (never replacing: an existing row aborts everything), and
+-- advance the marker unless the store is already current. Any
+-- failure rolls back and leaves the file as it was; an exception
+-- rolls back, closes and re-throws.
+migrateOwned :: OwnedStoreFile -> SQLiteMigration -> MigrationHooks -> IO (Either StoreError ())
+migrateOwned owned mig hooks = mask $ \restore -> do
+  let path = osfPath owned
+  same <- sameFile (osfDbFd owned) path
+  if not same then pure (Left (StoreIO ("store database replaced while owned: " ++ path))) else do
+    eDb <- trySQLite (S.open (T.pack path))
+    case eDb of
+      Left err -> pure (Left err)
+      Right db -> do
+        r <- restore (txn db path) `onException` (rollbackQuiet db >> closeQuiet db)
+        closeQuiet db
+        pure r
+  where
+    txn db path = do
+      eCfg <- configure db
+      case eCfg of
+        Left err -> pure (Left err)
+        Right () -> do
+          eBegin <- trySQLite (S.exec db "BEGIN IMMEDIATE")
+          case eBegin of
+            Left err -> pure (Left err)
+            Right () -> do
+              mgAfterBegin hooks db
+              eBody <- body db path
+              case eBody of
+                Left err -> rollbackQuiet db >> pure (Left err)
+                Right () -> do
+                  mgBeforeCommit hooks db
+                  eCommit <- trySQLite (S.exec db "COMMIT")
+                  case eCommit of
+                    Left err -> rollbackQuiet db >> pure (Left err)
+                    Right () -> pure (Right ())
+    body db path = do
+      eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
+      case eVer of
+        Left err -> pure (Left err)
+        Right [[S.SQLText v]] | v == T.pack (show (smFrom mig)) -> firstFailure
+          ( [trySQLite (S.exec db createCredentialsTable) | smFrom mig == 1]
+            ++ map (insertCredential db) (smFreeze mig)
+            ++ [advance db | smFrom mig /= sqliteSchemaVersion] )
+        Right _ -> pure (Left (StoreRevisionConflict (path ++ ": schema marker moved under ownership")))
+    insertCredential db c = execParams db
+      "INSERT INTO credentials (token_id, record_json, format_version) VALUES (?, ?, 1)"
+      [ S.SQLText (T.pack (encodeHex16 (unTokenId (crToken c))))
+      , S.SQLText (T.pack (encodeCredentialRecord c)) ]
+    advance db = do
+      e <- execParams db "UPDATE store_meta SET value = ? WHERE key = 'schema_version' AND value = ?"
+        [S.SQLText (T.pack (show sqliteSchemaVersion)), S.SQLText (T.pack (show (smFrom mig)))]
+      n <- S.changes db
+      pure (e >> if n == 1 then Right () else Left (StoreRevisionConflict "schema marker not advanced"))

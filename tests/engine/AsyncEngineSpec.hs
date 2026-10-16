@@ -33,7 +33,7 @@ import Foreign.StablePtr
   , freeStablePtr
   )
 import Foreign.Storable (peek, poke, peekByteOff, pokeByteOff)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, removePathForcibly)
 import System.Mem.StableName (makeStableName)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
@@ -1044,6 +1044,9 @@ stdAsyncConfig envLock tag sqlite = withEnvLock envLock $ do
   let dir = "dist-release-evidence/async-routing/task-3/fixtures"
       path = dir ++ "/" ++ tag ++ ".toml"
   createDirectoryIfMissing True dir
+  -- A store left by an earlier run may carry an older schema, which
+  -- the open now refuses: each configuration starts from a fresh file.
+  when sqlite $ mapM_ (\suffix -> removePathForcibly (dir ++ "/" ++ tag ++ ".db" ++ suffix)) ["", ".lock", "-journal"]
   writeFile path $ unlines $
     [ "schema_version = 1"
     , "profile = \"demo-maximal\""

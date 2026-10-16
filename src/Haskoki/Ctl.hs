@@ -15,6 +15,12 @@ Every command owns its instance or works offline:
   each step's result is checked centrally against its expectation);
 * @store inspect@ reads a SQLite store offline (SELECT-only under
   @query_only@; never takes the ownership lock);
+* @store check@ plans an open of a store read-only and reports what
+  it would need (nothing written; @--async-home@ plans a store the
+  async open created);
+* @store migrate@ upgrades a store from an earlier release, after a
+  verified backup (@--async-home@ migrates a store the async open
+  created);
 * @store reset@ REFUSES a live (lock-held) store and resets an
   offline one only with @--confirm-demo-reset@.
 
@@ -39,6 +45,7 @@ import System.IO.Error (tryIOError)
 import System.Posix.Files (fileExist, removeLink)
 import Text.Read (readMaybe)
 
+import Haskoki.Ctl.Store (storeCheckCommand, storeMigrateCommand)
 import Haskoki.Runtime.Async (newAsyncTable)
 import Haskoki.Runtime.Config
 import Haskoki.Runtime.Control
@@ -95,10 +102,15 @@ ctlHelp = unlines
   , "  haskoki-ctl scenario run --config FILE --scenario FILE"
   , "  haskoki-ctl store inspect --path FILE"
   , "  haskoki-ctl store reset --path FILE --confirm-demo-reset"
+  , "  haskoki-ctl store check --path FILE --config FILE [--async-home]"
+  , "  haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR [--async-home]"
   , ""
   , "Model: capabilities and scenario run own their module instance;"
-  , "store commands are offline and honor the database-ownership lock"
-  , "(reset refuses a live store). There is no remote administration:"
+  , "store commands are offline: inspect and check never write; reset and"
+  , "migrate need the store owner stopped, and migrate writes a verified"
+  , "backup and a receipt first. --async-home makes check and"
+  , "migrate use the async home catalog (a store created through"
+  , "the async open). There is no remote administration:"
   , "this tool cannot mutate another process's loaded module."
   ]
 
@@ -141,8 +153,13 @@ runCtl ("store" : "reset" : rest) = do
   case flag "--path" rest of
     Nothing -> pure (CtlExit 2 "" "store reset needs --path FILE\n")
     Just path -> resetStore path ("--confirm-demo-reset" `elem` rest)
+runCtl ("store" : "check" : rest) = toCtlExit <$> storeCheckCommand rest
+runCtl ("store" : "migrate" : rest) = toCtlExit <$> storeMigrateCommand rest
 runCtl [] = pure (CtlExit 2 "" ctlHelp)
 runCtl unknown = pure (CtlExit 2 "" ("unknown command: " ++ unwords unknown ++ "\n" ++ ctlHelp))
+
+toCtlExit :: (Int, String, String) -> CtlExit
+toCtlExit (code, out, err) = CtlExit code out err
 
 -- | @--flag VALUE@ lookup.
 flag :: String -> [String] -> Maybe String

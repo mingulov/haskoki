@@ -148,7 +148,9 @@ presence.
   never stored; handles are minted by the live model on reload.
   The store path is explicit in config (SQLite without a path
   refuses the open) and single-writer (a second concurrent open
-  refuses `C_Initialize`).
+  refuses `C_Initialize`). Stores from v0.4 and earlier need one
+  `haskoki-ctl store migrate` (schema 3); see docs/operations-notes.md,
+  Upgrade, backup and recovery.
 - PINs start at their configured values (`haskoki-demo` user `1234`,
   SO `5678`; catalog PINs come from the TOML file in plaintext) and
   move in-band after that (`C_InitToken` / `C_InitPIN` / `C_SetPIN`,

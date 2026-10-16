@@ -8,6 +8,7 @@ import Test.Tasty.Runners (NumThreads (..))
 
 import qualified CommitSpec
 import qualified MultiSessionSpec
+import qualified PreflightSpec
 import qualified StoreCtlSpec
 import qualified StoreSpec
 
@@ -29,6 +30,8 @@ main = do
   args <- getArgs
   case args of
     ["--holder", path, doneFile, readyFile] -> StoreSpec.holderMain path doneFile readyFile
+    ["--migrate-child", store, cfg, backups, ready] -> PreflightSpec.migrateChildMain store cfg backups ready
+    ["--migrate-child-small", store, cfg, backups, ready] -> PreflightSpec.migrateChildSmallMain store cfg backups ready
     _ -> do
       -- Never above the capability count: tasty raises the RTS
       -- capabilities to match NumThreads, which would turn a -N1 run
@@ -38,5 +41,6 @@ main = do
         [ StoreSpec.spec
         , CommitSpec.spec
         , StoreCtlSpec.spec
+        , PreflightSpec.spec
         , MultiSessionSpec.spec
         ]

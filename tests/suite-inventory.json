@@ -639,8 +639,10 @@
       "modules": [
         "CommitSpec",
         "MultiSessionSpec",
+        "PreflightSpec",
         "SQLiteSeams",
         "StoreCtlSpec",
+        "StoreFixtures",
         "StoreSpec"
       ],
       "required_groups": [
@@ -672,10 +674,14 @@
         "MultiSessionSpec": [
           "Multi-session store"
         ],
+        "PreflightSpec": [
+          "Store preflight"
+        ],
         "SQLiteSeams": [],
         "StoreCtlSpec": [
           "Store commands"
         ],
+        "StoreFixtures": [],
         "StoreSpec": [
           "store contract"
         ]

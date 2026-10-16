@@ -448,6 +448,18 @@ data StoreError
   | StoreLimit !String
   | StoreFull !String
   | StoreRevisionConflict !String
+  | StoreNeedsMigration !Int !Int
+    -- ^ Found and target schema: an older store that only the
+    -- explicit @haskoki-ctl store migrate@ upgrades. The open wrote
+    -- nothing.
+  | StoreJournalPresent !FilePath
+    -- ^ An interrupted write left this rollback journal; read-only
+    -- tools refuse rather than recover it (see the recovery guide).
+  | StoreJournalCold !FilePath
+    -- ^ An interrupted migration left this rollback journal cold
+    -- (SQLite itself treats it as not hot, so the database already
+    -- reads as committed state). The check refuses it distinctly;
+    -- only the explicit migration clears it, under exclusive locks.
   deriving (Eq, Show)
 
 -- | Store failures throw as exceptions on the paths with no
@@ -835,8 +847,8 @@ checkSlotUnique currentToks delta =
 -- stored tokens at open. Matches proceed; new identities seed;
 -- every ambiguous identity-changing reconfiguration REFUSES with
 -- an 'IdentityRefusal' carrying an actionable message
--- ('renderIdentityRefusal'). There are no automatic migrations in
--- this phase: a reorder, an insertion that shifts slots, a
+-- ('renderIdentityRefusal'). There are no automatic migrations:
+-- a reorder, an insertion that shifts slots, a
 -- removal, or a label change reopens refused, with the durable
 -- bytes untouched, until the operator either restores the
 -- matching catalog or performs the explicit slot move
@@ -864,9 +876,11 @@ checkSlotUnique currentToks delta =
 --   fields: 'TokenRecord' already separates identity
 --   (@token_id@) from assignment (@slot@). Unknown format
 --   versions keep refusing on decode, as before.
--- * The SQLite schema keeps @schema_version = 1@ with no
---   migration: a wrong version refuses at open without writing
---   a byte, as before.
+-- * The SQLite schema marker is @schema_version = 3@: versions 1
+--   and 2 refuse at open as migration-required without writing a
+--   byte (only the explicit @store migrate@ upgrades them), and
+--   any other version refuses as unsupported. The durable
+--   documents keep @format_version = 1@.
 -- * An interrupted multi-step move sequence reopens refused:
 --   the mid-state matches neither endpoint, the reconciler
 --   names the first drifted token, and the operator completes
@@ -987,23 +1001,25 @@ renderIdentityRefusal r = case r of
       ++ ") has no catalog entry: the durable token is authoritative and "
       ++ "is never pruned automatically, so its objects and auth state "
       ++ "stay exactly as stored. Restore its [tokens] entry (with its "
-      ++ "pinned token_ids value) and reopen; removal-by-config is not "
-      ++ "supported in this phase."
+      ++ "pinned token_ids value) and reopen; "
+      ++ "a token cannot be removed by editing the catalog."
   RefuseLabelChanged tid slot durableLabel desiredLabel ->
     "stored token " ++ show tid ++ " at " ++ show slot ++ " is labeled \""
       ++ durableLabel ++ "\" but the catalog says \"" ++ desiredLabel
       ++ "\": the durable label is authoritative and labels never "
       ++ "identify a token, so the catalog is not renamed silently. "
-      ++ "Restore the durable label in [tokens] and reopen; relabeling "
-      ++ "is not supported in this phase."
+      ++ "Restore the durable label in [tokens] and reopen. "
+      ++ "There is no relabel command; an in-band C_InitToken relabel "
+      ++ "changes the durable label, so update the catalog to match."
   RefuseSlotChanged tid durableSlot desiredSlot label ->
     "stored token " ++ show tid ++ " (\"" ++ label ++ "\") sits at "
       ++ show durableSlot ++ " but the catalog seats it at " ++ show desiredSlot
       ++ ": slot assignment is separate from token identity and never "
       ++ "moves automatically, so the wrong credential cannot silently "
       ++ "reach this token's objects. Either restore the durable slot "
-      ++ "in [tokens], or move the token explicitly (planSlotMoves, "
-      ++ "committed before reopening) and then reopen with the new layout."
+      ++ "in [tokens], or move the token with the Haskell library "
+      ++ "operation planSlotMoves (committed before reopening; there is "
+      ++ "no installed command for it) and then reopen with the new layout."
 
 -- | Why an explicit slot move cannot run. Every constructor
 -- renders through 'renderSlotMoveRefusal'.

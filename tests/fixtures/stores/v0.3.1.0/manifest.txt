@@ -1,0 +1,20 @@
+fixture-format: 1
+release-tag: v0.3.1.0
+bundle-asset: haskoki-0.3.1.0-linux-x86_64.tar.gz
+bundle-sha256: 8e77b8fdb15b68b5e0a42a63798fc6ce30a003e0163fce34728bee754aa107fa
+libhaskoki-sha256: 387aa40500dccd8c12fd043ef64a520587634447236635b25ccc659a4cbfef27
+haskoki-ctl-sha256: e1340cf16f62ffd523493077c0e94eceab394333597f8b7b06381bf635619e9c
+toolchain-record-sha256: ce6b6a63c144451fe0ea703dc868bc4118f12a8d82c3aa5a550611c79b3b21df
+config-template-sha256: a1c9f610ad97a1e3a9f851ba8ac59cbc8ae884c11f86622994586ce7a4c319c1
+generator-sha256: a1c7e3af769099c5bdd389215f4bc42a38901875abbd74cdb0d246d71c111732
+opensc-version: 0.27.0~rc1-1
+python-sqlite: 3.14.7 sqlite 3.53.1
+host: Linux 7.0.0-38-generic x86_64
+generated-utc: 2026-10-16T01:45:10Z
+store-sha256: 4c89745ac3a7cbfa5b65bca127e27144533cc90943e26ad9458882a2e39c563b
+sidecar-lock-after-exit: none
+schema-version: 1
+tokens: 0000000000000001 0000000000000002
+credentials: none
+objects: 2
+pins: so 58213946 69324057; user 12873465 23984576
