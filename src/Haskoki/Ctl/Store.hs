@@ -21,6 +21,7 @@ import Data.List (isPrefixOf, stripPrefix)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import qualified Database.SQLite3 as S
+import System.IO (hFlush, stdout)
 
 import Haskoki.Runtime.Catalog (asyncHomeConfig)
 import Haskoki.Runtime.Config (Config, ConfigError (..), loadConfigFile)
@@ -222,11 +223,22 @@ renderCheckUnexpectedFailure ex =
 
 -- | Run the selected migration over injected hooks. Every outcome
 -- after a cold-journal clear carries the clearing line on stdout
--- (a migrated run already carries it in its receipt).
+-- (a migrated run already carries it in its receipt). The verified
+-- backup's path and SHA-256 are printed to stdout the moment
+-- verification passes, before the transaction begins, and flushed,
+-- so a killed run still leaves its digest in the operator's log
+-- (the receipt repeats both lines on success).
 migrateSelectedWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Int, String, String)
 migrateSelectedWith hooks0 path cfg dir = do
   clearedRef <- newIORef False
-  let hooks = hooks0 { mhOnColdClear = mhOnColdClear hooks0 >> writeIORef clearedRef True }
+  let hooks = hooks0
+        { mhOnColdClear = mhOnColdClear hooks0 >> writeIORef clearedRef True
+        , mhOnBackupVerified = \bak n sha -> do
+            mhOnBackupVerified hooks0 bak n sha
+            putStrLn ("backup: " ++ bak)
+            putStrLn ("backup-sha256: " ++ sha)
+            hFlush stdout
+        }
       onInt e = do
         cleared <- readIORef clearedRef
         let coldLine = if cleared then "cold-journal-removed: yes\n" else ""

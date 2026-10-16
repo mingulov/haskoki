@@ -278,6 +278,11 @@ data MigrateHooks = MigrateHooks
     -- vanished), so every outcome after a clear reports it
   , mhAfterBackup :: IO ()
     -- ^ after the verified backup, before the transaction
+  , mhOnBackupVerified :: FilePath -> Int -> String -> IO ()
+    -- ^ with the backup path, byte count and SHA-256 hex the moment
+    -- verification passes, before the transaction begins: the
+    -- pre-BEGIN record, so a backup outlives a killed run with its
+    -- digest already reported
   , mhClock :: IO Integer
     -- ^ epoch seconds (default: 'epochTime'), read twice: once for the
     -- backup name and 'mrEpoch', once at completion for 'mrCompleted'
@@ -298,6 +303,7 @@ noMigrateHooks = MigrateHooks
   { mhAfterPlan = pure ()
   , mhOnColdClear = pure ()
   , mhAfterBackup = pure ()
+  , mhOnBackupVerified = \_ _ _ -> pure ()
   , mhClock = truncate . toRational <$> epochTime
   , mhDigest = sha256Hex
   , mhAfterCreate = \_ -> pure ()
@@ -422,6 +428,7 @@ migrateResolved hooks path cfg backupDir = do
         Right () -> do
           now <- mhClock hooks
           writeVerifiedBackup hooks path backupDir (sopSchema plan) now snap >>? \(bak, nBytes, sha) -> do
+            mhOnBackupVerified hooks bak nBytes sha
             mhAfterBackup hooks
             eTx <- migrateOwned o (SQLiteMigration (sopSchema plan) freeze) (mhSQLite hooks)
             case eTx of
@@ -645,7 +652,10 @@ isLinkUnsupported e = case ioe_errno e of
 -- | Hash, then copy the owned store into the first free candidate
 -- name, then verify by byte readback and by a read-only snapshot
 -- equal to the store's (file identity aside). A hashing failure
--- refuses before any file exists.
+-- refuses before any file exists. A backup that fails verification
+-- is removed again (best effort, directory synced), never left for
+-- a later restore to trust: only our own O_EXCL create can be at
+-- this path.
 writeVerifiedBackup :: MigrateHooks -> FilePath -> FilePath -> Int -> Integer -> StoreSnapshot
                     -> IO (Either MigrateError (FilePath, Int, String))
 writeVerifiedBackup hooks store dir from now snap =
@@ -654,12 +664,16 @@ writeVerifiedBackup hooks store dir from now snap =
   pickAndWrite bytes candidates >>? \bak ->
   readOrFail ("cannot read back the backup " ++ bak) bak >>? \back -> do
     eSnap <- readStoreSnapshot bak
-    pure $ case eSnap of
-      _ | back /= bytes -> Left (MigrateBackupFailed ("backup readback differs: " ++ bak))
-      Right b | b { snapFile = snapFile snap } == snap -> Right (bak, BS.length bytes, sha)
-      Right _ -> Left (MigrateBackupFailed ("backup does not read as the same store: " ++ bak))
-      Left err -> Left (MigrateBackupFailed ("backup does not open read-only: " ++ bak ++ ": " ++ show err))
+    case eSnap of
+      _ | back /= bytes -> discard bak ("backup readback differs: " ++ bak)
+      Right b | b { snapFile = snapFile snap } == snap -> pure (Right (bak, BS.length bytes, sha))
+      Right _ -> discard bak ("backup does not read as the same store: " ++ bak)
+      Left err -> discard bak ("backup does not open read-only: " ++ bak ++ ": " ++ show err)
   where
+    discard bak why = do
+      _ <- tryIOError (removeLink bak)
+      _ <- tryIOError (syncDir dir)
+      pure (Left (MigrateBackupFailed why))
     candidates = backupCandidates store dir from now
     readOrFail what p = first (\e -> MigrateBackupFailed (what ++ ": " ++ show e)) <$> tryIOError (readFileCloexec p)
     pickAndWrite _ [] = pure (Left (MigrateBackupExists firstName))

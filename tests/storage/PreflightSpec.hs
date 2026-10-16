@@ -145,6 +145,7 @@ spec = testGroup "Store preflight"
       , testCase "all 100 backup names taken refuses" caseMigrateBackupNamesExhausted
       , testCase "a hashing failure refuses before any write" caseMigrateHashFailure
       , testCase "the clock: one reading names the backup, completion is read after the commit" caseMigrateClockReadings
+      , testCase "the verified backup is recorded before BEGIN" caseBackupVerifiedBeforeBegin
       , testCase "a backup write failing after create refuses; only an existing name advances" caseMigrateBackupWriteFails
       , testCase "an interrupted backup write leaves no file" caseMigrateInterruptedWriteLeavesNoFile
       , testCase "a failed read-back after commit is reported with the backup" caseMigrateVerifyFails
@@ -1462,6 +1463,34 @@ caseMigrateClockReadings = withScratch "migrate" $ \dir -> do
   t <- readFile (mrReceipt rc)
   assertBool "receipt: backup epoch" ("backup-epoch-seconds: 1700000000\n" `isInfixOf` t)
   assertBool "receipt: completion" ("completed-epoch-seconds: 1700000007\n" `isInfixOf` t)
+
+-- The verified backup's path and digest are recorded before the
+-- transaction begins, so a killed run still leaves a digest the
+-- restore step can verify against.
+caseBackupVerifiedBeforeBegin :: IO ()
+caseBackupVerifiedBeforeBegin = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  order <- newIORef ([] :: [String])
+  seen <- newIORef ("", 0, "")
+  let mark s = atomicModifyIORef' order (\ss -> (ss ++ [s], ()))
+      hooks = fixedClock
+        { mhOnBackupVerified = \bak n sha -> do
+            writeIORef seen (bak, n, sha)
+            mark "backup-verified"
+        , mhSQLite = noMigrationHooks { mgAfterBegin = \_ -> mark "begin" }
+        }
+  r <- migrateStoreWith hooks store cfg backups
+  rc <- case r of
+    Right (Migrated rc) -> pure rc
+    other -> assertFailure ("migration failed: " ++ show other)
+  readIORef order >>= assertEqual "recorded before BEGIN" ["backup-verified", "begin"]
+  (bak, n, sha) <- readIORef seen
+  assertEqual "recorded path" (mrBackup rc) bak
+  assertEqual "recorded bytes" (mrBackupBytes rc) n
+  assertEqual "recorded digest" (mrBackupSha256 rc) sha
 
 -- A failure after the backup file is created (here a simulated full
 -- disk) refuses: the incomplete file is removed and the next name is

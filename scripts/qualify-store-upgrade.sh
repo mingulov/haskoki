@@ -83,7 +83,10 @@ run_tag() {
   "$CTL" store migrate --path "$w/store.sqlite" --config "$w/config.toml" --backup-dir "$w/backups" \
     >"$w/migrate.out" 2>"$w/migrate.err" || fail "$tag: migrate"
   grep -qx 'migrate-done' "$w/migrate.out" || fail "$tag: migrate-done missing"
-  local bak; bak=$(sed -n 's/^backup: //p' "$w/migrate.out")
+  [ "$(grep -c '^backup: ' "$w/migrate.out")" = 2 ] || fail "$tag: want the pre-BEGIN backup line plus the receipt echo"
+  [ "$(grep '^backup: ' "$w/migrate.out" | sort -u | wc -l)" = 1 ] || fail "$tag: pre-BEGIN and receipt backup lines differ"
+  [ "$(grep -c "^backup-sha256: $s0" "$w/migrate.out")" = 2 ] || fail "$tag: want the pre-BEGIN digest line plus the receipt echo"
+  local bak; bak=$(awk '/^backup: /{print substr($0, 9); exit}' "$w/migrate.out")
   [ "$(sha "$bak")" = "$s0" ] || fail "$tag: backup differs from the pre-migration store"
   grep -qx "backup-sha256: $s0" "$bak.receipt" || fail "$tag: receipt digest"
   grep -qx 'cold-journal-removed: no' "$w/migrate.out" || fail "$tag: migrate output misses cold-journal-removed no"
@@ -147,7 +150,8 @@ run_tag() {
     >"$w/recovery-cold.migrate.out" 2>"$w/recovery-cold.migrate.err" || fail "$tag: cold journal migrate"
   grep -qx 'migrate-done' "$w/recovery-cold.migrate.out" || fail "$tag: cold journal migrate-done missing"
   grep -qx 'cold-journal-removed: yes' "$w/recovery-cold.migrate.out" || fail "$tag: cold journal stdout line"
-  local bak_cold; bak_cold=$(sed -n 's/^backup: //p' "$w/recovery-cold.migrate.out")
+  [ "$(grep -c '^backup: ' "$w/recovery-cold.migrate.out")" = 2 ] || fail "$tag: cold journal wants the pre-BEGIN backup line plus the receipt echo"
+  local bak_cold; bak_cold=$(awk '/^backup: /{print substr($0, 9); exit}' "$w/recovery-cold.migrate.out")
   [ "$(sha "$bak_cold")" = "$s_cold" ] || fail "$tag: cold journal backup differs"
   grep -qx "backup-sha256: $s_cold" "$bak_cold.receipt" || fail "$tag: cold journal receipt digest"
   grep -qx 'cold-journal-removed: yes' "$bak_cold.receipt" || fail "$tag: cold journal receipt line"

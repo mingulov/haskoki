@@ -20,7 +20,7 @@ import Foreign.StablePtr (castStablePtrToPtr)
 import Foreign.Storable (poke)
 import System.Directory (createDirectory, doesFileExist, listDirectory, removeFile)
 import System.FilePath ((</>))
-import System.Posix.Files (createNamedPipe, createSymbolicLink)
+import System.Posix.Files (createNamedPipe, createSymbolicLink, removeLink)
 import System.Posix.User (getEffectiveUserID)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
@@ -65,6 +65,7 @@ spec = testGroup "Store commands"
   , testCase "migrate: a foreign WAL through a symlink refuses, keeping the credential" caseMigrateSymlinkWal
   , testCase "migrate: a bare symlink migrates the target" caseMigrateSymlinkBare
   , testCase "migrate: a failure after the clear still reports the clearing" caseMigrateCliReportsClearOnFailure
+  , testCase "migrate: a backup that fails verification is removed" caseMigrateBadBackupRemoved
   , testCase "check: a FIFO store is refused without hanging" caseCheckFifoStore
   , testCase "migrate: a FIFO store is refused without hanging" caseMigrateFifoStore
   , testCase "check: a FIFO lock is refused without hanging" caseCheckFifoLock
@@ -604,6 +605,21 @@ caseMigrateCliReportsClearOnFailure = withScratch "ctl-migrate" $ \dir -> do
   assertBool "clearing reported" ("cold-journal-removed: yes" `elem` lines out)
   gone <- not <$> doesFileExist (store ++ "-journal")
   assertBool "journal removed" gone
+
+-- A backup that fails verification is removed, never left behind
+-- for a later restore to trust: the hook swaps the just-created
+-- file under the writer so the byte readback differs.
+caseMigrateBadBackupRemoved :: IO ()
+caseMigrateBadBackupRemoved = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  let swap = noMigrateHooks { mhAfterCreate = \p -> removeLink p >> BS.writeFile p "bogus" }
+  (code, _, err) <- storeMigrateCommandWith swap
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 1" 1 code
+  assertBool "tag" ("migrate-backup-failed:" `isPrefixOf` err)
+  listDirectory backups >>= assertEqual "bad backup removed" []
 
 -- A FIFO at the store path is refused by lstat, never opened: the
 -- held writer only keeps a regression from hanging the suite (an

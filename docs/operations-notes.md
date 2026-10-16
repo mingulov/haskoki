@@ -404,8 +404,9 @@ haskoki-ctl store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehears
 ```
 
 The first check prints the plan and exits 1 with
-`store-migration-required`. The migrate prints the receipt and
-`migrate-done`. The second check prints `verdict: ok` and exits 0. Then
+`store-migration-required`. The migrate prints `backup:` and
+`backup-sha256:` first, then the receipt and `migrate-done`. The
+second check prints `verdict: ok` and exits 0. Then
 create the real backup directory, run the same two commands on `$STORE`
 with `$CONFIG` and `--backup-dir /srv/haskoki-backups`, and start the
 service.
@@ -423,14 +424,17 @@ writes its own config for the copy (see `caseConfigSelects` in
 | 0 | check: the store opens as-is with this config. migrate: migrated, or `migrate-not-needed` (nothing written). |
 | 1 | a diagnosed refusal; one stderr line `<tag>: <detail>` |
 | 2 | usage error |
+| 130 | interrupted by SIGINT; one stderr line (`migrate-interrupted` or `check-interrupted`), store state unknown |
 
 Tags: `store-migration-required`, `store-identity-refused`, `store-live`,
 `store-journal-present`, `store-journal-cold`, `store-foreign-sidecar`,
 `store-unsupported-version`,
 `store-corrupt`, `store-full`, `store-missing`, `store-unreadable`,
+`check-interrupted`,
 `config-invalid`, `config-mismatch`, `migrate-unsafe-backup-dir`,
 `migrate-store-changed`, `migrate-backup-exists`, `migrate-backup-failed`,
-`migrate-failed`, `migrate-verify-failed`, `migrate-receipt-failed`.
+`migrate-failed`, `migrate-unexpected`, `migrate-interrupted`,
+`migrate-verify-failed`, `migrate-receipt-failed`.
 Output and receipts name token ids (as 16 hex digits, the same text as the
 token serial), labels, versions, paths and reasons. They never print a PIN
 or key byte (`caseCheckNoPins`, `caseMigrateCliNoPins` in
@@ -474,7 +478,16 @@ in `tests/storage/PreflightSpec.hs`).
 3. Writes a new backup `<store>.pre-migrate.schema<N>.<epoch>.bak`
    (mode 0600; an existing name is never overwritten, the next free
    `-1`..`-99` name is used), verifies it byte for byte and by reading
-   it as a store, and records its SHA-256.
+   it as a store, and records its SHA-256. A backup that fails
+   verification is removed again, never left for a later restore to
+   trust (`caseMigrateBadBackupRemoved` in
+   `tests/storage/StoreCtlSpec.hs`). The moment verification passes,
+   before the transaction begins, migrate prints `backup: <path>` and
+   `backup-sha256: <hex>` to stdout and flushes, so a run killed
+   mid-transaction still leaves its backup's digest in the operator's
+   log (`caseBackupVerifiedBeforeBegin` in
+   `tests/storage/PreflightSpec.hs`); the receipt repeats both lines
+   on success.
 4. In one SQLite transaction: creates the `credentials` table (schema
    1 only), writes a credential row for every stored token that has
    none, taking the SO and user PIN of that token's catalog entry in
@@ -538,7 +551,11 @@ transaction back (the store returns to its pre-migration bytes) and
 refuses as migration-required; then run check and migrate again. Or
 restore the backup the interrupted run wrote, moving the store and its
 journal aside together first (`caseKilledMigrationRecovers`,
-`caseKilledRestoreMovesJournal`).
+`caseKilledRestoreMovesJournal`) — but only after verifying it: the
+run printed `backup:` and `backup-sha256:` before its transaction
+began, and `sha256sum` over that backup must equal the recorded
+digest. A kill mid-write leaves a partial `.bak` that fails this
+check; never restore it, take the first route instead.
 
 A non-empty `-wal` or `-shm` sibling is a different refusal:
 `store check`, `store migrate` and the serving open all report it
@@ -584,7 +601,12 @@ journal records `cold-journal-removed: no`
 
 ### Restore from a backup
 
-Stop the owner. Move the current store aside (with its `-journal`,
+Restore only a backup whose digest matches a recorded one: `sha256sum`
+over the `.bak` must equal the `backup-sha256:` the migration printed
+to stdout before its transaction began (repeated in the `.receipt`
+when the run finished). A partial `.bak` from a killed run, or any
+other file, fails this check and must never be restored. On a match,
+stop the owner. Move the current store aside (with its `-journal`,
 `-wal` and `-shm`, if present; keep them all), copy the backup to the
 store path, and run `store check`. A pre-migration backup is a schema
 1 or 2 store again:
