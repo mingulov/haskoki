@@ -85,12 +85,14 @@ SlotInfo checks catalog validity before null output, TokenInfo checks
 catalog/presence before null output, and OpenSession keeps its output/serial/
 flag guards before catalog/presence. CloseAll on a known empty slot succeeds.
 
-Removed sessions are not resurrected. One error-order limitation remains:
-`haskokiStdFind` checks find state before session validity, so a FindObjects
-page on a removed session can report a find-state error first. A repaired
-FindObjectsFinal case does not cover that page call. See
-[Standard.hs](../ffi/Haskoki/FFI/Standard.hs) and the
-[notification consumer](../tests/c/notifications_routed.c).
+Removed sessions are not resurrected. A FindObjects page on a removed
+session reports `CKR_SESSION_HANDLE_INVALID` before any find-state check:
+`haskokiStdFind` resolves the session first (the FindObjectsFinal
+precedent), then the cursor, so the close retired the cursor with its
+session while a fresh session with no cursor still reports
+`CKR_OPERATION_NOT_INITIALIZED`. Refusals leave the page outputs
+untouched. See [Standard.hs](../ffi/Haskoki/FFI/Standard.hs) and the
+[reopen consumer](../tests/c/consumer_login_reopen.c).
 
 Outside a callback, Wait first checks public liveness, then null `pSlot`,
 non-null `pReserved`, and unknown native-width flag bits beyond

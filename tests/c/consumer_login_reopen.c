@@ -281,6 +281,7 @@ int main(int argc, char **argv) {
     printf("invent: proxy skips the sqlite reopen journey\n");
     printf("invent: proxy skips the SO private-write leg\n");
     printf("invent: proxy skips the role-matrix legs\n");
+    printf("invent: proxy skips the removed-session page legs\n");
   } else {
     /* ---- Phase B/memory: write, close, reopen, honest reset ---- */
     CK_SESSION_HANDLE sess = 0;
@@ -896,6 +897,71 @@ int main(int argc, char **argv) {
       CHECKM(rv == CKR_OK, "matrix: SO session closes");
       rv = f->C_Finalize(NULL_PTR);
       CHECKM(rv == CKR_OK, "matrix: Finalize ok");
+    }
+
+    /* ---- Phase B/find-page: removed-session page refuses first ---- */
+    {
+      CK_SESSION_HANDLE sess = 0, fresh = 0;
+      CK_OBJECT_CLASS klass = CKO_DATA;
+      CK_BBOOL no = CK_FALSE;
+      CK_OBJECT_HANDLE h1 = 0, h2 = 0;
+      CK_OBJECT_HANDLE found[4];
+      CK_ULONG count = 0;
+      int i, clean;
+      CK_ATTRIBUTE t1[] = { { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &no, sizeof(no) }, { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "page-one", 8 } };
+      CK_ATTRIBUTE t2[] = { { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &no, sizeof(no) }, { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "page-two", 8 } };
+      CK_OBJECT_HANDLE warm[4] = { 0, 0, 0, 0 };
+      CK_ULONG nwarm = 0;
+      nslots = 8;
+      use_config(g_mem_cfg);
+      rv = f->C_Initialize(NULL_PTR);
+      CHECKM(rv == CKR_OK, "page: Initialize ok");
+      rv = f->C_GetSlotList(CK_TRUE, slots, &nslots);
+      CHECKM(rv == CKR_OK && nslots == 1, "page: single slot");
+      rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &sess);
+      CHECKM(rv == CKR_OK && sess != 0, "page: session opens");
+      h1 = 0; h2 = 0;
+      rv = f->C_CreateObject(sess, t1, 4, &h1);
+      CHECKM(rv == CKR_OK && h1 != 0, "page: first object created");
+      rv = f->C_CreateObject(sess, t2, 4, &h2);
+      CHECKM(rv == CKR_OK && h2 != 0, "page: second object created");
+      rv = f->C_FindObjectsInit(sess, NULL_PTR, 0);
+      CHECKM(rv == CKR_OK, "page: cursor opens");
+      rv = f->C_FindObjects(sess, warm, 4, &nwarm);
+      CHECKM(rv == CKR_OK && nwarm == 2, "page: warm page holds both handles");
+      rv = f->C_FindObjectsFinal(sess);
+      CHECKM(rv == CKR_OK, "page: warm cursor closes");
+      rv = f->C_FindObjectsInit(sess, NULL_PTR, 0);
+      CHECKM(rv == CKR_OK, "page: cursor reopens");
+      rv = f->C_CloseSession(sess);
+      CHECKM(rv == CKR_OK, "page: session closes with a live cursor");
+      for (i = 0; i < 4; i++) found[i] = (CK_OBJECT_HANDLE)0xA5A5A5A5UL;
+      count = (CK_ULONG)0xA5A5A5A5UL;
+      rv = f->C_FindObjects(sess, found, 4, &count);
+      clean = 1;
+      for (i = 0; i < 4; i++) clean = clean && (found[i] == (CK_OBJECT_HANDLE)0xA5A5A5A5UL);
+      clean = clean && (count == (CK_ULONG)0xA5A5A5A5UL);
+      CHECKM(rv == CKR_SESSION_HANDLE_INVALID && clean, "page: removed session refuses, outputs untouched");
+      rv = f->C_FindObjectsFinal(sess);
+      CHECKM(rv == CKR_SESSION_HANDLE_INVALID, "page: removed final refuses (unchanged)");
+      /* retired cursor: a fresh session has no cursor to page */
+      rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &fresh);
+      CHECKM(rv == CKR_OK && fresh != 0, "page: fresh session opens");
+      for (i = 0; i < 4; i++) found[i] = (CK_OBJECT_HANDLE)0xA5A5A5A5UL;
+      count = (CK_ULONG)0xA5A5A5A5UL;
+      rv = f->C_FindObjects(fresh, found, 4, &count);
+      clean = 1;
+      for (i = 0; i < 4; i++) clean = clean && (found[i] == (CK_OBJECT_HANDLE)0xA5A5A5A5UL);
+      clean = clean && (count == (CK_ULONG)0xA5A5A5A5UL);
+      CHECKM(rv == CKR_OPERATION_NOT_INITIALIZED && clean, "page: fresh session has no cursor, outputs untouched");
+      rv = f->C_CloseSession(fresh);
+      CHECKM(rv == CKR_OK, "page: fresh session closes");
+      rv = f->C_Finalize(NULL_PTR);
+      CHECKM(rv == CKR_OK, "page: Finalize ok");
     }
   }
 
