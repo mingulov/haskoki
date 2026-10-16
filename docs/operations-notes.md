@@ -461,6 +461,23 @@ whose kernel lock is held but whose sidecar is absent reports `offline`
 under `inspect` and `store-live` under `check` (see `casePlanLiveOwner`
 in `tests/storage/PreflightSpec.hs`).
 
+`store reset --confirm-demo-reset` removes an offline store and its
+`<store>.lock` sidecar, refusing a live store; the next open through
+the reset path recreates a fresh store. Through a store symlink it
+removes the link's target instead and leaves the link itself in
+place, so the link dangles and the next start refuses rather than
+recreating (`resetStore` in `src/Haskoki/Ctl.hs`,
+`caseResetSymlinkOffline` in `tests/storage/StoreCtlSpec.hs`). The
+success report keeps its `reset: <target> removed (offline)` stdout
+line and says so on stderr as `reset-dangling-link: <link> now
+dangles; the next start refuses until the target is recreated or the
+link removed` (`caseResetSymlinkWarnsDangling`); a plain reset
+reports nothing on stderr (`caseResetOfflineQuietStderr`). To start
+over after a reset through a link, either remove the link and serve
+the real path, or recreate the target by opening the real path
+once; until then the serving open fails closed on the dangling
+link, creating nothing there (`caseOpenDanglingLink`).
+
 ### What migrate does
 
 1. Refuses, writing nothing, when: the config does not select this

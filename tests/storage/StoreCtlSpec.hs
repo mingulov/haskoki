@@ -124,6 +124,8 @@ spec = testGroup "Store commands"
   , testCase "inspect: through a symlink, an offline store names the target" caseInspectSymlinkOffline
   , testCase "reset: through a symlink, a live owner at the target refuses" caseResetSymlinkLive
   , testCase "reset: through a symlink, an offline store removes the target" caseResetSymlinkOffline
+  , testCase "reset: through a symlink, the dangling link is reported" caseResetSymlinkWarnsDangling
+  , testCase "reset: a plain reset reports nothing on stderr" caseResetOfflineQuietStderr
   , testCase "migrate: after a clear, backup-exists stays honest about the store" caseMigrateClearBackupExistsHonest
   , testCase "migrate: after a clear, backup-failed stays honest about the store" caseMigrateClearBackupFailedHonest
   , testCase "migrate: after a clear, a failed transaction stays honest about the store" caseMigrateClearTxnFailedHonest
@@ -1454,6 +1456,37 @@ caseResetSymlinkOffline = withScratch "store-ctl" $ \dir -> do
   assertBool "target lock removed" (not lockLeft)
   entries <- listDirectory dir
   assertBool "symlink left dangling" ("link.sqlite" `elem` entries)
+
+-- Resetting through a store symlink reports that the link now
+-- dangles and the next start refuses; the next serving open through
+-- the link does refuse.
+caseResetSymlinkWarnsDangling :: IO ()
+caseResetSymlinkWarnsDangling = withScratch "store-ctl" $ \dir -> do
+  let realDir = dir </> "real"; real = realDir </> "store.sqlite"; link = dir </> "link.sqlite"
+  createDirectory realDir
+  eSt <- openSQLiteStore real
+  case eSt of
+    Left err -> fail ("open failed: " ++ show err)
+    Right st -> storeClose st
+  createSymbolicLink real link
+  cfgPath <- writeStoreConfig (dir </> "c.toml") link fixtureLabels fixtureSo fixtureUser
+  r <- runCtl ["store", "reset", "--path", link, "--confirm-demo-reset"]
+  assertEqual "reset exits 0" 0 (ceCode r)
+  assertBool "tag" ("reset-dangling-link:" `isPrefixOf` ceErr r)
+  assertBool "names the link" (link `isInfixOf` ceErr r)
+  assertBool "next start refuses" ("the next start refuses" `isInfixOf` ceErr r)
+  (ok, note) <- openRelStore cfgPath
+  assertBool ("serving open through the dangling link must refuse, but opened: " ++ note) (not ok)
+  assertBool "refusal is the dangling link" ("dangling" `isInfixOf` note)
+
+-- A reset that removes the operator's own path leaves no link
+-- behind, so there is nothing to report on stderr.
+caseResetOfflineQuietStderr :: IO ()
+caseResetOfflineQuietStderr = withStoreFile $ \dir -> do
+  db <- seedDb dir
+  r <- runCtl ["store", "reset", "--path", db, "--confirm-demo-reset"]
+  assertEqual "reset exits 0" 0 (ceCode r)
+  assertEqual "quiet stderr" "" (ceErr r)
 
 -- Hooks with a fixed clock, so every backup name is known up front.
 epochClock :: MigrateHooks
