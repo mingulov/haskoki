@@ -11,8 +11,10 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   unextractable. Imported, unwrapped and derived keys read `CKA_LOCAL`
   false with an unavailable mechanism; unwrapped and imported keys read
   both history rows false, while derived keys conjoin the child flags
-  with the source history. Previously every fresh key read local false
-  with false history and an unavailable mechanism.
+  with the source history. Secret keys produced by KEM encapsulate and
+  decapsulate read `CKA_LOCAL` false with both history rows false and
+  an unavailable `CKA_KEY_GEN_MECHANISM`. Previously every fresh key
+  read local false with false history and an unavailable mechanism.
 - `C_UnwrapKey` with a template that omits `CKA_EXTRACTABLE` now yields
   an extractable key (PKCS#11 v3.2 section 5.18.4); it used to yield an
   unextractable one. Reads of `CKA_EXTRACTABLE` on such keys flip
@@ -149,14 +151,33 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   The data value merge applies on modifiable sources only.
 - `C_CopyObject` refuses `CKA_START_DATE`, `CKA_END_DATE`
   and `CKA_SUBJECT` changes on keys, matching the set path,
-  with `CKR_ATTRIBUTE_READ_ONLY`. These stay copyable on
-  certificates only where the set path allows them.
+  with `CKR_ATTRIBUTE_READ_ONLY`. On certificates these fields
+  were already refused and stay refused.
 - `C_CopyObject` refuses any template naming `CKA_TRUSTED`
   on a certificate source with `CKR_ATTRIBUTE_READ_ONLY`,
   even for the same value and even for the Security Officer.
   Copy a certificate by omitting `CKA_TRUSTED` from the
   template; a `TRUSTED=true` source still needs the Security
   Officer, and a normal user cannot copy it at all.
+- `C_CopyObject` refuses `CKA_CLASS` and `CKA_KEY_TYPE`
+  overrides with `CKR_ATTRIBUTE_READ_ONLY`, matching the set
+  path. Copying a sealed private or secret key as a public key
+  or data object no longer works; certificate class-override
+  copies report this code too, where they used to report
+  `CKR_TEMPLATE_INCONSISTENT`.
+- Reads of `CKA_SEED` on a sensitive or unextractable ML-DSA,
+  ML-KEM or SLH-DSA private key now fail with
+  `CKR_ATTRIBUTE_SENSITIVE` instead of returning the seed, and
+  `C_FindObjects` no longer matches such keys by seed. In
+  0.4.0.0 the seed, the private key material, read back in
+  clear.
+- A key stored without `CKA_EXTRACTABLE` now counts as
+  unextractable: reads of its value fail with
+  `CKR_ATTRIBUTE_SENSITIVE`, and `C_FindObjects` withholds its
+  sealed components. Such keys used to read back in clear.
+- Stores written with the new key attributes are refused by
+  older binaries: unknown attribute names fail decode, so
+  upgrade is one-way.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and
