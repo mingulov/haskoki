@@ -47,7 +47,8 @@ seal (see below).
 ## Pinned refusals
 
 - Provider-generated IV (`ulIvLen = 0`) refuses with
-  `CKR_ARGUMENTS_BAD`.
+  `CKR_MECHANISM_PARAM_INVALID` (PKCS#11 v3.1 section 5.1.6: invalid
+  parameters supplied to the mechanism).
 - IV length/bits disagreement and off-list tag widths (for example
   16 bits) never seal; the consumer asserts the refusal and prints
   the observed code for the record.

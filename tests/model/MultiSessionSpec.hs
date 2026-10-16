@@ -332,7 +332,9 @@ observeViaB env mut = do
         (encodeInitInput hmacMech [OpSign] False BS.empty)
   case (mut, planCall defaultRules m req) of
     (MutDestroy, Reject rej) ->
-      assertEqual "destroyed key refuses" CKR_OBJECT_HANDLE_INVALID (rejCode rej)
+      -- Stale key handle at init: CKR_KEY_HANDLE_INVALID (PKCS#11 v3.1
+      -- section 5.1.6; C_SignInit 5.13.1 return list).
+      assertEqual "destroyed key refuses" CKR_KEY_HANDLE_INVALID (rejCode rej)
     (MutUsage, Reject rej) ->
       assertEqual "revoked use refuses" CKR_KEY_FUNCTION_NOT_PERMITTED (rejCode rej)
     (MutLabel, Immediate pc) ->

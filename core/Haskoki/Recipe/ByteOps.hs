@@ -7,8 +7,8 @@ secret values (no provider crypto):
   (the second handle rides the params as a bare @CK_ULONG@);
 * @CKM_CONCATENATE_BASE_AND_DATA@ (0x362): base ++ data;
 * @CKM_CONCATENATE_DATA_AND_BASE@ (0x363): data ++ base;
-* @CKM_XOR_BASE_AND_DATA@ (0x364): byte-wise XOR (equal
-  lengths only — a mismatch refuses @CKR_DATA_LEN_RANGE@);
+* @CKM_XOR_BASE_AND_DATA@ (0x364): byte-wise XOR over the
+  shorter of base and data (PKCS#11 §6.43.6 natural length);
 * @CKM_EXTRACT_KEY_FROM_KEY@ (0x365): bit-exact slice at the
   params-carried bit offset (a bare @CK_ULONG@).
 

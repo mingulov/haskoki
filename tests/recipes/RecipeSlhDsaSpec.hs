@@ -23,7 +23,7 @@ parameter validation, and mechanism table; these tests pin the
 recipe and its consumers:
 
 * the model init path enforces SLH-DSA parameters
-  ('validateInit', 'CKR_ARGUMENTS_BAD'; empty passes);
+  ('validateInit', 'CKR_MECHANISM_PARAM_INVALID'; empty passes);
 * the driver maps the covered (mechanism, params, key) triple
   to its backend 'SigSpec' ('slhdsaSpecFor' agrees with the
   recipe table; the set label comes from the key's SPKI OID,
@@ -231,8 +231,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpSign] False
 
@@ -241,19 +242,19 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "empty passes params (struct optional)" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "empty passes params (struct optional)" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign slhdsaMech BS.empty (Just badKey) Nothing Nothing))
-  assertEqual "default passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "default passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign slhdsaMech defaultImage (Just badKey) Nothing Nothing))
-  assertEqual "context passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "context passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign slhdsaMech (encodeSlhdsaParams SlhPreferred "CTX") (Just badKey) Nothing Nothing))
-  assertEqual "deterministic passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "deterministic passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign slhdsaMech (encodeSlhdsaParams SlhDeterministic BS.empty) (Just badKey) Nothing Nothing))
-  assertEqual "hedge word 3 refused" CKR_ARGUMENTS_BAD
+  assertEqual "hedge word 3 refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign slhdsaMech (word64 3 <> word64 0) (Just badKey) Nothing Nothing))
-  assertEqual "overlong context refused" CKR_ARGUMENTS_BAD
+  assertEqual "overlong context refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign slhdsaMech (encodeSlhdsaParams SlhPreferred (BS.replicate 256 0x41)) (Just badKey) Nothing Nothing))
-  assertEqual "malformed refused" CKR_ARGUMENTS_BAD
+  assertEqual "malformed refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign slhdsaMech "PEM" (Just badKey) Nothing Nothing))
 
 -- | All twelve parameter sets: backend algorithm plus the

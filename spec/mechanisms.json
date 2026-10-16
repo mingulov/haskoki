@@ -518,7 +518,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
+      "notes": "MD2 with RSA PKCS#1: no MD2 in the pinned OpenSSL 4.0.2 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
       "numeric_id": "0x00000004",
       "routes": [],
       "source_refs": [
@@ -772,7 +772,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
+      "notes": "RIPEMD-128 with RSA PKCS#1: no RIPEMD-128 in the pinned OpenSSL 4.0.2 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
       "numeric_id": "0x00000007",
       "routes": [],
       "source_refs": [
@@ -3889,7 +3889,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 DH hybrid derive: needs the MQV two-key agreement plus a second derive leg; the pinned OpenSSL 4.0.2 provider offers no MQV key exchange.\nReal unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000032",
       "routes": [],
       "source_refs": [
@@ -3917,7 +3917,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; the pinned OpenSSL 4.0.2 provider offers no MQV key exchange.\nReal unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000033",
       "routes": [],
       "source_refs": [
@@ -5929,7 +5929,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
+      "notes": "HMAC over SHA-512/t: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.0.2 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nStays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000051",
       "routes": [],
       "source_refs": [
@@ -5957,7 +5957,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
+      "notes": "HMAC over SHA-512/t: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.0.2 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nStays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000052",
       "routes": [],
       "source_refs": [
@@ -5985,7 +5985,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Parameterized-truncation sibling of the SHA-KD rows (t parameter selects the width); deferred with its digest/HMAC T siblings (later truncation-params slice). Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance; supersedes the truncation-params deferral for this row).",
+      "notes": "SHA-512/t key derivation: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.0.2 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nParameterized-truncation sibling of the SHA-KD rows (t parameter selects the width); deferred with its digest/HMAC T siblings (later truncation-params slice). Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance; supersedes the truncation-params deferral for this row).",
       "numeric_id": "0x00000053",
       "routes": [],
       "source_refs": [
@@ -7394,7 +7394,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC2 block-cipher MAC: RC2 is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000103",
       "routes": [],
       "source_refs": [
@@ -7422,7 +7422,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC2 block-cipher MAC: RC2 is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000104",
       "routes": [],
       "source_refs": [
@@ -8084,7 +8084,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "Single-DES block-cipher MAC: Single-DES is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000123",
       "routes": [],
       "source_refs": [
@@ -8112,7 +8112,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "Single-DES block-cipher MAC: Single-DES is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000124",
       "routes": [],
       "source_refs": [
@@ -9387,7 +9387,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CDMF block-cipher MAC: CDMF is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000143",
       "routes": [],
       "source_refs": [
@@ -9415,7 +9415,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CDMF block-cipher MAC: CDMF is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000144",
       "routes": [],
       "source_refs": [
@@ -9897,7 +9897,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (probed 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "MD2 digest: absent from the pinned OpenSSL 4.0.2 provider digest list; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (probed 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00000200",
       "routes": [],
       "source_refs": [
@@ -9925,7 +9925,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
+      "notes": "HMAC over MD2: the pinned OpenSSL 4.0.2 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000201",
       "routes": [],
       "source_refs": [
@@ -9953,7 +9953,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
+      "notes": "HMAC over MD2: the pinned OpenSSL 4.0.2 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000202",
       "routes": [],
       "source_refs": [
@@ -10559,7 +10559,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD-128 in the pinned OpenSSL 4.0.2 provider (only RIPEMD-160; probed 2026-09-21)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "RIPEMD-128 digest: the pinned OpenSSL 4.0.2 provider has only RIPEMD-160; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD-128 in the pinned OpenSSL 4.0.2 provider (only RIPEMD-160; probed 2026-09-21)); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00000230",
       "routes": [],
       "source_refs": [
@@ -10587,7 +10587,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
+      "notes": "HMAC over RIPEMD-128: the pinned OpenSSL 4.0.2 provider has no RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
       "numeric_id": "0x00000231",
       "routes": [],
       "source_refs": [
@@ -10615,7 +10615,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
+      "notes": "HMAC over RIPEMD-128: the pinned OpenSSL 4.0.2 provider has no RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
       "numeric_id": "0x00000232",
       "routes": [],
       "source_refs": [
@@ -12241,15 +12241,13 @@
       "mechanism_info": {
         "flags": [
           "CKF_SIGN",
-          "CKF_VERIFY",
-          "CKF_MESSAGE_SIGN",
-          "CKF_MESSAGE_VERIFY"
+          "CKF_VERIFY"
         ],
         "key_size_unit": "mechanism-specific",
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "OTP recipe (core/Haskoki/Recipe/Otp.hs): HOTP (RFC 4226) as a keyed sign/verify MAC over HMAC-SHA1 with hotp-params/1 (counter:u64be digits:u64be, 6-8 digits); empty input only, zero-padded ASCII digit output. Real KATs pinned (RoutingE2ESpec caseDriverHotp: full RFC 4226 Appendix D set + oracle 7/8-digit pins); constructions pinned (SyntheticSpec caseHotp); params/truncate/init/keygen pinned (RecipeOtpSpec).",
+      "notes": "OTP recipe (core/Haskoki/Recipe/Otp.hs): HOTP (RFC 4226) as a keyed sign/verify MAC over HMAC-SHA1 with hotp-params/1 (counter:u64be digits:u64be, 6-8 digits); native callers pass the standard CK_OTP_PARAMS (stateless profile: a CK_OTP_COUNTER entry of 8 big-endian bytes is required for sign and verify, CK_OTP_OUTPUT_LENGTH 6-8 is optional with default 6, any other entry (refused rather than ignored: no CKA_OTP_*_REQUIREMENT attribute is served, so none is declared IGNORED), a duplicate or a short or zero-length parameter refuses CKR_MECHANISM_PARAM_INVALID (NULL with a nonzero length is CKR_ARGUMENTS_BAD); no token counter, GAP-OTP-STATEFUL), which the FFI translates into that image (NativeParams otpEntriesToCanonical; consumer_roundtrip HOTP legs); empty input only, zero-padded ASCII digit output. Real KATs pinned (RoutingE2ESpec caseDriverHotp: full RFC 4226 Appendix D set + oracle 7/8-digit pins); constructions pinned (SyntheticSpec caseHotp); params/truncate/init/keygen pinned (RecipeOtpSpec). No message API (v0.5): PKCS#11 v3.2 defines no per-message parameter shape for HOTP, so the message-sign/verify routes and CKF_MESSAGE_SIGN/VERIFY are withdrawn and C_MessageSignInit/C_MessageVerifyInit refuse CKR_MECHANISM_INVALID (message_routed hotp-message).",
       "numeric_id": "0x00000291",
       "routes": [
         {
@@ -12272,31 +12270,7 @@
           "key_constraints": [
             "signing-key"
           ],
-          "operation": "message-sign",
-          "output_rule": "hotp-digits/v1",
-          "parameter_codec": "hotp-params/1"
-        },
-        {
-          "acceptance_cases": [
-            "A37",
-            "A39"
-          ],
-          "key_constraints": [
-            "signing-key"
-          ],
           "operation": "verify",
-          "output_rule": "synthetic-verify/v1",
-          "parameter_codec": "hotp-params/1"
-        },
-        {
-          "acceptance_cases": [
-            "A37",
-            "A39"
-          ],
-          "key_constraints": [
-            "signing-key"
-          ],
-          "operation": "message-verify",
           "output_rule": "synthetic-verify/v1",
           "parameter_codec": "hotp-params/1"
         }
@@ -14200,7 +14174,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000303",
       "routes": [],
       "source_refs": [
@@ -14228,7 +14202,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000304",
       "routes": [],
       "source_refs": [
@@ -14695,7 +14669,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000313",
       "routes": [],
       "source_refs": [
@@ -14723,7 +14697,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000314",
       "routes": [],
       "source_refs": [
@@ -15198,7 +15172,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000323",
       "routes": [],
       "source_refs": [
@@ -15228,7 +15202,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000324",
       "routes": [],
       "source_refs": [
@@ -15541,7 +15515,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC5 block-cipher MAC: RC5 is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000333",
       "routes": [],
       "source_refs": [
@@ -15569,7 +15543,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC5 block-cipher MAC: RC5 is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000334",
       "routes": [],
       "source_refs": [
@@ -15958,7 +15932,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "IDEA block-cipher MAC: IDEA is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000343",
       "routes": [],
       "source_refs": [
@@ -15986,7 +15960,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "IDEA block-cipher MAC: IDEA is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000344",
       "routes": [],
       "source_refs": [
@@ -16446,7 +16420,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is base value XOR parameter data over a generic-secret base. Parameters are the CK_KEY_DERIVATION_STRING_DATA struct (data chase); base and data must have equal length or the plan refuses CKR_DATA_LEN_RANGE (SoftHSM cross-check: equal-length matrix only). A missing template length defaults to the full natural width. Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
+      "notes": "Byte-op recipe (core/Haskoki/Recipe/ByteOps.hs): output is base value XOR parameter data over a generic-secret base. Parameters are the CK_KEY_DERIVATION_STRING_DATA struct (data chase); the natural width is the shorter of base and data (PKCS#11 6.43.6); a template length past it refuses CKR_KEY_SIZE_RANGE. A missing template length defaults to the full natural width. DES-family parity bits are not adjusted on the derived key (PKCS#11 6.43.6 requires them set; target gap todo:xor-derive-des-parity in spec/findings-ledger.json). Unequal lengths pinned natively (consumer_roundtrip xor_unequal_legs, Python XOR oracle). Vectors pinned (RoutingE2ESpec caseDriverByteOps); planner pins (RecipeByteOpsSpec); synthetic separation (SyntheticSpec caseByteOps); real KATs (KeyManagementSpec caseRealByteOpsVector).",
       "numeric_id": "0x00000364",
       "routes": [
         {
@@ -17554,7 +17528,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
+      "notes": "MD2 key derivation: the pinned OpenSSL 4.0.2 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
       "numeric_id": "0x00000391",
       "routes": [],
       "source_refs": [
@@ -18419,7 +18393,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no MD2 digest primitive in the pinned OpenSSL 4.0.2 default+legacy providers (digest-list probe), so the KDF root cannot run provider-backed (the DES cipher itself is served via legacy since slice 11p); behavior/synthetic stay planned, mirroring CKM_MD2.",
+      "notes": "PBE with MD2 and DES-CBC: no MD2 digest in the pinned OpenSSL 4.0.2 default+legacy providers, so the KDF root cannot run provider-backed; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: no MD2 digest primitive in the pinned OpenSSL 4.0.2 default+legacy providers (digest-list probe), so the KDF root cannot run provider-backed (the DES cipher itself is served via legacy since slice 11p); behavior/synthetic stay planned, mirroring CKM_MD2.",
       "numeric_id": "0x000003a0",
       "routes": [],
       "source_refs": [
@@ -19660,7 +19634,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: password-based PBA constructor, not the HMAC parameter shape; needs its own recipe. Unsupported-with-reason (all columns): identifier-only in vendored headers; no usable semantics; see source-issues.json GAP-SPECIALS.",
+      "notes": "Password-based PBA SHA-1 constructor: identifier-only in the vendored headers with no usable semantics; see GAP-SPECIALS.\nStays planned: password-based PBA constructor, not the HMAC parameter shape; needs its own recipe. Unsupported-with-reason (all columns): identifier-only in vendored headers; no usable semantics; see source-issues.json GAP-SPECIALS.",
       "numeric_id": "0x000003c0",
       "routes": [],
       "source_refs": [
@@ -19761,7 +19735,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete WTLS; will not implement.",
+      "notes": "WTLS derivation: obsolete wireless TLS protocol; will not implement.\nUnsupported-with-reason (all columns): obsolete WTLS; will not implement.",
       "numeric_id": "0x000003d1",
       "routes": [],
       "source_refs": [
@@ -19789,7 +19763,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete WTLS; will not implement.",
+      "notes": "WTLS derivation: obsolete wireless TLS protocol; will not implement.\nUnsupported-with-reason (all columns): obsolete WTLS; will not implement.",
       "numeric_id": "0x000003d2",
       "routes": [],
       "source_refs": [
@@ -19817,7 +19791,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete WTLS; will not implement.",
+      "notes": "WTLS derivation: obsolete wireless TLS protocol; will not implement.\nUnsupported-with-reason (all columns): obsolete WTLS; will not implement.",
       "numeric_id": "0x000003d3",
       "routes": [],
       "source_refs": [
@@ -19845,7 +19819,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete WTLS; will not implement.",
+      "notes": "WTLS derivation: obsolete wireless TLS protocol; will not implement.\nUnsupported-with-reason (all columns): obsolete WTLS; will not implement.",
       "numeric_id": "0x000003d4",
       "routes": [],
       "source_refs": [
@@ -19873,7 +19847,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete WTLS; will not implement.",
+      "notes": "WTLS derivation: obsolete wireless TLS protocol; will not implement.\nUnsupported-with-reason (all columns): obsolete WTLS; will not implement.",
       "numeric_id": "0x000003d5",
       "routes": [],
       "source_refs": [
@@ -19901,7 +19875,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
+      "notes": "Legacy TLS record-layer MAC: the TLS-MAC protocol surface is not mapped in the Raw provider layer, so no route exists.\nStays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
       "numeric_id": "0x000003d6",
       "routes": [],
       "source_refs": [
@@ -19929,7 +19903,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
+      "notes": "Legacy TLS record-layer MAC: the TLS-MAC protocol surface is not mapped in the Raw provider layer, so no route exists.\nStays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
       "numeric_id": "0x000003d7",
       "routes": [],
       "source_refs": [
@@ -19957,7 +19931,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
+      "notes": "Legacy TLS record-layer MAC: the TLS-MAC protocol surface is not mapped in the Raw provider layer, so no route exists.\nStays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
       "numeric_id": "0x000003d8",
       "routes": [],
       "source_refs": [
@@ -20385,7 +20359,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
+      "notes": "Legacy TLS record-layer MAC: the TLS-MAC protocol surface is not mapped in the Raw provider layer, so no route exists.\nStays planned: legacy record-layer MAC construct with protocol padding; needs base-spec prose plus its own recipe; synthetic unbuilt. Real unsupported-with-reason: TLS-MAC protocol surface unmapped in Raw; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: requires the TLS key schedule (the CKM_TLS*_KEY_AND_MAC_DERIVE rows are unserved), so the mechanism has no key source.",
       "numeric_id": "0x000003e4",
       "routes": [],
       "source_refs": [
@@ -20493,7 +20467,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): identifier-only in vendored headers; no usable semantics; see source-issues.json GAP-SPECIALS.",
+      "notes": "LYNKS key wrap: identifier-only in the vendored headers with no usable semantics; see GAP-SPECIALS.\nUnsupported-with-reason (all columns): identifier-only in vendored headers; no usable semantics; see source-issues.json GAP-SPECIALS.",
       "numeric_id": "0x00000400",
       "routes": [],
       "source_refs": [
@@ -20521,7 +20495,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete SET protocol; will not implement.",
+      "notes": "SET OAEP key wrap: obsolete SET protocol; will not implement.\nUnsupported-with-reason (all columns): obsolete SET protocol; will not implement.",
       "numeric_id": "0x00000401",
       "routes": [],
       "source_refs": [
@@ -20549,7 +20523,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): needs the non-provider CMS API, barred by the provider-only Raw architecture; see source-issues.json GAP-SPECIALS.",
+      "notes": "CMS signature: needs the non-provider CMS API, barred by the provider-only Raw architecture; see GAP-SPECIALS.\nUnsupported-with-reason (all columns): needs the non-provider CMS API, barred by the provider-only Raw architecture; see source-issues.json GAP-SPECIALS.",
       "numeric_id": "0x00000500",
       "routes": [],
       "source_refs": [
@@ -20577,7 +20551,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: KIP draft flow (CK_KIP_PARAMS wrapping session with a KIP server); no OpenSSL primitive backs it (extends the CKM_KIP_MAC stance).",
+      "notes": "KIP derive: needs a KIP server flow (CK_KIP_PARAMS); no OpenSSL primitive backs it.\nReal unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: KIP draft flow (CK_KIP_PARAMS wrapping session with a KIP server); no OpenSSL primitive backs it (extends the CKM_KIP_MAC stance).",
       "numeric_id": "0x00000510",
       "routes": [],
       "source_refs": [
@@ -20605,7 +20579,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned.",
+      "notes": "KIP wrap: KIP protocol surface is unmapped in Raw (CK_KIP_PARAMS known, behavior unreviewed); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned.",
       "numeric_id": "0x00000511",
       "routes": [],
       "source_refs": [
@@ -20633,7 +20607,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: KEA KIP per-message MAC; protocol-adjacent constructor, needs its own recipe; synthetic unbuilt. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: KIP draft flow (CK_KIP_PARAMS wrapping session with a KIP server); no OpenSSL primitive backs it.",
+      "notes": "KIP per-message MAC: KIP protocol surface is not mapped in the Raw provider layer; no OpenSSL primitive backs it.\nStays planned: KEA KIP per-message MAC; protocol-adjacent constructor, needs its own recipe; synthetic unbuilt. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (params CK_KIP_PARAMS known; behavior unreviewed); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: KIP draft flow (CK_KIP_PARAMS wrapping session with a KIP server); no OpenSSL primitive backs it.",
       "numeric_id": "0x00000512",
       "routes": [],
       "source_refs": [
@@ -22735,7 +22709,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "SEED block-cipher MAC: SEED is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000653",
       "routes": [],
       "source_refs": [
@@ -22763,7 +22737,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "SEED block-cipher MAC: SEED is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000654",
       "routes": [],
       "source_refs": [
@@ -23444,7 +23418,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001008",
       "routes": [],
       "source_refs": [
@@ -23472,7 +23446,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001009",
       "routes": [],
       "source_refs": [
@@ -23500,7 +23474,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x0000100a",
       "routes": [],
       "source_refs": [
@@ -23528,7 +23502,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
+      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.0.2.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
       "numeric_id": "0x00001010",
       "routes": [],
       "source_refs": [
@@ -23556,7 +23530,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
+      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.0.2.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
       "numeric_id": "0x00001011",
       "routes": [],
       "source_refs": [
@@ -23584,7 +23558,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
+      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.0.2.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
       "numeric_id": "0x00001012",
       "routes": [],
       "source_refs": [
@@ -23856,7 +23830,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001034",
       "routes": [],
       "source_refs": [
@@ -23884,7 +23858,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001035",
       "routes": [],
       "source_refs": [
@@ -23912,7 +23886,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001036",
       "routes": [],
       "source_refs": [
@@ -25301,7 +25275,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no MQV key agreement in the pinned OpenSSL 4.0.2 provider API); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "EC MQV derive: needs the MQV two-key agreement on EC keys; the pinned OpenSSL 4.0.2 provider offers no MQV key exchange.\nReal unsupported (no MQV key agreement in the pinned OpenSSL 4.0.2 provider API); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00001052",
       "routes": [],
       "source_refs": [
@@ -25929,7 +25903,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001063",
       "routes": [],
       "source_refs": [
@@ -25957,7 +25931,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001064",
       "routes": [],
       "source_refs": [
@@ -25985,7 +25959,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001065",
       "routes": [],
       "source_refs": [
@@ -27094,7 +27068,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Reviewed: caller-supplied IV (1..64 bytes, bit width agrees), NIST SP 800-38D tag widths (32/64/96/104/112/120/128 bits), AAD bound at seal; encrypt answers ciphertext with the tag appended, decrypt splits at the tag length and fails authentication on tamper or short input (core/Haskoki/Recipe/Gcm.hs, gcm-params/1). The provider-generated-IV conventions never translate (recipe refusal downstream). Real execution is native EVP AES-GCM pinned against Python cryptography (OpenSSLSpec caseAeadReal); synthetic execution is a deterministic PRF keystream plus tag, explicitly not GCM. No wrap/unwrap routes: key wrapping stays CBC-shaped, RSA wrap is T8. F-9 (FINAL-101): the CKF_MESSAGE_ENCRYPT/CKF_MESSAGE_DECRYPT flags are withdrawn (native CK_GCM_MESSAGE_PARAMS is refused CKR_ARGUMENTS_BAD per F-GCM-SHAPE, classic-shaped CK_GCM_PARAMS init plus the gcm-params/1 per-message image stay served, and malformed per-message shapes refuse pinned CKR_ARGUMENTS_BAD).",
+      "notes": "Reviewed: caller-supplied IV (1..64 bytes, bit width agrees), NIST SP 800-38D tag widths (32/64/96/104/112/120/128 bits), AAD bound at seal; encrypt answers ciphertext with the tag appended, decrypt splits at the tag length and fails authentication on tamper or short input (core/Haskoki/Recipe/Gcm.hs, gcm-params/1). The provider-generated-IV conventions never translate (recipe refusal downstream). Real execution is native EVP AES-GCM pinned against Python cryptography (OpenSSLSpec caseAeadReal); synthetic execution is a deterministic PRF keystream plus tag, explicitly not GCM. No wrap/unwrap routes: key wrapping stays CBC-shaped, RSA wrap is T8. F-9 (FINAL-101): the CKF_MESSAGE_ENCRYPT/CKF_MESSAGE_DECRYPT flags are withdrawn (native CK_GCM_MESSAGE_PARAMS is refused per F-GCM-SHAPE, at init CKR_MECHANISM_PARAM_INVALID per PKCS#11 v3.1 section 5.1.6, classic-shaped CK_GCM_PARAMS init plus the gcm-params/1 per-message image stay served, and malformed per-message shapes refuse pinned CKR_ARGUMENTS_BAD).",
       "numeric_id": "0x00001087",
       "routes": [
         {
@@ -27861,15 +27835,13 @@
       "mechanism_info": {
         "flags": [
           "CKF_SIGN",
-          "CKF_VERIFY",
-          "CKF_MESSAGE_SIGN",
-          "CKF_MESSAGE_VERIFY"
+          "CKF_VERIFY"
         ],
         "key_size_unit": "mechanism-specific",
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 section 6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec).",
+      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 section 6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec). Message flags withdrawn (v0.5): PKCS#11 v3.2 defines no message-API parameter shape for GMAC, so CKF_MESSAGE_SIGN/VERIFY are not advertised; the message-sign/verify routes stay for classic-shaped CK_GCM_PARAMS and native CK_GCM_MESSAGE_PARAMS refuses with CKR_MECHANISM_PARAM_INVALID (MessageFlagBatterySpec, message_routed gmac-shape).",
       "numeric_id": "0x0000108e",
       "routes": [
         {
@@ -28905,7 +28877,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: no GOSTR3410 keygen route in the backend surface; behavior/synthetic stay planned.",
+      "notes": "GOST R 34.10 key-pair generation: no GOSTR3410 keygen route in the backend surface; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: no GOSTR3410 keygen route in the backend surface; behavior/synthetic stay planned.",
       "numeric_id": "0x00001200",
       "routes": [],
       "source_refs": [
@@ -28933,7 +28905,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
+      "notes": "GOST R 34.10 signature: no GOST signatures in the pinned OpenSSL 4.0.2 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
       "numeric_id": "0x00001201",
       "routes": [],
       "source_refs": [
@@ -28961,7 +28933,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
+      "notes": "GOST R 34.10 with GOST R 34.11: no GOST signatures in the pinned OpenSSL 4.0.2 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
       "numeric_id": "0x00001202",
       "routes": [],
       "source_refs": [
@@ -28989,7 +28961,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001203",
       "routes": [],
       "source_refs": [
@@ -29017,7 +28989,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
+      "notes": "GOST R 34.10 derive: no GOST provider in the pinned OpenSSL 4.0.2 build (GOST needs an engine), so no route exists.\nReal unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
       "numeric_id": "0x00001204",
       "routes": [],
       "source_refs": [
@@ -29045,7 +29017,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); probed 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "GOST R 34.11 digest: no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); probed 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00001210",
       "routes": [],
       "source_refs": [
@@ -29073,7 +29045,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); same probe, 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
+      "notes": "HMAC over GOST R 34.11-94: the pinned OpenSSL 4.0.2 provider has no GOST digest (GOST needs an engine), so no route exists.\nReal unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); same probe, 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
       "numeric_id": "0x00001211",
       "routes": [],
       "source_refs": [
@@ -29262,7 +29234,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Stays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance; supersedes the recipe-slice deferral for this row).",
+      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.0.2 build (GOST needs an engine), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance; supersedes the recipe-slice deferral for this row).",
       "numeric_id": "0x00001223",
       "routes": [],
       "source_refs": [
@@ -29290,7 +29262,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001224",
       "routes": [],
       "source_refs": [
@@ -30150,7 +30122,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: provider 4.0.2 has no AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB); behavior/synthetic stay planned. Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
+      "notes": "AES-CFB64: the pinned OpenSSL 4.0.2 provider has no CFB64 mode (only CFB/CFB8/CFB1/OFB), and CFB128 output cannot be sliced into CFB64 feedback.\nReal unsupported-with-reason: provider 4.0.2 has no AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB); behavior/synthetic stay planned. Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
       "numeric_id": "0x00002105",
       "routes": [],
       "source_refs": [
@@ -31164,7 +31136,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (TPM 1.1 encodings have no pinned provider equivalent); behavior stays planned.",
+      "notes": "RSA PKCS#1 TPM 1.1 encoding: no pinned-provider equivalent; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (TPM 1.1 encodings have no pinned provider equivalent); behavior stays planned.",
       "numeric_id": "0x00004001",
       "routes": [],
       "source_refs": [
@@ -31192,7 +31164,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (TPM 1.1 encodings have no pinned provider equivalent); behavior stays planned.",
+      "notes": "RSA OAEP TPM 1.1 encoding: no pinned-provider equivalent; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (TPM 1.1 encodings have no pinned provider equivalent); behavior stays planned.",
       "numeric_id": "0x00004002",
       "routes": [],
       "source_refs": [
@@ -31804,7 +31776,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Not-applicable (all columns): no-op placeholder id; nothing to execute.",
+      "notes": "No-op placeholder id; nothing to execute.\nNot-applicable in all columns.",
       "numeric_id": "0x0000400b",
       "routes": [],
       "source_refs": [
@@ -33708,7 +33680,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Salsa20-Poly1305: Salsa20 is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00004022",
       "routes": [],
       "source_refs": [
@@ -33736,7 +33708,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004023",
       "routes": [],
       "source_refs": [
@@ -33764,7 +33736,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004024",
       "routes": [],
       "source_refs": [
@@ -33792,7 +33764,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004025",
       "routes": [],
       "source_refs": [
@@ -33820,7 +33792,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004026",
       "routes": [],
       "source_refs": [
@@ -33848,7 +33820,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004027",
       "routes": [],
       "source_refs": [
@@ -33876,7 +33848,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
+      "notes": "Signal-protocol (X3DH/double ratchet) state machine is unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Signal-protocol state machine unmapped (needs X25519 Raw plus ratchet state); behavior/synthetic stay planned.",
       "numeric_id": "0x00004028",
       "routes": [],
       "source_refs": [
@@ -33904,7 +33876,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Real unsupported (no XEdDSA in the pinned OpenSSL 4.0.2 provider signature list); behavior stays planned.",
+      "notes": "XEdDSA: not in the pinned OpenSSL 4.0.2 provider signature list; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no XEdDSA in the pinned OpenSSL 4.0.2 provider signature list); behavior stays planned.",
       "numeric_id": "0x00004029",
       "routes": [],
       "source_refs": [
@@ -34548,7 +34520,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
+      "notes": "Stateful hash-based signature (HSS): every signature consumes one-time key state, which immutable-engine key storage cannot mutate after success; see GAP-OTP-STATEFUL.\nUnsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
       "numeric_id": "0x00004032",
       "routes": [],
       "source_refs": [
@@ -34576,7 +34548,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
+      "notes": "Stateful hash-based signature (HSS): every signature consumes one-time key state, which immutable-engine key storage cannot mutate after success; see GAP-OTP-STATEFUL.\nUnsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
       "numeric_id": "0x00004033",
       "routes": [],
       "source_refs": [
@@ -34604,7 +34576,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
+      "notes": "Stateful hash-based signature (XMSS/XMSSMT): every signature consumes one-time key state, which immutable-engine key storage cannot mutate after success; see GAP-OTP-STATEFUL.\nUnsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
       "numeric_id": "0x00004034",
       "routes": [],
       "source_refs": [
@@ -34632,7 +34604,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
+      "notes": "Stateful hash-based signature (XMSS/XMSSMT): every signature consumes one-time key state, which immutable-engine key storage cannot mutate after success; see GAP-OTP-STATEFUL.\nUnsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
       "numeric_id": "0x00004035",
       "routes": [],
       "source_refs": [
@@ -34660,7 +34632,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
+      "notes": "Stateful hash-based signature (XMSS/XMSSMT): every signature consumes one-time key state, which immutable-engine key storage cannot mutate after success; see GAP-OTP-STATEFUL.\nUnsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
       "numeric_id": "0x00004036",
       "routes": [],
       "source_refs": [
@@ -34688,7 +34660,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Unsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
+      "notes": "Stateful hash-based signature (XMSS/XMSSMT): every signature consumes one-time key state, which immutable-engine key storage cannot mutate after success; see GAP-OTP-STATEFUL.\nUnsupported-with-reason (all columns): every signature consumes one-time key state, so correct execution must mutate the stored key post-success, which immutable-engine CRUD forbids; see source-issues.json GAP-OTP-STATEFUL.",
       "numeric_id": "0x00004037",
       "routes": [],
       "source_refs": [
@@ -34984,7 +34956,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (generator note): name-shape family hint only; mechanism info unreviewed; no behavior, synthetic, or real route. See spec/source-issues.json. Not-applicable (all columns): vendor range marker, not a mechanism.",
+      "notes": "Vendor range marker, not a mechanism.\nNot-applicable in all columns.",
       "numeric_id": "0x80000000",
       "routes": [],
       "source_refs": [

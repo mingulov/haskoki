@@ -10,7 +10,7 @@ the canonical codecs and parameter validation; these tests pin
 the recipe and its two consumers:
 
 * the model init path enforces both parameter shapes
-  ('validateInit', 'CKR_ARGUMENTS_BAD');
+  ('validateInit', 'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps the AEAD triple to its backend 'AeadSpec'
   and the stream triple to its backend 'CipherSpec'
   ('aeadSpecFor'/'cipherSpecFor' agree with the recipe table:
@@ -209,8 +209,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpEncrypt] False
 
@@ -225,21 +226,21 @@ caseInitParams :: IO ()
 caseInitParams = do
   let goodPoly = encodeChachaPolyParams nonce12 "AD" 16
       goodStream = encodeChachaStreamParams 0 nonce12
-  assertEqual "poly bad tag refused" CKR_ARGUMENTS_BAD
+  assertEqual "poly bad tag refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs polyMech (encodeChachaPolyParams nonce12 "AD" 8)))
-  assertEqual "poly bad nonce refused" CKR_ARGUMENTS_BAD
+  assertEqual "poly bad nonce refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs polyMech (encodeChachaPolyParams "12345678" "AD" 16)))
-  assertEqual "poly garbage refused" CKR_ARGUMENTS_BAD
+  assertEqual "poly garbage refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs polyMech "nope"))
-  assertEqual "poly valid params pass to key resolution" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "poly valid params pass to key resolution" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs polyMech goodPoly))
-  assertEqual "stream past-bound counter refused" CKR_ARGUMENTS_BAD
+  assertEqual "stream past-bound counter refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs streamMech (encodeChachaStreamParams (chachaMaxCounter + 1) nonce12)))
-  assertEqual "stream bad nonce refused" CKR_ARGUMENTS_BAD
+  assertEqual "stream bad nonce refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs streamMech (encodeChachaStreamParams 0 "12345678")))
-  assertEqual "stream garbage refused" CKR_ARGUMENTS_BAD
+  assertEqual "stream garbage refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs streamMech "nope"))
-  assertEqual "stream valid params pass to key resolution" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "stream valid params pass to key resolution" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs streamMech goodStream))
 
 caseDriverAead :: IO ()

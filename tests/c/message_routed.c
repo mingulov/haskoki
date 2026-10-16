@@ -276,6 +276,8 @@ static void extra_legs(MessageApi *a);
 static void oversize_legs(MessageApi *a);
 static void sweep_legs(MessageApi *a);
 static void gcm_shape_legs(MessageApi *a);
+static void gmac_shape_legs(MessageApi *a);
+static void hotp_message_legs(MessageApi *a);
 
 int main(int argc, char **argv) {
   if (argc != 2) return 2;
@@ -321,6 +323,8 @@ int main(int argc, char **argv) {
     extra_legs(&a);
     sweep_legs(&a);
     gcm_shape_legs(&a);
+    gmac_shape_legs(&a);
+    hotp_message_legs(&a);
     if (!proxy) oversize_legs(&a);
     rv("C_Finalize","end",a.C_Finalize(NULL),CKR_OK);
     boundary_legs(&a,1,"post-finalize");
@@ -607,7 +611,8 @@ static void encrypt_legs(MessageApi *a) {
   rv("C_EncryptMessageNext","no-begin",a->C_EncryptMessageNext(f.session,NULL,0,plain,16,o.bytes+1,&o.length,CKF_END_OF_MESSAGE),CKR_OPERATION_NOT_INITIALIZED);
   untouched("C_EncryptMessageNext","no-begin",&o,777);
   rv("C_MessageEncryptFinal","no-init",a->C_MessageEncryptFinal(f.session),CKR_OPERATION_NOT_INITIALIZED);
-  rv("C_MessageEncryptInit","bad-key",a->C_MessageEncryptInit(f.session,&cbc,~0UL),CKR_OBJECT_HANDLE_INVALID);
+  /* Unknown key handle: CKR_KEY_HANDLE_INVALID (PKCS#11 v3.1 section 5.1.6; the message init return lists carry it, not CKR_OBJECT_HANDLE_INVALID). */
+  rv("C_MessageEncryptInit","bad-key",a->C_MessageEncryptInit(f.session,&cbc,~0UL),CKR_KEY_HANDLE_INVALID);
   rv("C_MessageEncryptInit","unknown-mechanism",a->C_MessageEncryptInit(f.session,&unknown,f.aes),CKR_MECHANISM_INVALID);
   rv("C_MessageEncryptInit","init-cbc",a->C_MessageEncryptInit(f.session,&cbc,f.aes),CKR_OK);
   rv("C_MessageEncryptInit","duplicate-init",a->C_MessageEncryptInit(f.session,&cbc,f.aes),CKR_OPERATION_ACTIVE);
@@ -742,7 +747,7 @@ static void decrypt_legs(MessageApi *a) {
   rv("C_DecryptMessageNext","no-begin",a->C_DecryptMessageNext(f.session,NULL,0,cipher,16,o.bytes+1,&o.length,CKF_END_OF_MESSAGE),CKR_OPERATION_NOT_INITIALIZED);
   untouched("C_DecryptMessageNext","no-begin",&o,777);
   rv("C_MessageDecryptFinal","no-init",a->C_MessageDecryptFinal(f.session),CKR_OPERATION_NOT_INITIALIZED);
-  rv("C_MessageDecryptInit","bad-key",a->C_MessageDecryptInit(f.session,&cbc,~0UL),CKR_OBJECT_HANDLE_INVALID);
+  rv("C_MessageDecryptInit","bad-key",a->C_MessageDecryptInit(f.session,&cbc,~0UL),CKR_KEY_HANDLE_INVALID);
   rv("C_MessageDecryptInit","unknown-mechanism",a->C_MessageDecryptInit(f.session,&unknown,f.aes),CKR_MECHANISM_INVALID);
   rv("C_MessageDecryptInit","init-cbc",a->C_MessageDecryptInit(f.session,&cbc,f.aes),CKR_OK);
   rv("C_MessageDecryptInit","duplicate-init",a->C_MessageDecryptInit(f.session,&cbc,f.aes),CKR_OPERATION_ACTIVE);
@@ -866,7 +871,7 @@ static void sign_legs(MessageApi *a) {
   rv("C_SignMessageNext","no-begin",a->C_SignMessageNext(f.session,NULL,0,textBytes,8,o.bytes+1,&o.length),CKR_OPERATION_NOT_INITIALIZED);
   untouched("C_SignMessageNext","no-begin",&o,777);
   rv("C_MessageSignFinal","missing-context",a->C_MessageSignFinal(f.session),CKR_OPERATION_NOT_INITIALIZED);
-  rv("C_MessageSignInit","bad-key",a->C_MessageSignInit(f.session,&hmac,~0UL),CKR_OBJECT_HANDLE_INVALID);
+  rv("C_MessageSignInit","bad-key",a->C_MessageSignInit(f.session,&hmac,~0UL),CKR_KEY_HANDLE_INVALID);
   rv("C_MessageSignInit","denied-sign-usage",a->C_MessageSignInit(f.session,&hmac,f.noSign),CKR_KEY_FUNCTION_NOT_PERMITTED);
   rv("C_MessageSignInit","init-hmac",a->C_MessageSignInit(f.session,&hmac,f.mac),CKR_OK);
   rv("C_MessageSignInit","duplicate-init",a->C_MessageSignInit(f.session,&hmac,f.mac),CKR_OPERATION_ACTIVE);
@@ -962,7 +967,7 @@ static void verify_legs(MessageApi *a) {
   rv("C_VerifyMessageBegin","no-init",a->C_VerifyMessageBegin(f.session,NULL,0),CKR_OPERATION_NOT_INITIALIZED);
   rv("C_VerifyMessageNext","no-begin",a->C_VerifyMessageNext(f.session,NULL,0,textBytes,8,witness,32),CKR_OPERATION_NOT_INITIALIZED);
   rv("C_MessageVerifyFinal","missing-context",a->C_MessageVerifyFinal(f.session),CKR_OPERATION_NOT_INITIALIZED);
-  rv("C_MessageVerifyInit","bad-key",a->C_MessageVerifyInit(f.session,&hmac,~0UL),CKR_OBJECT_HANDLE_INVALID);
+  rv("C_MessageVerifyInit","bad-key",a->C_MessageVerifyInit(f.session,&hmac,~0UL),CKR_KEY_HANDLE_INVALID);
   rv("C_MessageVerifyInit","denied-verify-usage",a->C_MessageVerifyInit(f.session,&hmac,f.noVerify),CKR_KEY_FUNCTION_NOT_PERMITTED);
   rv("C_MessageVerifyInit","init-hmac",a->C_MessageVerifyInit(f.session,&hmac,f.mac),CKR_OK);
   rv("C_MessageVerifyInit","duplicate-init",a->C_MessageVerifyInit(f.session,&hmac,f.mac),CKR_OPERATION_ACTIVE);
@@ -1226,10 +1231,12 @@ static void sweep_gcm_kat(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HA
 }
 
 /* F-9 (FINAL-101, T-9 narrowed): header-native CK_GCM_MESSAGE_PARAMS
- * shapes refuse pinned CKR_ARGUMENTS_BAD at every GCM message entry
- * point (init, one-shot, begin, multipart end), for encrypt and
- * decrypt alike; truncated images refuse the same code at the same
- * points. The classic-shaped path (CK_GCM_PARAMS init plus the
+ * shapes refuse at every GCM message entry point (init, one-shot,
+ * begin, multipart end), for encrypt and decrypt alike; truncated
+ * images refuse the same code at the same points. At init the image
+ * is the mechanism parameter, so the code is CKR_MECHANISM_PARAM_INVALID
+ * (PKCS#11 v3.1 section 5.1.6: invalid parameters supplied to the
+ * mechanism); the per-message entry points keep CKR_ARGUMENTS_BAD. The classic-shaped path (CK_GCM_PARAMS init plus the
  * gcm-params/1 per-message image) stays served, including the
  * begin-empty/supply-at-end pattern and recovery after each refusal. */
 static void gcm_shape_legs(MessageApi *a) {
@@ -1250,9 +1257,9 @@ static void gcm_shape_legs(MessageApi *a) {
   if (result != CKR_OK) exit(1);
   memset(tag,0,sizeof(tag));
   key=make_key(a,s,CKK_AES,gcmKeyBytes,16,CK_TRUE,CK_TRUE,CK_FALSE,CK_FALSE);
-  rv("gcm-shape","native-init",a->C_MessageEncryptInit(s,&mNative0,key),CKR_ARGUMENTS_BAD);
-  rv("gcm-shape","native-decrypt-init",a->C_MessageDecryptInit(s,&mNativeTag,key),CKR_ARGUMENTS_BAD);
-  rv("gcm-shape","trunc-init",a->C_MessageEncryptInit(s,&mTrunc,key),CKR_ARGUMENTS_BAD);
+  rv("gcm-shape","native-init",a->C_MessageEncryptInit(s,&mNative0,key),CKR_MECHANISM_PARAM_INVALID);
+  rv("gcm-shape","native-decrypt-init",a->C_MessageDecryptInit(s,&mNativeTag,key),CKR_MECHANISM_PARAM_INVALID);
+  rv("gcm-shape","trunc-init",a->C_MessageEncryptInit(s,&mTrunc,key),CKR_MECHANISM_PARAM_INVALID);
   rv("gcm-shape","pm-init",a->C_MessageEncryptInit(s,&mClassic,key),CKR_OK);
   reset_output(&out,64);
   rv("gcm-shape","native-per-message",a->C_EncryptMessage(s,(CK_BYTE_PTR)&nativeTag,sizeof(nativeTag),gcmAad,8,gcmPt,16,out.bytes+1,&out.length),CKR_ARGUMENTS_BAD);
@@ -1316,6 +1323,83 @@ static void gcm_shape_legs(MessageApi *a) {
   output_bytes("gcm-shape","badend-recover-sealed",&out,gcmSealed,32);
   rv("gcm-shape","badend-final",a->C_MessageEncryptFinal(s),CKR_OK);
   rv("gcm-shape","close",a->C_CloseSession(s),CKR_OK);
+}
+
+/* GMAC message flags are withdrawn: PKCS#11 v3.2 defines no message-API
+ * parameter shape for CKM_AES_GMAC. A caller passing the native
+ * CK_GCM_MESSAGE_PARAMS to C_MessageSignInit/C_MessageVerifyInit gets
+ * CKR_MECHANISM_PARAM_INVALID (section 5.1.6), and single-part GMAC with
+ * the classic CK_GCM_PARAMS still signs and verifies. */
+static void gmac_shape_legs(MessageApi *a) {
+  static CK_BYTE data[16] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+  CK_SESSION_HANDLE s=0;
+  CK_OBJECT_HANDLE key=0;
+  CK_BYTE tag[16];
+  CK_BYTE mac[32];
+  CK_ULONG macLen=sizeof(mac);
+  CK_GCM_MESSAGE_PARAMS native={gcmNonce,12,0,CKG_NO_GENERATE,tag,128};
+  CK_GCM_PARAMS gp={gcmNonce,12,96,NULL,0,128};
+  CK_MECHANISM mNative={CKM_AES_GMAC,(CK_VOID_PTR)&native,sizeof(native)};
+  CK_MECHANISM mClassic={CKM_AES_GMAC,(CK_VOID_PTR)&gp,sizeof(gp)};
+  CK_RV result=a->C_OpenSession(tokenSlot,CKF_SERIAL_SESSION|CKF_RW_SESSION,NULL,NULL,&s);
+  rv("gmac-shape","open",result,CKR_OK);
+  if (result != CKR_OK) exit(1);
+  memset(tag,0,sizeof(tag));
+  key=make_key(a,s,CKK_AES,gcmKeyBytes,16,CK_FALSE,CK_FALSE,CK_TRUE,CK_TRUE);
+  rv("gmac-shape","native-sign-init",a->C_MessageSignInit(s,&mNative,key),CKR_MECHANISM_PARAM_INVALID);
+  rv("gmac-shape","native-verify-init",a->C_MessageVerifyInit(s,&mNative,key),CKR_MECHANISM_PARAM_INVALID);
+  rv("gmac-shape","classic-sign-init",a->C_SignInit(s,&mClassic,key),CKR_OK);
+  rv("gmac-shape","classic-sign",a->C_Sign(s,data,sizeof(data),mac,&macLen),CKR_OK);
+  check("gmac-shape","classic-tag-length",macLen == 16);
+  rv("gmac-shape","classic-verify-init",a->C_VerifyInit(s,&mClassic,key),CKR_OK);
+  rv("gmac-shape","classic-verify",a->C_Verify(s,data,sizeof(data),mac,macLen),CKR_OK);
+  rv("gmac-shape","close",a->C_CloseSession(s),CKR_OK);
+}
+
+/* HOTP has no message-API parameter shape in PKCS#11 v3.2, so it has
+ * no message route: message init refuses CKR_MECHANISM_INVALID for the
+ * standard CK_OTP_PARAMS and for the retired 16-byte hotp-params/1
+ * image alike, while classic sign with CK_OTP_PARAMS still works. The
+ * other classic-only rows (no message arm: CCM, ChaCha20-Poly1305,
+ * the SSL3 MACs) refuse message init the same way, before any
+ * parameter or key check. */
+static void hotp_message_legs(MessageApi *a) {
+  static CK_BYTE value[20] = {'1','2','3','4','5','6','7','8','9','0',
+                              '1','2','3','4','5','6','7','8','9','0'};
+  CK_BYTE counter[8] = {0,0,0,0,0,0,0,0};
+  CK_BYTE oldimg[16] = {0,0,0,0,0,0,0,1, 0,0,0,0,0,0,0,6};
+  CK_OTP_PARAM entry = {CK_OTP_COUNTER, counter, sizeof(counter)};
+  CK_OTP_PARAMS params = {&entry, 1};
+  CK_MECHANISM mStd = {CKM_HOTP, (CK_VOID_PTR)&params, sizeof(params)};
+  CK_MECHANISM mOld = {CKM_HOTP, (CK_VOID_PTR)oldimg, sizeof(oldimg)};
+  CK_SESSION_HANDLE s = 0;
+  CK_OBJECT_HANDLE key = 0;
+  CK_BYTE code[16];
+  CK_ULONG codeLen = sizeof(code);
+  CK_RV result = a->C_OpenSession(tokenSlot,CKF_SERIAL_SESSION|CKF_RW_SESSION,NULL,NULL,&s);
+  rv("hotp-message","open",result,CKR_OK);
+  if (result != CKR_OK) exit(1);
+  key = make_key(a,s,CKK_HOTP,value,sizeof(value),CK_FALSE,CK_FALSE,CK_TRUE,CK_TRUE);
+  rv("hotp-message","std-sign-init",a->C_MessageSignInit(s,&mStd,key),CKR_MECHANISM_INVALID);
+  rv("hotp-message","std-verify-init",a->C_MessageVerifyInit(s,&mStd,key),CKR_MECHANISM_INVALID);
+  rv("hotp-message","old-image-sign-init",a->C_MessageSignInit(s,&mOld,key),CKR_MECHANISM_INVALID);
+  rv("hotp-message","old-image-verify-init",a->C_MessageVerifyInit(s,&mOld,key),CKR_MECHANISM_INVALID);
+  rv("hotp-message","classic-sign-init",a->C_SignInit(s,&mStd,key),CKR_OK);
+  rv("hotp-message","classic-sign",a->C_Sign(s,(CK_BYTE_PTR)"",0,code,&codeLen),CKR_OK);
+  check("hotp-message","classic-code",codeLen == 6 && memcmp(code,"755224",6) == 0);
+  {
+    CK_MECHANISM ccm = {CKM_AES_CCM, NULL, 0};
+    CK_MECHANISM ccp = {CKM_CHACHA20_POLY1305, NULL, 0};
+    CK_MECHANISM md5 = {CKM_SSL3_MD5_MAC, NULL, 0};
+    CK_MECHANISM sha1 = {CKM_SSL3_SHA1_MAC, NULL, 0};
+    rv("routeless","aes-ccm-encrypt-init",a->C_MessageEncryptInit(s,&ccm,key),CKR_MECHANISM_INVALID);
+    rv("routeless","aes-ccm-decrypt-init",a->C_MessageDecryptInit(s,&ccm,key),CKR_MECHANISM_INVALID);
+    rv("routeless","chacha20-poly1305-encrypt-init",a->C_MessageEncryptInit(s,&ccp,key),CKR_MECHANISM_INVALID);
+    rv("routeless","chacha20-poly1305-decrypt-init",a->C_MessageDecryptInit(s,&ccp,key),CKR_MECHANISM_INVALID);
+    rv("routeless","ssl3-md5-mac-sign-init",a->C_MessageSignInit(s,&md5,key),CKR_MECHANISM_INVALID);
+    rv("routeless","ssl3-sha1-mac-verify-init",a->C_MessageVerifyInit(s,&sha1,key),CKR_MECHANISM_INVALID);
+  }
+  rv("hotp-message","close",a->C_CloseSession(s),CKR_OK);
 }
 
 static void sweep_ecdsa_msg(MessageApi *a, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE priv, CK_OBJECT_HANDLE pub) {
@@ -1453,7 +1537,7 @@ static void sweep_legs(MessageApi *a) {
     sweep_sign(a,s,"hmac-sha256-general",&mHmacGen,hmac20,hmac20);
     sweep_flags(a,CKM_AES_CMAC,"aes-cmac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
     sweep_sign(a,s,"aes-cmac",&mCmac,aes,aes);
-    sweep_flags(a,CKM_AES_GMAC,"aes-gmac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
+    sweep_flags(a,CKM_AES_GMAC,"aes-gmac",0); /* message flags withdrawn: no message-API GMAC parameter shape */
     sweep_sign(a,s,"aes-gmac",&mGmac,aes,aes);
     sweep_flags(a,CKM_AES_XCBC_MAC,"aes-xcbc-mac",CKF_MESSAGE_SIGN|CKF_MESSAGE_VERIFY);
     sweep_sign(a,s,"aes-xcbc-mac",&mXcbc,aes,aes);

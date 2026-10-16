@@ -15,7 +15,7 @@ module ConfigHonestySpec (spec) where
 
 import Control.Exception (bracket)
 import qualified Data.ByteString.Char8 as BC8
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf, sort, (\\))
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.FilePath ((</>))
 import System.Timeout (timeout)
@@ -130,7 +130,13 @@ spec = testGroup "Config honesty"
     , testCase "refusal: config check rejects dishonesty" caseStartupRefusalCheck
     ]
   , testGroup "audit"
-    [ testCase "catalog names every reserved knob" caseAuditReserved
+    [ testCase "key table matches the parser catalog" caseKeyTableMatches
+    , testCase "key table: missing key is caught (negative control)" caseKeyTableMissing
+    , testCase "key table: wrong class is caught (negative control)" caseKeyTableWrongClass
+    , testCase "key table: extra key is caught (negative control)" caseKeyTableExtra
+    , testCase "every reserved key is on a reserved-*/template-bounds line" caseReservedOnLines
+    , testCase "reserved disclosure: dropped line is caught (negative control)" caseReservedLineMissing
+    , testCase "catalog names every reserved knob" caseAuditReserved
     , testCase "catalog names every never-knob" caseAuditNeverKnobs
     , testCase "catalog names every refusal rule" caseAuditRefusals
     , testCase "catalog carries the dogfood matrix" caseAuditDogfood
@@ -877,3 +883,116 @@ caseAuditDogfood = do
     , "small-limits.toml", "sim-demo.toml", "multi-token.toml"
     , "defaultConfig"
     ]
+
+-- ---------------------------------------------------------------------------
+-- Mechanical comparison: documented key table vs the parser catalog
+-- ---------------------------------------------------------------------------
+
+classToken :: KeyClass -> String
+classToken Enforced = "E"
+classToken Refused = "R"
+classToken EnforcedRefused = "E/R"
+classToken Reserved = "D"
+
+dotted :: TomlKey -> String
+dotted ("", k) = k
+dotted (sec, k) = sec ++ "." ++ k
+
+-- | Rows of the "Accepted settings" table: @| `key` | CLASS | ...@.
+docKeyRows :: String -> [(String, String)]
+docKeyRows doc = concatMap row (lines section)
+  where
+    afterHead = drop 1 (dropWhile (not . ("## Accepted settings" `isPrefixOf`)) (lines doc))
+    section = unlines (takeWhile (not . ("## " `isPrefixOf`)) afterHead)
+    row ln = case splitCells ln of
+      (kc : cc : _)
+        | ('`' : k) <- kc, not (null k), last k == '`'
+        , cc `elem` ["E", "R", "E/R", "D"] -> [(init k, cc)]
+      _ -> []
+    splitCells ln = case ln of
+      ('|' : rest) -> map trimSp (splitBar rest)
+      _ -> []
+    splitBar str = case break (== '|') str of
+      (c, []) -> [c]
+      (c, _ : more) -> c : splitBar more
+    trimSp = reverse . dropWhile (== ' ') . reverse . dropWhile (== ' ')
+
+-- | Empty when the table and the catalog are set-equal with equal class.
+compareKeyTable :: String -> [String]
+compareKeyTable doc =
+  [ "documented but not in parser: " ++ k | k <- docKeys \\ catKeys ]
+  ++ [ "in parser but not documented: " ++ k | k <- catKeys \\ docKeys ]
+  ++ [ "duplicate documented key: " ++ k | k <- docKeys \\ uniq docKeys ]
+  ++ [ "class mismatch for " ++ k ++ ": doc " ++ c ++ ", parser " ++ classToken pc
+     | (k, c) <- rows, Just pc <- [lookup k cat], classToken pc /= c ]
+  where
+    rows = docRows
+    docRows = docKeyRows doc
+    docKeys = sort (map fst docRows)
+    cat = [ (dotted k, c) | (k, c) <- configKeyCatalog ]
+    catKeys = sort (map fst cat)
+    uniq = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
+
+caseKeyTableMatches :: IO ()
+caseKeyTableMatches = do
+  doc <- honestyCatalog
+  assertEqual "44 catalog keys" 44 (length configKeyCatalog)
+  assertEqual "doc table vs parser catalog" [] (compareKeyTable doc)
+
+dropRow :: String -> String -> String
+dropRow key = unlines . filter (not . (("| `" ++ key ++ "` |") `isPrefixOf`)) . lines
+
+caseKeyTableMissing :: IO ()
+caseKeyTableMissing = do
+  doc <- honestyCatalog
+  assertEqual "scratch doc without tokens.token_ids"
+    ["in parser but not documented: tokens.token_ids"]
+    (compareKeyTable (dropRow "tokens.token_ids" doc))
+
+caseKeyTableWrongClass :: IO ()
+caseKeyTableWrongClass = do
+  doc <- honestyCatalog
+  let from = "| `limits.attribute_depth` | D |" :: String
+      to = "| `limits.attribute_depth` | E |" :: String
+      mutate ln
+        | from `isPrefixOf` ln = to ++ drop (length from) ln
+        | otherwise = ln
+  assertEqual "scratch doc with a flipped class"
+    ["class mismatch for limits.attribute_depth: doc E, parser D"]
+    (compareKeyTable (unlines (map mutate (lines doc))))
+
+caseKeyTableExtra :: IO ()
+caseKeyTableExtra = do
+  doc <- honestyCatalog
+  let extra = "| `trace.level` | E | invented | none |"
+      ls = lines doc
+      (pre, post) = break ("| `trace.enabled`" `isPrefixOf`) ls
+  assertEqual "scratch doc with an invented key"
+    ["documented but not in parser: trace.level"]
+    (compareKeyTable (unlines (pre ++ [extra] ++ post)))
+
+-- | Lines of the capabilities report that disclose reserved knobs.
+reservedLines :: String -> [String]
+reservedLines out =
+  [ ln | ln <- lines out
+       , "reserved-" `isPrefixOf` ln || "template-bounds" `isPrefixOf` ln ]
+
+-- | Reserved (class D) keys whose bare name appears on no such line.
+undisclosedReserved :: String -> [String]
+undisclosedReserved out =
+  [ dotted k | (k@(_, leaf), Reserved) <- configKeyCatalog
+             , not (any (leaf `isInfixOf`) (reservedLines out)) ]
+
+caseReservedOnLines :: IO ()
+caseReservedOnLines = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
+  assertEqual "reserved keys in the catalog" 6
+    (length [ () | (_, Reserved) <- configKeyCatalog ])
+  assertEqual "undisclosed reserved keys" [] (undisclosedReserved (ceOut r))
+
+caseReservedLineMissing :: IO ()
+caseReservedLineMissing = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
+  let without = unlines (filter (not . ("reserved-async" `isPrefixOf`)) (lines (ceOut r)))
+  assertEqual "capabilities without the reserved-async line"
+    ["async.persist_detached"] (undisclosedReserved without)

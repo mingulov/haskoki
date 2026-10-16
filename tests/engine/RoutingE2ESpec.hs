@@ -1919,8 +1919,8 @@ caseDriverByteOps = withBackend $ \env -> do
   e2 <- deriveAs Nothing xt fExt4 2
   assertEqual "extract sub-byte" (hex "0010") e2
   -- Typed refusals: junk params, a non-empty info string, an
-  -- over-natural length, the missing aux key, the XOR
-  -- mismatch, and the EXTRACT overrun.
+  -- over-natural length, the missing aux key, and the EXTRACT
+  -- overrun.
   junk <- runEffect env res (FxDerive cbd (Just baseOid) Nothing "junk" BS.empty 16)
   case junk of
     GotCryptoError (CryptoFailed _) -> pure ()
@@ -1937,10 +1937,16 @@ caseDriverByteOps = withBackend $ \env -> do
   case noAux of
     GotCryptoError (CryptoBadKey _ _) -> pure ()
     other -> assertFailure ("expected BadKey byteop no-aux, got: " ++ show other)
-  mismatch <- runEffect env res (FxDerive xx (Just baseOid) Nothing fBD BS.empty 16)
-  case mismatch of
+  -- XOR over unequal lengths covers the shorter operand
+  -- (§6.43.6): base 32 / data 16 and base 32 / data 48.
+  xShort <- deriveAs Nothing xx fBD 16
+  assertEqual "xor short data" (hex "010003020504070609080b0a0d0c0f0e") xShort
+  xLong <- deriveAs Nothing xx (encodeByteOpsParams 0 0 (BS.replicate 48 0x0f)) 32
+  assertEqual "xor long data" x32 xLong
+  pastMin <- runEffect env res (FxDerive xx (Just baseOid) Nothing fBD BS.empty 17)
+  case pastMin of
     GotCryptoError (CryptoFailed _) -> pure ()
-    other -> assertFailure ("expected Failed byteop xor mismatch, got: " ++ show other)
+    other -> assertFailure ("expected Failed byteop xor past the shorter length, got: " ++ show other)
   overrun <- runEffect env res
     (FxDerive xt (Just baseOid) Nothing (encodeByteOpsParams 0 248 BS.empty) BS.empty 16)
   case overrun of
@@ -2458,19 +2464,18 @@ caseDriverHotp = withBackend $ \env -> do
   case badParams of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
-  -- Message variants agree on empty input and refuse input alike.
+  -- No message routes (v0.5): the message effects are unsupported,
+  -- even with a well-formed hotp-params/1 image.
   mCode <- runEffect env res
     (FxMessageSign hotpMech (Just keyOid) (encodeHotpParams 0 6) BS.empty)
-    >>= expectBytes
-  assertEqual "message agrees" "755224" mCode
+  case mCode of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
   mVer <- runEffect env res
     (FxMessageVerify hotpMech (Just keyOid) (encodeHotpParams 0 6) BS.empty "755224")
-  assertEqual "message verifies" (GotValid True) mVer
-  mBad <- runEffect env res
-    (FxMessageSign hotpMech (Just keyOid) (encodeHotpParams 0 6) "x")
-  case mBad of
-    GotCryptoError (CryptoFailed _) -> pure ()
-    other -> assertFailure ("expected Failed, got: " ++ show other)
+  case mVer of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
   -- HOTP keygen is real via the native DRBG surface (
   -- AES_KEY_GEN precedent flipped): 20 fresh bytes land framed
   -- as lone material.

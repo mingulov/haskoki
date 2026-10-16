@@ -21,7 +21,7 @@ codecs, parameter validation, block/key/IV geometry, and mechanism
 table; these tests pin the recipe and its three consumers:
 
 * the model init path enforces per-mechanism cipher parameters
-  ('validateInit', 'CKR_ARGUMENTS_BAD');
+  ('validateInit', 'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps every covered (mechanism, key length, params)
   triple to its backend 'CipherSpec' ('cipherSpecFor' agrees with
   the recipe table);
@@ -598,8 +598,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpEncrypt] False
 
@@ -608,94 +609,94 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 -- | Valid parameters proceed PAST the parameter check (which runs
 -- before key binding): with a well-formed cipher spec they reach key
--- resolution ('CKR_OBJECT_HANDLE_INVALID' for the unknown handle).
+-- resolution ('CKR_KEY_HANDLE_INVALID' for the unknown handle).
 mkArgs :: MechanismId -> BS.ByteString -> InitArgs
 mkArgs mech params = InitArgs OpEncrypt mech params (Just badKey)
   (Just (CipherSpec 16 False)) Nothing
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "cbc ragged iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "cbc ragged iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs cbcMech (BS.replicate 8 0)))
-  assertEqual "cbc empty iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "cbc empty iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs cbcMech BS.empty))
-  assertEqual "cbc valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "cbc valid iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs cbcMech (BS.replicate 16 0)))
-  assertEqual "ecb iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "ecb iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ecbMech (BS.replicate 16 0)))
-  assertEqual "ecb empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "ecb empty passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs ecbMech BS.empty))
-  assertEqual "des3 16-byte iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "des3 16-byte iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs d3Mech (BS.replicate 16 0)))
-  assertEqual "des3 8-byte iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "des3 8-byte iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs d3Mech (BS.replicate 8 0)))
-  assertEqual "ctr 128-bit image passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "ctr 128-bit image passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs ctrMech (encodeCtrParams 128 (BS.replicate 16 0))))
-  assertEqual "ctr 64-bit refused" CKR_ARGUMENTS_BAD
+  assertEqual "ctr 64-bit refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ctrMech (encodeCtrParams 64 (BS.replicate 16 0))))
-  assertEqual "ctr raw iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "ctr raw iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ctrMech (BS.replicate 16 0)))
-  assertEqual "cts ragged iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "cts ragged iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ctsMech (BS.replicate 8 0)))
-  assertEqual "cts empty iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "cts empty iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ctsMech BS.empty))
-  assertEqual "cts valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "cts valid iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs ctsMech (BS.replicate 16 0)))
-  assertEqual "cfb128 ragged iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "cfb128 ragged iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs cfb128Mech (BS.replicate 8 0)))
-  assertEqual "cfb128 valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "cfb128 valid iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs cfb128Mech (BS.replicate 16 0)))
-  assertEqual "cfb8 valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "cfb8 valid iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs cfb8Mech (BS.replicate 16 0)))
-  assertEqual "cfb1 valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "cfb1 valid iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs cfb1Mech (BS.replicate 16 0)))
-  assertEqual "ofb ragged iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "ofb ragged iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ofbMech (BS.replicate 8 0)))
-  assertEqual "ofb valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "ofb valid iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs ofbMech (BS.replicate 16 0)))
-  assertEqual "kw iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "kw iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs kwMech (BS.replicate 16 0)))
-  assertEqual "kw empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "kw empty passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs kwMech BS.empty))
-  assertEqual "kwpad iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "kwpad iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs kwPadMech (BS.replicate 8 0)))
-  assertEqual "kwpad empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "kwpad empty passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs kwPadMech BS.empty))
-  assertEqual "kwp iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "kwp iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs kwpMech (BS.replicate 16 0)))
-  assertEqual "kwp empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "kwp empty passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs kwpMech BS.empty))
-  assertEqual "kwpkcs7 4-byte iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "kwpkcs7 4-byte iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs kwp7Mech (BS.replicate 4 0)))
-  assertEqual "kwpkcs7 16-byte iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "kwpkcs7 16-byte iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs kwp7Mech (BS.replicate 16 0)))
-  assertEqual "kwpkcs7 empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "kwpkcs7 empty passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs kwp7Mech BS.empty))
-  assertEqual "kwpkcs7 8-byte iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "kwpkcs7 8-byte iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs kwp7Mech (BS.replicate 8 0)))
-  assertEqual "xts ragged tweak refused" CKR_ARGUMENTS_BAD
+  assertEqual "xts ragged tweak refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs xtsMech (BS.replicate 8 0)))
-  assertEqual "xts empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "xts empty refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs xtsMech BS.empty))
-  assertEqual "xts valid tweak passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "xts valid tweak passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs xtsMech (BS.replicate 16 0)))
-  assertEqual "aria-pad ragged iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "aria-pad ragged iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ariaPadMech (BS.replicate 8 0)))
-  assertEqual "aria-pad valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "aria-pad valid iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs ariaPadMech (BS.replicate 16 0)))
-  assertEqual "camellia-pad empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "camellia-pad empty refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs camPadMech BS.empty))
-  assertEqual "camellia-pad valid iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "camellia-pad valid iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs camPadMech (BS.replicate 16 0)))
-  assertEqual "des3-pad 16-byte iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "des3-pad 16-byte iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs d3PadMech (BS.replicate 16 0)))
-  assertEqual "des3-pad 8-byte iv passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "des3-pad 8-byte iv passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs d3PadMech (BS.replicate 8 0)))
-  assertEqual "camellia-ctr 128-bit image passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "camellia-ctr 128-bit image passes params" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs camCtrMech (encodeCtrParams 128 (BS.replicate 16 0))))
-  assertEqual "camellia-ctr 64-bit refused" CKR_ARGUMENTS_BAD
+  assertEqual "camellia-ctr 64-bit refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs camCtrMech (encodeCtrParams 64 (BS.replicate 16 0))))
-  assertEqual "camellia-ctr raw iv refused" CKR_ARGUMENTS_BAD
+  assertEqual "camellia-ctr raw iv refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs camCtrMech (BS.replicate 16 0)))
 
 caseDriverMap :: IO ()

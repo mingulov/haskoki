@@ -1,9 +1,5 @@
-# frozen parity subset (R9): <family>	<exact diff line> — 83 lines, diff.txt order
-G-inversion	skipped passed ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_key_handle_invalid
+# frozen parity subset (v0.5 re-freeze): <family>	<exact diff line> — 61 lines, diff.txt order
 E-boundary	passed skipped ckr/test_ckr_derive.py::TestDeriveKeyErrors::test_key_type_inconsistent
-G-inversion	skipped passed ckr/test_ckr_sign.py::TestSignInitErrors::test_key_handle_invalid
-G-inversion	skipped passed ckr/test_ckr_verify.py::TestVerifyInitErrors::test_key_handle_invalid
-G-inversion	skipped passed security/test_operation_state_uaf.py::TestDigestOperationStateUAF::test_digest_key_after_destroy_does_not_crash
 E-boundary	passed skipped security/test_recover_length_boundary.py::TestRecoverOutputLengthBoundary::test_verify_recover_inflated_pul_data_len_does_not_crash
 B-blowfish	passed skipped test_blowfish.py::TestBlowfishEncryption::test_blowfish_cbc_different_ivs
 B-blowfish	passed skipped test_blowfish.py::TestBlowfishEncryption::test_blowfish_cbc_pad_different_keys
@@ -13,24 +9,6 @@ B-blowfish	passed skipped test_mech_encrypt.py::TestMechEncryptKAT::test_kat_vec
 B-blowfish	passed skipped test_mech_encrypt.py::TestMechEncryptKAT::test_kat_vector[BLOWFISH_CBC_PAD]
 B-blowfish	passed skipped test_mech_encrypt.py::TestMechEncryptRoundtrip::test_roundtrip[BLOWFISH_CBC]
 B-blowfish	passed skipped test_mech_encrypt.py::TestMechEncryptRoundtrip::test_roundtrip[BLOWFISH_CBC_PAD]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[AES_CTR]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[BLOWFISH_CBC]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[BLOWFISH_CBC_PAD]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[CAMELLIA_CTR]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[CHACHA20]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[RC2_CBC]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[RC2_CBC_PAD]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[RC2_ECB]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_decrypt_missing_required_param[RSA_PKCS_OAEP]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[AES_CTR]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[BLOWFISH_CBC]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[BLOWFISH_CBC_PAD]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[CAMELLIA_CTR]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[CHACHA20]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[RC2_CBC]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[RC2_CBC_PAD]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[RC2_ECB]
-G-inversion	skipped passed test_mech_message.py::TestRegistryMessageBadParameters::test_registry_message_encrypt_missing_required_param[RSA_PKCS_OAEP]
 A-msg-init-0x71	passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[AES_CTR]
 A-msg-init-0x71	passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[BLOWFISH_CBC]
 A-msg-init-0x71	passed skipped test_mech_message.py::TestRegistryMessageInit::test_registry_message_decrypt_init[BLOWFISH_CBC_PAD]

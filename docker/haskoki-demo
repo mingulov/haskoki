@@ -18,7 +18,7 @@
 # Profiles FROZEN (R4; see examples/release/pkcs11-check/README).
 # Compare parity subset FROZEN (R5): this command diffs ALL collected
 # ids (raw plumbing); the shipped examples/release/compare-classify
-# wrapper classifies the 83 frozen exclusions with per-id reasons
+# wrapper classifies the 61 frozen exclusions with per-id reasons
 # (driver: scripts/test-demo-image.sh).
 # Demo PINs/seeds/labels are PUBLIC fixtures (values never logged).
 #
@@ -161,7 +161,7 @@ run dir.
 
 Subset = frozen parity subset (R5). For the subset-aware view, run
 the shipped classifier over the run dir — it splits the raw diff
-into known-difference (83 frozen exclusions with per-id reasons),
+into known-difference (61 frozen exclusions with per-id reasons),
 direct-only, flaky, and unexpected-difference buckets and leaves
 diff.txt / shared-findings.txt untouched:
   /opt/haskoki/examples/release/compare-classify/compare-classify <run-dir>

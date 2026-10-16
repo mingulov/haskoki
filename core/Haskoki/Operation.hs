@@ -388,17 +388,26 @@ isRc4Mech m = case cipherRecipeFor m of
 -- via 'dsaRecipeFor'; CMAC inits enforce the plain/GENERAL
 -- shape via 'cmacRecipeFor'; AEAD inits enforce the caller IV and
 -- approved tag width via 'gcmRecipeFor'; CCM inits refuse
--- out-of-range nonces and tag widths with
--- 'CKR_MECHANISM_PARAM_INVALID' (OASIS §2.20.2 pins that code for
--- bad CCM parameters at init); later slices extend this
--- to KDF recipes.
+-- out-of-range nonces and tag widths (OASIS §2.20.2 pins
+-- 'CKR_MECHANISM_PARAM_INVALID' for bad CCM parameters at init);
+-- later slices extend this to KDF recipes.
+-- Every refusal here judges only the mechanism parameter
+-- (@pMechanism->pParameter@: NULL, wrong length or malformed), so
+-- each one is 'CKR_MECHANISM_PARAM_INVALID' — PKCS#11 v3.1 section
+-- 5.1.6: "Invalid parameters were supplied to the mechanism
+-- specified to the cryptographic operation". 'CKR_ARGUMENTS_BAD'
+-- (the generic function-argument code) stays with the faults that
+-- are not the mechanism parameter: a NULL @pMechanism@ or a NULL
+-- @pParameter@ with a nonzero length (C shim), the cipher and
+-- recover shapes ('checkShape'), and the key shape
+-- ('checkKeyBinding').
 -- Runs after shape checks (which govern specs) and before key
 -- binding.
 checkMechParams :: InitArgs -> Either StepDeny ()
 checkMechParams args
   | iaOp args == OpDigest
   , not (digestParamsValid (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "digest operation takes empty mechanism parameters")
   | Just r <- hmacRecipeFor (iaMech args)
   , not (hmacParamsValid r (iaParams args)) =
@@ -411,79 +420,79 @@ checkMechParams args
         "SSL3 MAC mechanism parameters rejected by the recipe")
   | Just r <- cipherRecipeFor (iaMech args)
   , not (cipherParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "cipher mechanism parameters rejected by the recipe")
   | Just r <- rsaPkcs1RecipeFor (iaMech args)
   , not (rsaPkcs1ParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "RSA mechanism parameters rejected by the recipe")
   | Just r <- rsaPssRecipeFor (iaMech args)
   , not (rsaPssParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "RSA-PSS mechanism parameters rejected by the recipe")
   | Just r <- rsaOaepRecipeFor (iaMech args)
   , not (rsaOaepParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "RSA-OAEP mechanism parameters rejected by the recipe")
   | Just r <- rsaX509RecipeFor (iaMech args)
   , not (rsaX509ParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "RSA-X.509 mechanism parameters rejected by the recipe")
   | Just r <- rsaX931RecipeFor (iaMech args)
   , not (rsaX931ParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "RSA-X9.31 mechanism parameters rejected by the recipe")
   | Just r <- poly1305RecipeFor (iaMech args)
   , not (poly1305ParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "Poly1305 mechanism parameters rejected by the recipe")
   | Just r <- ecdsaRecipeFor (iaMech args)
   , not (ecdsaParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "ECDSA mechanism parameters rejected by the recipe")
   | Just r <- dsaRecipeFor (iaMech args)
   , not (dsaParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "DSA mechanism parameters rejected by the recipe")
   | Just r <- eddsaRecipeFor (iaMech args)
   , not (eddsaParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "EdDSA mechanism parameters rejected by the recipe")
   | Just r <- mldsaRecipeFor (iaMech args)
   , not (mldsaParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "ML-DSA mechanism parameters rejected by the recipe")
   | Just r <- slhdsaRecipeFor (iaMech args)
   , not (slhdsaParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "SLH-DSA mechanism parameters rejected by the recipe")
   | Just r <- cmacRecipeFor (iaMech args)
   , not (cmacParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "CMAC mechanism parameters rejected by the recipe")
   | Just r <- des3macRecipeFor (iaMech args)
   , not (des3macParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "3DES-MAC mechanism parameters rejected by the recipe")
   | Just r <- cbcmacRecipeFor (iaMech args)
   , not (cbcmacParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "CBC-MAC mechanism parameters rejected by the recipe")
   | Just r <- xcbcRecipeFor (iaMech args)
   , not (xcbcParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "XCBC-MAC mechanism parameters rejected by the recipe")
   | Just r <- gmacRecipeFor (iaMech args)
   , not (gmacParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "GMAC mechanism parameters rejected by the recipe")
   | Just r <- hotpRecipeFor (iaMech args)
   , not (hotpParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "HOTP mechanism parameters rejected by the recipe")
   | Just r <- gcmRecipeFor (iaMech args)
   , not (gcmParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "GCM mechanism parameters rejected by the recipe")
   | Just r <- ccmRecipeFor (iaMech args)
   , not (ccmParamsValid r (iaParams args)) =
@@ -491,7 +500,7 @@ checkMechParams args
         "CCM mechanism parameters rejected by the recipe")
   | Just r <- chachaRecipeFor (iaMech args)
   , not (chachaParamsValid r (iaParams args)) =
-      Left (mkDeny CKR_ARGUMENTS_BAD
+      Left (mkDeny CKR_MECHANISM_PARAM_INVALID
         "ChaCha20 mechanism parameters rejected by the recipe")
   | otherwise = Right ()
 
@@ -519,7 +528,15 @@ grantAdmitsPending st =
   not (ssLogin st == LoginContextUser && hasAuthPendingOp (ssOps st))
 
 -- | Key-shape and key-binding checks: keyed ops need a key, unkeyed
--- ops take none, and a bound key must resolve, be visible, carry a
+-- ops take none, and a bound key must resolve and be visible (an
+-- unknown, stale or invisible handle refuses 'CKR_KEY_HANDLE_INVALID':
+-- PKCS#11 v3.1 section 5.1.6, and the init return lists in 5.8.1,
+-- 5.10.1, 5.13.1, 5.14.1 and 5.15.1 carry it, never
+-- 'CKR_OBJECT_HANDLE_INVALID'; one code for all three, so the refusal
+-- is no existence oracle, as on the derive path; this covers
+-- operation init, C_DigestKey and recover init only: wrap, unwrap
+-- and KEM key resolution still refuse 'CKR_OBJECT_HANDLE_INVALID',
+-- a target gap recorded in spec/findings-ledger.json), carry a
 -- compatible key type, permit the operation, and (for
 -- always-authenticate keys) sit under a user login. Success carries
 -- the resolved object id and the auth marking. A second
@@ -544,11 +561,11 @@ checkKeyBinding env st args = case (opKeyed (iaOp args), iaKey args) of
   (False, Just _) -> Left (mkDeny CKR_ARGUMENTS_BAD "operation takes no key")
   (False, Nothing) -> Right (Nothing, AuthNone)
   (True, Just kp) -> case resolveHandle (oeModel env) (kpHandle kp) of
-    Nothing -> Left (mkDeny CKR_OBJECT_HANDLE_INVALID "unknown object handle")
+    Nothing -> Left (mkDeny CKR_KEY_HANDLE_INVALID "unknown key handle")
     Just ost
       | not (objectVisible st ost) ->
-          Left (mkDeny CKR_OBJECT_HANDLE_INVALID
-            "object not visible in this session")
+          Left (mkDeny CKR_KEY_HANDLE_INVALID
+            "key not visible in this session")
       | not (keyTypeCompatible (iaMech args) (iaOp args) ost) ->
           Left (mkDeny CKR_KEY_TYPE_INCONSISTENT
             "key type does not serve this mechanism")
@@ -657,9 +674,12 @@ initDualOperation env ops st dArgs cArgs =
 -- | Initialize one outer message context. Check order: the args op
 -- must name the family's classic counterpart (a mismatched bundle
 -- is malformed), then the slot conflict (a doomed call fails before
--- touching keys), then the shared validation against the classic
--- counterpart ('msgFamilyOp'). The context records the message
--- operation tag and starts idle with zero delivered messages.
+-- touching keys), then the mechanism's own @message-*@ route (a
+-- classic-only mechanism refuses @CKR_MECHANISM_INVALID@ instead of
+-- opening a context no data call can serve), then the shared
+-- validation against the classic counterpart ('msgFamilyOp'). The
+-- context records the message operation tag and starts idle with
+-- zero delivered messages.
 initMessageOperation
   :: MsgFamily -> OpEnv -> SessionOps -> SessionState -> InitArgs
   -> (SessionOps, InitOutcome)
@@ -668,6 +688,9 @@ initMessageOperation fam env ops st args
       reject CKR_ARGUMENTS_BAD "init args op mismatches the message family"
   | kindOccupied ops kind =
       reject CKR_OPERATION_ACTIVE "an operation is already active in this slot"
+  | Just desc <- lookupBehavior (oeRegistry env) (iaMech args)
+  , msgOperation fam `notElem` map routeOperation (descRoutes desc) =
+      reject CKR_MECHANISM_INVALID "no source-backed message route for this mechanism"
   | otherwise = case validateInit env st args of
       Left deny -> rejectDeny deny
       Right vi -> allocateMessage ops args fam vi

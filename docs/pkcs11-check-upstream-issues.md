@@ -26,6 +26,29 @@ A source correction and an executed crypto case are different observations.
 These were originally tracked as P11C-001 through P11C-010. Other provider
 findings, such as unavailable `CKA_LOCAL`, are not erased by a checker fix.
 
+## Pending upstream reports
+
+Recorded for filing against the checker. The finding stays in the frozen
+shared set until the checker pin changes.
+
+**BLAKE2B HMAC wrong-key-type tests use a valid key type.**
+`test_registry_message_{sign,verify}_wrong_key_type[BLAKE2B_*_HMAC{,_GENERAL}]`
+(16 cases) picks `CKK_GENERIC_SECRET` as the wrong key whenever the registry
+key generator is not `CKM_GENERIC_SECRET_KEY_GEN`. The BLAKE2B rows use
+`CKM_BLAKE2B_*_KEY_GEN`, so they get a generic-secret key. PKCS#11 3.1
+section 6.33.3 says: "The keys it uses are generic secret keys and
+CKK_BLAKE2B_160_HMAC", and table 172 lists "generic secret or
+CKK_BLAKE2B_160_HMAC" for `C_Sign` and `C_Verify`. Sections 6.34.3 to 6.36.3
+say the same for the 256, 384 and 512 widths, and the non-general mechanisms
+are "a special case" of the general ones. A module that accepts the key is
+conforming. The SHA-2 and SHA-3 HMAC rows already skip this test because
+their registry generator is `CKM_GENERIC_SECRET_KEY_GEN`. Suggested
+correction: choose a key type outside the mechanism's list (for example
+`CKK_AES`) as the wrong key. Haskoki pins both sides natively: a
+generic-secret key signs and verifies BLAKE2B-256-HMAC against an independent
+oracle, and an AES key is refused with `CKR_KEY_TYPE_INCONSISTENT`
+(`tests/c/consumer_roundtrip.c`, "blake2b-key-type").
+
 ## Public issue reports
 
 | Report | What the test needed to distinguish |
@@ -38,6 +61,13 @@ All three reports were closed on October 5, 2026. Their public threads
 retain the original inputs and comparisons. They describe historical
 checker versions, not unresolved findings in every later release.
 
+One report is open. [Async child results,
+#49](https://github.com/mingulov/pkcs11-check/issues/49): the
+`ckr_v32_raw` async probes pass a ctypes character buffer where the
+binding declares unsigned bytes, so they fail before `C_AsyncGetID` is
+called. It covers the two async findings in the current set; nothing new
+needs filing for them.
+
 ## Remaining recipe and provider boundaries
 
 The raw RSA X9.31 recipe needs prehashed input rather than the generic
@@ -45,12 +75,14 @@ The raw RSA X9.31 recipe needs prehashed input rather than the generic
 is a separate provider issue; changing that code alone does not repair the
 input. This was recorded as P11C-011.
 
-HOTP message-init probes still omit the required counter/digit parameters
-(P11C-012). Earlier CBC message recipes omitted IVs (P11C-013), and RSA
+HOTP message-init probes still omit the `CK_OTP_COUNTER` entry that
+Haskoki's stateless profile requires (P11C-012). Since v0.5 HOTP
+advertises no message flags, so those probes target an unadvertised
+operation. Earlier CBC message recipes omitted IVs (P11C-013), and RSA
 recover recipes omitted `CKA_SIGN_RECOVER`/`CKA_VERIFY_RECOVER` permissions
 (P11C-014). The latter CBC/recover findings left the demo baseline when
 the checker recipes were corrected. They are not part of the current
-22-finding set.
+18-finding set.
 
 For current provider limitations and transport exclusions, use the
 [qualification reference](pkcs11-oracle-triage.md) and

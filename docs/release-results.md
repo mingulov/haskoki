@@ -24,21 +24,30 @@ counts include skips and expected failures; they do not count passing tests
 or establish how many complete test bodies ran. Pass counts do not measure
 feature coverage or conformance.
 
-## What the 22 findings mean
+## What the findings mean
+
+The October baseline above had 22 findings. After the v0.5 provider fixes
+the full profile has **18**, measured on the v0.5 re-freeze run (direct:
+10,983 collected, 5,290 passed, 18 findings, 4,964 skipped, 711 expected
+failures; proxy: 10,983 collected, 5,229 passed, 18 findings, 4,964
+skipped, 772 expected failures; checker 0.2.3, proxy v0.2.2). The four
+findings that left are listed first.
 
 | Family | Count | Cause |
 | --- | ---: | --- |
-| GMAC message shape | 2 | Provider message-init parameter limitation |
-| HOTP parameters | 2 | Checker probes omit the provider's required parameters |
-| BLAKE2B key type | 16 | Provider key-type matrix gap in negative tests |
+| GMAC message shape | 0 (was 2) | Resolved: AES-GMAC no longer advertises `CKF_MESSAGE_SIGN`/`CKF_MESSAGE_VERIFY`, because the specification defines no message-API parameter shape for it; the checker no longer collects its ten message test ids. Single-part `CK_GCM_PARAMS` sign/verify is unchanged |
+| HOTP parameters | 0 (was 2) | Resolved: HOTP takes the standard `CK_OTP_PARAMS` and has no message API, so no message flags are advertised. Profile: keys are `CKO_SECRET_KEY` objects of type `CKK_HOTP` (not `CKO_OTP_KEY`), the output is the raw ASCII digit string (not `CK_OTP_SIGNATURE_INFO`), and the `CK_OTP_COUNTER` entry is required because no token counter is kept |
+| BLAKE2B key type | 16 | Checker defect: its "wrong" key is a generic secret, which PKCS#11 allows for BLAKE2B HMAC |
 | Async child results | 2 | Checker ctypes binding problem before the module call |
 
 The set is shared by direct and proxy modes, with no proxy-only findings in
 this baseline. [Qualification notes](pkcs11-oracle-triage.md) explain the
 inputs and attribution. Findings remain visible as failed outcomes.
 
-The comparison accepts only **83 frozen exclusions in six reason families**
-and **22 shared findings**, with zero allowed variance. The
+On the v0.5 development tree the comparison accepts only **61 frozen
+exclusions in five reason families** and **18 shared findings**, with zero
+allowed variance (the published v0.4.0.0 image's classifier accepts 83
+and 22). The
 [per-case exclusions](../examples/release/compare-classify/frozen-subset.tsv)
 and [shared finding IDs](../examples/release/compare-classify/frozen-shared.txt)
 are checked by [the demo driver](../scripts/test-demo-image.sh). These are

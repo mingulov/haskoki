@@ -2847,8 +2847,13 @@ caseByteOps = withSynth "11" $ \env -> do
     (FxDerive cbd (Just secOid) Nothing fBD BS.empty 49)
   expectFailed "wrong-row frame"
     (FxDerive ck (Just auxOid) (Just auxOid) fBD BS.empty 32)
-  expectFailed "xor mismatch"
-    (FxDerive xx (Just secOid) Nothing fBD BS.empty 16)
+  -- XOR over unequal lengths covers the shorter operand.
+  xShort <- deriveAs xx secOid Nothing fBD 16
+  assertEqual "xor short data" (BS.pack (zipWith xor [0 .. 15] (replicate 16 1))) xShort
+  xLong <- deriveAs xx secOid Nothing (encodeByteOpsParams 0 0 (BS.replicate 48 0x0f)) 32
+  assertEqual "xor long data" x1 xLong
+  expectFailed "xor past the shorter length"
+    (FxDerive xx (Just secOid) Nothing fBD BS.empty 17)
   expectFailed "extract overrun"
     (FxDerive xt (Just secOid) Nothing (encodeByteOpsParams 0 248 BS.empty) BS.empty 16)
 
@@ -3147,23 +3152,21 @@ caseHotp = withSynth "13" $ \env -> do
   vCounter <- runEffect env res
     (FxVerify hotpMech (Just kOid) (encodeHotpParams 1 6) BS.empty c0)
   assertEqual "wrong counter rejects" (GotValid False) vCounter
-  -- Message variants agree.
+  -- No message routes (v0.5): the message effects are unsupported.
   m0 <- runEffect env res
     (FxMessageSign hotpMech (Just kOid) (encodeHotpParams 0 6) BS.empty)
-    >>= expectBytes
-  assertEqual "message agrees" c0 m0
+  case m0 of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
   mv <- runEffect env res
     (FxMessageVerify hotpMech (Just kOid) (encodeHotpParams 0 6) BS.empty c0)
-  assertEqual "message verifies" (GotValid True) mv
+  case mv of
+    GotCryptoError (CryptoUnsupported _ _) -> pure ()
+    other -> assertFailure ("expected Unsupported, got: " ++ show other)
   -- Typed refusals: any input, bad digits, malformed params.
   badInput <- runEffect env res
     (FxSign hotpMech (Just kOid) (encodeHotpParams 0 6) "x")
   case badInput of
-    GotCryptoError (CryptoFailed _) -> pure ()
-    other -> assertFailure ("expected Failed, got: " ++ show other)
-  badMsg <- runEffect env res
-    (FxMessageSign hotpMech (Just kOid) (encodeHotpParams 0 6) "x")
-  case badMsg of
     GotCryptoError (CryptoFailed _) -> pure ()
     other -> assertFailure ("expected Failed, got: " ++ show other)
   badDigits <- runEffect env res

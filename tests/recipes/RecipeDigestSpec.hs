@@ -8,7 +8,7 @@ widths, and mechanism table; these tests pin the recipe and its two
 consumers:
 
 * the model init path refuses non-empty digest mechanism parameters
-  ('validateInit', 'CKR_ARGUMENTS_BAD');
+  ('validateInit', 'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps every covered mechanism to its backend algorithm
   ('digestAlgFor' agrees with the recipe table);
 * widths pin the synthetic output contract per algorithm (executed
@@ -139,7 +139,9 @@ caseInitRefusesParams :: IO ()
 caseInitRefusesParams = do
   let badArgs = InitArgs OpDigest (MechanismId 0x250) "params" Nothing Nothing Nothing
       (_, badOut) = initOperation testEnv emptySessionOps testSession badArgs
-  assertEqual "refusal code" CKR_ARGUMENTS_BAD (ioCode badOut)
+  -- PKCS#11 v3.1 section 5.1.6: a parameter the mechanism does not take
+  -- is an invalid mechanism parameter, not a generic argument fault.
+  assertEqual "refusal code" CKR_MECHANISM_PARAM_INVALID (ioCode badOut)
   let goodArgs = InitArgs OpDigest (MechanismId 0x250) BS.empty Nothing Nothing Nothing
       (_, goodOut) = initOperation testEnv emptySessionOps testSession goodArgs
   assertEqual "empty params pass" CKR_OK (ioCode goodOut)

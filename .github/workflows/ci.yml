@@ -150,6 +150,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          # Full history: check-findings-ledger verifies that every cited
+          # fix commit is an ancestor of HEAD and fails on a shallow clone.
+          fetch-depth: 0
       - name: Restore OpenSSL prefix cache
         id: ossl-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -194,7 +197,7 @@ jobs:
               check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
               check-smoke-surface check-history-codes check-actions-pinned \
-              check-qualification-wiring; do
+              check-qualification-wiring check-findings-ledger; do
             python3 scripts/$g.py
           done
           # Final-review M-1: the pin gate defaults to ci.yml — cover
@@ -211,6 +214,8 @@ jobs:
           python3 scripts/check-test-execution.py --self-test
           python3 scripts/check-qualification-wiring.py --self-test
           python3 scripts/test-ownership-matrix-controls.py
+          python3 scripts/check-findings-ledger.py --self-test
+          python3 scripts/check-seed-honesty.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
           python3 scripts/test-demo-shards.py

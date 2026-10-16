@@ -328,6 +328,85 @@ static void dsa_pair_roundtrip(CK_FUNCTION_LIST_PTR f, CK_SESSION_HANDLE s,
   CHECKC(r == CKR_SIGNATURE_INVALID, "%s: tampered DSA refused", tag);
 }
 
+/* XOR_BASE_AND_DATA over unequal lengths (PKCS#11 3.x 6.43.6):
+ * the result covers the shorter of base and data. Base bytes are
+ * (13i+5) and data bytes (37i+11), mod 256; the expected bytes come
+ * from an independent Python XOR of the truncated operands. Legs:
+ * base 16 / data 24 and base 24 / data 16 give 16 bytes with or
+ * without a template length; CKA_VALUE_LEN 17 refuses. */
+static void xor_unequal_legs(CK_FUNCTION_LIST_PTR f, CK_SESSION_HANDLE s) {
+  static const CK_BYTE want[16] = {
+    0x0e, 0x22, 0x4a, 0x56, 0xa6, 0x82, 0xba, 0x6e,
+    0x5e, 0x22, 0xfa, 0x36, 0x66, 0x42, 0xaa, 0xfe
+  };
+  static const CK_ULONG baseLens[2] = { 16, 24 };
+  static const CK_ULONG dataLens[2] = { 24, 16 };
+  CK_OBJECT_CLASS cls = CKO_SECRET_KEY;
+  CK_KEY_TYPE kt = CKK_GENERIC_SECRET;
+  CK_BBOOL t = CK_TRUE, fa = CK_FALSE;
+  CK_ULONG len16 = 16, len17 = 17;
+  int leg, i;
+  for (leg = 0; leg < 2; leg++) {
+    CK_BYTE base[24], data[24], got[24];
+    CK_OBJECT_HANDLE hb = 0, hd = 0;
+    CK_KEY_DERIVATION_STRING_DATA sd;
+    CK_MECHANISM m;
+    CK_RV r;
+    CK_ATTRIBUTE baseT[] = {
+      { CKA_CLASS, &cls, sizeof(cls) },
+      { CKA_KEY_TYPE, &kt, sizeof(kt) },
+      { CKA_TOKEN, &fa, sizeof(fa) },
+      { CKA_DERIVE, &t, sizeof(t) },
+      { CKA_VALUE, base, baseLens[leg] },
+    };
+    CK_ATTRIBUTE outT[] = {
+      { CKA_CLASS, &cls, sizeof(cls) },
+      { CKA_KEY_TYPE, &kt, sizeof(kt) },
+      { CKA_TOKEN, &fa, sizeof(fa) },
+      { CKA_SENSITIVE, &fa, sizeof(fa) },
+      { CKA_EXTRACTABLE, &t, sizeof(t) },
+      { CKA_VALUE_LEN, &len16, sizeof(len16) },
+    };
+    CK_ATTRIBUTE g[] = { { CKA_VALUE, got, sizeof(got) } };
+    for (i = 0; i < 24; i++) {
+      base[i] = (CK_BYTE)(i * 13 + 5);
+      data[i] = (CK_BYTE)(i * 37 + 11);
+    }
+    r = f->C_CreateObject(s, baseT, 5, &hb);
+    CHECKC(r == CKR_OK && hb != 0, "xor-unequal/%lu-%lu: base imports",
+           baseLens[leg], dataLens[leg]);
+    sd.pData = data;
+    sd.ulLen = dataLens[leg];
+    m.mechanism = CKM_XOR_BASE_AND_DATA;
+    m.pParameter = &sd;
+    m.ulParameterLen = sizeof(sd);
+    /* Explicit length at the minimum, then no length (natural). */
+    for (i = 0; i < 2; i++) {
+      CK_ULONG n = i == 0 ? 6 : 5;
+      hd = 0;
+      r = f->C_DeriveKey(s, &m, hb, outT, n, &hd);
+      CHECKC(r == CKR_OK && hd != 0, "xor-unequal/%lu-%lu/%s: derive ok rv=0x%lx",
+             baseLens[leg], dataLens[leg], i == 0 ? "len16" : "natural",
+             (unsigned long)r);
+      memset(got, 0, sizeof(got));
+      g[0].ulValueLen = sizeof(got);
+      r = f->C_GetAttributeValue(s, hd, g, 1);
+      CHECKC(r == CKR_OK && g[0].ulValueLen == 16 && memcmp(got, want, 16) == 0,
+             "xor-unequal/%lu-%lu/%s: 16 bytes match the oracle",
+             baseLens[leg], dataLens[leg], i == 0 ? "len16" : "natural");
+      if (hd != 0) f->C_DestroyObject(s, hd);
+    }
+    outT[5].pValue = &len17;
+    hd = 0;
+    r = f->C_DeriveKey(s, &m, hb, outT, 6, &hd);
+    CHECKC(r == CKR_KEY_SIZE_RANGE && hd == 0,
+           "xor-unequal/%lu-%lu: length 17 past the shorter operand refused rv=0x%lx",
+           baseLens[leg], dataLens[leg], (unsigned long)r);
+    if (hd != 0) f->C_DestroyObject(s, hd);
+    if (hb != 0) f->C_DestroyObject(s, hb);
+  }
+}
+
 int main(int argc, char **argv) {
   void *handle;
   CK_C_GetFunctionList pGetList;
@@ -612,8 +691,10 @@ int main(int argc, char **argv) {
       rv = f->C_DigestInit(dsess, &mech);
       CHECKC(rv == CKR_OK, "init for bad-handle leg");
       rv = f->C_DigestKey(dsess, 0xFFFFFFFFUL);
-      CHECKC(rv == CKR_OBJECT_HANDLE_INVALID,
-             "digest-key bad handle is HANDLE_INVALID");
+      /* PKCS#11 v3.1 section 5.1.6; C_DigestKey (5.12.4) lists
+       * CKR_KEY_HANDLE_INVALID, not CKR_OBJECT_HANDLE_INVALID. */
+      CHECKC(rv == CKR_KEY_HANDLE_INVALID,
+             "digest-key bad handle is KEY_HANDLE_INVALID");
       rv = f->C_DigestInit(dsess, &mech);
       CHECKC(rv == CKR_OK, "re-init after bad handle ok (terminated)");
       rv = f->C_DestroyObject(dsess, dkey);
@@ -624,7 +705,9 @@ int main(int argc, char **argv) {
     }
     {
       /* The engine recipe requires empty digest params
-       * (checkMechParams): a stray param byte is ARGUMENTS_BAD. */
+       * (checkMechParams): a stray param byte is
+       * MECHANISM_PARAM_INVALID (PKCS#11 v3.1 section 5.1.6: invalid
+       * parameters supplied to the mechanism). */
       CK_MECHANISM bad;
       CK_BYTE param = 0;
       bad.mechanism = CKM_SHA256;
@@ -632,13 +715,13 @@ int main(int argc, char **argv) {
       bad.ulParameterLen = 1;
       rv = f->C_DigestInit(dsess, &bad);
       if (!isProxy) {
-        CHECKC(rv == CKR_ARGUMENTS_BAD,
-               "SHA-256 with stray param is ARGUMENTS_BAD");
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "SHA-256 with stray param is MECHANISM_PARAM_INVALID");
       } else {
         /* Init params are forwarded to the backend, whose
-         * ARGUMENTS_BAD surfaces unchanged. */
-        CHECKC(rv == CKR_ARGUMENTS_BAD,
-               "proxied stray param surfaces backend ARGS_BAD");
+         * MECHANISM_PARAM_INVALID surfaces unchanged. */
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "proxied stray param surfaces backend PARAM_INVALID");
       }
     }
     rv = f->C_CloseSession(dsess);
@@ -1261,7 +1344,9 @@ int main(int argc, char **argv) {
     rv = f->C_SignInit(ssess, NULL_PTR, priv);
     CHECKC(rv == CKR_ARGUMENTS_BAD, "SignInit NULL mech refused");
     rv = f->C_SignInit(ssess, &sm, 9999);
-    CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "SignInit bad key refused");
+    /* PKCS#11 v3.1 section 5.1.6: an unknown key handle at init is
+     * CKR_KEY_HANDLE_INVALID (the init return lists carry it). */
+    CHECKC(rv == CKR_KEY_HANDLE_INVALID, "SignInit bad key refused");
     rv = f->C_SignInit(ssess, &sm, pub);
     CHECKC(rv == CKR_KEY_FUNCTION_NOT_PERMITTED,
            "SignInit with verify-only key refused");
@@ -1457,11 +1542,25 @@ int main(int argc, char **argv) {
         { CKA_VERIFY, &bTrue, sizeof(bTrue) }
       };
       CK_MECHANISM hotpm;
-      CK_BYTE hotpp[16] = { 0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,6 };
+      /* Standard CK_OTP_PARAMS (PKCS#11 6.53.7.1): CK_OTP_COUNTER is
+       * 8 bytes big-endian; CK_OTP_OUTPUT_LENGTH is a CK_ULONG. */
+      CK_BYTE hotpctr[8] = { 0,0,0,0,0,0,0,0 };
+      CK_BYTE hotpctr1[8] = { 0,0,0,0,0,0,0,1 };
+      CK_ULONG hotplen8 = 8;
+      CK_OTP_PARAM hotpent[2];
+      CK_OTP_PARAMS hotpp;
+      hotpent[0].type = CK_OTP_COUNTER;
+      hotpent[0].pValue = hotpctr;
+      hotpent[0].ulValueLen = sizeof(hotpctr);
+      hotpent[1].type = CK_OTP_OUTPUT_LENGTH;
+      hotpent[1].pValue = &hotplen8;
+      hotpent[1].ulValueLen = sizeof(hotplen8);
+      hotpp.pParams = hotpent;
+      hotpp.ulCount = 1;
       rv = f->C_CreateObject(ssess, hott, 6, &hotpk);
       CHECKC(rv == CKR_OK && hotpk != 0, "HOTP key imports");
       hotpm.mechanism = CKM_HOTP;
-      hotpm.pParameter = hotpp;
+      hotpm.pParameter = &hotpp;
       hotpm.ulParameterLen = sizeof(hotpp);
       if (!isProxy) {
         rv = f->C_SignInit(ssess, &hotpm, hmkey);
@@ -1477,6 +1576,119 @@ int main(int argc, char **argv) {
         CHECKC(rv == CKR_OK, "HOTP VerifyInit with HOTP key ok");
         rv = f->C_Verify(ssess, (CK_BYTE_PTR) "", 0, sig, sigLen);
         CHECKC(rv == CKR_OK, "HOTP verify of its own digits ok");
+        /* RFC 4226 vector 1 with an 8-digit output-length entry:
+         * the 31-bit value 1094287082 gives "94287082". */
+        hotpent[0].pValue = hotpctr1;
+        hotpp.ulCount = 2;
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_OK, "HOTP SignInit with counter 1 and 8 digits ok");
+        sigLen = sizeof(sig);
+        rv = f->C_Sign(ssess, (CK_BYTE_PTR) "", 0, sig, &sigLen);
+        CHECKC(rv == CKR_OK && sigLen == 8 && memcmp(sig, "94287082", 8) == 0,
+               "HOTP counter 1, 8 digits yields 94287082");
+        /* Verify needs the counter (6.53.9.3): the counter-free array
+         * (output length only) refuses, and so does sign, since this
+         * stateless profile keeps no token counter. */
+        hotpp.pParams = &hotpent[1];
+        hotpp.ulCount = 1;
+        rv = f->C_VerifyInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "HOTP VerifyInit without a counter refused rv=0x%lx", (unsigned long)rv);
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "HOTP SignInit without a counter refused rv=0x%lx", (unsigned long)rv);
+        /* A short counter and an empty array refuse. */
+        hotpp.pParams = hotpent;
+        hotpent[0].ulValueLen = 4;
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "HOTP 4-byte counter refused rv=0x%lx", (unsigned long)rv);
+        hotpent[0].ulValueLen = sizeof(hotpctr);
+        hotpp.ulCount = 0;
+        rv = f->C_SignInit(ssess, &hotpm, hotpk);
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "HOTP empty CK_OTP_PARAMS refused rv=0x%lx", (unsigned long)rv);
+        /* Decoder guards over the real struct. Each shape refuses at
+         * init for sign and verify; none may reach the recipe. */
+        {
+          /* The pre-v0.5 hotp-params/1 image (counter 1, 6 digits,
+           * both u64 big-endian) is no longer a caller format. */
+          CK_BYTE oldimg[16] = { 0,0,0,0,0,0,0,1, 0,0,0,0,0,0,0,6 };
+          CK_MECHANISM oldm = { CKM_HOTP, oldimg, sizeof(oldimg) };
+          CK_ULONG len4 = 4, len9 = 9;
+          CK_OTP_PARAM many[9];
+          CK_ULONG k;
+          rv = f->C_SignInit(ssess, &oldm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP old 16-byte image refused for sign rv=0x%lx", (unsigned long)rv);
+          rv = f->C_VerifyInit(ssess, &oldm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP old 16-byte image refused for verify rv=0x%lx", (unsigned long)rv);
+          /* NULL entry array with a nonzero count. */
+          hotpp.pParams = NULL_PTR;
+          hotpp.ulCount = 1;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP NULL entry array refused rv=0x%lx", (unsigned long)rv);
+          /* More than eight entries, all well formed counters. */
+          for (k = 0; k < 9; k++) {
+            many[k].type = CK_OTP_COUNTER;
+            many[k].pValue = hotpctr;
+            many[k].ulValueLen = sizeof(hotpctr);
+          }
+          hotpp.pParams = many;
+          hotpp.ulCount = 9;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP nine entries refused rv=0x%lx", (unsigned long)rv);
+          /* Duplicate counter entries. */
+          hotpp.ulCount = 2;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP duplicate counter refused rv=0x%lx", (unsigned long)rv);
+          /* A foreign entry type next to a valid counter. */
+          many[1].type = CK_OTP_PIN;
+          rv = f->C_VerifyInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP foreign CK_OTP_PIN entry refused rv=0x%lx", (unsigned long)rv);
+          /* Output-length entries: a value shorter than a CK_ULONG, a
+           * NULL value of CK_ULONG size, and out-of-range lengths. */
+          many[1].type = CK_OTP_OUTPUT_LENGTH;
+          many[1].pValue = &hotplen8;
+          many[1].ulValueLen = sizeof(CK_ULONG) - 1;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP short output-length value refused rv=0x%lx", (unsigned long)rv);
+          many[1].pValue = NULL_PTR;
+          many[1].ulValueLen = sizeof(CK_ULONG);
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP NULL output-length value refused rv=0x%lx", (unsigned long)rv);
+          many[1].pValue = &len9;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP 9-digit output length refused rv=0x%lx", (unsigned long)rv);
+          many[1].pValue = &len4;
+          rv = f->C_VerifyInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP 4-digit output length refused rv=0x%lx", (unsigned long)rv);
+          /* A NULL counter value of the right length. */
+          many[0].pValue = NULL_PTR;
+          hotpp.ulCount = 1;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                 "HOTP NULL counter value refused rv=0x%lx", (unsigned long)rv);
+          /* The guards refuse without poisoning the key: the valid
+           * counter-0 struct still signs 755224. */
+          hotpp.pParams = hotpent;
+          hotpent[0].pValue = hotpctr;
+          rv = f->C_SignInit(ssess, &hotpm, hotpk);
+          sigLen = sizeof(sig);
+          if (rv == CKR_OK)
+            rv = f->C_Sign(ssess, (CK_BYTE_PTR) "", 0, sig, &sigLen);
+          CHECKC(rv == CKR_OK && sigLen == 6 && memcmp(sig, "755224", 6) == 0,
+                 "HOTP valid struct still signs after refusals rv=0x%lx", (unsigned long)rv);
+        }
       } else {
         /* The shim's check_operation rejects parameterized
          * invocations for mechanisms absent from its shape
@@ -1722,6 +1934,69 @@ int main(int argc, char **argv) {
       rv = f->C_Sign(ssess, (CK_BYTE_PTR) "Hi There", 8, b2g, &b2gLen);
       CHECKC(rv == CKR_OK && b2gLen == 32 &&
              memcmp(b2g, b2tc1, 32) == 0, "GENERAL truncation is the prefix");
+    }
+    /* BLAKE2B HMAC key types (PKCS#11 3.1 6.34.3, table 175: "generic
+     * secret or CKK_BLAKE2B_256_HMAC"): a generic-secret key signs and
+     * verifies BLAKE2B-256-HMAC (tag from Python hmac over
+     * hashlib.blake2b(digest_size=32), key 32 x 0x0b, "Hi There"); an
+     * AES key is outside the list and refuses KEY_TYPE_INCONSISTENT. */
+    {
+      static const CK_BYTE b2gs256[32] = {
+        0xad, 0x64, 0x79, 0xe4, 0xa9, 0x5c, 0xb3, 0x42, 0x62, 0x6a,
+        0x25, 0x6e, 0xc9, 0x75, 0x56, 0x7f, 0x51, 0xc9, 0x02, 0xf2,
+        0xb8, 0x37, 0x1a, 0x58, 0x59, 0x93, 0x13, 0x68, 0x11, 0x15,
+        0x74, 0x7c
+      };
+      CK_KEY_TYPE gskt = CKK_GENERIC_SECRET, aeskt = CKK_AES;
+      CK_BYTE gsval[32], gstag[32];
+      CK_ULONG gstagLen;
+      CK_OBJECT_HANDLE gsh = 0, aesh = 0;
+      CK_MECHANISM gsm;
+      CK_ATTRIBUTE gstmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &gskt, sizeof(gskt) },
+        { CKA_VALUE, gsval, sizeof(gsval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      CK_ATTRIBUTE aestmpl[] = {
+        { CKA_CLASS, &ckcls, sizeof(ckcls) },
+        { CKA_KEY_TYPE, &aeskt, sizeof(aeskt) },
+        { CKA_VALUE, gsval, sizeof(gsval) },
+        { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+        { CKA_SIGN, &bTrue, sizeof(bTrue) },
+        { CKA_VERIFY, &bTrue, sizeof(bTrue) }
+      };
+      memset(gsval, 0x0b, sizeof(gsval));
+      rv = f->C_CreateObject(ssess, gstmpl, 6, &gsh);
+      CHECKC(rv == CKR_OK && gsh != 0, "blake2b-key-type: generic secret imports");
+      gsm.mechanism = CKM_BLAKE2B_256_HMAC;
+      gsm.pParameter = NULL_PTR;
+      gsm.ulParameterLen = 0;
+      rv = f->C_SignInit(ssess, &gsm, gsh);
+      CHECKC(rv == CKR_OK, "blake2b-key-type: generic secret SignInit ok rv=0x%lx",
+             (unsigned long)rv);
+      gstagLen = sizeof(gstag);
+      rv = f->C_Sign(ssess, (CK_BYTE_PTR) "Hi There", 8, gstag, &gstagLen);
+      CHECKC(rv == CKR_OK && gstagLen == 32 && memcmp(gstag, b2gs256, 32) == 0,
+             "blake2b-key-type: generic secret tag matches the oracle");
+      rv = f->C_VerifyInit(ssess, &gsm, gsh);
+      CHECKC(rv == CKR_OK, "blake2b-key-type: generic secret VerifyInit ok");
+      rv = f->C_Verify(ssess, (CK_BYTE_PTR) "Hi There", 8, gstag, gstagLen);
+      CHECKC(rv == CKR_OK, "blake2b-key-type: generic secret verify ok");
+      rv = f->C_CreateObject(ssess, aestmpl, 6, &aesh);
+      CHECKC(rv == CKR_OK && aesh != 0, "blake2b-key-type: AES key imports");
+      rv = f->C_SignInit(ssess, &gsm, aesh);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "blake2b-key-type: AES key refused KEY_TYPE_INCONSISTENT rv=0x%lx",
+             (unsigned long)rv);
+      rv = f->C_VerifyInit(ssess, &gsm, aesh);
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
+             "blake2b-key-type: AES key verify refused KEY_TYPE_INCONSISTENT rv=0x%lx",
+             (unsigned long)rv);
+      if (gsh != 0) f->C_DestroyObject(ssess, gsh);
+      if (aesh != 0) f->C_DestroyObject(ssess, aesh);
     }
     gm.mechanism = CKM_SHA256_HMAC_GENERAL;
     gm.pParameter = &gpar;
@@ -2419,7 +2694,9 @@ int main(int argc, char **argv) {
       ebm.pParameter = &ebad;
       ebm.ulParameterLen = sizeof(ebad);
       rv = f->C_SignInit(ssess, &ebm, epriv);
-      CHECKC(rv == CKR_ARGUMENTS_BAD,
+      /* PKCS#11 v3.1 section 5.1.6: an invalid mechanism parameter value
+       * is CKR_MECHANISM_PARAM_INVALID. */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
              "EdDSA prehash struct refused");
       rv = f->C_SignInit(ssess, &enm, epriv);
       CHECKC(rv == CKR_OK,
@@ -2581,7 +2858,9 @@ int main(int argc, char **argv) {
       mbm.pParameter = &mbad;
       mbm.ulParameterLen = sizeof(mbad);
       rv = f->C_SignInit(ssess, &mbm, mpriv);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "ML-DSA bad-hedge struct refused");
+      /* PKCS#11 v3.1 section 5.1.6: an invalid mechanism parameter value
+       * is CKR_MECHANISM_PARAM_INVALID. */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "ML-DSA bad-hedge struct refused");
       /* Tamper under NULL params (msig still holds the 2420
        * deterministic-signed bytes; the refusal started no op). */
       rv = f->C_VerifyInit(ssess, &mnm, mpub);
@@ -2729,7 +3008,9 @@ int main(int argc, char **argv) {
       sbm.pParameter = &sbad;
       sbm.ulParameterLen = sizeof(sbad);
       rv = f->C_SignInit(ssess, &sbm, spriv);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "SLH-DSA bad-hedge struct refused");
+      /* PKCS#11 v3.1 section 5.1.6: an invalid mechanism parameter value
+       * is CKR_MECHANISM_PARAM_INVALID. */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "SLH-DSA bad-hedge struct refused");
       /* Tamper under NULL params (ssig still holds the 7856
        * deterministic-signed bytes; the refusal started no op). */
       rv = f->C_VerifyInit(ssess, &snm, spub);
@@ -2808,18 +3089,20 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK, "DES3-MAC-GENERAL verify ok");
       dmacLen = 9;
       rv = f->C_SignInit(ssess, &dgm, dkey);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "DES3-MAC-GENERAL length 9 refused");
+      /* PKCS#11 v3.1 section 5.1.6: invalid mechanism parameters are
+       * CKR_MECHANISM_PARAM_INVALID (CKR_ARGUMENTS_BAD is generic). */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "DES3-MAC-GENERAL length 9 refused");
       dbm.mechanism = CKM_DES3_MAC;
       dbm.pParameter = &dmacLen;
       dbm.ulParameterLen = sizeof(dmacLen);
       rv = f->C_SignInit(ssess, &dbm, dkey);
       if (!isProxy) {
-        CHECKC(rv == CKR_ARGUMENTS_BAD, "DES3-MAC nonempty params refused");
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "DES3-MAC nonempty params refused");
       } else {
         /* Init params are forwarded to the backend, whose
-         * ARGUMENTS_BAD surfaces unchanged. */
-        CHECKC(rv == CKR_ARGUMENTS_BAD,
-               "proxied DES3-MAC nonempty params surfaces backend ARGS_BAD");
+         * MECHANISM_PARAM_INVALID (section 5.1.6) surfaces unchanged. */
+        CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+               "proxied DES3-MAC nonempty params surfaces backend PARAM_INVALID");
       }
       rv = f->C_VerifyInit(ssess, &dnm, dkey);
       CHECKC(rv == CKR_OK, "DES3-MAC re-init for tamper");
@@ -2897,10 +3180,14 @@ int main(int argc, char **argv) {
       noiv.pParameter = NULL_PTR;
       noiv.ulParameterLen = 0;
       rv = f->C_EncryptInit(esess, &noiv, ekey);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "EncryptInit empty IV refused");
+      /* PKCS#11 v3.1 section 5.1.6: invalid mechanism parameters are
+       * CKR_MECHANISM_PARAM_INVALID (CKR_ARGUMENTS_BAD is generic). */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "EncryptInit empty IV refused");
     }
     rv = f->C_EncryptInit(esess, &em, 9999);
-    CHECKC(rv == CKR_OBJECT_HANDLE_INVALID, "EncryptInit bad key refused");
+    /* PKCS#11 v3.1 section 5.1.6: an unknown key handle at init is
+     * CKR_KEY_HANDLE_INVALID (the init return lists carry it). */
+    CHECKC(rv == CKR_KEY_HANDLE_INVALID, "EncryptInit bad key refused");
     rv = f->C_EncryptInit(esess, &em, ekey);
     CHECKC(rv == CKR_OK, "CBC-PAD EncryptInit ok");
     rv = f->C_EncryptInit(esess, &em, ekey);
@@ -3424,7 +3711,9 @@ int main(int argc, char **argv) {
       gp.ulIvLen = 0;
       gp.ulIvBits = 96;
       rv = f->C_EncryptInit(esess, &gm, ekey);
-      CHECKC(rv == CKR_ARGUMENTS_BAD, "GCM generated-IV refused");
+      /* PKCS#11 v3.1 section 5.1.6: invalid mechanism parameters are
+       * CKR_MECHANISM_PARAM_INVALID (CKR_ARGUMENTS_BAD is generic). */
+      CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "GCM generated-IV refused");
     }
     /* ChaCha20: keygen (exact-32) -> raw-stream KAT (RFC 8439
      * 2.4.2) -> Poly1305 AEAD KAT (RFC 8439 2.8.2) + tamper
@@ -6457,6 +6746,7 @@ int main(int argc, char **argv) {
             }
             rv = f->C_DestroyObject(sess, bd4);
             CHECKC(rv == CKR_OK, "byte-op secret destroyed");
+            xor_unequal_legs(f, sess);
           }
         }
       }
@@ -7157,7 +7447,8 @@ int main(int argc, char **argv) {
            * cross-checked pin; and the six CBC_PAD oracle vectors
            * (pad framing over the shared CBC specs). Bad RC2
            * effective bits and mistimed images refuse
-           * CKR_ARGUMENTS_BAD at init. */
+           * CKR_MECHANISM_PARAM_INVALID at init (PKCS#11 v3.1
+           * section 5.1.6: invalid mechanism parameters). */
           CK_OBJECT_CLASS qckcls = CKO_SECRET_KEY;
           CK_KEY_TYPE qdes = CKK_DES, qrc2 = CKK_RC2, qrc4 = CKK_RC4;
           CK_KEY_TYPE qcast = CKK_CAST128, qidea = CKK_IDEA;
@@ -7422,17 +7713,17 @@ int main(int argc, char **argv) {
           qm.pParameter = &qrc2bad;
           qm.ulParameterLen = sizeof(qrc2bad);
           rv = f->C_EncryptInit(sess, &qm, qrc2k);
-          CHECKC(rv == CKR_ARGUMENTS_BAD, "rc2 zero bits refused");
+          CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "rc2 zero bits refused");
           qm.pParameter = &qrc2ecb;
           qm.ulParameterLen = sizeof(qrc2ecb);
           rv = f->C_EncryptInit(sess, &qm, qrc2k);
           if (!isProxy) {
-            CHECKC(rv == CKR_ARGUMENTS_BAD, "rc2-cbc word-only image refused");
+            CHECKC(rv == CKR_MECHANISM_PARAM_INVALID, "rc2-cbc word-only image refused");
           } else {
             /* Init params are forwarded to the backend, whose
-             * ARGUMENTS_BAD surfaces unchanged. */
-            CHECKC(rv == CKR_ARGUMENTS_BAD,
-                   "proxied rc2-cbc word-only image surfaces backend ARGS_BAD");
+             * MECHANISM_PARAM_INVALID (section 5.1.6) surfaces unchanged. */
+            CHECKC(rv == CKR_MECHANISM_PARAM_INVALID,
+                   "proxied rc2-cbc word-only image surfaces backend PARAM_INVALID");
           }
           qm.mechanism = CKM_RC4;
           qm.pParameter = NULL_PTR;

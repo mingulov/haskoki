@@ -10,7 +10,7 @@ bindings, and mechanism table; these tests pin the recipe and its
 three consumers:
 
 * the model init path enforces PSS parameters ('validateInit',
-  'CKR_ARGUMENTS_BAD');
+  'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps every covered (mechanism, params) pair to its
   backend 'SigSpec' ('rsaPssSpecFor' agrees with the recipe table);
 * engines execute the pinned specs (SyntheticSpec roundtrips,
@@ -217,8 +217,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpSign] False
 
@@ -227,15 +228,15 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "empty refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign pssMech BS.empty (Just badKey) Nothing Nothing))
-  assertEqual "wrong digest refused" CKR_ARGUMENTS_BAD
+  assertEqual "wrong digest refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign pssMech (encodePssParams "SHA512" "SHA512" 32)
       (Just badKey) Nothing Nothing))
-  assertEqual "salt 65 refused" CKR_ARGUMENTS_BAD
+  assertEqual "salt 65 refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign pssMech (encodePssParams "SHA256" "SHA256" 65)
       (Just badKey) Nothing Nothing))
-  assertEqual "valid passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "valid passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign pssMech (encodePssParams "SHA256" "SHA256" 32)
       (Just badKey) Nothing Nothing))
 

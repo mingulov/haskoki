@@ -46,17 +46,23 @@ pin differs from the image's checker pin; keep their results separate.
 
 ## Current demo findings
 
-The frozen full profile has 22 findings shared by direct and proxy modes:
+The frozen full profile has 18 findings shared by direct and proxy modes (v0.5 re-freeze; the GMAC and HOTP message-init findings of earlier baselines are resolved):
 
 | Family | Count | Interpretation |
 | --- | ---: | --- |
-| GMAC message shape | 2 | Haskoki's message-init path accepts its classic-shaped parameters, not native `CK_GCM_MESSAGE_PARAMS` |
-| HOTP parameters | 2 | Checker message-init probes send NULL; the provider requires its counter/digit parameter image |
-| BLAKE2B key type | 16 | The provider's key-type matrix lacks the negative cases the checker expects |
+| BLAKE2B key type | 16 | Checker defect. Its wrong-key test uses a generic-secret key, but PKCS#11 3.1 sections 6.33.3 to 6.36.3 list "generic secret or CKK_BLAKE2B_n_HMAC" for these mechanisms, so Haskoki correctly accepts it. A native leg pins the acceptance and the refusal of a key type outside the list ([upstream report](pkcs11-check-upstream-issues.md#pending-upstream-reports)) |
 | Async child results | 2 | A checker child passes a ctypes character buffer where its declared binding expects unsigned bytes; it fails before the module call |
 
-The AES-GCM message flags were withdrawn because that route was not
-supported as advertised. Basic classic-shaped message tests do not establish
+The AES-GCM and AES-GMAC message flags were withdrawn because those routes
+have no normative message-parameter shape. HOTP also advertises no message
+flags (no per-message parameter shape is defined; message init refuses
+`CKR_MECHANISM_INVALID`, and classic init takes the standard `CK_OTP_PARAMS`
+with its `CK_OTP_COUNTER` entry required because Haskoki keeps no token
+counter). The four message-init lines left the finding set differently per
+mechanism. AES-GMAC's ten message test ids were not collected in the re-freeze
+run; why the checker does not collect them is not established here. HOTP's message tests are still
+collected and are now expected failures in both lanes, because HOTP has no
+message routes and message init refuses `CKR_MECHANISM_INVALID`. Basic classic-shaped message tests do not establish
 general v3 message conformance. CBC/recover recipe findings from earlier
 runs are not current baseline findings.
 

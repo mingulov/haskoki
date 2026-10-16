@@ -9,7 +9,7 @@ sources `profiles.conf` and copies `backend-memory.toml` into each run.
 | Profile | Selection | Current result, direct and proxied |
 | --- | --- | --- |
 | smoke | Offline interface, slot, digest, and profile cases | 743 collected cases; zero findings; exit 0 |
-| full | All offline cases | 10993 collected cases; 22 documented findings in each mode; exit 1 |
+| full | All offline cases | 10983 collected cases; 18 documented findings in each mode (v0.5 re-freeze); exit 1 |
 
 Collected cases include skips and expected failures. They are not counts
 of passing tests. The checker is pinned to 0.2.3 and the proxy to v0.2.2.

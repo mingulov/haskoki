@@ -12,7 +12,7 @@ validation, key-length and truncation rules, and mechanism table;
 these tests pin the recipe and its three consumers:
 
 * the model init path enforces CMAC parameters ('validateInit',
-  'CKR_ARGUMENTS_BAD');
+  'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps every covered (mechanism, params, key length)
   triple to its cipher spec plus truncation ('cmacSpecFor') and
   executes the SP 800-38B composition over the backend ECB route;
@@ -213,8 +213,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpSign] False
 
@@ -223,13 +224,13 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "nonempty refused" CKR_ARGUMENTS_BAD
+  assertEqual "nonempty refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign cmacMech "x" (Just badKey) Nothing Nothing))
-  assertEqual "empty passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "empty passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign cmacMech BS.empty (Just badKey) Nothing Nothing))
-  assertEqual "general bad length refused" CKR_ARGUMENTS_BAD
+  assertEqual "general bad length refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign cmacGenMech (encodeMacGeneral 17) (Just badKey) Nothing Nothing))
-  assertEqual "general good length passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "general good length passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign cmacGenMech (encodeMacGeneral 8) (Just badKey) Nothing Nothing))
 
 -- ---------------------------------------------------------------------------

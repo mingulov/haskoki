@@ -117,7 +117,24 @@ config the consumer prints with `--print-config`:
   ready only when its own log shows `listening on tcp` and its process
   is alive.
 
+## Proxy-owned divergences inside gated consumers
+
+These legs are not `DIRECT_ONLY` entries: the consumer runs proxied and
+is compared, but one leg branches on topology because the pinned shim
+behaves differently from the provider. The proxied branch asserts the
+shim's behavior, so a change in either side fails the run. No upstream
+issue has been filed for either.
+
+| Leg | Proxied behavior | Direct behavior | Introduced |
+| --- | --- | --- | --- |
+| `consumer_errors` refusal legs, digest-key control | The shim refuses `C_DigestKey` on a destroyed key handle itself (client-side handle translation), so the backend never sees the error and its digest stays active: the next `C_DigestInit` returns `CKR_OPERATION_ACTIVE`. The consumer prints a `topology:` line (excluded from the diff), finishes the stale digest and re-initializes. | The refused `C_DigestKey` returns `CKR_KEY_HANDLE_INVALID` and terminates the digest (PKCS#11 v3.1 section 5.12), so `C_DigestInit` succeeds. | `f520105` |
+| `consumer_roundtrip` HOTP `CK_OTP_PARAMS` legs | The shim's operation check refuses any parameterized `CKM_HOTP` (0x291 has no entry in its mechanism parameter registry) with `CKR_MECHANISM_PARAM_INVALID` before forwarding, because it does not marshal the pointer inside `CK_OTP_PARAMS`. The proxied run asserts that refusal; the RFC 4226 vectors and the parameter-decoder refusals run direct only. | `CK_OTP_PARAMS` with a `CK_OTP_COUNTER` entry signs and verifies the RFC 4226 vectors. | `8caf66f` |
+
+Both are recorded in `proxy_owned_divergences` of the
+[findings ledger](../spec/findings-ledger.json), whose gate checks that
+each introducing commit is an ancestor of the checked-out tree.
+
 ## Ledger rows
 
 The qualification ledger's proxy rows come from the same pinned pair.
-They are re-frozen by v0.5 WP12 Task 7.
+They were re-frozen at the v0.5 checker re-freeze.

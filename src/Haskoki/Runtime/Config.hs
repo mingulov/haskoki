@@ -26,6 +26,9 @@ module Haskoki.Runtime.Config
   , TokensCfg (..)
   , Config (..)
   , ConfigError (..)
+  , KeyClass (..)
+  , TomlKey
+  , configKeyCatalog
   , defaultConfig
   , parseConfig
   , loadConfigFile
@@ -286,30 +289,66 @@ data TomlVal
 -- | Dotted key: @("storage", "path")@; top-level keys use @""@.
 type TomlKey = (String, String)
 
+-- | Behavior class of a key, as the documented table states it:
+-- @E@ enforced, @R@ refused (non-default values), @E/R@ enforced with a
+-- refused value, @D@ reserved (config-not-policy, disclosed).
+data KeyClass = Enforced | Refused | EnforcedRefused | Reserved
+  deriving (Eq, Show)
+
+-- | Every key the provider understands with its documented class.
+-- Anything else is rejected. @docs/config-honesty.md@ is compared to
+-- this catalog mechanically by @ConfigHonestySpec@.
+configKeyCatalog :: [(TomlKey, KeyClass)]
+configKeyCatalog =
+  [ (("", "schema_version"), Enforced)
+  , (("", "profile"), Enforced)
+  , (("", "interfaces"), Enforced)
+  , (("", "seed"), Refused)
+  , (("storage", "kind"), Enforced)
+  , (("storage", "path"), EnforcedRefused)
+  , (("storage", "busy_timeout_ms"), Refused)
+  , (("storage", "exclusive_provider_ownership"), Refused)
+  , (("engine", "kind"), Enforced)
+  , (("engine", "allow_synthetic_fallback"), Refused)
+  , (("engine", "private_library_context"), Refused)
+  , (("async", "executor"), Enforced)
+  , (("async", "enabled"), Enforced)
+  , (("async", "pending_polls"), Enforced)
+  , (("async", "persist_detached"), Reserved)
+  , (("trace", "enabled"), Enforced)
+  , (("trace", "path"), Enforced)
+  , (("trace", "redact_secrets"), Refused)
+  , (("trace", "queue_limit"), Enforced)
+  , (("control", "enabled"), Refused)
+  , (("control", "max_request_bytes"), Enforced)
+  , (("control", "response_budget_bytes"), Enforced)
+  , (("control", "test_enabled"), Enforced)
+  , (("fixtures", "set"), Refused)
+  , (("fixtures", "apply"), Refused)
+  , (("limits", "slots"), Enforced)
+  , (("limits", "sessions"), Enforced)
+  , (("limits", "objects"), Enforced)
+  , (("limits", "buffer_bytes"), Reserved)
+  , (("limits", "transcript_bytes"), Reserved)
+  , (("limits", "aggregate_payload_bytes"), Reserved)
+  , (("limits", "attribute_entries"), Reserved)
+  , (("limits", "attribute_depth"), Reserved)
+  , (("limits", "jobs"), Enforced)
+  , (("limits", "events"), Enforced)
+  , (("sim", "enabled"), Enforced)
+  , (("sim", "delay_schedule"), Enforced)
+  , (("sim", "token_script"), Enforced)
+  , (("sim", "fault_window_start"), Enforced)
+  , (("sim", "fault_window_ticks"), Enforced)
+  , (("tokens", "labels"), Enforced)
+  , (("tokens", "so_pins"), Enforced)
+  , (("tokens", "user_pins"), Enforced)
+  , (("tokens", "token_ids"), Enforced)
+  ]
+
 -- | Every key the provider understands. Anything else is rejected.
 knownKeys :: [TomlKey]
-knownKeys =
-  [ ("", "schema_version"), ("", "profile"), ("", "interfaces"), ("", "seed")
-  , ("storage", "kind"), ("storage", "path"), ("storage", "busy_timeout_ms")
-  , ("storage", "exclusive_provider_ownership")
-  , ("engine", "kind"), ("engine", "allow_synthetic_fallback")
-  , ("engine", "private_library_context")
-  , ("async", "executor"), ("async", "enabled"), ("async", "pending_polls")
-  , ("async", "persist_detached")
-  , ("trace", "enabled"), ("trace", "path"), ("trace", "redact_secrets")
-  , ("trace", "queue_limit")
-  , ("control", "enabled"), ("control", "max_request_bytes")
-  , ("control", "response_budget_bytes"), ("control", "test_enabled")
-  , ("fixtures", "set"), ("fixtures", "apply")
-  , ("limits", "slots"), ("limits", "sessions"), ("limits", "objects")
-  , ("limits", "buffer_bytes"), ("limits", "transcript_bytes")
-  , ("limits", "aggregate_payload_bytes"), ("limits", "attribute_entries")
-  , ("limits", "attribute_depth"), ("limits", "jobs"), ("limits", "events")
-  , ("sim", "enabled"), ("sim", "delay_schedule"), ("sim", "token_script")
-  , ("sim", "fault_window_start"), ("sim", "fault_window_ticks")
-  , ("tokens", "labels"), ("tokens", "so_pins"), ("tokens", "user_pins")
-  , ("tokens", "token_ids")
-  ]
+knownKeys = map fst configKeyCatalog
 
 knownSections :: [String]
 knownSections = ["storage", "engine", "async", "trace", "control", "fixtures", "limits", "sim", "tokens"]

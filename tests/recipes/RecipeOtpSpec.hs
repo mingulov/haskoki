@@ -13,7 +13,7 @@ mechanism table; these tests pin the recipe and its three
 consumers:
 
 * the model init path enforces HOTP parameters ('validateInit',
-  'CKR_ARGUMENTS_BAD');
+  'CKR_MECHANISM_PARAM_INVALID');
 * the driver maps (mechanism, params) to (counter, digits)
   ('hotpParamsFor') and executes the HMAC-SHA1-plus-truncate
   composition over the backend MAC route;
@@ -55,6 +55,7 @@ import Haskoki.Operation.KeyManagement
   , hotpKeyGenMech
   , planGenerateKey
   )
+import Haskoki.FFI.NativeParams (OtpEntry (..), otpEntriesToCanonical)
 import Haskoki.Recipe.Otp
   ( OtpRecipe (..)
   , decodeHotpParams
@@ -95,6 +96,7 @@ spec = testGroup "OTP recipe"
   , testCase "codec identity" caseCodec
   , testCase "params: layout and round-trip" caseParamsCodec
   , testCase "params: validity" caseParamsValid
+  , testCase "native CK_OTP_PARAMS entries translate" caseNativeEntries
   , testCase "truncate: RFC 4226 pins" caseTruncate
   , testCase "keygen geometry" caseKeygenGeometry
   , testCase "init enforces parameters" caseInitParams
@@ -254,8 +256,9 @@ testEnv = OpEnv
   }
 
 -- | Unknown handle: valid parameters proceed PAST the parameter check
--- to key resolution (proving acceptance); bad parameters stop at
--- 'CKR_ARGUMENTS_BAD'.
+-- to key resolution ('CKR_KEY_HANDLE_INVALID', proving acceptance);
+-- bad parameters stop at 'CKR_MECHANISM_PARAM_INVALID' (PKCS#11 v3.1
+-- section 5.1.6: invalid parameters supplied to the mechanism).
 badKey :: KeyPolicy
 badKey = KeyPolicy (ExternalHandle 999) [OpSign, OpVerify] False
 
@@ -264,18 +267,18 @@ runInit args = ioCode (snd (initOperation testEnv emptySessionOps testSession ar
 
 caseInitParams :: IO ()
 caseInitParams = do
-  assertEqual "empty refused" CKR_ARGUMENTS_BAD
+  assertEqual "empty refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign hotpMech BS.empty (Just badKey) Nothing Nothing))
-  assertEqual "short refused" CKR_ARGUMENTS_BAD
+  assertEqual "short refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign hotpMech "x" (Just badKey) Nothing Nothing))
-  assertEqual "bad digits refused" CKR_ARGUMENTS_BAD
+  assertEqual "bad digits refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (InitArgs OpSign hotpMech
       (hex "0000000000000003" <> hex "0000000000000005")
       (Just badKey) Nothing Nothing))
-  assertEqual "good passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "good passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpSign hotpMech (encodeHotpParams 3 6)
       (Just badKey) Nothing Nothing))
-  assertEqual "verify good passes params" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "verify good passes params" CKR_KEY_HANDLE_INVALID
     (runInit (InitArgs OpVerify hotpMech (encodeHotpParams 3 8)
       (Just badKey) Nothing Nothing))
 
@@ -356,3 +359,33 @@ caseKeygenRefuse = do
       , (AttrKeyType, ValULong ckkAes)
       , (AttrValueLen, ValULong 20)
       ])
+
+-- | The standard CK_OTP_PARAMS entries map onto the canonical
+-- image (stateless profile): the counter entry (8 bytes,
+-- big-endian) is required, the output length is optional (6-8,
+-- default 6); other types, duplicates and bad values refuse.
+caseNativeEntries :: IO ()
+caseNativeEntries = do
+  let ctr n = OtpCounter (encodeHotpCounter n)
+  assertEqual "counter only, default 6 digits"
+    (Just (encodeHotpParams 0 6)) (otpEntriesToCanonical [ctr 0])
+  assertEqual "counter and output length"
+    (Just (encodeHotpParams 0x0102030405060708 8))
+    (otpEntriesToCanonical [OtpOutputLength 8, ctr 0x0102030405060708])
+  assertEqual "translated image decodes"
+    (Just (7, 7)) (otpEntriesToCanonical [ctr 7, OtpOutputLength 7] >>= decodeHotpParams)
+  assertEqual "no counter refuses" Nothing (otpEntriesToCanonical [OtpOutputLength 6])
+  assertEqual "empty array refuses" Nothing (otpEntriesToCanonical [])
+  assertEqual "short counter refuses" Nothing
+    (otpEntriesToCanonical [OtpCounter (BS.replicate 4 0)])
+  assertEqual "long counter refuses" Nothing
+    (otpEntriesToCanonical [OtpCounter (BS.replicate 9 0)])
+  assertEqual "duplicate counter refuses" Nothing (otpEntriesToCanonical [ctr 1, ctr 2])
+  assertEqual "duplicate length refuses" Nothing
+    (otpEntriesToCanonical [ctr 1, OtpOutputLength 6, OtpOutputLength 6])
+  assertEqual "5 digits refuse" Nothing (otpEntriesToCanonical [ctr 1, OtpOutputLength 5])
+  assertEqual "9 digits refuse" Nothing (otpEntriesToCanonical [ctr 1, OtpOutputLength 9])
+  -- CK_OTP_PIN (1), CK_OTP_CHALLENGE (2), CK_OTP_TIME (3),
+  -- CK_OTP_FLAGS (5): outside the stateless profile.
+  mapM_ (\t -> assertEqual ("type " ++ show t ++ " refuses") Nothing
+          (otpEntriesToCanonical [ctr 1, OtpOther t])) [0, 1, 2, 3, 5, 7]

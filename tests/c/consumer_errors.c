@@ -3,6 +3,16 @@
  * legacy 2.40 + 3.x tables:
  *   - bogus mechanism init is CKR_MECHANISM_INVALID
  *   - NULL mechanism init is CKR_ARGUMENTS_BAD
+ *   - refusal codes at keyed init (PKCS#11 v3.1 section 5.1.6): a NULL
+ *     or wrong-length pParameter where the mechanism requires one is
+ *     CKR_MECHANISM_PARAM_INVALID (cipher, GCM, RSA-OAEP, ChaCha20,
+ *     GMAC, HOTP, and the message-API cipher inits); a NULL pMechanism
+ *     and a NULL pParameter with a nonzero length stay
+ *     CKR_ARGUMENTS_BAD; an unknown or destroyed key handle at
+ *     C_{Encrypt,Decrypt,Sign,Verify}Init and C_DigestKey is
+ *     CKR_KEY_HANDLE_INVALID (the init and C_DigestKey return lists in
+ *     5.8.1, 5.10.1, 5.12.4, 5.13.1 and 5.15.1 carry it, not
+ *     CKR_OBJECT_HANDLE_INVALID)
  *   - template-count overflow on C_GetAttributeValue is
  *     CKR_ARGUMENTS_BAD (64-entry bound shared with the pack path);
  *     a real 64-entry template over a live key still processes;
@@ -425,6 +435,247 @@ static CK_RV open_session_on(void *T, CK_SESSION_HANDLE *sess) {
   return open_session_on_32(g_t32, sess);
 }
 
+/* Refusal codes at keyed init and C_DigestKey (PKCS#11 v3.1 section
+ * 5.1.6). Runs once on the 3.0 table (message API and C_DigestKey).
+ * Every refusal leg uses a live key of the right type, so the code
+ * under test is the parameter or handle verdict alone. */
+static CK_RV make_secret(CK_FUNCTION_LIST_3_0_PTR T, CK_SESSION_HANDLE s,
+                         CK_KEY_TYPE kt, CK_BYTE *val, CK_ULONG len,
+                         CK_OBJECT_HANDLE *out) {
+  CK_OBJECT_CLASS cls = CKO_SECRET_KEY;
+  CK_BBOOL f = CK_FALSE, t = CK_TRUE;
+  CK_ATTRIBUTE tmpl[] = {
+    { CKA_CLASS, &cls, sizeof(cls) },
+    { CKA_KEY_TYPE, &kt, sizeof(kt) },
+    { CKA_VALUE, val, len },
+    { CKA_TOKEN, &f, sizeof(f) },
+    { CKA_ENCRYPT, &t, sizeof(t) },
+    { CKA_DECRYPT, &t, sizeof(t) },
+    { CKA_SIGN, &t, sizeof(t) },
+    { CKA_VERIFY, &t, sizeof(t) },
+  };
+  return T->C_CreateObject(s, tmpl, 8, out);
+}
+
+static int g_isProxy;
+
+static void refusal_code_legs(CK_FUNCTION_LIST_3_0_PTR T) {
+  CK_SESSION_HANDLE s = 0;
+  CK_OBJECT_HANDLE aes = 0, gone = 0, c20 = 0, hotp = 0, pub = 0, priv = 0;
+  CK_BYTE aesv[16] = { 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
+                       0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
+  CK_BYTE gonev[16] = { 0 };
+  CK_BYTE c20v[32] = { 0 };
+  CK_BYTE hotpv[20] = { '1','2','3','4','5','6','7','8','9','0',
+                        '1','2','3','4','5','6','7','8','9','0' };
+  CK_BYTE iv16[16] = { 0 };
+  CK_BYTE iv8[8] = { 0 };
+  CK_BYTE junk[3] = { 1, 2, 3 };
+  CK_BYTE c20ctr[4] = { 0 };
+  CK_BYTE c20nonce[12] = { 0 };
+  CK_CHACHA20_PARAMS c20p;
+  CK_ULONG bits = 2048;
+  CK_BYTE e[3] = { 0x01, 0x00, 0x01 };
+  CK_BBOOL t = CK_TRUE, f = CK_FALSE;
+  CK_ATTRIBUTE pubt[] = {
+    { CKA_MODULUS_BITS, &bits, sizeof(bits) },
+    { CKA_PUBLIC_EXPONENT, e, sizeof(e) },
+    { CKA_ENCRYPT, &t, sizeof(t) },
+    { CKA_TOKEN, &f, sizeof(f) },
+  };
+  CK_ATTRIBUTE privt[] = {
+    { CKA_DECRYPT, &t, sizeof(t) },
+    { CKA_TOKEN, &f, sizeof(f) },
+  };
+  CK_MECHANISM rsagen = { CKM_RSA_PKCS_KEY_PAIR_GEN, NULL_PTR, 0 };
+  CK_MECHANISM cbcNull = { CKM_AES_CBC, NULL_PTR, 0 };
+  CK_MECHANISM cbcShort = { CKM_AES_CBC, iv8, sizeof(iv8) };
+  CK_MECHANISM cbcOk = { CKM_AES_CBC, iv16, sizeof(iv16) };
+  CK_MECHANISM cbcNullLen = { CKM_AES_CBC, NULL_PTR, 16 };
+  CK_MECHANISM gcmNull = { CKM_AES_GCM, NULL_PTR, 0 };
+  CK_MECHANISM oaepNull = { CKM_RSA_PKCS_OAEP, NULL_PTR, 0 };
+  CK_MECHANISM oaepJunk = { CKM_RSA_PKCS_OAEP, junk, sizeof(junk) };
+  CK_MECHANISM c20Null = { CKM_CHACHA20, NULL_PTR, 0 };
+  CK_MECHANISM c20Short = { CKM_CHACHA20, &c20p, sizeof(c20p) - 1 };
+  CK_MECHANISM gmacNull = { CKM_AES_GMAC, NULL_PTR, 0 };
+  CK_MECHANISM gmacJunk = { CKM_AES_GMAC, junk, sizeof(junk) };
+  CK_MECHANISM hotpNull = { CKM_HOTP, NULL_PTR, 0 };
+  CK_MECHANISM hotpJunk = { CKM_HOTP, junk, sizeof(junk) };
+  CK_MECHANISM ctrNull = { CKM_AES_CTR, NULL_PTR, 0 };
+  CK_MECHANISM cmac = { CKM_AES_CMAC, NULL_PTR, 0 };
+  CK_MECHANISM hmac = { CKM_SHA256_HMAC, NULL_PTR, 0 };
+  CK_MECHANISM sha = { CKM_SHA256, NULL_PTR, 0 };
+  CK_OBJECT_HANDLE unknown = 0x7FFFFFF0UL;
+  CK_BYTE out[64];
+  CK_ULONG outLen;
+  CK_RV prv;
+
+  c20p.pBlockCounter = c20ctr;
+  c20p.blockCounterBits = 32;
+  c20p.pNonce = c20nonce;
+  c20p.ulNonceBits = 96;
+  prv = open_session_on(T, &s);
+  CHECKC(prv == CKR_OK && s != 0, "refusal: session opens");
+  CHECKC(make_secret(T, s, CKK_AES, aesv, 16, &aes) == CKR_OK,
+         "refusal: AES key imports");
+  CHECKC(make_secret(T, s, CKK_AES, gonev, 16, &gone) == CKR_OK,
+         "refusal: doomed AES key imports");
+  CHECKC(make_secret(T, s, CKK_CHACHA20, c20v, 32, &c20) == CKR_OK,
+         "refusal: ChaCha20 key imports");
+  CHECKC(make_secret(T, s, CKK_HOTP, hotpv, 20, &hotp) == CKR_OK,
+         "refusal: HOTP key imports");
+  prv = T->C_GenerateKeyPair(s, &rsagen, pubt, 4, privt, 2, &pub, &priv);
+  CHECKC(prv == CKR_OK, "refusal: RSA pair generates");
+
+  /* NULL or wrong-length pParameter: CKR_MECHANISM_PARAM_INVALID. */
+  prv = T->C_EncryptInit(s, &cbcNull, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: AES-CBC encrypt NULL iv is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_DecryptInit(s, &cbcNull, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: AES-CBC decrypt NULL iv is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_EncryptInit(s, &cbcShort, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: AES-CBC 8-byte iv is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_EncryptInit(s, &gcmNull, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: AES-GCM NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_EncryptInit(s, &oaepNull, pub);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: RSA-OAEP encrypt NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_DecryptInit(s, &oaepNull, priv);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: RSA-OAEP decrypt NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_EncryptInit(s, &oaepJunk, pub);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: RSA-OAEP 3-byte params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_EncryptInit(s, &c20Null, c20);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: ChaCha20 NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_EncryptInit(s, &c20Short, c20);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: ChaCha20 short struct is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_SignInit(s, &gmacNull, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: GMAC sign NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_VerifyInit(s, &gmacNull, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: GMAC verify NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_SignInit(s, &gmacJunk, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: GMAC 3-byte params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_SignInit(s, &hotpNull, hotp);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: HOTP sign NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_VerifyInit(s, &hotpNull, hotp);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: HOTP verify NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_SignInit(s, &hotpJunk, hotp);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: HOTP 3-byte params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_MessageEncryptInit(s, &ctrNull, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: message AES-CTR encrypt NULL params is PARAM_INVALID (0x%lx)",
+         prv);
+  prv = T->C_MessageDecryptInit(s, &ctrNull, aes);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: message AES-CTR decrypt NULL params is PARAM_INVALID (0x%lx)",
+         prv);
+  prv = T->C_MessageEncryptInit(s, &oaepNull, pub);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: message RSA-OAEP NULL params is PARAM_INVALID (0x%lx)", prv);
+  prv = T->C_MessageEncryptInit(s, &c20Null, c20);
+  CHECKC(prv == CKR_MECHANISM_PARAM_INVALID,
+         "refusal: message ChaCha20 NULL params is PARAM_INVALID (0x%lx)", prv);
+
+  /* Function-argument faults stay CKR_ARGUMENTS_BAD. */
+  prv = T->C_EncryptInit(s, NULL_PTR, aes);
+  CHECKC(prv == CKR_ARGUMENTS_BAD,
+         "refusal: encrypt NULL pMechanism is ARGUMENTS_BAD (0x%lx)", prv);
+  prv = T->C_SignInit(s, NULL_PTR, aes);
+  CHECKC(prv == CKR_ARGUMENTS_BAD,
+         "refusal: sign NULL pMechanism is ARGUMENTS_BAD (0x%lx)", prv);
+  prv = T->C_MessageEncryptInit(s, NULL_PTR, aes);
+  CHECKC(prv == CKR_ARGUMENTS_BAD,
+         "refusal: message encrypt NULL pMechanism is ARGUMENTS_BAD (0x%lx)",
+         prv);
+  prv = T->C_EncryptInit(s, &cbcNullLen, aes);
+  CHECKC(prv == CKR_ARGUMENTS_BAD,
+         "refusal: NULL pParameter with length is ARGUMENTS_BAD (0x%lx)", prv);
+
+  /* Unknown and destroyed key handles: CKR_KEY_HANDLE_INVALID. */
+  prv = T->C_EncryptInit(s, &cbcOk, unknown);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: encrypt unknown key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_DecryptInit(s, &cbcOk, unknown);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: decrypt unknown key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_SignInit(s, &hmac, unknown);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: sign unknown key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_VerifyInit(s, &hmac, unknown);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: verify unknown key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_DestroyObject(s, gone);
+  CHECKC(prv == CKR_OK, "refusal: doomed key destroys");
+  prv = T->C_EncryptInit(s, &cbcOk, gone);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: encrypt destroyed key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_DecryptInit(s, &cbcOk, gone);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: decrypt destroyed key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_SignInit(s, &cmac, gone);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: sign destroyed key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_VerifyInit(s, &cmac, gone);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: verify destroyed key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_DigestInit(s, &sha);
+  CHECKC(prv == CKR_OK, "refusal: digest init for unknown key");
+  prv = T->C_DigestKey(s, unknown);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: digest-key unknown key is KEY_HANDLE_INVALID (0x%lx)", prv);
+  prv = T->C_DigestInit(s, &sha);
+  CHECKC(prv == CKR_OK, "refusal: digest init for destroyed key");
+  prv = T->C_DigestKey(s, gone);
+  CHECKC(prv == CKR_KEY_HANDLE_INVALID,
+         "refusal: digest-key destroyed key is KEY_HANDLE_INVALID (0x%lx)",
+         prv);
+
+  /* Controls: the same live keys and well-formed parameters serve. */
+  prv = T->C_EncryptInit(s, &cbcOk, aes);
+  CHECKC(prv == CKR_OK, "refusal: control AES-CBC encrypt init ok");
+  outLen = sizeof(out);
+  prv = T->C_Encrypt(s, iv16, 16, out, &outLen);
+  CHECKC(prv == CKR_OK && outLen == 16, "refusal: control AES-CBC encrypts");
+  prv = T->C_SignInit(s, &cmac, aes);
+  CHECKC(prv == CKR_OK, "refusal: control AES-CMAC sign init ok");
+  outLen = sizeof(out);
+  prv = T->C_Sign(s, iv16, 16, out, &outLen);
+  CHECKC(prv == CKR_OK && outLen == 16, "refusal: control AES-CMAC signs");
+  prv = T->C_DigestInit(s, &sha);
+  if (g_isProxy && prv == CKR_OPERATION_ACTIVE) {
+    /* pkcs11-proxy-ng v0.2.2 refuses C_DigestKey on an unknown handle
+     * itself (client-side handle translation), so the backend never sees
+     * the error and its digest stays active. Direct topology follows
+     * PKCS#11 v3.1 5.12 (an error terminates the operation). Recorded as
+     * a proxy-owned divergence; finish the stale digest to continue. */
+    printf("topology: proxy kept the digest after a refused C_DigestKey "
+           "(0x%lx)\n", prv);
+    outLen = sizeof(out);
+    (void)T->C_DigestFinal(s, out, &outLen);
+    prv = T->C_DigestInit(s, &sha);
+  }
+  CHECKC(prv == CKR_OK, "refusal: control digest init (0x%lx)", prv);
+  prv = T->C_DigestKey(s, aes);
+  CHECKC(prv == CKR_OK, "refusal: control digest-key live key ok");
+  outLen = sizeof(out);
+  prv = T->C_DigestFinal(s, out, &outLen);
+  CHECKC(prv == CKR_OK && outLen == 32, "refusal: control digest final");
+  prv = T->C_CloseSession(s);
+  CHECKC(prv == CKR_OK, "refusal: session closes");
+}
+
 int main(int argc, char **argv) {
   void *handle;
   CK_C_GetFunctionList pGetList;
@@ -444,6 +695,7 @@ int main(int argc, char **argv) {
   }
   topo = getenv("HASKOKI_CONSUMER_TOPOLOGY");
   isProxy = topo && strcmp(topo, "proxy") == 0;
+  g_isProxy = isProxy;
   printf("topology: %s\n", isProxy ? "proxy" : "direct");
   write_config();
   handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -504,6 +756,7 @@ int main(int argc, char **argv) {
     ERRORS_SCENARIO("3.1", g_t31);
   }
   ERRORS_SCENARIO("3.2", g_t32);
+  refusal_code_legs(g_t30);
 
   /* Login probes once: token auth state is shared across tables. */
   rv = open_session_on_legacy(legacy, &lsess);

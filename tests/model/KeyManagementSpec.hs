@@ -6205,12 +6205,19 @@ caseByteOpsPlans = do
     KeyDenied (KeyDeny code _) ->
       assertEqual "natural code" CKR_KEY_SIZE_RANGE code
     other -> assertFailure ("over-natural must deny, got: " ++ show other)
-  -- XOR over mismatched lengths refuses typed.
+  -- XOR over unequal lengths covers the shorter operand
+  -- (§6.43.6): the 16-byte data admits 16, and 17 refuses typed
+  -- like every over-natural byte-op request.
   case planDerive defaultRules m2 st xorMech baseH
       (encodeDeriveParams fBD [kid 16]) of
+    KeyEffect _ (FxDerive _ _ _ _ _ total) ->
+      assertEqual "xor shorter-operand total" 16 total
+    other -> assertFailure ("xor over unequal lengths must plan, got: " ++ show other)
+  case planDerive defaultRules m2 st xorMech baseH
+      (encodeDeriveParams fBD [kid 17]) of
     KeyDenied (KeyDeny code _) ->
-      assertEqual "xor code" CKR_DATA_LEN_RANGE code
-    other -> assertFailure ("xor mismatch must deny, got: " ++ show other)
+      assertEqual "xor past the shorter length" CKR_KEY_SIZE_RANGE code
+    other -> assertFailure ("xor past the shorter length must deny, got: " ++ show other)
   -- EXTRACT without a template length refuses typed.
   case planDerive defaultRules m2 st extractMech baseH
       (encodeDeriveParams fExt [kidNoLen]) of

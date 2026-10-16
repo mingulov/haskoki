@@ -654,9 +654,11 @@ int main(int argc, char **argv) {
     EXPECT_RV(F->C_Login(s1, CKU_USER, (CK_UTF8CHAR_PTR)kUserPin, 4),
               CKR_PIN_LOCKED, "C13: correct user PIN stays locked");
     /* Logout destroys private session objects and stales their handles;
-     * init refuses a dead handle with OBJECT_HANDLE_INVALID (the code
-     * consumer_so_isolation pins for an invisible key). */
-    EXPECT_RV(sign_init(s1, kA), CKR_OBJECT_HANDLE_INVALID,
+     * init refuses a dead key handle with KEY_HANDLE_INVALID (PKCS#11
+     * v3.1 section 5.1.6; C_SignInit 5.13.1 lists it, not
+     * OBJECT_HANDLE_INVALID), the code consumer_so_isolation pins for
+     * an invisible key. */
+    EXPECT_RV(sign_init(s1, kA), CKR_KEY_HANDLE_INVALID,
               "C13: private session key gone after the lockout logout");
     fill(out, sizeof(out));
     rv = sign_msg_a(s1, out, &len);

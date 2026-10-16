@@ -24,6 +24,9 @@ MECH = ROOT / "spec" / "mechanisms.json"
 ISSUES = ROOT / "spec" / "source-issues.json"
 OUT = ROOT / "docs" / "coverage.md"
 INC = ROOT / "cbits" / "mech_catalog.inc"
+FUNCS = ROOT / "spec" / "function-contracts.json"
+LEDGER = ROOT / "spec" / "findings-ledger.json"
+PLACEHOLDER = "Catalog-only (generator note)"
 
 # Templates, not fixed text: the served-row count is derived from
 # spec/mechanisms.json (support.real == "tested") and proven equal
@@ -60,6 +63,29 @@ def load():
     mechs = json.loads(MECH.read_text())["mechanisms"]
     issues = json.loads(ISSUES.read_text())["issues"]
     return mechs, issues
+
+
+def load_functions():
+    funcs = json.loads(FUNCS.read_text())["functions"]
+    ledger = json.loads(LEDGER.read_text())["rows"]
+    refusals = sorted(r["input"] for r in ledger
+                      if r["kind"] == "function"
+                      and r["dimension"] == "c-routing")
+    return funcs, refusals
+
+
+def check_functions(funcs, refusals):
+    assert len(funcs) == 104, f"function contract drift: {len(funcs)} want 104"
+    names = {f["name"] for f in funcs}
+    assert len(names) == len(funcs), "duplicate function contract"
+    assert len(refusals) == 11, f"C hard refusals: {len(refusals)} want 11"
+    # The C hard refusals are served by the C tables, and each one has
+    # its own function contract row (the four C_VerifySignature*
+    # functions included), so every refusal must name a contract row.
+    for n in refusals:
+        assert n in names, f"hard refusal {n} has no function contract row"
+    n_unsup = sum(1 for f in funcs if f["contract"] == "unsupported-with-reason")
+    assert n_unsup == 21, f"planner-unsupported drift: {n_unsup} want 21"
 
 
 def real_tested_count(mechs):
@@ -111,6 +137,13 @@ def check_consistency(mechs):
             assert r["test_evidence"], f"{r['canonical_name']}: tested without evidence"
         if b in ("unsupported-with-reason", "not-applicable"):
             assert r["notes"].strip(), f"{r['canonical_name']}: {b} without reason"
+        if b in ("unsupported-with-reason", "not-applicable", "planned"):
+            # The rendered reason is the first line of the notes; a
+            # generator placeholder there is not a reviewed reason.
+            assert not r["notes"].strip().splitlines()[0].startswith(
+                PLACEHOLDER), (
+                f"{r['canonical_name']}: placeholder reason, needs a "
+                f"reviewed note")
         if b == "planned":
             assert not r["test_evidence"], (
                 f"{r['canonical_name']}: planned row carries evidence")
@@ -122,7 +155,7 @@ def fmt_counts(counter, total):
                      if counter.get(k, 0)) + f" ({total} total)"
 
 
-def render(mechs, issues):
+def render(mechs, issues, funcs, refusals):
     total = len(mechs)
     n_alias = sum(len(r["aliases"]) for r in mechs)
     by_beh = collections.Counter(r["support"]["behavior"] for r in mechs)
@@ -213,6 +246,57 @@ def render(mechs, issues):
         L.append(f"| {r['canonical_name']} | {r['numeric_id']} | "
                  f"{r['support']['behavior']} | {reason} |")
     L.append("")
+    planned = sorted((r for r in mechs if r["support"]["behavior"] == "planned"),
+                     key=lambda r: int(r["numeric_id"], 16))
+    L.append("## Planned mechanisms (catalog rows, not yet served)")
+    L.append("")
+    L.append(f"{len(planned)} rows carry behavior `planned`: catalogued with "
+             "their header identity, no evidence and no C route. Each is "
+             "tracked as a target-gap in the [findings ledger]"
+             "(../spec/findings-ledger.json). Reason is the first line of "
+             "the row notes.")
+    L.append("")
+    L.append("| mechanism | id | family | reason |")
+    L.append("|---|---|---|---|")
+    for r in planned:
+        reason = r["notes"].strip().splitlines()[0][:160].replace("|", "/")
+        L.append(f"| {r['canonical_name']} | {r['numeric_id']} | "
+                 f"{r['family']} | {reason} |")
+    L.append("")
+    refset = set(refusals)
+    n_contract = collections.Counter(f["contract"] for f in funcs)
+    L.append("## Function contracts")
+    L.append("")
+    L.append(f"{len(funcs)} function contracts from "
+             "spec/function-contracts.json "
+             + ", ".join(f"{n_contract[k]} {k}" for k in sorted(n_contract))
+             + ". The contract scope is planner/in-process reachability, "
+             "NOT C-table routing, so the planner and C columns can differ.")
+    L.append("")
+    L.append("### C hard refusals")
+    L.append("")
+    L.append(f"{len(refusals)} C functions are refused by the C function "
+             "tables with `CKR_FUNCTION_NOT_SUPPORTED` once the library is "
+             "initialised (`CKR_CRYPTOKI_NOT_INITIALIZED` before): "
+             + ", ".join(f"`{n}`" for n in refusals) + ". "
+             "Two further entries (`C_GetFunctionStatus`, `C_CancelFunction`) "
+             "give the mandated legacy responses and are not counted. These "
+             "are the \"C routing\" refusals; they are a different set from "
+             "the planner-unsupported contracts below. Decisions are in the "
+             "[findings ledger](../spec/findings-ledger.json).")
+    L.append("")
+    L.append("| function | ordinal (3.2) | C routing | planner contract | "
+             "planner reason |")
+    L.append("|---|---|---|---|---|")
+    for f in sorted(funcs, key=lambda f: f["ordinal_3_2"]):
+        c = ("hard refusal (C routing)" if f["name"] in refset
+             else "served")
+        if f["contract"] == "not-applicable":
+            c = "legacy response"
+        reason = (f["reason"] or "").replace("|", "/")
+        L.append(f"| {f['name']} | {f['ordinal_3_2']} | {c} | "
+                 f"{f['contract']} | {reason} |")
+    L.append("")
     L.append("Release-wide limitations (reviewed, non-generated):")
     L.append("")
     L.append(LIMITATIONS_TEMPLATE.format(n=real_tested_count(mechs)))
@@ -238,12 +322,14 @@ def main():
         print("usage: scripts/publish-coverage.py [--check]", file=sys.stderr)
         return 2
     mechs, issues = load()
+    funcs, refusals = load_functions()
     try:
         check_consistency(mechs)
+        check_functions(funcs, refusals)
     except AssertionError as e:
         print(f"FAIL: coverage data inconsistent: {e}", file=sys.stderr)
         return 1
-    text = render(mechs, issues)
+    text = render(mechs, issues, funcs, refusals)
     if check:
         if not OUT.exists():
             print(f"FAIL: {OUT.relative_to(ROOT)} missing "

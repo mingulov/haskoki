@@ -216,7 +216,7 @@ caseInitParams = do
     (runInit (mkArgs ccmMech (encodeCcmParams nonce12 "AD" 5 2)))
   assertEqual "garbage refused" CKR_MECHANISM_PARAM_INVALID
     (runInit (mkArgs ccmMech "nope"))
-  assertEqual "valid params pass to key resolution" CKR_OBJECT_HANDLE_INVALID
+  assertEqual "valid params pass to key resolution" CKR_KEY_HANDLE_INVALID
     (runInit (mkArgs ccmMech good))
 
 caseDriverMap :: IO ()

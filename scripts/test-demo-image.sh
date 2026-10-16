@@ -5,7 +5,7 @@
 # contract: expected tag/digest shape, demo verifications, check lanes
 # (smoke/full x direct/proxy, all under --network none; direct
 # byte-exact, proxy stable-core strict), compare diff
-# (under --network none; frozen R9 parity subset: 83 exclusions,
+# (under --network none; frozen parity subset: 61 exclusions,
 # strict — no flaky variance allowance) + the shipped
 # compare-classify wrapper leg (in-image ok + drift controls),
 # help texts + usage-error matrix + examples (incl. proxy-example
@@ -305,9 +305,10 @@ fi
 if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 # Full lanes exit 1 with exact finding sets (R9 on proxy v0.2.2: 27
 # direct / 27 proxy-core / diff-core + shared re-frozen below on
-# checker 0.2.3; triaged in task-R9-report.md; F-9 re-freeze: 22/22,
-# see below). Direct is byte-exact (deterministic across runs).
-# Proxy asserts a stable 22-line core exactly (strict, codex I4 —
+# checker 0.2.3; triaged in task-R9-report.md; F-9 re-freeze: 22/22;
+# v0.5 re-freeze: 18/18 after the GMAC and HOTP message flags were
+# withdrawn, see below). Direct is byte-exact (deterministic across runs).
+# Proxy asserts a stable 18-line core exactly (strict, codex I4 —
 # the failed pair's historical {pass, fail} bound is NOT suppressed);
 # any other line fails loudly. R9 delta vs R5: +2 GMAC message-init
 # lines (init params now forward; the backend's native 0x7 refusal
@@ -316,15 +317,18 @@ if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 # CKF_MESSAGE_* from the GCM row; the framework skips message ops
 # whose flags are not advertised — verified in framework source
 # test_mech_message.py — so the oracle no longer reports them).
+# v0.5 delta vs F-9: -4 lines (AES_GMAC and HOTP sign/verify message-init).
+# GMAC withdrew CKF_MESSAGE_*, so its 10 message test ids are no longer
+# collected (full-lane total 10993 -> 10983; the 10993 baseline is inferred
+# from the October-era sample, no id list exists). HOTP's message tests are
+# still collected and now xfail in both lanes (no message routes; message
+# init refuses CKR_MECHANISM_INVALID). spec/findings-ledger.json retired
+# rows carry the receipts.
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[AES_GMAC]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC]
@@ -342,21 +346,17 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
 EOF
-[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 22 ] || fail "driver: want 22 expected direct findings"
+[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 18 ] || fail "driver: want 18 expected direct findings"
 if ! diff -u "$OUT/exp-full-direct.txt" "$RUN_DIR/findings.txt"; then
-  fail "check direct/full findings differ from the exact expected 22"
+  fail "check direct/full findings differ from the exact expected 18"
 fi
-echo "check direct/full: exact 22 findings match"
+echo "check direct/full: exact 18 findings match"
 
 run_check proxy full 1
 RUN_DIR=$(latest_run "check-proxy-full")
 cat > "$OUT/exp-full-proxy.txt" <<'EOF'
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[AES_GMAC]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_sign_init[HOTP]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[AES_GMAC]
-failed test_mech_message.py::TestRegistryMessageInit::test_registry_message_verify_init[HOTP]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC]
@@ -374,7 +374,7 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 22 ] || fail "driver: want 22 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 18 ] || fail "driver: want 18 stable-core proxy findings"
 # R5 strict (codex I4): the failed pair's {pass, fail} bound is
 # historical (older pin) — v0.2.0 never demonstrated the flip, so
 # no failure form is suppressed here; any variance fails loud and
@@ -388,12 +388,15 @@ if [ "$PHASE" = all ] || [ "$PHASE" = compare ]; then
 # ---------------------------------------------------------------------------
 # 4. compare: exit 1 with a stable-core diff + exact shared set.
 # R9 parity-subset re-freeze (proxy v0.2.2): the diff asserts the
-# 83-line exclusion core exactly (6 families: message-init 0x71
+# 61-line exclusion core exactly (5 families: message-init 0x71
 # x34, blowfish catalog x20, tls12-derive x2, wtls-premaster x3,
-# boundary-order x2, proxy-better inversions x22 — every delta
-# vs R5 caused in task-R9-report.md section 4; GMAC moved to
-# shared); the 22-line shared set stays byte-exact (F-9 re-freeze:
-# the 5 AES_GCM message lines left with the withdrawn flags).
+# boundary-order x2 — every delta vs R5 caused in
+# task-R9-report.md section 4; GMAC moved to shared); the shared set
+# stays byte-exact (F-9 re-freeze: the 5 AES_GCM message lines left
+# with the withdrawn flags). v0.5 re-freeze: the 22 proxy-better
+# inversion lines (family G) converged and left the exclusion core
+# (stale-handle 0x60, mechanism-parameter 0x71), and 4 shared lines
+# (GMAC x2, HOTP x2) left; receipts in spec/findings-ledger.json.
 # Parity-eligible = every other collected id (default-eligible;
 # the freeze is this exclusion list, not an 11k allowlist). Flaky
 # ids assert their measured v0.2.2 verdicts with NO variance
@@ -421,12 +424,12 @@ rows = [l for l in open(sys.argv[1]).read().splitlines()
         if l and not l.startswith("#")]
 c = Counter(l.split("\t", 1)[0] for l in rows)
 want = {"A-msg-init-0x71": 34, "B-blowfish": 20, "C-tls12": 2,
-        "D-wtls": 3, "E-boundary": 2, "G-inversion": 22}
-assert len(rows) == 83 and dict(c) == want, (len(rows), dict(c))
+        "D-wtls": 3, "E-boundary": 2}
+assert len(rows) == 61 and dict(c) == want, (len(rows), dict(c))
 PY
 grep -v '^#' "$CC_DATA/frozen-subset.tsv" | cut -f2- > "$OUT/exp-diff.txt"
 grep -v '^#' "$CC_DATA/frozen-shared.txt" > "$OUT/exp-shared.txt"
-[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 83 ] || fail "driver: want 83 stable-core diff lines"
+[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 61 ] || fail "driver: want 61 stable-core diff lines"
 # R9 strict (codex I4): flaky bounds are historical (older pin) —
 # v0.2.2 measured no flips, so the freeze asserts the measured
 # verdicts exactly; any variance fails loud and re-opens §4.
@@ -435,6 +438,23 @@ if ! diff -u "$OUT/exp-shared.txt" "$RUN_DIR/shared-findings.txt"; then
   fail "compare shared set differs from the exact expected set"
 fi
 echo "compare: stable-core diff + exact shared set match"
+
+# Shared-set negative controls (WP12 ruling 6): the exact-shared check
+# above must reject an extra and a missing shared line. Each control
+# runs the same predicate on a mutated copy and must fail.
+shared_exact() { diff -q "$1" "$2" >/dev/null 2>&1; }
+shared_exact "$OUT/exp-shared.txt" "$RUN_DIR/shared-findings.txt" \
+  || fail "shared control baseline: real shared set must match"
+cp "$RUN_DIR/shared-findings.txt" "$OUT/shared-extra.txt"
+echo 'failed INJECTED::shared-drift-control' >> "$OUT/shared-extra.txt"
+if shared_exact "$OUT/exp-shared.txt" "$OUT/shared-extra.txt"; then
+  fail "shared control: an extra shared line was accepted"
+fi
+head -n -1 "$RUN_DIR/shared-findings.txt" > "$OUT/shared-missing.txt"
+if shared_exact "$OUT/exp-shared.txt" "$OUT/shared-missing.txt"; then
+  fail "shared control: a missing shared line was accepted"
+fi
+echo "compare: shared-set controls hold (extra and missing line rejected)"
 
 # Subset-aware wrapper (codex I3): exercise the SHIPPED in-image
 # classifier on this compare run dir (raw plumbing stays untouched),
@@ -447,16 +467,16 @@ timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
   "/out/$CC_RUN" > "$OUT/classify.log" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] || fail "in-image compare-classify exited $rc, want 0"
-grep -q 'compare-classify-ok: 83 known-difference + shared 22/22 exact' \
+grep -q 'compare-classify-ok: 61 known-difference + shared 18/18 exact' \
   "$OUT/classify.log" || fail "compare-classify ok marker missing"
 [ -f "$RUN_DIR/classification.json" ] || fail "classification.json missing"
 python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
 import json, sys
 c = json.load(open(sys.argv[1]))["counts"]
-assert c == {"known_difference": 83, "direct_only": 0, "flaky": 0,
+assert c == {"known_difference": 61, "direct_only": 0, "flaky": 0,
              "unexpected_difference": 0, "missing_known": 0,
-             "duplicate_diff_lines": 0, "shared_expected": 22,
-             "shared_actual": 22, "shared_exact": True}, c
+             "duplicate_diff_lines": 0, "shared_expected": 18,
+             "shared_actual": 18, "shared_exact": True}, c
 PY
 # Drift controls on run-dir copies (the raw run dir is untouched):
 # an injected line must surface as unexpected=1, a removed frozen
@@ -483,7 +503,31 @@ rc=$?
 [ "$rc" -eq 1 ] || fail "classify removal control exited $rc, want 1"
 grep -q 'missing-known 1' "$OUT/classify-remove.log" \
   || fail "removal control marker missing"
-echo "compare-classify: in-image ok + injection/removal controls hold"
+# Shared-set drift controls through the shipped classifier: an extra
+# shared line and a missing shared line must each exit 1 and be named.
+rm -rf "$OUT/cc-shared-extra" "$OUT/cc-shared-missing"
+mkdir -p "$OUT/cc-shared-extra" "$OUT/cc-shared-missing"
+cp "$RUN_DIR/diff.txt" "$OUT/cc-shared-extra/"
+cp "$RUN_DIR/diff.txt" "$OUT/cc-shared-missing/"
+cp "$OUT/shared-extra.txt" "$OUT/cc-shared-extra/shared-findings.txt"
+cp "$OUT/shared-missing.txt" "$OUT/cc-shared-missing/shared-findings.txt"
+timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
+  --entrypoint /bin/sh "$TAG" \
+  /opt/haskoki/examples/release/compare-classify/compare-classify \
+  /out/cc-shared-extra > "$OUT/classify-shared-extra.log" 2>&1
+rc=$?
+[ "$rc" -eq 1 ] || fail "classify shared-extra control exited $rc, want 1"
+grep -q 'shared-extra: 1' "$OUT/cc-shared-extra/classification.txt" \
+  || fail "shared-extra control marker missing"
+timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
+  --entrypoint /bin/sh "$TAG" \
+  /opt/haskoki/examples/release/compare-classify/compare-classify \
+  /out/cc-shared-missing > "$OUT/classify-shared-missing.log" 2>&1
+rc=$?
+[ "$rc" -eq 1 ] || fail "classify shared-missing control exited $rc, want 1"
+grep -q 'shared-missing: 1' "$OUT/cc-shared-missing/classification.txt" \
+  || fail "shared-missing control marker missing"
+echo "compare-classify: in-image ok + injection/removal/shared-set controls hold"
 
 fi
 
@@ -693,8 +737,8 @@ and every entrypoint verdict asserted byte-exact on its stable core by
 this driver. Four proxy-lane timing-flaky test ids carry historical
 bounds (R5 report section 4; a fifth id is transcript-stable) but
 no variance allowance on this pin — any line outside the stable
-core fails the driver loudly. The parity subset is frozen (R9):
-83 compare exclusions in 6 reasoned families, strict.
+core fails the driver loudly. The parity subset is frozen (v0.5 re-freeze):
+61 compare exclusions in 5 reasoned families, strict.
 Functional reproducibility = same versions + same outcomes above.
 EOF
 cat "$OUT/reproducibility-note.txt"

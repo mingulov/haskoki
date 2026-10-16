@@ -10,9 +10,14 @@ unadvertised. F-9 (FINAL-101) withdrawal: @CKM_AES_GCM@ keeps its
 cipher @message-*@ routes (classic-shaped @CK_GCM_PARAMS@ init
 plus the @gcm-params\/1@ per-message image stays served) but
 advertises neither cipher message flag (native
-@CK_GCM_MESSAGE_PARAMS@ refuses @CKR_ARGUMENTS_BAD@ per
-F-GCM-SHAPE). The flag leg pins that exact withdrawn state for
-the GCM row instead of the iff.
+@CK_GCM_MESSAGE_PARAMS@ refuses per F-GCM-SHAPE: at init as a
+mechanism parameter, @CKR_MECHANISM_PARAM_INVALID@ per PKCS#11 v3.1
+section 5.1.6; per message, @CKR_ARGUMENTS_BAD@). GMAC withdrawal
+(v0.5): @CKM_AES_GMAC@ keeps its @message-sign@ and
+@message-verify@ routes (classic-shaped @CK_GCM_PARAMS@) but
+advertises neither message flag, because PKCS#11 v3.2 defines no
+message-API parameter shape for GMAC. The flag leg pins that exact
+withdrawn state for both rows instead of the iff.
 
 Legs (each a named tasty case):
 
@@ -24,11 +29,11 @@ Legs (each a named tasty case):
 * flag correspondence: every @CKF_MESSAGE_*@ flag (parsed from the
   generated @cbits/mech_catalog.inc@, the exact
   @C_GetMechanismInfo@ source) has its route and vice versa,
-  except the withdrawn GCM row (flags absent, routes present,
-  pinned exactly);
+  except the withdrawn GCM and GMAC rows (flags absent, routes
+  present, pinned exactly);
 * no multi: @CKF_MULTI_MESSAGE@ is advertised nowhere;
 * scratch mutation: an in-memory catalog copy with one flipped
-  route, one flipped flag, and one re-advertised withdrawn flag
+  route, one flipped flag, and each re-advertised withdrawn flag
   must fail the rule/flag checks (the battery proves per run it
   is not blind; scratch discarded).
 
@@ -138,7 +143,7 @@ import Haskoki.Recipe.Gcm (encodeGcmParams, gcmRecipeFor)
 import Haskoki.Recipe.Gmac (gmacRecipeFor)
 import Haskoki.Recipe.Hmac (encodeMacGeneral, hmacRecipeFor)
 import Haskoki.Recipe.MlDsa (MldsaHedge (..), encodeMldsaParams, mldsaRecipeFor)
-import Haskoki.Recipe.Otp (encodeHotpParams, hotpRecipeFor)
+import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Recipe.Poly1305 (poly1305RecipeFor)
 import Haskoki.Recipe.RsaOaep (encodeOaepParams, rsaOaepRecipeFor)
 import Haskoki.Recipe.RsaPkcs1 (rsaPkcs1RecipeFor)
@@ -174,6 +179,7 @@ spec :: TestTree
 spec = testGroup "message flag battery (T-M01)"
   [ testCase "route rule: message route iff DG1 holds" caseRouteRule
   , testCase "route init: every message route initializes CKR_OK" caseRouteInit
+  , testCase "routeless init: classic-only rows refuse message init" caseRoutelessInit
   , testCase "flag correspondence: CKF_MESSAGE_* has its route and vice versa" caseFlags
   , testCase "no CKF_MULTI_MESSAGE advertised" caseNoMulti
   , testCase "scratch mutation: flipped route/flag fails per run" caseMutation
@@ -440,9 +446,10 @@ msgCipherServed mid =
 
 -- | Message-sign/verify service: the exact @FxMessageSign@ /
 -- @FxMessageVerify@ mechanism dispatch (@Driver.hs:1957-2072@)
--- through the same recipe tables. The classic SSL3-MAC arm has no
--- message counterpart: those two rows fall through to @unsupported
--- fx@.
+-- through the same recipe tables. The classic SSL3-MAC and HOTP
+-- arms have no message counterpart: those rows fall through to
+-- @unsupported fx@ (HOTP since v0.5: PKCS#11 v3.2 defines no
+-- per-message parameter shape for it).
 msgSignServed :: MechanismId -> Bool
 msgSignServed mid =
   isJust (hmacRecipeFor mid)
@@ -451,7 +458,6 @@ msgSignServed mid =
   || isJust (cbcmacRecipeFor mid)
   || isJust (xcbcRecipeFor mid)
   || isJust (gmacRecipeFor mid)
-  || isJust (hotpRecipeFor mid)
   || isJust (poly1305RecipeFor mid)
   || isJust (rsaPkcs1RecipeFor mid)
   || isJust (rsaPssRecipeFor mid)
@@ -570,6 +576,44 @@ caseRouteInit = guarded "route-init" $ do
   (parseBad, mechs) <- loadCatalog
   assertNoMismatches "route init" (parseBad ++ checkRouteInit mechs)
 
+-- | The converse of 'checkRouteInit': a row with the classic route but
+-- no @message-*@ route refuses message init with
+-- @CKR_MECHANISM_INVALID@ under full caps, whatever the parameters
+-- (the route check precedes parameter and key checks). Without it a
+-- classic-only mechanism (HOTP, SSL3-MAC) would initialize a message
+-- context that no data call can serve.
+checkRoutelessInit :: [MechRow] -> ([String], Int)
+checkRoutelessInit mechs = (concat results, length results)
+  where
+    results =
+      [ check row fam
+      | row <- mechs, fam <- [minBound .. maxBound]
+      , msgFamilyOp fam `elem` mrOps row
+      , msgOperation fam `notElem` mrOps row ]
+    check row fam =
+      let mid = MechanismId (mrId row)
+          params = either (const BS.empty) id (paramsFor (mrCodec row) mid)
+          tag = T.unpack (mrName row) ++ " " ++ show mid
+                ++ " " ++ T.unpack (operationName (msgOperation fam))
+          (_, out) = initMessageOperation fam fullEnv emptySessionOps
+            fixtureSession (argsFor (msgFamilyOp fam) mid params)
+      in ["routeless init: want CKR_MECHANISM_INVALID, got "
+          ++ show (ioCode out, ioReasons out) ++ " at " ++ tag
+         | ioCode out /= CKR_MECHANISM_INVALID]
+
+caseRoutelessInit :: IO ()
+caseRoutelessInit = guarded "routeless-init" $ do
+  (parseBad, mechs) <- loadCatalog
+  let (mm, n) = checkRoutelessInit mechs
+      hotp = [r | r <- mechs, mrId r == 0x291]
+  -- Not vacuous: the set is non-empty and includes the HOTP row.
+  assertNoMismatches "routeless init"
+    (parseBad ++ mm
+     ++ ["routeless set is empty: leg is vacuous" | n == 0]
+     ++ ["HOTP row missing or not classic-only"
+        | not (any (\r -> OpSign `elem` mrOps r
+                         && OpMessageSign `notElem` mrOps r) hotp)])
+
 -- | Flag/route correspondence per (row, family): the
 -- @CKF_MESSAGE_*@ flag is present iff the @message-*@ route is.
 flagFor :: MsgFamily -> Text
@@ -578,13 +622,19 @@ flagFor MsgDecrypt = "CKF_MESSAGE_DECRYPT"
 flagFor MsgSign = "CKF_MESSAGE_SIGN"
 flagFor MsgVerify = "CKF_MESSAGE_VERIFY"
 
--- | F-9 (FINAL-101) withdrawn row: @CKM_AES_GCM@ (@0x1087@) keeps
--- its cipher @message-*@ routes but advertises neither cipher
--- message flag. The correspondence leg pins that exact state —
--- flags absent AND routes present — so drift in either direction
--- (flags re-advertised, routes dropped) fails loudly.
-withdrawnRow :: Word64
-withdrawnRow = 0x1087
+-- | Withdrawn rows keep their @message-*@ routes but advertise no
+-- message flag for the listed families. F-9 (FINAL-101):
+-- @CKM_AES_GCM@ (@0x1087@), cipher families. GMAC (v0.5 ruling 2):
+-- @CKM_AES_GMAC@ (@0x108e@), sign families; PKCS#11 v3.2 defines no
+-- message-API parameter shape for GMAC. The correspondence leg pins
+-- that exact state, flags absent AND routes present, so drift in
+-- either direction (flags re-advertised, routes dropped) fails
+-- loudly.
+withdrawnRows :: [(Word64, [MsgFamily])]
+withdrawnRows =
+  [ (0x1087, [MsgEncrypt, MsgDecrypt])
+  , (0x108e, [MsgSign, MsgVerify])
+  ]
 
 checkFlags :: [MechRow] -> Map Word64 [Text] -> [String]
 checkFlags mechs flagMap =
@@ -604,12 +654,11 @@ checkFlags mechs flagMap =
           tag = T.unpack (mrName row) ++ " " ++ show (MechanismId (mrId row))
           hasFlag = flagFor fam `elem` flags
           hasRoute = msgOp `elem` mrOps row
-          withdrawn = mrId row == withdrawnRow
-            && fam `elem` [MsgEncrypt, MsgDecrypt]
+          withdrawn = maybe False (fam `elem`) (lookup (mrId row) withdrawnRows)
       in case (withdrawn, hasFlag, hasRoute) of
         (True, False, True) -> []
         (True, _, _) ->
-          ["withdrawn GCM row must keep its route without its flag: got flag="
+          ["withdrawn row must keep its route without its flag: got flag="
            ++ show hasFlag ++ " route=" ++ show hasRoute ++ " at " ++ tag]
         (False, True, False) ->
           ["flag without route: " ++ T.unpack (flagFor fam)
@@ -662,19 +711,24 @@ caseMutation = guarded "mutation" $ do
       -- fail the correspondence check.
           mutatedFlags = Map.insert (mrId keygen) ["CKF_MESSAGE_SIGN"] flagMap
           flagHits = checkFlags mechs mutatedFlags
-          -- Flip the withdrawn GCM flag back on: re-advertising
-          -- @CKF_MESSAGE_ENCRYPT@ on the withdrawn row must fail
-          -- the pinned withdrawn-state check.
-          gcmFlags = Map.adjust ("CKF_MESSAGE_ENCRYPT" :) withdrawnRow flagMap
+          -- Flip each withdrawn flag back on: re-advertising
+          -- @CKF_MESSAGE_ENCRYPT@ on the GCM row or
+          -- @CKF_MESSAGE_SIGN@ on the GMAC row must fail the pinned
+          -- withdrawn-state check.
+          gcmFlags = Map.adjust ("CKF_MESSAGE_ENCRYPT" :) 0x1087 flagMap
           gcmHits = checkFlags mechs gcmFlags
+          gmacFlags = Map.adjust ("CKF_MESSAGE_SIGN" :) 0x108e flagMap
+          gmacHits = checkFlags mechs gmacFlags
           -- Detection must name the flipped row: on a failing tree the
           -- re-check also reports the live catalog's own gaps.
           rowHit hits = any ("CKM_RSA_PKCS_KEY_PAIR_GEN" `isInfixOf`) hits
-          gcmHit = any ("CKM_AES_GCM" `isInfixOf`) gcmHits
+          gcmHit = any ("CKM_AES_GCM " `isInfixOf`) gcmHits
+          gmacHit = any ("CKM_AES_GMAC " `isInfixOf`) gmacHits
       assertNoMismatches "mutation detection"
         (["route flip undetected: battery is blind" | not (rowHit routeHits)]
          ++ ["flag flip undetected: battery is blind" | not (rowHit flagHits)]
-         ++ ["withdrawn-flag flip undetected: battery is blind" | not gcmHit])
+         ++ ["withdrawn GCM flag flip undetected: battery is blind" | not gcmHit]
+         ++ ["withdrawn GMAC flag flip undetected: battery is blind" | not gmacHit])
 
 -- ---------------------------------------------------------------------------
 -- Recover legs (task-m03): DG3 pair advertisement

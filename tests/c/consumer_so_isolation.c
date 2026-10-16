@@ -7,7 +7,9 @@
  *   - SO read (C_GetAttributeValue) and use (C_SignInit) are asserted
  *     unconditionally — against the discovered handle when find leaks
  *     one (base), else against the retained user handle — and must
- *     refuse with CKR_OBJECT_HANDLE_INVALID;
+ *     refuse: the read with CKR_OBJECT_HANDLE_INVALID, the init with
+ *     CKR_KEY_HANDLE_INVALID (PKCS#11 v3.1 section 5.1.6; C_SignInit
+ *     5.13.1 lists the key-handle code, not the object-handle one);
  *   - a sign operation initialized before logout must not survive it:
  *     SO C_Sign after the transition refuses with
  *     CKR_OPERATION_NOT_INITIALIZED (cached-operation bypass pin);
@@ -178,8 +180,9 @@ int main(int argc, char **argv) {
       /* Read/use refusal is asserted unconditionally: against the
        * leaked handle when find exposes one (base), else against
        * the retained user handle (stale after logout, invisible
-       * under SO either way). Both must refuse with
-       * CKR_OBJECT_HANDLE_INVALID. */
+       * under SO either way). The read refuses with
+       * CKR_OBJECT_HANDLE_INVALID; the init with CKR_KEY_HANDLE_INVALID
+       * (PKCS#11 v3.1 section 5.1.6, C_SignInit 5.13.1). */
       CK_OBJECT_HANDLE target = (nfound > 0) ? found[0] : userKey;
       CK_BYTE label[32];
       CK_ATTRIBUTE get[] = { { CKA_LABEL, label, sizeof(label) } };
@@ -193,8 +196,8 @@ int main(int argc, char **argv) {
             "SO read refused with OBJECT_HANDLE_INVALID");
       rv = f->C_SignInit(sess, &hm, target);
       printf("so: signinit rv=0x%lx\n", (unsigned long)rv);
-      CHECK(rv == CKR_OBJECT_HANDLE_INVALID,
-            "SO sign-init refused with OBJECT_HANDLE_INVALID");
+      CHECK(rv == CKR_KEY_HANDLE_INVALID,
+            "SO sign-init refused with KEY_HANDLE_INVALID");
       /* The user leg left a sign initialized before logout: logout
        * must have retired it, so this C_Sign has no operation. */
       sigLen = sizeof(sig);

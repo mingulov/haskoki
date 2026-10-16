@@ -10,9 +10,12 @@ CryptoAuthFailed = CKR_ENCRYPTED_DATA_INVALID
 unknown-mech = CKR_MECHANISM_INVALID
 conflict = CKR_OPERATION_ACTIVE
 key-required = CKR_ARGUMENTS_BAD
-bad-handle = CKR_OBJECT_HANDLE_INVALID
+# bad-handle: an unknown key handle at keyed init is CKR_KEY_HANDLE_INVALID
+# (PKCS#11 v3.1 section 5.1.6; the init return lists in 5.8.1, 5.10.1,
+# 5.13.1 and 5.15.1 carry it, not CKR_OBJECT_HANDLE_INVALID).
+bad-handle = CKR_KEY_HANDLE_INVALID
 [denyReason]
 unknown-mech = unknown mechanism
 conflict = an operation is already active in this slot
 key-required = operation requires a key
-bad-handle = unknown object handle
+bad-handle = unknown key handle
