@@ -58,4 +58,29 @@ __attribute__((visibility("hidden"))) void haskoki_ctx_stats(unsigned long long 
                                                              unsigned long long *taken_out,
                                                              unsigned long long *freed_out);
 
+/* Process residue cell, a separate C-owned cell under its own mutex.
+ *
+ * Holds the Stores a failed standalone open could not close (two
+ * cleanup closes failed) and could not hand to a caller: the C
+ * exports, and an asynchronous primary. Each entry is a Haskell
+ * StablePtr root to the Store. The cell is bounded: at most
+ * HASKOKI_RESIDUE_CAP entries, queued plus in flight. A push into a
+ * full cell refuses (returns 0) and the caller keeps the root.
+ *
+ * Every later standalone open and close takes the queued entries
+ * (each take moves one entry in flight), tries one close per entry,
+ * frees the root of each Store it closed and reports the batch
+ * through 'haskoki_residue_note_closed', and puts the rest back.
+ * 'haskoki_residue_count' reports queued plus in-flight entries, so
+ * the count never dips while another thread holds an entry mid-retry.
+ * A put-back always fits: the entry kept its slot while in flight.
+ */
+#define HASKOKI_RESIDUE_CAP 256
+
+__attribute__((visibility("hidden"))) int haskoki_residue_push(void *root);
+__attribute__((visibility("hidden"))) int haskoki_residue_take(void **root_out);
+__attribute__((visibility("hidden"))) void haskoki_residue_put_back(void *root);
+__attribute__((visibility("hidden"))) void haskoki_residue_note_closed(int n);
+__attribute__((visibility("hidden"))) int haskoki_residue_count(void);
+
 #endif

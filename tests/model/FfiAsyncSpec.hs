@@ -36,30 +36,36 @@ crypto probes are race-free.
 module FfiAsyncSpec (spec) where
 
 import Control.Concurrent
-  ( ThreadId
+  ( MVar
+  , ThreadId
   , forkIO
   , killThread
   , newEmptyMVar
   , putMVar
   , takeMVar
   , threadDelay
+  , tryPutMVar
   , tryTakeMVar
   )
 import Control.Exception
   ( AsyncException (..)
+  , IOException
   , SomeException
+  , bracket
   , finally
   , fromException
+  , throwIO
   , try
   )
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Set as Set
 import Data.Word (Word64)
-import Foreign.C.Types (CULong (..))
+import Foreign.C.String (withCString)
+import Foreign.C.Types (CInt (..), CLong (..), CULong (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (castPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr
   ( StablePtr
   , castPtrToStablePtr
@@ -68,32 +74,54 @@ import Foreign.StablePtr
   , newStablePtr
   )
 import Foreign.Storable (peek, poke)
+import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Conc (ThreadStatus (..), threadStatus)
+import System.Directory
+  ( createDirectory
+  , getTemporaryDirectory
+  , removeDirectoryRecursive
+  )
+import System.FilePath ((</>))
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import qualified Haskoki.Engine.Backend as B
 import OwnershipCounters (assertZero, counted)
-import Haskoki.Engine.OpenSSL4 (OpenSSL4)
+import Haskoki.Engine.OpenSSL4 (OpenSSL4, TestGate, openBackendGated)
 import Haskoki.FFI.Async
-  ( AsyncCtx (..)
+  ( AcquireFailure (..)
+  , AcquireStep (..)
+  , AsyncAcquisition (..)
+  , AsyncCtx (..)
   , JobHandle
+  , ResidueOwner
   , allocJobHandle
+  , asyncAcquisition
   , asyncCloseCtx
   , asyncLiveHandles
   , ctxAcquireBorrowTest
   , ctxPendingReclaims
   , ctxReclaimStats
   , ctxReleaseBorrowTest
+  , closeCtxSlotWith
+  , closeStoreBoxSlotWith
   , haskokiAsyncCancel
   , haskokiAsyncClose
   , haskokiAsyncJoin
   , haskokiAsyncStart
+  , haskokiAsyncStoreClose
+  , haskokiAsyncStoreOpen
+  , haskokiAsyncStoreOpenWith
   , joinAcquireTransfer
   , joinTransfer
+  , newResidueOwner
+  , openAsyncCtxOnWith
+  , openAsyncCtxWith
+  , openStoreBoxWith
   , registerBorrowedCtx
   , registerCtx
+  , residueCount
   , resolveJobHandle
   , retireCtx
   , setEnterTestHook
@@ -177,10 +205,12 @@ import Haskoki.Runtime.Storage
   , JobRecord (..)
   , Store (..)
   , StoreDelta (..)
+  , StoreError (..)
   , TokenRecord (..)
   , emptyDelta
   )
-import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
+import Haskoki.Runtime.Storage.Memory (MemoryWorld, newMemoryWorld, openMemoryStore)
+import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session (tokenAuthNew)
 import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Types
@@ -219,6 +249,17 @@ spec = testGroup "FFI acquisition"
   , testCase "registry roots reclaim across churn" (counted "m3-ffi-acquisition" "registry-roots-reclaim-across-churn" (caseRegistryRootsReclaim))
   , testCase "stacked displacements preserve every root" (counted "m3-ffi-acquisition" "stacked-displacements-preserve-every-root" (caseReclaimOverlappingReuse))
   , testCase "kill during acquire rolls back and nulls" (counted "m3-ffi-acquisition" "kill-during-acquire-rolls-back-and-nulls" (caseJoinAcquireKillDuringAcquire))
+  , testGroup "standalone ownership"
+      [ testCase "store box killed after store open closes the store" (counted "m3-standalone-ownership" "store-box-killed-after-store-open-closes-the-store" (caseBoxKilledAfterStoreOpen))
+      , testCase "store box killed after token setup closes the store" (counted "m3-standalone-ownership" "store-box-killed-after-token-setup-closes-the-store" (caseBoxKilledAfterTokenSetup))
+      , testCase "store box killed during token load closes the store" (counted "m3-standalone-ownership" "store-box-killed-during-token-load-closes-the-store" (caseBoxKilledDuringTokenLoad))
+      , testCase "sqlite store box killed after token setup releases its lock" (counted "m3-standalone-ownership" "sqlite-store-box-killed-after-token-setup-releases-its-lock" (caseSqliteBoxKilledAfterTokenSetup))
+      , testCase "context killed after backend open closes the backend" (counted "m3-standalone-ownership" "context-killed-after-backend-open-closes-the-backend" (caseCtxKilledAfterBackendOpen))
+      , testCase "context killed after session open closes the backend" (counted "m3-standalone-ownership" "context-killed-after-session-open-closes-the-backend" (caseCtxKilledAfterSessionOpen))
+      , testCase "context killed after pointer allocation frees it unregistered" (counted "m3-standalone-ownership" "context-killed-after-pointer-allocation-frees-it-unregistered" (caseCtxKilledAfterCtxAlloc))
+      , testCase "store-bound context killed after reload leaves the box usable" (counted "m3-standalone-ownership" "store-bound-context-killed-after-reload-leaves-the-box-usable" (caseStoreBoundKilledAfterReload))
+      , testCase "export store open residue is recovered by the next open" (counted "m3-standalone-ownership" "export-store-open-residue-is-recovered-by-the-next-open" (caseExportResidueRecoveredByNextOpen))
+      ]
   ]
 
 isNull :: StablePtr a -> Bool
@@ -1464,3 +1505,432 @@ caseJoinAcquireKillDuringAcquire = do
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
   assertZero "live_handles" "close drains clean" nLive2
+
+-- ---------------------------------------------------------------------------
+-- Standalone ownership: a kill at each acquisition step
+-- ---------------------------------------------------------------------------
+
+-- | Balance counters over one acquisition record (opens, closes,
+-- pointer allocs and frees, registrations and retirements). Closes,
+-- frees and retirements count only once they return.
+data AcqCounts = AcqCounts
+  { acStoreOpens :: !Int
+  , acStoreCloses :: !Int
+  , acBackendOpens :: !Int
+  , acBackendCloses :: !Int
+  , acCtxAllocs :: !Int
+  , acCtxFrees :: !Int
+  , acBoxAllocs :: !Int
+  , acBoxFrees :: !Int
+  , acRegistrations :: !Int
+  , acRetirements :: !Int
+  }
+  deriving (Show)
+
+zeroCounts :: AcqCounts
+zeroCounts = AcqCounts 0 0 0 0 0 0 0 0 0 0
+
+-- | Counting wrapper over the production acquisition steps, with a
+-- private residue owner.
+countingAcquisition :: IO (AsyncAcquisition, IO AcqCounts)
+countingAcquisition = countingAcquisitionOver asyncAcquisition
+
+-- | Counting wrapper over the given steps, with a private residue
+-- owner (parallel cases never share one).
+--
+-- Keep in sync with the copy in tests/engine/FfiAcquireSpec.hs: suites
+-- share only tests/support, so the helper is duplicated.
+countingAcquisitionOver
+  :: AsyncAcquisition -> IO (AsyncAcquisition, IO AcqCounts)
+countingAcquisitionOver base = do
+  ref <- newIORef zeroCounts
+  owner <- newResidueOwner
+  let bump f = atomicModifyIORef' ref (\c -> (f c, ()))
+      acq = base
+        { aaOpenStore = \p -> do
+            r <- aaOpenStore base p
+            case r of
+              Right _ -> bump (\c -> c { acStoreOpens = acStoreOpens c + 1 })
+              Left _ -> pure ()
+            pure r
+        , aaCloseStore = \st -> do
+            aaCloseStore base st
+            bump (\c -> c { acStoreCloses = acStoreCloses c + 1 })
+        , aaOpenBackend = do
+            r <- aaOpenBackend base
+            case r of
+              B.EngineOk _ -> bump (\c -> c { acBackendOpens = acBackendOpens c + 1 })
+              B.EngineFail _ -> pure ()
+            pure r
+        , aaCloseBackend = \be -> do
+            aaCloseBackend base be
+            bump (\c -> c { acBackendCloses = acBackendCloses c + 1 })
+        , aaNewCtxPtr = \ctx -> do
+            sp <- aaNewCtxPtr base ctx
+            bump (\c -> c { acCtxAllocs = acCtxAllocs c + 1 })
+            pure sp
+        , aaFreeCtxPtr = \sp -> do
+            aaFreeCtxPtr base sp
+            bump (\c -> c { acCtxFrees = acCtxFrees c + 1 })
+        , aaRegisterCtx = \sp table -> do
+            aaRegisterCtx base sp table
+            bump (\c -> c { acRegistrations = acRegistrations c + 1 })
+        , aaRetireCtx = \sp -> do
+            aaRetireCtx base sp
+            bump (\c -> c { acRetirements = acRetirements c + 1 })
+        , aaNewBoxPtr = \b -> do
+            sp <- aaNewBoxPtr base b
+            bump (\c -> c { acBoxAllocs = acBoxAllocs c + 1 })
+            pure sp
+        , aaFreeBoxPtr = \sp -> do
+            aaFreeBoxPtr base sp
+            bump (\c -> c { acBoxFrees = acBoxFrees c + 1 })
+        , aaResidue = owner
+        }
+  pure (acq, readIORef ref)
+
+-- | Park at one acquisition step: signal arrival, then block forever
+-- (until killed). Every other step runs as before.
+parkAt :: AcquireStep -> MVar () -> MVar () -> AsyncAcquisition -> AsyncAcquisition
+parkAt step arrived hold acq = acq
+  { aaStep = \s ->
+      if s == step
+        then putMVar arrived () >> takeMVar hold
+        else aaStep acq s
+  }
+
+-- | Every Store and backend the record opens, kept so a case can
+-- close what a killed open left behind once its assertions have
+-- read the state (closes are idempotent).
+data Opened = Opened
+  { opStores :: !(IORef [Store])
+  , opBackends :: !(IORef [B.BackendEnv OpenSSL4])
+  }
+
+-- | Record every Store and backend the given steps open.
+trackOpened :: AsyncAcquisition -> IO (AsyncAcquisition, Opened)
+trackOpened base = do
+  stores <- newIORef []
+  backends <- newIORef []
+  let acq = base
+        { aaOpenStore = \p -> do
+            r <- aaOpenStore base p
+            case r of
+              Right st -> modifyIORef' stores (st :)
+              Left _ -> pure ()
+            pure r
+        , aaOpenBackend = do
+            r <- aaOpenBackend base
+            case r of
+              B.EngineOk be -> modifyIORef' backends (be :)
+              B.EngineFail _ -> pure ()
+            pure r
+        }
+  pure (acq, Opened stores backends)
+
+-- | Close whatever the record opened (idempotent closes; a close
+-- error is ignored, the assertions already ran).
+releaseOpened :: Opened -> IO ()
+releaseOpened o = do
+  readIORef (opBackends o) >>= mapM_ (\be -> tryAny (B.closeBackend be))
+  readIORef (opStores o) >>= mapM_ (\st -> tryAny (storeClose st))
+  where
+    tryAny :: IO () -> IO (Either SomeException ())
+    tryAny = try
+
+-- | Open the box's Store over a test-held memory world, so a reopen
+-- of the same world is the lock probe.
+memoryStoreSteps :: MemoryWorld -> AsyncAcquisition -> AsyncAcquisition
+memoryStoreSteps world acq = acq
+  { aaOpenStore = \_ -> either (const (Left ())) Right <$> openMemoryStore world }
+
+-- | Open backends through a test gate, so native envs are counted
+-- per gate.
+gatedBackendSteps :: Ptr TestGate -> AsyncAcquisition -> AsyncAcquisition
+gatedBackendSteps g acq = acq { aaOpenBackend = openBackendGated g "provider=default" }
+
+foreign import ccall unsafe "hsk_ossl4_test_gate_new" c_ownGateNew
+  :: IO (Ptr TestGate)
+foreign import ccall unsafe "hsk_ossl4_test_gate_free" c_ownGateFree
+  :: Ptr TestGate -> IO ()
+foreign import ccall unsafe "hsk_ossl4_test_gate_release" c_ownGateRelease
+  :: Ptr TestGate -> CInt -> IO ()
+foreign import ccall unsafe "hsk_ossl4_test_gate_env_outstanding" c_ownGateEnvOutstanding
+  :: Ptr TestGate -> IO CLong
+
+-- | A private test gate, released and freed on every exit. The body
+-- closes every backend opened through it first ('releaseOpened'),
+-- so no env outlives its gate.
+withOwnGate :: (Ptr TestGate -> IO a) -> IO a
+withOwnGate = bracket acquire release
+  where
+    acquire = do
+      g <- c_ownGateNew
+      if g == nullPtr
+        then assertFailure "test gate allocation failed"
+        else pure g
+    release g = c_ownGateRelease g 0 >> c_ownGateFree g
+
+-- | A fresh private directory under the temp root, removed on exit.
+withPrivateDir :: (FilePath -> IO a) -> IO a
+withPrivateDir = bracket create (\d -> try' (removeDirectoryRecursive d))
+  where
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base </> ("haskoki-standalone-" ++ show t ++ "-" ++ show n)
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+    try' :: IO () -> IO ()
+    try' act = do
+      _ <- (try act :: IO (Either IOException ()))
+      pure ()
+
+-- | Ten-second backstop on every wait.
+within10s :: String -> IO a -> IO a
+within10s what act = do
+  r <- timeout 10000000 act
+  case r of
+    Just a -> pure a
+    Nothing -> assertFailure ("timed out: " ++ what)
+
+-- | Run one open on an unmasked victim thread that parks at a point
+-- reached through the given steps, kill it there, and join it. The
+-- kill must abort the open.
+killVictimAt
+  :: (MVar () -> MVar () -> AsyncAcquisition -> AsyncAcquisition)
+  -> AsyncAcquisition
+  -> (AsyncAcquisition -> IO (Either AcquireFailure a))
+  -> IO ()
+killVictimAt park acq open = do
+  arrived <- newEmptyMVar
+  hold <- newEmptyMVar
+  done <- newEmptyMVar
+  victim <- forkIO $ do
+    r <- try (open (park arrived hold acq))
+    putMVar done r
+  (do within10s "victim reaches the step" (takeMVar arrived)
+      killThread victim
+      r <- within10s "victim joins" (takeMVar done)
+      case r of
+        Left e | fromException e == Just ThreadKilled -> pure ()
+        Left e -> assertFailure ("victim died with " ++ show e)
+        Right (Right _) -> assertFailure "killed open returned a handle"
+        Right (Left _) -> assertFailure "killed open returned a failure")
+    `finally` (killThread victim >> tryPutMVar hold () >> pure ())
+
+-- | Park inside the Store's token load (token initialization), not at
+-- a step.
+parkInTokenLoad :: MVar () -> MVar () -> AsyncAcquisition -> AsyncAcquisition
+parkInTokenLoad arrived hold acq = acq
+  { aaOpenStore = \p -> do
+      r <- aaOpenStore acq p
+      pure $ case r of
+        Right st -> Right st
+          { storeLoadTokens = putMVar arrived () >> takeMVar hold >> storeLoadTokens st }
+        Left e -> Left e
+  }
+
+-- | The balance lines every standalone-ownership case asserts. The
+-- labels carry the whole count record and the case's own
+-- observation, so one failure shows every value.
+assertBalanced :: String -> AcqCounts -> IO ()
+assertBalanced note c = do
+  let ctxt = " (" ++ show c ++ "; " ++ note ++ ")"
+  assertZero "store_opens_minus_closes" ("store opens minus closes" ++ ctxt)
+    (acStoreOpens c - acStoreCloses c)
+  assertZero "backend_opens_minus_closes" ("backend opens minus closes" ++ ctxt)
+    (acBackendOpens c - acBackendCloses c)
+  assertZero "ctx_allocs_minus_frees" ("context allocs minus frees" ++ ctxt)
+    (acCtxAllocs c - acCtxFrees c)
+  assertZero "box_allocs_minus_frees" ("box allocs minus frees" ++ ctxt)
+    (acBoxAllocs c - acBoxFrees c)
+  assertZero "registrations_minus_retirements"
+    ("registrations minus retirements" ++ ctxt)
+    (acRegistrations c - acRetirements c)
+
+-- | 0 when the memory world reopens (then closes the reopened
+-- handle), 1 when it is still owned.
+memoryReopenRefused :: MemoryWorld -> IO (Int, String)
+memoryReopenRefused world = do
+  r <- openMemoryStore world
+  case r of
+    Right st -> storeClose st >> pure (0, "reopened")
+    Left e -> pure (1, show e)
+
+-- | A box open over a memory world, killed at the given park point:
+-- the Store must be closed and the world must reopen.
+boxKilledMemory
+  :: (MVar () -> MVar () -> AsyncAcquisition -> AsyncAcquisition) -> IO ()
+boxKilledMemory park = do
+  world <- newMemoryWorld
+  (tracked, opened) <- trackOpened (memoryStoreSteps world asyncAcquisition)
+  (acq, readCounts) <- countingAcquisitionOver tracked
+  (do killVictimAt park acq (\a -> openStoreBoxWith a nullPtr)
+      c <- readCounts
+      (refused, why) <- memoryReopenRefused world
+      assertBalanced ("memory world reopen: " ++ why) c
+      assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused)
+    `finally` releaseOpened opened
+
+caseBoxKilledAfterStoreOpen :: IO ()
+caseBoxKilledAfterStoreOpen = boxKilledMemory (parkAt AfterStoreOpen)
+
+caseBoxKilledAfterTokenSetup :: IO ()
+caseBoxKilledAfterTokenSetup = boxKilledMemory (parkAt AfterTokenSetup)
+
+caseBoxKilledDuringTokenLoad :: IO ()
+caseBoxKilledDuringTokenLoad = boxKilledMemory parkInTokenLoad
+
+caseSqliteBoxKilledAfterTokenSetup :: IO ()
+caseSqliteBoxKilledAfterTokenSetup = withPrivateDir $ \dir -> do
+  let path = dir </> "store.sqlite"
+  (counting, readCounts) <- countingAcquisition
+  (acq, opened) <- trackOpened counting
+  (do withCString path $ \cPath ->
+        killVictimAt (parkAt AfterTokenSetup) acq (\a -> openStoreBoxWith a cPath)
+      c <- readCounts
+      r <- openSQLiteStore path
+      (refused, why) <- case r of
+        Right st -> storeClose st >> pure (0 :: Int, "reopened")
+        Left e -> pure (1, show e)
+      assertBalanced ("sqlite reopen: " ++ why) c
+      assertZero "store_reopen_refused" ("sqlite reopen: " ++ why) refused)
+    `finally` releaseOpened opened
+
+-- | A bare context open over a gated backend, killed at the given
+-- step: the backend must be closed and its native env destroyed.
+ctxKilledGated :: AcquireStep -> IO ()
+ctxKilledGated step = withOwnGate $ \g -> do
+  (tracked, opened) <- trackOpened (gatedBackendSteps g asyncAcquisition)
+  (acq, readCounts) <- countingAcquisitionOver tracked
+  (do killVictimAt (parkAt step) acq (\a -> openAsyncCtxWith a defaultConfig)
+      c <- readCounts
+      envOut <- c_ownGateEnvOutstanding g
+      let note = "env_outstanding=" ++ show envOut
+      assertBalanced note c
+      assertZero "registrations" ("registrations (" ++ show c ++ ")")
+        (acRegistrations c)
+      assertZero "env_outstanding" "native envs left on the gate" envOut)
+    `finally` releaseOpened opened
+
+caseCtxKilledAfterBackendOpen :: IO ()
+caseCtxKilledAfterBackendOpen = ctxKilledGated AfterBackendOpen
+
+caseCtxKilledAfterSessionOpen :: IO ()
+caseCtxKilledAfterSessionOpen = ctxKilledGated AfterSessionOpen
+
+caseCtxKilledAfterCtxAlloc :: IO ()
+caseCtxKilledAfterCtxAlloc = ctxKilledGated AfterCtxAlloc
+
+-- | A store-bound open killed after its reload holds nothing of its
+-- own: the box stays usable for the next open, and closing both
+-- balances every counter.
+caseStoreBoundKilledAfterReload :: IO ()
+caseStoreBoundKilledAfterReload = do
+  world <- newMemoryWorld
+  (tracked, opened) <- trackOpened (memoryStoreSteps world asyncAcquisition)
+  (acq, readCounts) <- countingAcquisitionOver tracked
+  (do eBox <- openStoreBoxWith acq nullPtr
+      box <- case eBox of
+        Right b -> pure b
+        Left _ -> assertFailure "store box open failed"
+      killVictimAt (parkAt AfterStoreReload) acq
+        (\a -> openAsyncCtxOnWith a defaultConfig box)
+      eCtx <- openAsyncCtxOnWith acq defaultConfig box
+      ctx <- case eCtx of
+        Right sp -> pure sp
+        Left _ -> assertFailure "open on the same box failed"
+      alloca $ \pCtx -> do
+        poke pCtx ctx
+        closeCtxSlotWith acq pCtx
+        after <- peek pCtx
+        assertBool "context slot nulled" (isNull after)
+      alloca $ \pBox -> do
+        poke pBox box
+        closeStoreBoxSlotWith acq pBox
+        after <- peek pBox
+        assertBool "box slot nulled" (isNull after)
+      c <- readCounts
+      (refused, why) <- memoryReopenRefused world
+      assertBalanced ("memory world reopen: " ++ why) c
+      assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused)
+    `finally` releaseOpened opened
+
+-- | The C export cannot hand a residue back: a synchronous primary
+-- whose two cleanup closes fail reports NULL and queues the Store on
+-- the process owner (the C-owned cell), which keeps its lock. The
+-- next open through the real export retries the close first: the
+-- count drains to zero and the world reopens.
+caseExportResidueRecoveredByNextOpen :: IO ()
+caseExportResidueRecoveredByNextOpen = do
+  world <- newMemoryWorld
+  armed <- newIORef True
+  (counting, readCounts) <- countingAcquisitionOver asyncAcquisition
+    { aaOpenStore = \_ -> do
+        r <- openMemoryStore world
+        pure $ case r of
+          -- Every close fails while armed, so a concurrent drainer in
+          -- this process cannot close the residue before the asserts.
+          Right st -> Right st
+            { storeClose = do
+                on <- readIORef armed
+                if on
+                  then throwIO (StoreIO "close refused while armed")
+                  else storeClose st
+            }
+          Left _ -> Left ()
+    , aaStep = \s ->
+        if s == AfterTokenSetup then throwIO (userError "primary") else pure ()
+    }
+  let processOwner = aaResidue asyncAcquisition
+      acq = counting { aaResidue = processOwner }
+  sp <- haskokiAsyncStoreOpenWith acq nullPtr
+  queued <- residueCount processOwner
+  (held, heldWhy) <- memoryReopenRefused world
+  writeIORef armed False
+  box <- haskokiAsyncStoreOpen nullPtr
+  alloca $ \pBox -> do
+    poke pBox box
+    haskokiAsyncStoreClose pBox
+  left <- awaitResidueDrained processOwner
+  (refused, why) <- memoryReopenRefused world
+  c <- readCounts
+  let note = " (" ++ show c ++ "; queued=" ++ show queued ++ ", held: " ++ heldWhy ++ ")"
+  assertBool ("export reports NULL" ++ note) (isNull sp)
+  assertEqual ("residue queued on the process owner" ++ note) 1 queued
+  assertEqual ("the residue keeps its lock" ++ note) 1 held
+  assertBool ("the next open through the real export" ++ note) (not (isNull box))
+  assertZero "residue_count" ("residue left after the next open" ++ note) left
+  assertZero "store_reopen_refused" ("memory world reopen: " ++ why) refused
+  assertZero "box_allocs_minus_frees" ("box allocs minus frees" ++ note)
+    (acBoxAllocs c - acBoxFrees c)
+  assertZero "registrations_minus_retirements"
+    ("registrations minus retirements" ++ note)
+    (acRegistrations c - acRetirements c)
+
+-- | Poll the residue count down to zero. A concurrent standalone open
+-- or close elsewhere in this process may hold the entry mid-retry;
+-- each further poll runs one more open and close through the real
+-- exports, which retries it again. Gives up after about two seconds.
+awaitResidueDrained :: ResidueOwner -> IO Int
+awaitResidueDrained owner = go (0 :: Int)
+  where
+    go n = do
+      k <- residueCount owner
+      if k == 0 || n >= 400
+        then pure k
+        else do
+          threadDelay 5000
+          box <- haskokiAsyncStoreOpen nullPtr
+          alloca $ \pBox -> do
+            poke pBox box
+            haskokiAsyncStoreClose pBox
+          go (n + 1)

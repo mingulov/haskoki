@@ -25,6 +25,10 @@
  * and the caller drains and frees taken roots. Taken roots come
  * only from entries holding no borrow, so a freed root can never
  * still be dereferenced.
+ *
+ * The process residue cell (see the header note) shares this file
+ * but not the registry mutex: a fixed array of Store roots under its
+ * own mutex, with the same one-locked-step discipline.
  */
 
 #include <pthread.h>
@@ -295,4 +299,77 @@ haskoki_ctx_stats(unsigned long long *displaced_out,
   if (freed_out != NULL)
     *freed_out = g_freed;
   pthread_mutex_unlock(&g_mu);
+}
+
+/* ------------------------------------------------------------------
+ * Process residue cell
+ * ------------------------------------------------------------------ */
+
+static pthread_mutex_t g_residue_mu = PTHREAD_MUTEX_INITIALIZER;
+static void *g_residue[HASKOKI_RESIDUE_CAP];
+static int g_residue_len = 0;       /* queued roots, oldest first */
+static int g_residue_in_flight = 0; /* taken, not yet closed or put back */
+
+__attribute__((visibility("hidden"))) int
+haskoki_residue_push(void *root) {
+  int queued = 0;
+  if (root == NULL)
+    return 0;
+  pthread_mutex_lock(&g_residue_mu);
+  if (g_residue_len + g_residue_in_flight < HASKOKI_RESIDUE_CAP) {
+    g_residue[g_residue_len] = root;
+    g_residue_len++;
+    queued = 1;
+  }
+  pthread_mutex_unlock(&g_residue_mu);
+  return queued;
+}
+
+__attribute__((visibility("hidden"))) int
+haskoki_residue_take(void **root_out) {
+  int taken = 0;
+  if (root_out != NULL)
+    *root_out = NULL;
+  pthread_mutex_lock(&g_residue_mu);
+  if (g_residue_len > 0) {
+    g_residue_len--;
+    if (root_out != NULL)
+      *root_out = g_residue[g_residue_len];
+    g_residue_in_flight++;
+    taken = 1;
+  }
+  pthread_mutex_unlock(&g_residue_mu);
+  return taken;
+}
+
+__attribute__((visibility("hidden"))) void
+haskoki_residue_put_back(void *root) {
+  if (root == NULL)
+    return;
+  pthread_mutex_lock(&g_residue_mu);
+  if (g_residue_in_flight > 0) {
+    /* Fits: the entry kept its slot while in flight. */
+    g_residue_in_flight--;
+    g_residue[g_residue_len] = root;
+    g_residue_len++;
+  }
+  pthread_mutex_unlock(&g_residue_mu);
+}
+
+__attribute__((visibility("hidden"))) void
+haskoki_residue_note_closed(int n) {
+  if (n <= 0)
+    return;
+  pthread_mutex_lock(&g_residue_mu);
+  g_residue_in_flight = (n > g_residue_in_flight) ? 0 : (g_residue_in_flight - n);
+  pthread_mutex_unlock(&g_residue_mu);
+}
+
+__attribute__((visibility("hidden"))) int
+haskoki_residue_count(void) {
+  int count;
+  pthread_mutex_lock(&g_residue_mu);
+  count = g_residue_len + g_residue_in_flight;
+  pthread_mutex_unlock(&g_residue_mu);
+  return count;
 }
