@@ -8,14 +8,14 @@
 # raw outputs are preserved) and classifies every diff line into exactly
 # one bucket:
 #   KNOWN-DIFFERENCE      exact frozen line, with family + per-id reason
-#                         (frozen-subset.tsv, 83 lines in 6 families)
+#                         (frozen-subset.tsv, 61 lines in 5 families)
 #   DIRECT-ONLY           one-sided collection (`absent` on either side);
 #                         zero on the frozen pin
 #   FLAKY                 an R5 section-4 stable-eligible id appearing as
 #                         a diff at all — ZERO allowed on v0.2.2, so any
 #                         hit fails and re-opens section 4
 #   UNEXPECTED-DIFFERENCE anything else — fails
-# The shared set must equal frozen-shared.txt (22) exactly; missing
+# The shared set must equal frozen-shared.txt (18) exactly; missing
 # frozen lines (a diff silently fixed) fail as drift too.
 #
 # Writes <run-dir>/classification.txt + <run-dir>/classification.json.
@@ -46,7 +46,7 @@ Usage:
 compare`. Raw files are never modified; classification.txt and
 classification.json are written beside them.
 
-Exit: 0 frozen set reproduced exactly (83 known + shared 22/22,
+Exit: 0 frozen set reproduced exactly (61 known + shared 18/18,
 zero unexpected/direct-only/flaky/missing) / 1 drift / 2 usage
 or infrastructure failure.
 EOF
@@ -72,6 +72,9 @@ from collections import Counter
 
 run, subset_path, shared_path = sys.argv[1:4]
 
+# v0.5 re-freeze: family G-inversion retired (all 22 rows converged when
+# the provider fixes landed: stale-handle 0x60 and mechanism-parameter
+# 0x71, see spec/findings-ledger.json retired rows). 83 -> 61 lines.
 # R9: family F-gmac retired — AES_GMAC message-init now fails
 # native-identical in both lanes (init transparency) and moved to
 # the shared set. A shrank 153 -> 34 (flat-byte opaque forwarding);
@@ -88,8 +91,6 @@ REASONS = {
         "CKR_MECHANISM_PARAM_INVALID (not operational)",
     "E-boundary": "validation check-order differs between lanes "
         "(not refusal-vs-accept)",
-    "G-inversion": "proxy returns spec-preferred codes the backend does "
-        "not (proxy-better direction, not normalized away)",
 }
 
 # R5 section 4 stable-eligible ids: any appearance in diff.txt is a
@@ -133,14 +134,14 @@ for line in read_lines(subset_path):
         print("compare-classify: duplicate frozen line: %r" % frozen_line)
         sys.exit(2)
     frozen[frozen_line] = fam
-if len(frozen) != 83:
-    print("compare-classify: want 83 frozen lines, have %d" % len(frozen))
+if len(frozen) != 61:
+    print("compare-classify: want 61 frozen lines, have %d" % len(frozen))
     sys.exit(2)
 
 want_shared = [l for l in read_lines(shared_path)
                if l and not l.startswith("#")]
-if len(want_shared) != 22:
-    print("compare-classify: want 22 frozen shared lines, have %d"
+if len(want_shared) != 18:
+    print("compare-classify: want 18 frozen shared lines, have %d"
           % len(want_shared))
     sys.exit(2)
 

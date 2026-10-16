@@ -5,13 +5,20 @@ and old TODO category has exactly one row in spec/findings-ledger.json, with
 a valid decision and evidence.
 
 Sources (1:1 set equality, never a subset):
-  * examples/release/compare-classify/frozen-shared.txt   (22 findings)
-  * examples/release/compare-classify/frozen-subset.tsv   (83 exclusions)
+  * examples/release/compare-classify/frozen-shared.txt   (18 findings)
+  * examples/release/compare-classify/frozen-subset.tsv   (61 exclusions)
   * cbits/function_tables.c stub_probe stubs + cbits/abi_stubs.inc
     x_live_check stubs                                     (11 C refusals)
   * spec/function-contracts.json unsupported-with-reason   (21 planner)
   * spec/mechanisms.json behavior planned/unsupported/n-a  (57/89/2)
   * TODO_IDS below (historical outer todo.md categories)
+
+Retired rows: a finding or exclusion that left the frozen sets at a
+re-freeze moves from "rows" to "retired" (same schema plus `retired_by`,
+the fix commits, and `refreeze_evidence`). Its id must no longer be in the
+frozen sources, its decision is provider-fix, and its test and receipt are
+existing paths (never pending). "proxy_owned_divergences" records
+proxy-owned behaviour found while fixing the provider.
 
 Evidence rule: `test` and `receipt` are an existing repo path (optionally
 `path::detail`), `none: <reason>`, or `pending: WP12 Task N`. `pending` is
@@ -31,6 +38,7 @@ Usage: python3 scripts/check-findings-ledger.py [--self-test]
 import copy
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -48,12 +56,15 @@ FIELDS = ["id", "kind", "dimension", "source", "input", "expected",
           "checker_pin"]
 DIMENSIONS = ["checker", "c-routing", "planner", "catalog", "todo"]
 EXCL_FAMILIES = ["A-msg-init-0x71", "B-blowfish", "C-tls12", "D-wtls",
-                 "E-boundary", "G-inversion"]
+                 "E-boundary"]
 PENDING_RE = re.compile(r"^pending: WP12 Task [2-8]$")
 
-COUNTS = {"finding": 22, "exclusion": 83, "c-function": 11,
+COUNTS = {"finding": 18, "exclusion": 61, "c-function": 11,
           "planner-function": 21, "mechanism-planned": 57,
           "unsupported": 89, "n-a": 2}
+
+RETIRED_COUNTS = {"finding": 4, "exclusion": 22}
+SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 TODO_IDS = [
     "todo:release-closure", "todo:proxy-upstream-statuses",
@@ -216,7 +227,78 @@ def validate(ledger, src, counts=COUNTS, repo=REPO):
             elif d != "provider-fix":
                 errs.append("%s: provider-owned %s must be provider-fix or "
                             "supported-refusal (got %s)" % (rid, r["kind"], d))
+    errs += validate_retired(ledger, src, seen, repo)
     return errs
+
+
+def validate_retired(ledger, src, seen, repo):
+    errs = []
+    ret = ledger.get("retired")
+    if not isinstance(ret, list):
+        return ["ledger has no retired list"]
+    ids, kinds = set(), {}
+    for r in ret:
+        rid = r.get("id")
+        if sorted(r.keys()) != sorted(FIELDS + ["retired_by",
+                                                "refreeze_evidence"]):
+            errs.append("retired %s: fields != schema" % rid)
+            continue
+        if rid in ids or rid in seen:
+            errs.append("retired %s: duplicate of a live or retired row" % rid)
+        ids.add(rid)
+        kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+        if r["kind"] not in ("finding", "exclusion"):
+            errs.append("retired %s: kind must be finding or exclusion" % rid)
+        if rid in src.get(r["kind"], set()):
+            errs.append("retired %s: still in the frozen source" % rid)
+        if r["decision"] != "provider-fix" or r["owner"] != "provider":
+            errs.append("retired %s: must be a provider-fix provider row" % rid)
+        for f in ("test", "receipt"):
+            v = r[f]
+            if not isinstance(v, str) or v.startswith(("pending", "none")):
+                errs.append("retired %s: %s must be an existing path" % (rid, f))
+            else:
+                e = evidence_ok(v, r["decision"], repo)
+                if e:
+                    errs.append("retired %s: %s %s" % (rid, f, e))
+        by = r["retired_by"]
+        if not isinstance(by, list) or not by or not all(
+                isinstance(c, str) and SHA_RE.match(c) for c in by):
+            errs.append("retired %s: retired_by needs fix commit shas" % rid)
+        elif not all(_commit_exists(c, repo) for c in by):
+            errs.append("retired %s: retired_by names an unknown commit" % rid)
+        if not isinstance(r["refreeze_evidence"], str) or not r[
+                "refreeze_evidence"].strip():
+            errs.append("retired %s: empty refreeze_evidence" % rid)
+    for kind, n in RETIRED_COUNTS.items():
+        if kinds.get(kind, 0) != n:
+            errs.append("retired %s count %d != pinned %d"
+                        % (kind, kinds.get(kind, 0), n))
+    for d in ledger.get("proxy_owned_divergences", []):
+        if not (d.get("id") and d.get("note") and
+                _commit_exists(d.get("commit", ""), repo) and
+                not evidence_ok(d.get("test", ""), "provider-fix", repo)):
+            errs.append("bad proxy_owned_divergences entry %s" % d.get("id"))
+    if not ledger.get("proxy_owned_divergences"):
+        errs.append("proxy_owned_divergences is empty (4819bd4 receipt)")
+    return errs
+
+
+def _commit_exists(sha, repo):
+    """True when git knows the commit; accepted if git is unavailable."""
+    if not sha:
+        return False
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "cat-file", "-e",
+                            sha + "^{commit}"], capture_output=True)
+    except OSError:
+        return True
+    if r.returncode == 0:
+        return True
+    # shallow or exported tree without history: only fail when git works
+    chk = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                         capture_output=True)
+    return chk.returncode != 0
 
 
 def run_gate():
@@ -229,8 +311,8 @@ def run_gate():
     if errs:
         return 1
     n = len(json.loads(LEDGER.read_text())["rows"])
-    print("findings-ledger: ok (%d rows; 22 findings, 83 exclusions, "
-          "11 C refusals, 21 planner, 57/89/2 mechanisms)" % n)
+    print("findings-ledger: ok (%d rows; 18 findings, 61 exclusions, "
+          "11 C refusals, 21 planner, 57/89/2 mechanisms; 26 retired)" % n)
     return 0
 
 
@@ -287,8 +369,14 @@ def self_test():
     short = copy.deepcopy(src)
     short["exclusion"] = set(sorted(short["exclusion"])[:-1])
     expect("source-has-fewer-than-ledger", validate(base, short))
-    i = next(i for i, r in enumerate(rows)
-             if r["kind"] == "exclusion" and r["owner"] == "provider")
+    # No live exclusion is provider-owned after the v0.5 re-freeze, so the
+    # controls synthesize one from the first exclusion row.
+    i = next(i for i, r in enumerate(rows) if r["kind"] == "exclusion")
+    rows = copy.deepcopy(rows)
+    rows[i]["owner"] = "provider"
+    rows[i]["decision"] = "provider-fix"
+    rows[i]["test"] = "tests/c/consumer_errors.c"
+    rows[i]["receipt"] = "tests/c/consumer_errors.c"
     r2 = copy.deepcopy(rows)
     r2[i]["decision"] = "target-gap"
     r2[i]["test"] = "none: relabelled"
@@ -326,6 +414,33 @@ def self_test():
         bad += 1
     else:
         print("ok   control pending-on-provider-fix -> accepted")
+    # retired-row controls
+    ret = base["retired"]
+
+    def with_ret(new):
+        d = copy.deepcopy(base)
+        d["retired"] = new
+        return d
+
+    expect("retired-dropped", validate(with_ret(ret[1:]), src))
+    r2 = copy.deepcopy(ret)
+    r2[0]["receipt"] = "pending: WP12 Task 7"
+    expect("retired-pending-receipt", validate(with_ret(r2), src))
+    r2 = copy.deepcopy(ret)
+    r2[0]["retired_by"] = []
+    expect("retired-without-commit", validate(with_ret(r2), src))
+    r2 = copy.deepcopy(ret)
+    r2[0]["retired_by"] = ["0000000000000000000000000000000000000000"]
+    expect("retired-unknown-commit", validate(with_ret(r2), src))
+    r2 = copy.deepcopy(ret)
+    r2[0]["decision"] = "target-gap"
+    expect("retired-not-provider-fix", validate(with_ret(r2), src))
+    resurrect = copy.deepcopy(src)
+    resurrect["exclusion"] = set(resurrect["exclusion"]) | {ret[-1]["id"]}
+    expect("retired-id-back-in-source", validate(base, resurrect))
+    d2 = copy.deepcopy(base)
+    d2["proxy_owned_divergences"] = []
+    expect("proxy-divergence-receipt-missing", validate(d2, src))
     if bad:
         return 1
     print("findings-ledger self-test: ok")

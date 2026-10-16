@@ -207,7 +207,7 @@ contract, not byte equality.
 
 `compare` runs the full checker profile in both modes. It intentionally
 exits 1 for documented findings. The shipped classifier checks the frozen
-83 exclusions and 22 shared findings; it must exit 0 when those sets match.
+61 exclusions and 18 shared findings; it must exit 0 when those sets match.
 From your host terminal, with the image selected in [Try Haskoki](try-it.md#choose-the-image):
 
 ```sh

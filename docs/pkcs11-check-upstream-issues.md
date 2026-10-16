@@ -75,7 +75,7 @@ operation. Earlier CBC message recipes omitted IVs (P11C-013), and RSA
 recover recipes omitted `CKA_SIGN_RECOVER`/`CKA_VERIFY_RECOVER` permissions
 (P11C-014). The latter CBC/recover findings left the demo baseline when
 the checker recipes were corrected. They are not part of the current
-22-finding set.
+18-finding set.
 
 For current provider limitations and transport exclusions, use the
 [qualification reference](pkcs11-oracle-triage.md) and
