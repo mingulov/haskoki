@@ -61,18 +61,24 @@ module Haskoki.Runtime.Storage.SQLite
   , livenessFromProbes
   , PidLiveness (..)
   , ProcProbe (..)
+  , FileIdentity (..)
+  , StoreSnapshot (..)
+  , readStoreSnapshot
+  , OwnerState (..)
+  , probeOwner
   ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, putMVar, readMVar, takeMVar)
-import Control.Exception (SomeException, bracket, bracket_, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Exception (SomeException, bracket, bracket_, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (when)
 import Data.Bits (shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
-import Data.List (nub)
+import Data.List (nub, sort)
+import qualified Data.ByteString.Char8 as BC8
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
@@ -83,7 +89,7 @@ import Database.SQLite3.Direct (getAutoCommit)
 import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
-import System.Posix.Files (deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, removeLink, setFdSize, setFileMode)
+import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, removeLink, setFdSize, setFileMode)
 import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdWrite, openFd)
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (Fd, ProcessID)
@@ -2141,3 +2147,148 @@ decodeBlobW64 bs
   | otherwise = Just (BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0 bs)
 
 -- Identifier projections ('unTokenId' et al.) come from 'Haskoki.Types'.
+
+-- ---------------------------------------------------------------
+-- Read-only snapshot and owner probe
+
+-- | Device, inode, size and mtime (seconds) of a file.
+data FileIdentity = FileIdentity
+  { fiDevice :: !Integer, fiInode :: !Integer, fiSize :: !Integer, fiMtime :: !Integer }
+  deriving (Eq, Show)
+
+-- | What a read-only look at a store found. Credential rows are
+-- reduced to their token ids: no PIN byte leaves this function.
+data StoreSnapshot = StoreSnapshot
+  { snapSchema :: !Int                 -- 1, 2 or 3
+  , snapTokens :: ![TokenRecord]       -- token-id ascending
+  , snapObjectCount :: !Int
+  , snapJobCount :: !Int
+  , snapCredentialTokens :: ![TokenId] -- ascending; [] for schema 1
+  , snapMeta :: ![(String, String)]    -- sorted
+  , snapFile :: !FileIdentity
+  } deriving (Eq, Show)
+
+-- | Whether some owner holds the store.
+data OwnerState
+  = OwnerAbsent        -- ^ no sidecar lock; kernel lock free
+  | OwnerStale !Int    -- ^ sidecar names a dead pid; kernel lock free (left in place)
+  | OwnerLive !String  -- ^ live, unknowable or kernel-held owner (fail closed): the reason
+  deriving (Eq, Show)
+
+fileIdentity :: FileStatus -> FileIdentity
+fileIdentity st = FileIdentity
+  (toInteger (deviceID st)) (toInteger (fileID st)) (toInteger (fileSize st))
+  (truncate (toRational (modificationTime st)))
+
+-- | A rollback journal SQLite would treat as hot: present and
+-- non-empty. (A zero-byte leftover is ignored, as SQLite ignores it.)
+hotJournal :: FilePath -> IO Bool
+hotJournal path = do
+  e <- tryIOError (getSymbolicLinkStatus (path ++ "-journal"))
+  pure (either (const False) (\st -> fileSize st > 0) e)
+
+-- | Read a store WITHOUT writing it: no ownership, no sidecar, a
+-- read-only connection (never creates the file, never recovers a
+-- journal, never migrates). Decodes every record the serving open
+-- decodes, so a corrupt file fails here too; keeps only ids and
+-- counts. Refuses a hot journal and a file that changed while read.
+readStoreSnapshot :: FilePath -> IO (Either StoreError StoreSnapshot)
+readStoreSnapshot path = do
+  eSt0 <- tryIOError (getFileStatus path)
+  case eSt0 of
+    Left _ -> pure (Left (StoreIO ("no store file at " ++ path)))
+    Right st0
+      | not (isRegularFile st0) -> pure (Left (StoreIO (path ++ ": not a regular file")))
+      | otherwise -> do
+          hot <- hotJournal path
+          if hot then pure (Left (StoreJournalPresent (path ++ "-journal"))) else do
+            eDb <- trySQLite (S.open2 (T.pack path) [S.SQLOpenReadOnly] S.SQLVFSDefault)
+            case eDb of
+              Left err -> pure (Left err)
+              Right db -> do
+                r <- snapshotDb db `finally` closeQuiet db
+                eSt1 <- tryIOError (getFileStatus path)
+                hot1 <- hotJournal path
+                pure $ case (r, eSt1) of
+                  (Left err, _) -> Left err
+                  (_, Left _) -> Left (StoreIO (path ++ ": vanished while read"))
+                  (Right mk, Right st1)
+                    | hot1 -> Left (StoreJournalPresent (path ++ "-journal"))
+                    | fileIdentity st0 /= fileIdentity st1 ->
+                        Left (StoreIO (path ++ ": changed while read; retry with the owner stopped"))
+                    | otherwise -> Right (mk (fileIdentity st1))
+  where
+    snapshotDb db = do
+      eTables <- queryRows db "SELECT name FROM sqlite_master WHERE type = 'table'" []
+      case eTables of
+        Left err -> pure (Left err)
+        Right rows -> do
+          let names = [t | [S.SQLText t] <- rows]
+          eVer <- if "store_meta" `elem` names
+            then queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
+            else pure (Right [])
+          case classifySchema path names eVer of
+            Left err -> pure (Left err)
+            Right v -> do
+              eToks <- loadTokens db
+              eJobs <- loadJobs db
+              eCreds <- if v >= 2 then loadCredentials db else pure (Right [])
+              eMeta <- loadMeta db
+              pure $ do
+                toks <- eToks
+                jobs <- eJobs
+                creds <- eCreds
+                meta <- eMeta
+                Right (StoreSnapshot v (map fst toks) (sum (map (length . snd) toks))
+                  (length jobs) (sort (map crToken creds)) (sort meta))
+
+-- | Whether some owner holds the store, without taking anything: the
+-- sidecar pid ('pidLiveness', fail closed on unknowable), then a
+-- shared non-blocking kernel lock on a read-only database fd,
+-- released at once. Never creates, removes or rewrites a lock.
+probeOwner :: FilePath -> IO OwnerState
+probeOwner path = do
+  procRoot <- procRootFromEnv
+  me <- getProcessID
+  let lockPath = path ++ ".lock"
+  eLock <- tryIOError (getSymbolicLinkStatus lockPath)
+  sidecar <- case eLock of
+    Left e | isDoesNotExistError e -> pure (Right Nothing)
+           | otherwise -> pure (Left "the lock file cannot be examined")
+    Right _ -> do
+      eContent <- tryIOError (BS.readFile lockPath)
+      case eContent of
+        Left _ -> pure (Left "the lock file is unreadable")
+        Right content -> case reads (BC8.unpack content) of
+          [(n, _) :: (Int, String)]
+            | n == fromIntegral me -> pure (Left "this process holds the store")
+            | otherwise -> do
+                live <- pidLiveness procRoot n
+                pure $ case live of
+                  PidAlive -> Left ("pid " ++ show n ++ " holds the lock")
+                  PidUnknown -> Left ("pid " ++ show n ++ " holds the lock; its liveness is unknowable")
+                  PidDead -> Right (Just n)
+          _ -> pure (Left "the lock file names no pid")
+  case sidecar of
+    Left why -> pure (OwnerLive why)
+    Right stale -> do
+      held <- kernelLockHeld path
+      pure $ case (held, stale) of
+        (True, _) -> OwnerLive "the database kernel lock is held"
+        (False, Nothing) -> OwnerAbsent
+        (False, Just n) -> OwnerStale n
+
+-- | Try a SHARED non-blocking flock on a read-only fd and drop it at
+-- once. Any failure to probe counts as held (fail closed).
+kernelLockHeld :: FilePath -> IO Bool
+kernelLockHeld path = mask_ $ do
+  eFd <- tryIOError (openFd path ReadOnly defaultFileFlags)
+  case eFd of
+    Left _ -> pure True
+    Right fd -> do
+      ok <- (== 0) <$> c_flock (fromIntegral fd) (lockSh .|. lockNb)
+      closeQuietFd fd
+      pure (not ok)
+
+lockSh :: CInt
+lockSh = 1 -- LOCK_SH: shared

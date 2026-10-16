@@ -7,15 +7,19 @@ module PreflightSpec (spec) where
 
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
+import System.Directory (createDirectory, doesFileExist)
 import System.FilePath ((</>))
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
+import System.Posix.Files (getFileStatus, modificationTime)
+import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.FFI.Standard (StdStoreError (..))
-import Haskoki.Runtime.Storage (CredentialRecord (..), StoreError (..), storeClose)
+import Haskoki.Runtime.Storage
+  (CommitResult (..), CredentialRecord (..), StoreError (..), TokenRecord (..), emptyDelta, storeClose, storeCommit)
 import Haskoki.Types (TokenId (..))
 import Haskoki.Runtime.Storage.Preflight (sha256Hex)
-import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
+import Haskoki.Runtime.Storage.SQLite
+  (OwnerState (..), StoreSnapshot (..), openSQLiteStore, probeOwner, readStoreSnapshot)
 
 import StoreFixtures
 
@@ -25,6 +29,8 @@ spec = testGroup "Store preflight"
       [ testCase "sha-256 is the standard digest" caseSha256Vector
       , testCase "v0.3.1.0 fixture matches its manifest" (caseFixtureManifest "v0.3.1.0")
       , testCase "v0.4.0.0 fixture matches its manifest" (caseFixtureManifest "v0.4.0.0")
+      , testCase "v0.3.1.0 manifest names the committed generator and template" (caseManifestGenerator "v0.3.1.0")
+      , testCase "v0.4.0.0 manifest names the committed generator and template" (caseManifestGenerator "v0.4.0.0")
       ]
   , testGroup "refused open"
       [ testCase "v0.3.1.0 store refuses unchanged under its own config" (caseOldStoreRefuses "v0.3.1.0" 1 False)
@@ -36,6 +42,17 @@ spec = testGroup "Store preflight"
       , testCase "schema 1 with a credentials table is corrupt, unchanged" caseV1WithCredentialsCorrupt
       , testCase "unknown schema versions refuse unchanged" caseUnknownVersionsRefuse
       , testCase "schema-3 rowless tokens still name their ids" caseV3RowlessNamesIds
+      ]
+  , testGroup "snapshot"
+      [ testCase "snapshot reads a released store without writing" caseSnapshotReadsFixture
+      , testCase "snapshot never creates a missing store" caseSnapshotNeverCreates
+      , testCase "snapshot reads a store in a read-only directory" caseSnapshotReadOnlyDir
+      , testCase "snapshot refuses a hot journal, touching nothing" caseSnapshotRefusesJournal
+      , testCase "snapshot diagnoses garbage and corrupt records" caseSnapshotDiagnoses
+      , testCase "owner probe: absent and in-process live" caseProbeAbsentAndLive
+      , after AllFinish "/death after reservation leaves a gap, never reuse/" $
+          testCase "owner probe: stale lock reported and left in place" caseProbeStaleLeftInPlace
+      , testCase "owner probe: unreadable lock is live" caseProbeUnreadableLive
       ]
   ]
 
@@ -146,3 +163,121 @@ caseV3RowlessNamesIds = withScratch "refused-open" $ \dir -> do
     Left other -> assertFailure ("wrong refusal: " ++ show other)
     Right acq -> closeAcquired acq >> assertFailure "rowless store opened"
   assertUnchanged "schema-3 rowless store" before store
+
+-- | The manifest's generator and template digests name the files in
+-- the tree, so an edit to either cannot leave a stale record.
+caseManifestGenerator :: String -> IO ()
+caseManifestGenerator tag = do
+  root <- storePackageRoot
+  manifest <- readManifest (root </> "tests" </> "fixtures" </> "stores" </> tag </> "manifest.txt")
+  gen <- sha256Hex =<< BS.readFile (root </> "scripts" </> "make-store-fixtures.sh")
+  assertEqual "generator digest" (fmap Right (lookup "generator-sha256" manifest)) (Just gen)
+  tmpl <- sha256Hex =<< BS.readFile (root </> "tests" </> "fixtures" </> "stores" </> "config.toml.in")
+  assertEqual "template digest" (fmap Right (lookup "config-template-sha256" manifest)) (Just tmpl)
+
+caseSnapshotReadsFixture :: IO ()
+caseSnapshotReadsFixture = withScratch "snapshot" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  before <- captureState store
+  st0 <- getFileStatus store
+  r <- readStoreSnapshot store
+  snap <- either (assertFailure . show) pure r
+  assertEqual "schema" 2 (snapSchema snap)
+  assertEqual "tokens" [TokenId 1, TokenId 2] (map trId (snapTokens snap))
+  assertEqual "credential holders" [TokenId 2] (snapCredentialTokens snap)
+  assertEqual "objects" 2 (snapObjectCount snap)
+  assertUnchanged "snapshot" before store
+  st1 <- getFileStatus store
+  assertEqual "mtime unchanged" (modificationTime st0) (modificationTime st1)
+
+caseSnapshotNeverCreates :: IO ()
+caseSnapshotNeverCreates = withScratch "snapshot" $ \dir -> do
+  let store = dir </> "absent.db"
+  r <- readStoreSnapshot store
+  case r of
+    Left (StoreIO _) -> pure ()
+    other -> assertFailure ("wrong result: " ++ show other)
+  absent <- not <$> doesFileExist store
+  noLock <- not <$> doesFileExist (store ++ ".lock")
+  assertBool "no file created" absent
+  assertBool "no lock created" noLock
+
+-- | The serving open needs to create its sidecar, so it fails in a
+-- read-only directory; the snapshot, which never takes ownership or
+-- writes, still reads.
+caseSnapshotReadOnlyDir :: IO ()
+caseSnapshotReadOnlyDir = withScratch "snapshot" $ \dir -> do
+  let sub = dir </> "ro"
+  createDirectory sub
+  (store, _) <- copyReleasedFixture "v0.4.0.0" sub
+  withFileMode store 0o444 $ withFileMode sub 0o555 $ do
+    r <- readStoreSnapshot store
+    assertEqual "snapshot reads" (Right 2) (snapSchema <$> r)
+    o <- openSQLiteStore store
+    case o of
+      Left _ -> pure ()
+      Right s -> storeClose s >> assertFailure "owning open succeeded in a read-only directory"
+
+caseSnapshotRefusesJournal :: IO ()
+caseSnapshotRefusesJournal = withScratch "snapshot" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  BS.writeFile (store ++ "-journal") "\217\213\5\249 interrupted"
+  dbBefore <- BS.readFile store
+  jBefore <- BS.readFile (store ++ "-journal")
+  r <- readStoreSnapshot store
+  assertEqual "refused" (Left (StoreJournalPresent (store ++ "-journal"))) (snapSchema <$> r)
+  BS.readFile store >>= assertEqual "db untouched" dbBefore
+  BS.readFile (store ++ "-journal") >>= assertEqual "journal untouched" jBefore
+
+caseSnapshotDiagnoses :: IO ()
+caseSnapshotDiagnoses = withScratch "snapshot" $ \dir -> do
+  let garbage = dir </> "garbage.db"
+  BS.writeFile garbage (BS.replicate 4096 0x41)
+  rg <- readStoreSnapshot garbage
+  case rg of
+    Left (StoreIO _) -> pure ()
+    other -> assertFailure ("garbage: " ++ show other)
+  let store = dir </> "store.db"
+  makeSchemaStore 3 store [fixtureToken 1 0 "haskoki-demo"] []
+  rawExec store "UPDATE tokens SET record_json = '{broken'"
+  rc <- readStoreSnapshot store
+  case rc of
+    Left (StoreCorrupt _) -> pure ()
+    other -> assertFailure ("corrupt token: " ++ show other)
+
+caseProbeAbsentAndLive :: IO ()
+caseProbeAbsentAndLive = withScratch "probe" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 3 store [] []
+  probeOwner store >>= assertEqual "offline" OwnerAbsent
+  e <- openSQLiteStore store
+  s <- either (assertFailure . show) pure e
+  lockBefore <- BS.readFile (store ++ ".lock")
+  p <- probeOwner store
+  case p of
+    OwnerLive _ -> pure ()
+    other -> assertFailure ("held store not live: " ++ show other)
+  BS.readFile (store ++ ".lock") >>= assertEqual "owner lock untouched" lockBefore
+  r <- storeCommit s emptyDelta
+  assertEqual "owner keeps serving" Committed r
+  storeClose s
+
+caseProbeStaleLeftInPlace :: IO ()
+caseProbeStaleLeftInPlace = withScratch "probe" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 3 store [] []
+  pid <- reapedPid
+  writeFile (store ++ ".lock") (show pid ++ "\n")
+  before <- BS.readFile (store ++ ".lock")
+  probeOwner store >>= assertEqual "stale" (OwnerStale pid)
+  BS.readFile (store ++ ".lock") >>= assertEqual "stale lock left in place" before
+
+caseProbeUnreadableLive :: IO ()
+caseProbeUnreadableLive = withScratch "probe" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 3 store [] []
+  writeFile (store ++ ".lock") "1\n"
+  p <- withFileMode (store ++ ".lock") 0o000 (probeOwner store)
+  case p of
+    OwnerLive _ -> pure ()
+    other -> assertFailure ("unreadable lock not live: " ++ show other)
