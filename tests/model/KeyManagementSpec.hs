@@ -493,6 +493,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
   , testCase "KEM accepts AES-256 secret templates" caseKemAesTemplate
   , testCase "KEM keygen honors CKA_PARAMETER_SET" caseKemKeygenParamSet
+  , testCase "KEM outputs stamp creation history" caseKemStampsOutputHistory
   , testCase "Handle writeback plans one exact handle" caseHandleWriteback
   , testCase "Wrapped writeback plans query/short/exact" caseWrappedWriteback
   , testCase "Ciphertext writeback enforces the length" caseCiphertextWriteback
@@ -7467,6 +7468,95 @@ caseKemAesTemplate = withSynth $ \answer -> do
     KeyEffect _ _ -> pure ()
     other -> assertFailure ("must plan, got: " ++ show other)
 
+-- | KEM outputs stamp creation history: minimal templates mint
+-- defaulted protection plus false history and origin on both the
+-- encapsulate and decapsulate paths, for generic-secret and AES-256
+-- shapes; explicit flags win without forging history; history rows
+-- in the caller template refuse.
+caseKemStampsOutputHistory :: IO ()
+caseKemStampsOutputHistory = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, pubH, privH) <- genKemPair answer m0 st
+  let ctLen = kemCtLen KemMl768
+      intent = IntentBuffer (fromIntegral ctLen)
+      minimalGeneric = bareSecretTmpl ckkGenericSecret 32
+      minimalAes = bareSecretTmpl ckkAes 32
+      explicit = minimalGeneric ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]
+  (m2, ct) <- case planKemEncaps m1 st mlKemMech pubH KemMl768 minimalGeneric intent of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      c <- finishCommit m1 st pw res 1
+      hh <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m1 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertKemHistory "encaps generic" (osAttrs ost) False False
+      case pcOutputs c !! 0 of
+        NativeOutput (RegionBytes "ciphertext" _) bytes -> pure (m', bytes)
+        o -> assertFailure ("no ciphertext: " ++ show o) >> undefined
+    other -> assertFailure ("encaps must plan, got: " ++ show other) >> undefined
+  m3 <- case planKemDecaps m2 st mlKemMech privH KemMl768 ct minimalGeneric of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      hh <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertKemHistory "decaps generic" (osAttrs ost) False False
+      pure m'
+    other -> assertFailure ("decaps must plan, got: " ++ show other) >> undefined
+  (m4, ctAes) <- case planKemEncaps m3 st mlKemMech pubH KemMl768 minimalAes intent of
+    KeyEffect pw fx -> do
+      res <- answer m3 fx
+      c <- finishCommit m3 st pw res 1
+      hh <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m3 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertEqual "encaps aes keytype" (Just (ValULong ckkAes))
+        (Map.lookup AttrKeyType (osAttrs ost))
+      assertKemHistory "encaps aes" (osAttrs ost) False False
+      case pcOutputs c !! 0 of
+        NativeOutput (RegionBytes "ciphertext" _) bytes -> pure (m', bytes)
+        o -> assertFailure ("no ciphertext: " ++ show o) >> undefined
+    other -> assertFailure ("encaps aes must plan, got: " ++ show other) >> undefined
+  m5 <- case planKemDecaps m4 st mlKemMech privH KemMl768 ctAes minimalAes of
+    KeyEffect pw fx -> do
+      res <- answer m4 fx
+      c <- finishCommit m4 st pw res 1
+      hh <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m4 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertKemHistory "decaps aes" (osAttrs ost) False False
+      pure m'
+    other -> assertFailure ("decaps aes must plan, got: " ++ show other) >> undefined
+  case planKemEncaps m5 st mlKemMech pubH KemMl768 explicit intent of
+    KeyEffect pw fx -> do
+      res <- answer m5 fx
+      c <- finishCommit m5 st pw res 1
+      hh <- handleOf (pcOutputs c !! 1)
+      m6 <- expectRight (publishDelta m5 (pcDelta c))
+      Just ost <- pure (resolveHandle m6 hh)
+      assertKemHistory "encaps explicit" (osAttrs ost) True True
+      case planKemDecaps m6 st mlKemMech privH KemMl768 ct explicit of
+        KeyEffect pw2 fx2 -> do
+          res2 <- answer m6 fx2
+          c2 <- finishCommit m6 st pw2 res2 1
+          hh2 <- handleOf (pcOutputs c2 !! 0)
+          m7 <- expectRight (publishDelta m6 (pcDelta c2))
+          Just ost2 <- pure (resolveHandle m7 hh2)
+          assertKemHistory "decaps explicit" (osAttrs ost2) True True
+        other2 -> assertFailure ("decaps explicit must plan, got: " ++ show other2)
+    other -> assertFailure ("encaps explicit must plan, got: " ++ show other)
+  let forged = (AttrAlwaysSensitive, ValBool True) : minimalGeneric
+  case planKemEncaps m5 st mlKemMech pubH KemMl768 forged intent of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "encaps history code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("encaps history must deny, got: " ++ show other)
+  case planKemDecaps m5 st mlKemMech privH KemMl768 ct forged of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "decaps history code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("decaps history must deny, got: " ++ show other)
+
 caseKemKeygenParamSet :: IO ()
 caseKemKeygenParamSet = withSynth $ \answer -> do
   m0 <- seedModel >>= loginUser
@@ -7991,6 +8081,20 @@ assertDerivedHistory tag attrs sens ext alw nev = do
   assertStoredBool (tag ++ " extractable") attrs AttrExtractable ext
   assertStoredBool (tag ++ " always-sensitive") attrs AttrAlwaysSensitive alw
   assertStoredBool (tag ++ " never-extractable") attrs AttrNeverExtractable nev
+  assertStoredBool (tag ++ " local") attrs AttrLocal False
+  assertEqual (tag ++ " key-gen mechanism")
+    (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism attrs)
+
+-- | Assert one KEM output secret: caller-or-defaulted protection
+-- plus false history and origin (exposed material, never a
+-- never-extracted claim).
+assertKemHistory :: String -> Map.Map AttributeType AttributeValue
+  -> Bool -> Bool -> IO ()
+assertKemHistory tag attrs sens ext = do
+  assertStoredBool (tag ++ " sensitive") attrs AttrSensitive sens
+  assertStoredBool (tag ++ " extractable") attrs AttrExtractable ext
+  assertStoredBool (tag ++ " always-sensitive") attrs AttrAlwaysSensitive False
+  assertStoredBool (tag ++ " never-extractable") attrs AttrNeverExtractable False
   assertStoredBool (tag ++ " local") attrs AttrLocal False
   assertEqual (tag ++ " key-gen mechanism")
     (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism attrs)

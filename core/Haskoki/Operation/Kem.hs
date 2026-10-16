@@ -29,7 +29,7 @@ import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
 
-import Haskoki.Attribute (AttributeType (..), AttributeValue (..), encodeValue)
+import Haskoki.Attribute (AttributeType (..), AttributeValue (..), encodeValue, stampKeyDefaults)
 import Haskoki.Model (Model, ObjectState (..), SessionState)
 import Haskoki.Object (objectVisible, resolveHandle)
 import Haskoki.Operation.Effect (CryptoEffect (..))
@@ -118,6 +118,22 @@ kemAlgOfKey model h = case resolveHandle model h of
     _ -> KemMl768
   Nothing -> KemMl768
 
+-- | Stamp one KEM output secret: the caller-wins secret-key
+-- protection defaults plus false history and origin. Shared-secret
+-- material is exposed through the ciphertext, so history and origin
+-- read false (never a never-extracted claim) and the mechanism id
+-- reads unavailable. Explicit caller flags always win. Runs after
+-- validation, before 'pendingFromAttrs', on both the encapsulate
+-- and decapsulate paths.
+stampKemOutput :: Map.Map AttributeType AttributeValue -> Map.Map AttributeType AttributeValue
+stampKemOutput attrs =
+  Map.insert AttrKeyGenMechanism (ValULong maxBound)
+    (Map.insert AttrLocal (ValBool False)
+      (Map.insert AttrNeverExtractable (ValBool False)
+        (Map.insert AttrAlwaysSensitive (ValBool False) filled)))
+  where
+    filled = stampKeyDefaults ckoSecretKey attrs
+
 -- | Plan one encapsulation against a peer public key: the mechanism
 -- must be ML-KEM, the handle must resolve to a visible ML-KEM key
 -- of this parameter set carrying the encapsulate mark, and the
@@ -157,7 +173,7 @@ planKemEncaps model st mech h alg tmpl intent
             Right attrs -> case checkSecretLen attrs of
               Left deny -> KeyDenied deny
               Right attrs' ->
-                let po = pendingFromAttrs st attrs'
+                let po = pendingFromAttrs st (stampKemOutput attrs')
                     ctLen = kemCtLen alg
                     lenOut = NativeOutput (RegionBytes "ciphertext" intent)
                       (encodeValue (ValULong (fromIntegral ctLen)))
@@ -270,5 +286,5 @@ planKemDecaps model st mech h alg ct tmpl
             Right attrs -> case checkSecretLen attrs of
               Left deny -> KeyDenied deny
               Right attrs' ->
-                KeyEffect (PwDecaps (pendingFromAttrs st attrs'))
+                KeyEffect (PwDecaps (pendingFromAttrs st (stampKemOutput attrs')))
                   (FxKemDecaps mech (Just (osId ost)) (kemAlgName alg) ct)

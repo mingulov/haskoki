@@ -402,8 +402,8 @@ int main(int argc, char **argv) {
       if (rv == CKR_OK && h != 0) {
         expect_flags(sess, h, CK_TRUE, CK_FALSE, "omitted extract");
         expect_sealed(sess, h, len32, "omitted extract");
-        /* History attributes with no stored value report the
-         * effective view: false until creation stamps real history. */
+        /* History attributes are stamped at creation: the derived
+         * child carries stored false history. */
         {
           CK_BBOOL hist = 0xa5;
           CK_ATTRIBUTE q[] = { { CKA_ALWAYS_SENSITIVE, &hist, sizeof(hist) } };
