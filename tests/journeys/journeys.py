@@ -29,6 +29,12 @@ not an object, or whose log path is not the leg's own, reports as
 JR-RECORD. The table shape is defined by legs-schema.json and
 validated structurally by --self-test.
 
+`spki-match` compares a certificate's embedded SPKI byte for byte
+with a standalone SPKI file. `issue-cert` mints a per-run ephemeral
+CA leaf over a token SPKI with the openssl CLI, then runs the same
+comparison. The `probes` block of the leg table pins the Java probe
+bytes the engine requires before any leg that compiles them.
+
 Failure lines look like `JR-<RULE>: <leg>: <detail>`, sorted by leg
 then rule, followed by `JOURNEYS: PASS n/n` or `JOURNEYS: FAIL k/n`
 where n counts the profile's required legs and k counts failure lines.
@@ -185,6 +191,9 @@ def validate_legs_table(table):
         for name in sorted(profiles):
             problems.extend(
                 _validate_profile(name, profiles[name], clients))
+    probes = table.get("probes")
+    if probes is not None:
+        problems.extend(_validate_probes(probes))
     legs = table.get("legs")
     if not isinstance(legs, list):
         problems.append((RUN_LEG, "leg table legs is not a list"))
@@ -238,6 +247,44 @@ def _validate_client_pin(name, pin):
         problems.append((RUN_LEG,
                          f"client {name}: compile_target is not a "
                          "non-empty string"))
+    return problems
+
+
+def _validate_probes(probes):
+    if not isinstance(probes, dict):
+        return [(RUN_LEG, "leg table probes is not an object")]
+    problems = []
+    for name in sorted(probes):
+        entry = probes[name]
+        label = f"probe {name}"
+        if not isinstance(entry, dict):
+            problems.append((RUN_LEG, f"{label}: not an object"))
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not path \
+                or not is_run_relative(path):
+            problems.append((RUN_LEG,
+                             f"{label}: path is not a relative path"))
+        sha = entry.get("sha256")
+        if not isinstance(sha, str) or len(sha) != 64 \
+                or any(char not in "0123456789abcdef"
+                       for char in sha):
+            problems.append((RUN_LEG,
+                             f"{label}: sha256 is not 64 hex"))
+        for key in ("compile", "run"):
+            argv = entry.get(key)
+            if argv is None:
+                continue
+            if not isinstance(argv, list) or not argv \
+                    or not all(isinstance(a, str) for a in argv):
+                problems.append((RUN_LEG,
+                                 f"{label}: {key} is not a non-empty "
+                                 "string list"))
+            else:
+                for token in unknown_placeholders("\n".join(argv)):
+                    problems.append((RUN_LEG,
+                                     f"{label}: unknown placeholder "
+                                     f"{token} in {key}"))
     return problems
 
 
@@ -1007,6 +1054,44 @@ def synthesize_config_text(leg):
     )
 
 
+def probe_setup_note(argv_raw, ctx):
+    """Setup note when a referenced probe fails its pinned SHA.
+
+    Returns None when no leg argv references a pinned probe, or when
+    every referenced probe matches. A leg references a probe with the
+    exact `@SRC@/<path>` element.
+    """
+    probes = ctx.get("probes")
+    if not isinstance(probes, dict) or not probes:
+        return None
+    src_root = ctx.get("src_root")
+    if src_root is None:
+        return None
+    src_root = Path(src_root)
+    for name in sorted(probes):
+        entry = probes[name]
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        want = entry.get("sha256")
+        if not isinstance(path, str) or not path:
+            continue
+        if not isinstance(want, str) or not want:
+            continue
+        marker = "@SRC@/" + path
+        if not any(isinstance(item, str) and item == marker
+                   for item in argv_raw):
+            continue
+        try:
+            got = sha256_file(src_root / path)
+        except OSError:
+            got = None
+        if got != want:
+            return (f"probe provenance mismatch: {name} bytes differ "
+                    f"from pin {want[:16]}")
+    return None
+
+
 def run_one_leg(run_dir, row, profile_rows, clients, ctx):
     name = row["name"]
     tag = safe_leg(name)
@@ -1057,11 +1142,18 @@ def run_one_leg(run_dir, row, profile_rows, clients, ctx):
     exit_code = 0
     setup_note = None
     timed_out = False
+    probe_note = None
+    if not problems:
+        probe_note = probe_setup_note(argv_raw, ctx)
     if problems:
         setup_note = ("setup: unknown placeholder "
                       + ", ".join(sorted(set(problems))))
         exit_code = None
         log_path.write_text(setup_note + "\n", encoding="utf-8")
+    elif probe_note is not None:
+        setup_note = probe_note
+        exit_code = None
+        log_path.write_text(probe_note + "\n", encoding="utf-8")
     else:
         argv = [substitute_text(a, mapping) for a in argv_raw]
         if isinstance(cwd_raw, str):
@@ -1565,6 +1657,9 @@ def run_new(args, table, clients, legs_path):
     else:
         selected = list(rows)
     versions = capture_versions(selected, clients)
+    probes = table.get("probes")
+    if not isinstance(probes, dict):
+        probes = {}
     ctx = {"module_path": module_path,
            "native_dir": str(Path(args.native_dir).resolve()),
            "src_root": src_root,
@@ -1573,7 +1668,8 @@ def run_new(args, table, clients, legs_path):
            "source_dirty": dirty,
            "artifact": artifact,
            "start_hash": start_hash,
-           "versions": versions}
+           "versions": versions,
+           "probes": probes}
     records = {}
     for row in selected:
         record = run_one_leg(run_dir, row, rows, clients, ctx)
@@ -1713,6 +1809,9 @@ def run_verifier_append(args, table, clients, legs_path):
         src_path = Path(src_root) if src_root else find_src_root()
     except (TypeError, ValueError, OSError):
         src_path = find_src_root()
+    probes = table.get("probes")
+    if not isinstance(probes, dict):
+        probes = {}
     ctx = {"module_path": module_path,
            "native_dir": native_dir,
            "src_root": src_path,
@@ -1721,7 +1820,8 @@ def run_verifier_append(args, table, clients, legs_path):
            "source_dirty": source["dirty"],
            "artifact": artifact,
            "start_hash": start_hash,
-           "versions": versions}
+           "versions": versions,
+           "probes": probes}
     records = {}
     records_dir = run_dir / "records"
     if records_dir.is_dir():
@@ -1793,6 +1893,209 @@ def run_verifier_append(args, table, clients, legs_path):
 
 
 # ------------------------------------------------------------------
+# Matched-certificate tooling: a stdlib DER walk to the
+# subjectPublicKeyInfo inside tbsCertificate, compared byte for byte
+# with a standalone SPKI file; plus a per-run ephemeral CA that
+# issues a leaf over a token SPKI with the openssl CLI (argv form,
+# no shell) and then runs the same comparison.
+# ------------------------------------------------------------------
+
+class DerError(Exception):
+    pass
+
+
+def _der_tlv(data, offset, end):
+    """One TLV at offset as (tag, value_offset, value_len, next)."""
+    if offset >= end:
+        raise DerError("truncated tag")
+    tag = data[offset]
+    pos = offset + 1
+    if tag & 0x1F == 0x1F:
+        while True:
+            if pos >= end:
+                raise DerError("truncated tag")
+            byte = data[pos]
+            pos += 1
+            if not byte & 0x80:
+                break
+    if pos >= end:
+        raise DerError("truncated length")
+    first = data[pos]
+    pos += 1
+    if first & 0x80 == 0:
+        length = first
+    else:
+        count = first & 0x7F
+        if count == 0:
+            raise DerError("indefinite length")
+        if pos + count > end:
+            raise DerError("truncated length")
+        length = int.from_bytes(data[pos:pos + count], "big")
+        pos += count
+    if pos + length > end:
+        raise DerError("truncated value")
+    return tag, pos, length, pos + length
+
+
+def _der_children(data, offset, end):
+    """Children of one constructed value as (tag, value, full) triples."""
+    nodes = []
+    pos = offset
+    while pos < end:
+        tag, val_off, val_len, nxt = _der_tlv(data, pos, end)
+        nodes.append((tag, data[val_off:val_off + val_len],
+                      data[pos:nxt]))
+        pos = nxt
+    return nodes
+
+
+def _der_oid(value):
+    """Dotted string for OID value bytes (without tag or length)."""
+    if not value:
+        raise DerError("empty OID")
+    first = value[0]
+    parts = [first // 40, first % 40]
+    num = 0
+    pending = False
+    for byte in value[1:]:
+        num = (num << 7) | (byte & 0x7F)
+        if byte & 0x80:
+            pending = True
+        else:
+            parts.append(num)
+            num = 0
+            pending = False
+    if pending:
+        raise DerError("truncated OID")
+    return ".".join(str(part) for part in parts)
+
+
+def _cert_spki(cert_bytes):
+    """Full TLV bytes of the SPKI inside tbsCertificate.
+
+    The SPKI is the 7th child (index 6) of tbsCertificate, counting
+    the [0] version.
+    """
+    top = _der_children(cert_bytes, 0, len(cert_bytes))
+    if len(top) != 1 or top[0][0] != 0x30:
+        raise DerError("certificate shape")
+    outer = _der_children(top[0][1], 0, len(top[0][1]))
+    if not outer or outer[0][0] != 0x30:
+        raise DerError("tbsCertificate shape")
+    tbs = _der_children(outer[0][1], 0, len(outer[0][1]))
+    if len(tbs) < 7:
+        raise DerError("tbsCertificate children")
+    tag, _value, full = tbs[6]
+    if tag != 0x30:
+        raise DerError("subjectPublicKeyInfo shape")
+    return full
+
+
+def _spki_alg_oid(spki_bytes):
+    """Dotted algorithm OID of one DER SubjectPublicKeyInfo."""
+    top = _der_children(spki_bytes, 0, len(spki_bytes))
+    if len(top) != 1 or top[0][0] != 0x30:
+        raise DerError("SPKI shape")
+    inner = _der_children(top[0][1], 0, len(top[0][1]))
+    if not inner or inner[0][0] != 0x30:
+        raise DerError("SPKI algorithm")
+    alg = _der_children(inner[0][1], 0, len(inner[0][1]))
+    if not alg or alg[0][0] != 0x06:
+        raise DerError("SPKI algorithm OID")
+    return _der_oid(alg[0][1])
+
+
+def report_spki(cert_bytes, key_bytes):
+    """Compare and print; return the process exit code."""
+    try:
+        cert_spki = _cert_spki(cert_bytes)
+    except DerError as exc:
+        print(f"SPKI-ERROR malformed certificate: {exc}",
+              file=sys.stderr)
+        return 2
+    if cert_spki == key_bytes:
+        print("SPKI-MATCH")
+        return 0
+    try:
+        cert_oid = _spki_alg_oid(cert_spki)
+        key_oid = _spki_alg_oid(key_bytes)
+    except DerError as exc:
+        print(f"SPKI-ERROR malformed public key: {exc}",
+              file=sys.stderr)
+        return 2
+    print(f"SPKI-MISMATCH cert={cert_oid} key={key_oid}")
+    return 1
+
+
+def cmd_spki_match(args):
+    try:
+        cert_bytes = Path(args.cert_der).read_bytes()
+        key_bytes = Path(args.spki_der).read_bytes()
+    except OSError as exc:
+        print(f"SPKI-ERROR cannot read input: {exc}", file=sys.stderr)
+        return 2
+    return report_spki(cert_bytes, key_bytes)
+
+
+def cmd_issue_cert(args):
+    out_dir = Path(args.out_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"issue-cert: cannot create out dir: {exc}",
+              file=sys.stderr)
+        return 2
+    if not isinstance(args.cn, str) or not args.cn:
+        print("issue-cert: cn is required", file=sys.stderr)
+        return 2
+    try:
+        Path(args.pub).read_bytes()
+    except OSError as exc:
+        print(f"issue-cert: cannot read pub: {exc}", file=sys.stderr)
+        return 2
+    ca_key = str(out_dir / "ca.key")
+    ca_pem = str(out_dir / "ca.pem")
+    token_pub = str(out_dir / "token-pub.pem")
+    leaf_pem = str(out_dir / "leaf.pem")
+    leaf_der = str(out_dir / "leaf.der")
+    steps = [
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+         "ec_paramgen_curve:P-256", "-nodes", "-keyout", ca_key,
+         "-out", ca_pem, "-subj", "/CN=journey-ca", "-days", "2"],
+        ["openssl", "pkey", "-pubin", "-inform", "DER",
+         "-in", args.pub, "-out", token_pub],
+        ["openssl", "x509", "-new", "-CA", ca_pem, "-CAkey", ca_key,
+         "-force_pubkey", token_pub, "-subj", "/CN=" + args.cn,
+         "-days", "2", "-out", leaf_pem],
+        ["openssl", "x509", "-in", leaf_pem, "-outform", "DER",
+         "-out", leaf_der],
+    ]
+    for step in steps:
+        try:
+            proc = subprocess.run(step, capture_output=True, text=True,
+                                  errors="replace", timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"issue-cert: cannot run {' '.join(step[:2])}: {exc}",
+                  file=sys.stderr)
+            return 2
+        if proc.returncode != 0:
+            detail = (((proc.stderr or "").strip() + "\n"
+                       + (proc.stdout or "").strip()).strip()[:300]
+                       or "openssl step failed")
+            print(f"issue-cert: {' '.join(step[:2])} failed: {detail}",
+                  file=sys.stderr)
+            return 2
+    try:
+        cert_bytes = Path(leaf_der).read_bytes()
+        key_bytes = Path(args.pub).read_bytes()
+    except OSError as exc:
+        print(f"issue-cert: cannot read outputs: {exc}",
+              file=sys.stderr)
+        return 2
+    return report_spki(cert_bytes, key_bytes)
+
+
+# ------------------------------------------------------------------
 # Self-test: a synthetic five-leg fixture run plus one mutation per
 # rule, plus live run-path checks over tiny synthetic legs, bundles
 # and runs. Everything lives in temp dirs only, never in the real
@@ -1811,6 +2114,42 @@ FIXTURE_TOOLCHAIN_SHA = hashlib.sha256(b"fixture-toolchain").hexdigest()
 FIXTURE_BUNDLE_SHA = hashlib.sha256(b"fixture-bundle").hexdigest()
 FIXTURE_KEPT_SHA = hashlib.sha256(b"fixture-kept-output").hexdigest()
 FIXTURE_T0 = 1780000000000000000
+
+# Pinned SPKI bytes for the spki-match self-test. The fixture pin was
+# derived once with the openssl CLI (`x509 -pubkey` then `pkey
+# -outform DER`) from tests/fixtures/cert-selfsigned.der, so the
+# walker is judged against an independent source, never against
+# itself. The EC pin is one fixed P-256 public key for the mismatch
+# control. Both are frozen; the input bytes must not churn.
+PINNED_FIXTURE_SPKI_HEX = (
+    "30820122300d06092a864886f70d01010105000382010f003082010a0282"
+    "010100bf06cfc7c613df6425b568f13697625708a0b97f49b1343d29ce09"
+    "61bb67730e6fa4fe794c2afc6ca0b6380404018619d7a7f6947476a91d21"
+    "1dc342912580583b2ee50853fa7b6a550cd9b5b7a54579d08c7eadfc5e7f"
+    "9357731665acdc6c4ed6fe2d24c0f8b895431caf126be76206eda8207baa"
+    "ee1a0735eb653ba96bd962b0554a7cb009059b98ece07d99dec5e5f7b2ac"
+    "5c1ca708ac23233707c796dc94079d9c545da66dd490b9e8ced298173b5b"
+    "baed83adc6c1a3dbc1a609fa4ced6e66a56ac18dccad5b049387def33adf"
+    "cf7c4d854b920f1418ce82350a5330fc3cf68da2a99e5f5814c50f0ff218"
+    "a96240aef3d757be14eb3e198eb855d6f79a3d0203010001"
+)
+FIXED_EC_SPKI_HEX = (
+    "3059301306072a8648ce3d020106082a8648ce3d03010703420004175172"
+    "1e2f28eb0a73c04b96b1eb25bfc9fc7b018054f38c7d51b7939e7062599a"
+    "6f358d6c95037ff34243583e86f3c0b60818d4b53a4bf8c7c15cdf963d16"
+    "b5"
+)
+RSA_ENCRYPTION_OID = "1.2.840.113549.1.1.1"
+EC_PUBLIC_KEY_OID = "1.2.840.10045.2.1"
+
+# Java probe provenance for the self-test. The bytes live at
+# tests/journeys/java/JavaTokenProbe.java; the SHA-256 below is the
+# value the engine requires before any leg that compiles the probe.
+PROBE_PATH = "tests/journeys/java/JavaTokenProbe.java"
+PROBE_SHA = (
+    "c1c77e8459f1c45de3fae2dcf8279848f206a60fc8379e50480d57d7ec24"
+    "3eb6"
+)
 
 FIXTURE_LEGS = {
     "$schema": "haskoki-journey-legs/1",
@@ -2606,6 +2945,7 @@ def _run_check_ctx(run_dir,
             "runner": {"package_version": None,
                        "runtime_version": None},
         },
+        "probes": {},
     }
 
 
@@ -2983,6 +3323,142 @@ def check_empty_profile_claims_failure(tmp):
     return None
 
 
+def _spki_cli(tmp, cert_bytes, key_bytes):
+    tmp = Path(tmp)
+    cert_path = tmp / "spki-cert.der"
+    key_path = tmp / "spki-key.der"
+    cert_path.write_bytes(cert_bytes)
+    key_path.write_bytes(key_bytes)
+    return subprocess.run(
+        [sys.executable, "-I", str(Path(__file__).resolve()),
+         "spki-match", str(cert_path), str(key_path)],
+        capture_output=True, text=True, timeout=60)
+
+
+def _fixture_cert_bytes():
+    fixture = find_src_root() / "tests" / "fixtures" / "cert-selfsigned.der"
+    try:
+        return fixture.read_bytes(), None
+    except OSError as exc:
+        return None, f"fixture certificate unreadable: {exc}"
+
+
+def check_spki_pinned_match(tmp):
+    cert_bytes, problem = _fixture_cert_bytes()
+    if problem is not None:
+        return problem
+    proc = _spki_cli(tmp, cert_bytes,
+                     bytes.fromhex(PINNED_FIXTURE_SPKI_HEX))
+    if proc.returncode != 0:
+        return ("fixture certificate against its pinned SPKI exited "
+                f"{proc.returncode}: "
+                f"{(proc.stderr or '').strip()[:120]}")
+    if "SPKI-MATCH" not in (proc.stdout or ""):
+        return "fixture certificate against its pinned SPKI lacks SPKI-MATCH"
+    return None
+
+
+def check_spki_mismatch(tmp):
+    cert_bytes, problem = _fixture_cert_bytes()
+    if problem is not None:
+        return problem
+    proc = _spki_cli(tmp, cert_bytes,
+                     bytes.fromhex(FIXED_EC_SPKI_HEX))
+    if proc.returncode != 1:
+        return (f"RSA certificate against an EC SPKI exited "
+                f"{proc.returncode}, want 1")
+    lines = (proc.stdout or "").strip().splitlines()
+    want = ("SPKI-MISMATCH cert=" + RSA_ENCRYPTION_OID
+            + " key=" + EC_PUBLIC_KEY_OID)
+    if not lines or lines[0] != want:
+        return f"mismatch line {lines[:1]}, want {want!r}"
+    return None
+
+
+def check_spki_truncated(tmp):
+    cert_bytes, problem = _fixture_cert_bytes()
+    if problem is not None:
+        return problem
+    proc = _spki_cli(tmp, cert_bytes[:100],
+                     bytes.fromhex(PINNED_FIXTURE_SPKI_HEX))
+    if proc.returncode != 2:
+        return (f"truncated certificate exited {proc.returncode}, "
+                "want 2")
+    if "SPKI-ERROR" not in (proc.stderr or ""):
+        return "truncated certificate lacks the SPKI-ERROR diagnostic"
+    return None
+
+
+def check_probe_provenance(tmp):
+    tmp = Path(tmp)
+    fake_src = tmp / "fake-src"
+    probe_file = fake_src / PROBE_PATH
+    probe_file.parent.mkdir(parents=True)
+    probe_file.write_bytes(b"tampered probe bytes\n")
+    probes = {"java-token-probe": {"path": PROBE_PATH,
+                                  "sha256": PROBE_SHA}}
+    ctx = _run_check_ctx(tmp)
+    ctx["src_root"] = fake_src
+    ctx["probes"] = probes
+    row = _run_check_row("probe-tampered",
+                         [sys.executable, "-c", "pass",
+                          "@SRC@/" + PROBE_PATH])
+    run_dir, record = _run_check_leg(tmp, row, ctx)
+    if record.get("failure_stage") != "setup":
+        return "probe bytes differ from provenance but no setup leg resulted"
+    try:
+        log_text = (run_dir / record["log"]).read_text(
+            encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"tampered probe log unreadable: {exc}"
+    if "probe provenance mismatch" not in log_text:
+        return "tampered probe log lacks the provenance marker"
+    ctx_clean = _run_check_ctx(tmp)
+    ctx_clean["probes"] = probes
+    row_clean = _run_check_row("probe-clean",
+                               [sys.executable, "-c", "pass",
+                                "@SRC@/" + PROBE_PATH])
+    _run_dir, clean = _run_check_leg(tmp, row_clean, ctx_clean)
+    if clean.get("status") != "pass":
+        return ("clean probe bytes did not pass: "
+                f"{clean.get('failure_stage')}")
+    table = {
+        "$schema": "haskoki-journey-legs/1",
+        "clients": {"runner": {"package": None,
+                              "package_version": None,
+                              "runtime_argv": None,
+                              "runtime_version": None}},
+        "profiles": {RUN_CHECK_PROFILE: {
+            "clients": ["runner"],
+            "phases": ["module", "verifier"],
+        }},
+        "legs": [row, row_clean],
+    }
+    legs_path = tmp / "probe-legs.json"
+    write_json(legs_path, table)
+    write_json(run_dir / "summary.json", {
+        "$schema": "haskoki-journey-summary/1",
+        "profile": RUN_CHECK_PROFILE,
+        "required": ["probe-tampered", "probe-clean"],
+        "results": {"probe-tampered": "fail", "probe-clean": "pass"},
+        "aggregate": "fail",
+        "phases_complete": ["module", "verifier"],
+        "module_sha256_start": FIXTURE_MODULE_SHA,
+        "module_sha256_end": FIXTURE_MODULE_SHA,
+        "first_verified_signature": None,
+        "client_setup_seconds": None,
+        "versions": {},
+    })
+    failures, _required = check_run(str(run_dir), RUN_CHECK_PROFILE,
+                                    str(legs_path))
+    observed = {rule for rule, leg, _detail in failures
+                if leg == "probe-tampered"}
+    if observed != {JR_SETUP}:
+        return (f"probe bytes differ from provenance drew "
+                f"{sorted(observed)}, want JR-SETUP")
+    return None
+
+
 def run_path_checks():
     """Yield (label, check) for live run-path behavior.
 
@@ -3012,6 +3488,13 @@ def run_path_checks():
            check_timeout_exit_null)
     yield ("an empty profile run claims failure like its verdict",
            check_empty_profile_claims_failure)
+    yield ("fixture certificate matches its own SPKI",
+           check_spki_pinned_match)
+    yield ("RSA certificate against an EC SPKI",
+           check_spki_mismatch)
+    yield ("truncated certificate", check_spki_truncated)
+    yield ("probe bytes differ from provenance",
+           check_probe_provenance)
 
 
 def self_test():
@@ -3090,6 +3573,15 @@ def build_parser():
     run.add_argument("--source-dirty-basis", default=None)
     run.add_argument("--client-setup-seconds", default=None)
     run.add_argument("--artifact-image", default=None)
+    spki = sub.add_parser("spki-match",
+                          help="compare a certificate SPKI with a key SPKI")
+    spki.add_argument("cert_der")
+    spki.add_argument("spki_der")
+    issue = sub.add_parser("issue-cert",
+                           help="issue a leaf over a token SPKI")
+    issue.add_argument("--pub", required=True)
+    issue.add_argument("--out-dir", required=True)
+    issue.add_argument("--cn", required=True)
     return parser
 
 
@@ -3101,6 +3593,10 @@ def main(argv=None):
         return cmd_check(args)
     if args.command == "run":
         return cmd_run(args)
+    if args.command == "spki-match":
+        return cmd_spki_match(args)
+    if args.command == "issue-cert":
+        return cmd_issue_cert(args)
     build_parser().print_usage(sys.stderr)
     return 2
 

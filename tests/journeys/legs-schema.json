@@ -33,6 +33,23 @@
         }
       }
     },
+    "probes": {
+      "type": "object",
+      "description": "Pinned probe sources; the engine verifies the bytes before any leg that compiles them.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": {"type": "string", "description": "Source-relative probe path."},
+          "sha256": {"type": "string", "description": "Pinned SHA-256 of the probe bytes."},
+          "origin_commit": {"type": "string"},
+          "origin_path": {"type": "string"},
+          "introduced_by": {"type": "string"},
+          "compile": {"type": "array", "items": {"type": "string"}, "description": "Compile argv template; whitelist placeholders allowed."},
+          "run": {"type": "array", "items": {"type": "string"}, "description": "Run argv template; whitelist placeholders allowed."}
+        }
+      }
+    },
     "legs": {
       "type": "array",
       "items": {

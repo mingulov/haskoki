@@ -55,6 +55,17 @@ extra-source-files:
   tests/ops/fixtures/*.md
   docs/config-honesty.md
   cabal.project.freeze
+  tests/journeys/*.json
+  tests/journeys/*.py
+  tests/journeys/gnutls/*.toml
+  tests/journeys/gnutls/*.urls
+  tests/journeys/java/*.java
+  tests/journeys/keystore/*.toml
+  tests/journeys/keystore/*.cfg
+  tests/journeys/opensc/*.toml
+  tests/journeys/sunpkcs11/*.toml
+  tests/journeys/sunpkcs11/*.cfg
+  scripts/test-client-journeys.sh
 source-repository head
   type:     git
   location: https://github.com/mingulov/haskoki

@@ -51,6 +51,17 @@
       "phases": ["module", "verifier"]
     }
   },
+  "probes": {
+    "java-token-probe": {
+      "path": "tests/journeys/java/JavaTokenProbe.java",
+      "sha256": "c1c77e8459f1c45de3fae2dcf8279848f206a60fc8379e50480d57d7ec243eb6",
+      "origin_commit": "a96a753c9e80353eed29eacca9bb9bafc0cfecb5",
+      "origin_path": "tests/review/JavaTokenProbe.java",
+      "introduced_by": "8fcb405",
+      "compile": ["javac", "--release", "17", "-d", "@RUN@/java", "@SRC@/tests/journeys/java/JavaTokenProbe.java"],
+      "run": ["java", "--add-modules", "jdk.crypto.cryptoki,jdk.crypto.ec", "-cp", "@RUN@/java", "JavaTokenProbe", "@CFG@/sunpkcs11.cfg"]
+    }
+  },
   "legs": [
     {
       "name": "opensc-provision-init-token",
@@ -153,5 +164,4 @@
       "depends_on": ["opensc-provision-enumerate-new-pin"]
     }
   ]
-
 }
