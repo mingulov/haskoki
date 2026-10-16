@@ -147,6 +147,12 @@ Receipt verifier (judges a real run, build-free):
   receipt directory under $RUNNER_TEMP/qualify-evidence/sanitizer.
 * QW-LANE-SANVERIFY: qualify and report each run --verify-sanitizer on
   that directory against the requested revision, never swallowed.
+* QW-LANE-HARNESS: the toolchain job syntax-checks
+  tests/c/ossl4_sanitize.c in exactly one step, through docker run with
+  -fsyntax-only and the pinned OpenSSL 4 headers, asserting the pinned
+  include directory first (fail closed), under `set -euo pipefail`,
+  never swallowed; static-gates never compiles the harness (the runner
+  has no such prefix).
 * QW-SAN-TABLE: the driver's case lists, run loops and negative
   controls equal the expected sets below (build-free drift check).
 
@@ -814,6 +820,37 @@ def check_lane(root, failures):
                      "sanitizer step must run on if: always() (record its verdict)")
             if "continue-on-error" in sst or "|| true" in code or "|| :" in code:
                 _add(failures, "QW-LANE-SANITIZER", "sanitizer failure is swallowed")
+    if "static-gates" in blocks:
+        sgcode = "\n".join(_code_lines(blocks["static-gates"]))
+        if "ossl4_sanitize.c" in sgcode:
+            _add(failures, "QW-LANE-HARNESS",
+                 "static-gates must not compile the sanitizer harness "
+                 "(no pinned headers on the runner)")
+    if "toolchain" in blocks:
+        hsteps = [st for st in re.split(r"(?m)^      - name:", blocks["toolchain"])
+                  if "tests/c/ossl4_sanitize.c" in "\n".join(_code_lines(st))]
+        if len(hsteps) != 1:
+            _add(failures, "QW-LANE-HARNESS",
+                 "toolchain must syntax-check tests/c/ossl4_sanitize.c in "
+                 f"exactly one step (found {len(hsteps)})")
+        else:
+            hst = hsteps[0]
+            code = "\n".join(_code_lines(hst))
+            if "docker run" not in code or "-fsyntax-only" not in code \
+                    or "-I/opt/openssl-4.0.2/include" not in code:
+                _add(failures, "QW-LANE-HARNESS",
+                     "harness syntax check must run through docker run with "
+                     "-fsyntax-only and the pinned OpenSSL 4 headers")
+            if "test -d /opt/openssl-4.0.2/include" not in code:
+                _add(failures, "QW-LANE-HARNESS",
+                     "harness syntax check must assert the pinned include "
+                     "directory first (fail closed)")
+            if "set -euo pipefail" not in code:
+                _add(failures, "QW-LANE-HARNESS",
+                     "harness syntax check must run under set -euo pipefail")
+            if "continue-on-error" in hst or "|| true" in code or "|| :" in code:
+                _add(failures, "QW-LANE-HARNESS",
+                     "harness syntax check failure is swallowed")
     for job in (QUALIFY_JOB, REPORT_JOB):
         if job not in blocks:
             continue
@@ -2174,6 +2211,24 @@ def self_test():
         root = fresh()
         _drop_lines(root / SANITIZER_DRIVER, 'do run_case san-hooks plain "$c"; done')
         controls.expect_fail("sanitizer driver drops a run loop", root, "QW-SAN-TABLE")
+        # The harness syntax check lives in the toolchain image (pinned
+        # OpenSSL 4 headers or fail closed), never on the runner.
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "tests/c/ossl4_sanitize.c")
+        controls.expect_fail("toolchain job drops the harness syntax check",
+                             root, "QW-LANE-HARNESS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "# and the runner has no such prefix: it is syntax-checked",
+                 "cc -std=c11 -fsyntax-only tests/c/ossl4_sanitize.c")
+        controls.expect_fail("static-gates compiles the harness on the runner",
+                             root, "QW-LANE-HARNESS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "tests/c/ossl4_sanitize.c'",
+                 "tests/c/ossl4_sanitize.c' || true")
+        controls.expect_fail("harness syntax check failure is swallowed",
+                             root, "QW-LANE-HARNESS")
         # Static drift between the driver's case table and the expected set.
         driver = "scripts/" + OWNERSHIP_DRIVER
         root = fresh()

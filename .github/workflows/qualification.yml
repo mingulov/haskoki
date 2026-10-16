@@ -109,8 +109,10 @@ jobs:
                 scripts/test-native-sanitizers.sh; do
               sh -n "$d"
             done
-            cc -std=c11 -Wall -Wextra -Werror -pthread -fsyntax-only \
-              -Icbits -I/opt/openssl-4.0.2/include tests/c/ossl4_sanitize.c
+            # The sanitizer harness includes the pinned OpenSSL 4 headers
+            # and the runner has no such prefix: it is syntax-checked
+            # inside the toolchain image by the toolchain job, never here
+            # against the runner's system headers.
             for p in tests/c/sim_threaded.c tests/c/finalize_race.c \
                 tests/c/finalize_wait_race_probe.c tests/c/async_routed.c \
                 tests/c/notifications_routed.c tests/c/mutexes.c \
@@ -176,6 +178,18 @@ jobs:
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Harness syntax check in the toolchain image
+        run: |
+          set -euo pipefail
+          # The sanitizer harness includes the pinned OpenSSL 4 headers; the
+          # hosted runner has no such prefix, so this check runs inside the
+          # toolchain image (the same toolchain as the shipped shim), over a
+          # read-only checkout mount (a syntax check writes nothing). The
+          # image carries no system OpenSSL headers: the pinned include
+          # directory is asserted first, so a broken image fails here
+          # instead of checking against the wrong headers.
+          docker run --rm -v "$PWD:/work:ro" -w /work haskoki-dev:ghc-9.10.3 \
+            sh -c 'test -d /opt/openssl-4.0.2/include && cc -std=c11 -Wall -Wextra -Werror -pthread -fsyntax-only -Icbits -I/opt/openssl-4.0.2/include tests/c/ossl4_sanitize.c'
       - name: Record toolchain provenance
         run: |
           set -euo pipefail

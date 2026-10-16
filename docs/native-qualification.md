@@ -132,7 +132,10 @@ the evidence upload carries. Both the qualify and report jobs then run
 `check-qualification-wiring.py --verify-sanitizer` against the requested
 revision. It requires gate `pass`, the requested sha, a clean tree, source
 hashes equal to the checkout, and the exact case and negative-control sets.
-An open gate fails there as well.
+An open gate fails there as well. The workflow also syntax-checks the harness
+inside the toolchain image against the pinned OpenSSL 4 headers (toolchain
+job, read-only mount, pinned include directory asserted first); the wiring
+gate pins that placement and refuses a runner-side compile.
 
 Evidence limits:
 
@@ -172,10 +175,6 @@ an earlier single run on the same host measured 0.97 (31623102 against
 
 ## 7. Open items
 
-- Workflow: the static job's `-fsyntax-only` compile of the harness runs on
-  the hosted runner, where `/opt/openssl-4.0.2` does not exist, so it checks
-  against the runner's OpenSSL headers. The driver step compiles the harness
-  against the pinned headers in the image.
 - Release time: `scripts/make-release.sh` should check with `nm` that
   `bin/haskoki-ctl` and `lib/libhaskoki.so` in the release tree contain no
   `hsk_ossl4_test_` or `*_gated` symbol. That check belongs to the release
