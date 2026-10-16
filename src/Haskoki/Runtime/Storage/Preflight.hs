@@ -664,14 +664,17 @@ writeVerifiedBackup :: MigrateHooks -> FilePath -> FilePath -> Int -> Integer ->
 writeVerifiedBackup hooks store dir from now snap =
   readOrFail ("cannot read the store " ++ store) store >>? \bytes ->
   (first MigrateBackupFailed <$> mhDigest hooks bytes) >>? \sha ->
-  pickAndWrite bytes candidates >>? \bak ->
-  readOrFail ("cannot read back the backup " ++ bak) bak >>? \back -> do
-    eSnap <- readStoreSnapshot bak
-    case eSnap of
-      _ | back /= bytes -> discard bak ("backup readback differs: " ++ bak)
-      Right b | b { snapFile = snapFile snap } == snap -> pure (Right (bak, BS.length bytes, sha))
-      Right _ -> discard bak ("backup does not read as the same store: " ++ bak)
-      Left err -> discard bak ("backup does not open read-only: " ++ bak ++ ": " ++ show err)
+  pickAndWrite bytes candidates >>? \bak -> do
+    eBack <- tryIOError (readFileCloexec bak)
+    case eBack of
+      Left e -> discard bak ("cannot read back the backup " ++ bak ++ ": " ++ show e)
+      Right back -> do
+        eSnap <- readStoreSnapshot bak
+        case eSnap of
+          _ | back /= bytes -> discard bak ("backup readback differs: " ++ bak)
+          Right b | b { snapFile = snapFile snap } == snap -> pure (Right (bak, BS.length bytes, sha))
+          Right _ -> discard bak ("backup does not read as the same store: " ++ bak)
+          Left err -> discard bak ("backup does not open read-only: " ++ bak ++ ": " ++ show err)
   where
     discard bak why = do
       _ <- tryIOError (removeLink bak)

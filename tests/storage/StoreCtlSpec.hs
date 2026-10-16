@@ -125,6 +125,7 @@ spec = testGroup "Store commands"
   , testCase "migrate: after a clear, backup-failed stays honest about the store" caseMigrateClearBackupFailedHonest
   , testCase "migrate: after a clear, a failed transaction stays honest about the store" caseMigrateClearTxnFailedHonest
   , testCase "migrate: the clearing is on stdout before the backup verifies" caseMigrateClearRecordedAtClearTime
+  , testCase "migrate: a backup that fails its read-back is removed" caseMigrateBackupReadbackFailureRemoved
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -1520,3 +1521,20 @@ caseMigrateClearRecordedAtClearTime = withScratch "ctl-migrate" $ \dir -> do
   assertEqual ("exit 0; stderr: " ++ err) 0 code
   assertBool "clearing reported at the end" ("cold-journal-removed: yes" `elem` lines out)
   assertBool ("clearing already on stdout mid-run; seen: " ++ seen) ("cold-journal-removed: yes" `isInfixOf` seen)
+
+-- A backup that cannot even be read back is removed like any other
+-- unverified backup: the hook swaps the just-created file for a
+-- dangling symlink, which the O_NOFOLLOW read-back refuses.
+caseMigrateBackupReadbackFailureRemoved :: IO ()
+caseMigrateBackupReadbackFailureRemoved = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  let dangling = noMigrateHooks
+        { mhAfterCreate = \p -> removeLink p >> createSymbolicLink (dir </> "no-such-target") p }
+  (code, _, err) <- storeMigrateCommandWith dangling
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 1" 1 code
+  assertBool "tag" ("migrate-backup-failed:" `isPrefixOf` err)
+  assertBool "names the read-back" ("cannot read back the backup" `isInfixOf` err)
+  listDirectory backups >>= assertEqual "unreadable backup removed" []
