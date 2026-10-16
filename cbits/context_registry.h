@@ -63,24 +63,41 @@ __attribute__((visibility("hidden"))) void haskoki_ctx_stats(unsigned long long 
  * Holds the Stores a failed standalone open could not close (two
  * cleanup closes failed) and could not hand to a caller: the C
  * exports, and an asynchronous primary. Each entry is a Haskell
- * StablePtr root to the Store. The cell is bounded: at most
- * HASKOKI_RESIDUE_CAP entries, queued plus in flight. A push into a
- * full cell refuses (returns 0) and the caller keeps the root.
+ * StablePtr root to the Store. The cell grows with realloc and never
+ * drops an entry.
+ *
+ * Fail closed: an open that may queue a Store first reserves a slot
+ * ('haskoki_residue_reserve', before it acquires the Store). A
+ * reservation that cannot allocate reports 0 and the open refuses,
+ * holding nothing. A push consumes the caller's reservation, so it
+ * always fits; an open that queued nothing returns its reservation
+ * ('haskoki_residue_release').
  *
  * Every later standalone open and close takes the queued entries
- * (each take moves one entry in flight), tries one close per entry,
- * frees the root of each Store it closed and reports the batch
- * through 'haskoki_residue_note_closed', and puts the rest back.
+ * (newest first: take pops the tail; each take moves one entry in
+ * flight and keeps its slot), tries one close per entry, frees the
+ * root of each Store it closed and reports the batch through
+ * 'haskoki_residue_note_closed', and puts the rest back. A put-back
+ * always fits: the entry kept its slot while in flight.
  * 'haskoki_residue_count' reports queued plus in-flight entries, so
  * the count never dips while another thread holds an entry mid-retry.
- * A put-back always fits: the entry kept its slot while in flight.
+ *
+ * Protocol slips are never silent. A push without a reservation, a
+ * release without one, a put-back with nothing in flight, and a
+ * note_closed beyond the in-flight count each bump
+ * 'haskoki_residue_anomalies' (test-visible; zero in a correct run).
+ * A push without a reservation still queues when the cell can grow
+ * and reports 0 otherwise (the caller keeps the root). A put-back with
+ * nothing in flight still queues the root, growing the cell, and
+ * aborts when the cell cannot grow: it never drops a root.
  */
-#define HASKOKI_RESIDUE_CAP 256
-
+__attribute__((visibility("hidden"))) int haskoki_residue_reserve(void);
+__attribute__((visibility("hidden"))) void haskoki_residue_release(void);
 __attribute__((visibility("hidden"))) int haskoki_residue_push(void *root);
 __attribute__((visibility("hidden"))) int haskoki_residue_take(void **root_out);
 __attribute__((visibility("hidden"))) void haskoki_residue_put_back(void *root);
 __attribute__((visibility("hidden"))) void haskoki_residue_note_closed(int n);
 __attribute__((visibility("hidden"))) int haskoki_residue_count(void);
+__attribute__((visibility("hidden"))) unsigned long long haskoki_residue_anomalies(void);
 
 #endif

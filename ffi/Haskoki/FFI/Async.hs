@@ -66,6 +66,7 @@ module Haskoki.FFI.Async
   , ResidueOwner
   , newResidueOwner
   , residueCount
+  , residueAnomalies
   , asyncAcquisition
   , openStoreBoxWith
   , openAsyncCtxWith
@@ -463,6 +464,12 @@ foreign import ccall unsafe "haskoki_ctx_stats"
 
 -- The process residue cell (C-owned, beside the registry; see
 -- 'ResidueOwner'): one locked step per call, no callbacks.
+foreign import ccall unsafe "haskoki_residue_reserve"
+  c_residueReserve :: IO CInt
+
+foreign import ccall unsafe "haskoki_residue_release"
+  c_residueRelease :: IO ()
+
 foreign import ccall unsafe "haskoki_residue_push"
   c_residuePush :: StablePtr Store -> IO CInt
 
@@ -477,6 +484,9 @@ foreign import ccall unsafe "haskoki_residue_note_closed"
 
 foreign import ccall unsafe "haskoki_residue_count"
   c_residueCount :: IO CInt
+
+foreign import ccall unsafe "haskoki_residue_anomalies"
+  c_residueAnomalies :: IO CULLong
 
 -- | Free one root the C table handed back for reclamation (a null
 -- root means nothing to free). Roots are opaque addresses: table
@@ -883,9 +893,11 @@ data ResidueOwner
   = ProcessResidue
     -- ^ the process instance, used by the production record: the
     -- C-owned residue cell beside the context registry
-    -- (@cbits/context_registry.c@), bounded at 256 Stores (a push
-    -- into a full cell drops the Store, which then holds its lock
-    -- until the process exits)
+    -- (@cbits/context_registry.c@). It grows without a fixed bound
+    -- and never drops a Store. A box open reserves its slot before
+    -- it acquires the Store ('withResidueSlot'), so a later push
+    -- always fits; when the cell cannot grow for the reservation,
+    -- the open refuses ('AcquireRefused') holding nothing
   | PrivateResidue !(IORef [Store])
     -- ^ a private instance, injected by a test
 
@@ -899,15 +911,62 @@ residueCount :: ResidueOwner -> IO Int
 residueCount (PrivateResidue ref) = length <$> readIORef ref
 residueCount ProcessResidue = fromIntegral <$> c_residueCount
 
--- | Queue a Store no caller can receive on its owner. The root
--- allocation and the push run masked, so no kill can strand the
--- root between them.
-pushResidue :: ResidueOwner -> Store -> IO ()
-pushResidue (PrivateResidue ref) st = atomicModifyIORef' ref (\q -> (st : q, ()))
-pushResidue ProcessResidue st = mask_ $ do
+-- | TEST-ONLY: protocol slips the process residue cell recorded (a
+-- push or release without a reservation, a put-back with nothing in
+-- flight, more closes noted than entries in flight). Zero in a
+-- correct run.
+residueAnomalies :: IO Word64
+residueAnomalies = fromIntegral <$> c_residueAnomalies
+
+-- | One residue slot, reserved on an owner before a box open
+-- acquires its Store. At most one push consumes it; the open releases
+-- it unconsumed when it ends. The flag is 'True' while the slot is
+-- still reserved.
+data ResidueSlot = ResidueSlot !ResidueOwner !(IORef Bool)
+
+-- | Run a box open holding one reserved residue slot (masked by the
+-- open). Fail closed: when the process cell cannot grow for the
+-- reservation, the open refuses before it acquires anything, so a
+-- later push can never fail for want of room.
+withResidueSlot
+  :: ResidueOwner -> (ResidueSlot -> IO (Either AcquireFailure a))
+  -> IO (Either AcquireFailure a)
+withResidueSlot owner body = do
+  reserved <- case owner of
+    PrivateResidue _ -> pure True
+    ProcessResidue -> (/= 0) <$> c_residueReserve
+  if not reserved
+    then pure (Left AcquireRefused)
+    else do
+      held <- newIORef True
+      let slot = ResidueSlot owner held
+      body slot `finally` releaseUnused slot
+  where
+    releaseUnused (ResidueSlot o held) = do
+      unused <- atomicModifyIORef' held (\h -> (False, h))
+      case o of
+        ProcessResidue | unused -> c_residueRelease
+        _ -> pure ()
+
+-- | Queue a Store no caller can receive on the slot's owner,
+-- consuming the slot's reservation, so the push always fits. The
+-- root allocation and the push run masked, so no kill can strand the
+-- root between them. A second push through one slot (a protocol
+-- slip) reserves afresh; if that cannot grow the cell, the Store
+-- keeps its root (reachable, never freed) rather than being dropped.
+pushResidue :: ResidueSlot -> Store -> IO ()
+pushResidue (ResidueSlot (PrivateResidue ref) held) st = do
+  _ <- atomicModifyIORef' held (\h -> (False, h))
+  atomicModifyIORef' ref (\q -> (st : q, ()))
+pushResidue (ResidueSlot ProcessResidue held) st = mask_ $ do
   sp <- newStablePtr st
-  queued <- c_residuePush sp
-  if queued == 0 then freeStablePtr sp else pure ()
+  wasHeld <- atomicModifyIORef' held (\h -> (False, h))
+  reserved <- if wasHeld then pure True else (/= 0) <$> c_residueReserve
+  if reserved
+    then do
+      _ <- c_residuePush sp
+      pure ()
+    else pure ()
 
 -- | Retry every Store queued on the record's residue owner: one
 -- close attempt each, through 'aaCloseStore'. A Store that closes
@@ -1006,9 +1065,9 @@ asyncAcquisition = AsyncAcquisition
 -- The @foreign export@ boundaries keep their catch-all 'guardedPtr'.
 guardedAcquire :: IO (Either AcquireFailure a) -> IO (Either AcquireFailure a)
 guardedAcquire body = body `catch` \e ->
-  case (fromException e :: Maybe SomeAsyncException) of
-    Just _ -> throwIO e
-    Nothing -> pure (Left (AcquireThrew e))
+  if isAsyncException e
+    then throwIO e
+    else pure (Left (AcquireThrew e))
 
 -- | Whether an exception is asynchronous (a kill, a timeout).
 isAsyncException :: SomeException -> Bool
@@ -1019,10 +1078,12 @@ isAsyncException e = case (fromException e :: Maybe SomeAsyncException) of
 -- | Close a Store an open still holds, after the open failed. A
 -- failed close keeps the handle retriable ('HandleCloseFailed'), so a
 -- throwing close is retried once. 'Nothing' when the Store closed;
--- otherwise the last close error, with the Store still open. An
--- interrupted close is not retried: its exception is returned. The
--- Store is private to the opening thread, so its close lock is
--- uncontended and the close does not block.
+-- otherwise the last close error, with the Store still open. The
+-- close can block (a memory close waits for its commit lock, a SQLite
+-- close for its connection guard and the process-level open-path
+-- registry); the cleanup runs masked, so it stays interruptible
+-- there. An interrupted close is not retried: its exception is
+-- returned, and the caller queues the Store as residue.
 closeStoreAfter :: AsyncAcquisition -> Store -> IO (Maybe SomeException)
 closeStoreAfter acq st = attempt True
   where
@@ -1059,13 +1120,13 @@ closeBackendAfter acq be = attempt True
 -- rethrown unchanged. When both cleanup closes fail, a synchronous
 -- primary or a refusal hands the Store back ('AcquireResidue');
 -- with an asynchronous primary nobody can receive it, so it queues
--- on the record's residue owner. A cleanup interrupted by a kill
--- queues the Store the same way and lets the kill propagate. On
+-- on the open's reserved residue slot. A cleanup interrupted by a
+-- kill queues the Store the same way and lets the kill propagate. On
 -- success the Store's ownership passes to the body's result.
 holdingStore
-  :: AsyncAcquisition -> Store
+  :: AsyncAcquisition -> ResidueSlot -> Store
   -> IO (Either AcquireFailure a) -> IO (Either AcquireFailure a)
-holdingStore acq store body = do
+holdingStore acq slot store body = do
   r <- try body
   case r of
     Right ok@(Right _) -> pure ok
@@ -1081,7 +1142,7 @@ holdingStore acq store body = do
         (_, Just cerr)
           | isAsyncException cerr -> queue >> throwIO cerr
           | otherwise -> pure (Left (AcquireResidue mPrimary cerr store))
-    queue = pushResidue (aaResidue acq) store
+    queue = pushResidue slot store
 
 -- | Hold a backend across the rest of a context open. On a refusal
 -- or an exception from the body the backend closes
@@ -1235,9 +1296,13 @@ adoptCtx
   :: AsyncAcquisition -> (IO () -> IO ()) -> AsyncCtx -> IO (StablePtr AsyncCtx)
 adoptCtx acq restore ctx = do
   sp <- aaNewCtxPtr acq ctx
+  -- A synchronous free error never replaces the primary; an
+  -- asynchronous one propagates.
   let freeUnregistered = do
-        _ <- try (aaFreeCtxPtr acq sp) :: IO (Either SomeException ())
-        pure ()
+        r <- try (aaFreeCtxPtr acq sp)
+        case r of
+          Left e | isAsyncException e -> throwIO e
+          _ -> pure ()
   (restore (aaStep acq AfterCtxAlloc) >> aaRegisterCtx acq sp (acTable ctx))
     `onException` freeUnregistered
   pure sp
@@ -1698,19 +1763,22 @@ haskokiAsyncStoreOpen :: CString -> IO (StablePtr StoreBox)
 haskokiAsyncStoreOpen = haskokiAsyncStoreOpenWith asyncAcquisition
 
 -- | The body of 'haskokiAsyncStoreOpen' over injected acquisition
--- steps: open through 'openStoreBoxWith' and map every failure (and
--- any exception) to NULL. The C caller cannot receive a residue, so
--- an 'AcquireResidue' Store queues on the record's residue owner,
--- masked with the open's return.
+-- steps: open and map every failure (and any exception) to NULL. The
+-- C caller cannot receive a residue, so a Store whose cleanup closes
+-- both failed queues on the record's residue owner inside the masked
+-- open ('QueueResidue').
 haskokiAsyncStoreOpenWith :: AsyncAcquisition -> CString -> IO (StablePtr StoreBox)
-haskokiAsyncStoreOpenWith acq cPath = guardedPtr $ mask_ $ do
-  r <- openStoreBoxWith acq cPath
-  case r of
-    Right box -> pure box
-    Left (AcquireResidue _ _ store) -> do
-      pushResidue (aaResidue acq) store
-      pure nullStable
-    Left _ -> pure nullStable
+haskokiAsyncStoreOpenWith acq cPath =
+  guardedPtr (fromAcquired <$> openStoreBoxAs QueueResidue acq cPath)
+
+-- | Who receives a Store whose two cleanup closes failed after a
+-- synchronous primary or a refusal.
+data ResidueReceiver
+  = HandBackResidue
+    -- ^ the caller, as 'AcquireResidue' (the typed helper)
+  | QueueResidue
+    -- ^ the record's residue owner; the caller sees the primary
+    -- failure (the C export, which can only report NULL)
 
 -- | Open a process-level store over injected acquisition steps:
 -- retry the record's residue, then the Store, the home token and
@@ -1722,19 +1790,35 @@ haskokiAsyncStoreOpenWith acq cPath = guardedPtr $ mask_ $ do
 -- propagate after the cleanup.
 openStoreBoxWith
   :: AsyncAcquisition -> CString -> IO (Either AcquireFailure (StablePtr StoreBox))
-openStoreBoxWith acq cPath = guardedAcquire $ mask $ \restore -> do
+openStoreBoxWith = openStoreBoxAs HandBackResidue
+
+-- | The box open behind 'openStoreBoxWith' and the export body. It
+-- reserves a residue slot before it opens the Store
+-- ('withResidueSlot'; a failed reservation refuses holding nothing),
+-- so queueing a residue never fails.
+openStoreBoxAs
+  :: ResidueReceiver -> AsyncAcquisition -> CString
+  -> IO (Either AcquireFailure (StablePtr StoreBox))
+openStoreBoxAs receiver acq cPath = guardedAcquire $ mask $ \restore -> do
   retryResidue acq
-  eStore <- aaOpenStore acq cPath
-  case eStore of
-    Left _ -> pure (Left AcquireRefused)
-    Right store -> holdingStore acq store $ do
-      restore (aaStep acq AfterStoreOpen)
-      mDc <- ensureHomeToken store
-      case mDc of
-        Nothing -> pure (Left AcquireRefused)
-        Just dc -> do
-          restore (aaStep acq AfterTokenSetup)
-          Right <$> aaNewBoxPtr acq (StoreBox store dc)
+  withResidueSlot (aaResidue acq) $ \slot -> do
+    eStore <- aaOpenStore acq cPath
+    case eStore of
+      Left _ -> pure (Left AcquireRefused)
+      Right store -> do
+        r <- holdingStore acq slot store $ do
+          restore (aaStep acq AfterStoreOpen)
+          mDc <- ensureHomeToken store
+          case mDc of
+            Nothing -> pure (Left AcquireRefused)
+            Just dc -> do
+              restore (aaStep acq AfterTokenSetup)
+              Right <$> aaNewBoxPtr acq (StoreBox store dc)
+        case (receiver, r) of
+          (QueueResidue, Left (AcquireResidue mPrimary _ st)) -> do
+            pushResidue slot st
+            pure (Left (maybe AcquireRefused AcquireThrew mPrimary))
+          _ -> pure r
 
 -- | Open the store named by the path pointer (NULL\/empty = memory).
 openStoreByPath :: CString -> IO (Either () Store)

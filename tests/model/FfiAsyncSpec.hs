@@ -121,6 +121,7 @@ import Haskoki.FFI.Async
   , openStoreBoxWith
   , registerBorrowedCtx
   , registerCtx
+  , residueAnomalies
   , residueCount
   , resolveJobHandle
   , retireCtx
@@ -1513,6 +1514,8 @@ caseJoinAcquireKillDuringAcquire = do
 -- | Balance counters over one acquisition record (opens, closes,
 -- pointer allocs and frees, registrations and retirements). Closes,
 -- frees and retirements count only once they return.
+--
+-- Keep in sync with the copy in tests/engine/FfiAcquireSpec.hs.
 data AcqCounts = AcqCounts
   { acStoreOpens :: !Int
   , acStoreCloses :: !Int
@@ -1892,10 +1895,14 @@ caseExportResidueRecoveredByNextOpen = do
     }
   let processOwner = aaResidue asyncAcquisition
       acq = counting { aaResidue = processOwner }
-  sp <- haskokiAsyncStoreOpenWith acq nullPtr
-  queued <- residueCount processOwner
-  (held, heldWhy) <- memoryReopenRefused world
-  writeIORef armed False
+  -- Re-enable the close on every exit, so a failure here never
+  -- leaves an unclosable Store in the process cell.
+  (sp, queued, held, heldWhy) <-
+    (do sp <- haskokiAsyncStoreOpenWith acq nullPtr
+        queued <- residueCount processOwner
+        (held, heldWhy) <- memoryReopenRefused world
+        pure (sp, queued, held, heldWhy))
+      `finally` writeIORef armed False
   box <- haskokiAsyncStoreOpen nullPtr
   alloca $ \pBox -> do
     poke pBox box
@@ -1915,6 +1922,8 @@ caseExportResidueRecoveredByNextOpen = do
   assertZero "registrations_minus_retirements"
     ("registrations minus retirements" ++ note)
     (acRegistrations c - acRetirements c)
+  anomalies <- residueAnomalies
+  assertZero "residue_anomalies" "process residue cell protocol slips" anomalies
 
 -- | Poll the residue count down to zero. A concurrent standalone open
 -- or close elsewhere in this process may hold the entry mid-retry;

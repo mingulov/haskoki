@@ -71,7 +71,7 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (replicateM_)
+import Control.Monad (forM, forM_, replicateM, replicateM_)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import EnvLock (withEnvLock)
 import Foreign.C.String (peekCString, withCString)
@@ -102,15 +102,19 @@ import Haskoki.FFI.Async
   ( AcquireFailure (..)
   , AcquireStep (..)
   , AsyncAcquisition (..)
+  , ResidueOwner
   , StoreBox
   , asyncAcquisition
   , closeCtxSlotWith
   , closeStoreBoxSlotWith
+  , haskokiAsyncStoreClose
+  , haskokiAsyncStoreOpen
   , haskokiAsyncStoreOpenWith
   , newResidueOwner
   , openAsyncCtxOnWith
   , openAsyncCtxWith
   , openStoreBoxWith
+  , residueAnomalies
   , residueCount
   )
 import Haskoki.FFI.Exports
@@ -189,6 +193,7 @@ spec envLock = testGroup "Acquisition hooks"
   , testCase "killed open with a double cleanup failure queues the residue for the next close" caseResidueQueuedForClose
   , testCase "next open retries the queued residue and frees the lock" caseResidueRetriedByNextOpen
   , testCase "async success counts balance" caseAsyncSuccessBalance
+  , testCase "process residue cell keeps every entry past 256 and returns each one" caseProcessResidueUnbounded
   ]
 
 isNull :: StablePtr a -> Bool
@@ -1014,3 +1019,70 @@ caseAsyncSuccessBalance = do
   assertEqual ("box allocs = frees" ++ what) (acBoxAllocs c) (acBoxFrees c)
   assertEqual ("registrations = retirements" ++ what) (acRegistrations c) (acRetirements c)
   assertEqual ("two contexts registered" ++ what) 2 (acRegistrations c)
+
+-- | The process residue cell has no fixed bound: 300 export-path
+-- opens whose cleanup closes all fail queue 300 Stores on the process
+-- owner (the C-owned cell), each keeping its lock. The next real
+-- export open retries every one, so the count drains to its starting
+-- value and every world reopens. This suite is its own process, and
+-- no other case here queues on the process owner, so the counts are
+-- this case's own; other cases' production opens and closes only
+-- retry the entries (failing while armed) and put them back.
+caseProcessResidueUnbounded :: IO ()
+caseProcessResidueUnbounded = do
+  let n = 300 :: Int
+      processOwner = aaResidue asyncAcquisition
+  armed <- newIORef True
+  worlds <- replicateM n newMemoryWorld
+  before <- residueCount processOwner
+  (do nulls <- forM worlds $ \world -> do
+        let acq = asyncAcquisition
+              { aaOpenStore = \_ -> do
+                  r <- openMemoryStoreWith world defaultLimits noFaults
+                  pure $ case r of
+                    -- Every close fails while armed.
+                    Right st -> Right st
+                      { storeClose = do
+                          on <- readIORef armed
+                          if on
+                            then throwIO (userError "close refused while armed")
+                            else storeClose st
+                      }
+                    Left _ -> Left ()
+              , aaStep = \s ->
+                  if s == AfterTokenSetup then throwIO primaryError else pure ()
+              }
+        isNull <$> haskokiAsyncStoreOpenWith acq nullPtr
+      assertBool "every export open reports NULL" (and nulls)
+      queued <- residueCount processOwner
+      held <- length . filter (either (const True) (const False))
+        <$> mapM memoryReopens worlds
+      assertEqual "every residue queued" n (queued - before)
+      assertEqual "every residue keeps its lock" n held)
+    `finally` writeIORef armed False
+  box <- haskokiAsyncStoreOpen nullPtr
+  assertBool "the next real export open succeeds" (not (isNull box))
+  alloca $ \pBox -> poke pBox box >> haskokiAsyncStoreClose pBox
+  left <- awaitProcessResidue processOwner before
+  assertEqual "every residue closed" before left
+  forM_ (zip [1 :: Int ..] worlds) $ \(i, world) ->
+    assertReopens ("world " ++ show i) world
+  anomalies <- residueAnomalies
+  assertEqual "process residue cell protocol slips" 0 anomalies
+
+-- | Poll the process residue count down to the target. Another case's
+-- open or close may hold entries mid-retry; each further poll runs one
+-- more real export open and close, which retries them again. Gives up
+-- after about two seconds.
+awaitProcessResidue :: ResidueOwner -> Int -> IO Int
+awaitProcessResidue owner target = go (0 :: Int)
+  where
+    go k = do
+      c <- residueCount owner
+      if c <= target || k >= 400
+        then pure c
+        else do
+          threadDelay 5000
+          box <- haskokiAsyncStoreOpen nullPtr
+          alloca $ \pBox -> poke pBox box >> haskokiAsyncStoreClose pBox
+          go (k + 1)
