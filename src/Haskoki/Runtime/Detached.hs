@@ -52,10 +52,11 @@ arbitrates the same attachments — two contexts cannot both join
 one persistent id. Live bindings key by
 @('AsyncTableId', 'JobId')@, so two tables never confuse each
 other's local job ids, and a retiring table retires only its own
-attachments; a context retires only tables it claimed through.
+attachments; a context retires only tables it claimed through
+(and drops the opaque marks of tables it marked).
 Claim transactions touch the authority's @TVar@ (and the
-context's served-table set) only: no Store IO runs in STM on any
-path.
+context's own served, refused and marked table sets) only: no
+Store IO runs in STM on any path.
 -}
 module Haskoki.Runtime.Detached
   ( -- * Context
@@ -235,9 +236,10 @@ import Haskoki.Types
 -- did not serve), the context-local refused set (tables retired
 -- through this context before it ever claimed through them: its
 -- own later claims through them are refused, while the shared
--- authority and sibling contexts are untouched), and the
--- TEST-ONLY join-transfer hook (a no-op
--- unless a test sets it).
+-- authority and sibling contexts are untouched), the set of
+-- tables it marked opaque through (retiring one of them drops
+-- that table's marks, and only its marks), and the TEST-ONLY
+-- join-transfer hook (a no-op unless a test sets it).
 -- Persistent ids are NOT minted here: every detach reserves its
 -- id from the store ('storeReserveJobId'), so two contexts on
 -- one store never share an id. One context may serve several
@@ -253,9 +255,9 @@ import Haskoki.Types
 -- unsupported (reopen after the owner is fully retired; nothing is
 -- exactly-once across process death); a stale active claim held by
 -- another context that never retires is not reclaimed; and a
--- table retired by a context that never served it leaves its
--- opaque marks in the shared authority until the serving context
--- retires it.
+-- table retired through a context that neither served nor marked
+-- it keeps its opaque marks until a context that did retires it
+-- (or the store handle closes).
 data DetachCtx = DetachCtx
   { dcStore :: !Store
   , dcToken :: !TokenId
@@ -263,6 +265,7 @@ data DetachCtx = DetachCtx
   , dcClaims :: !ClaimAuthority
   , dcServed :: !(TVar (Set AsyncTableId))
   , dcRefused :: !(TVar (Set AsyncTableId))
+  , dcMarked :: !(TVar (Set AsyncTableId))
   , dcJoinHook :: !(TVar (IO ()))
   }
 
@@ -297,6 +300,7 @@ openDetached store tok = do
           Right _ -> do
             servedVar <- newTVarIO Set.empty
             refusedVar <- newTVarIO Set.empty
+            markedVar <- newTVarIO Set.empty
             hookVar <- newTVarIO (pure ())
             pure (Right DetachCtx
               { dcStore = store
@@ -305,6 +309,7 @@ openDetached store tok = do
               , dcClaims = storeClaims store
               , dcServed = servedVar
               , dcRefused = refusedVar
+              , dcMarked = markedVar
               , dcJoinHook = hookVar
               })
 
@@ -349,13 +354,19 @@ putAttachment dc pid att = atomically $ do
 -- running or held) job then reports the permitted typed
 -- unsaveable outcome with the job preserved, every time: the
 -- mark is not consumed by a refusal. It clears when the job
--- detaches successfully and when its table retires. Terminal
--- jobs ignore marks.
+-- detaches successfully, and when the table is retired through a
+-- context that marked or served it (this context records the
+-- table in its marked set, in the same STM step, so its own
+-- retirement of the table drops the mark even if no context ever
+-- joined through it). Terminal jobs ignore marks.
 markJobOpaque :: DetachCtx -> AsyncTable -> JobId -> String -> IO ()
 markJobOpaque dc table jid reason = atomically $ do
+  let tid = asyncTableId table
   tc <- readClaims dc
   writeClaims dc tc
-    { tcOpaque = Map.insert (asyncTableId table, jid) reason (tcOpaque tc) }
+    { tcOpaque = Map.insert (tid, jid) reason (tcOpaque tc) }
+  marked <- readTVar (dcMarked dc)
+  writeTVar (dcMarked dc) (Set.insert tid marked)
 
 -- | Read (without consuming) a job's opaque mark, if any.
 readOpaque :: DetachCtx -> AsyncTable -> JobId -> IO (Maybe String)
@@ -915,9 +926,17 @@ inspectReverse dc tid jid =
 detachStats :: DetachCtx -> IO (Int, Int, Int)
 detachStats dc = claimCensus (dcClaims dc) (dcToken dc)
 
--- | Record a fresh detach as idle (awaiting join).
+-- | Record a fresh detach as idle (awaiting join) — only when the
+-- id has no entry yet. The durable insert is visible before this
+-- runs, so a join through any context over the handle may already
+-- have claimed, bound, or resolved the id; that state stands and
+-- is never reset to idle (which would admit a second live job).
 setIdle :: DetachCtx -> Word64 -> IO ()
-setIdle dc pid = putAttachment dc pid AttIdle
+setIdle dc pid = atomically $ do
+  tc <- readClaims dc
+  case Map.lookup pid (tcAttach tc) of
+    Nothing -> writeClaims dc tc { tcAttach = Map.insert pid AttIdle (tcAttach tc) }
+    Just _ -> pure ()
 
 -- | Take the in-progress join claim for a persistent id in one
 -- STM step, stamping it with the attempt token the caller
@@ -1527,10 +1546,13 @@ markResolved dc table jid st = do
 -- through resolves canceled, durably and in memory, each of
 -- those tables' in-progress claims rolls back to what it
 -- replaced, and those tables' opaque marks clear (a new table
--- generation starts unflagged). Tables this context never
--- claimed through — including a sibling context's tables on the
--- same store — are untouched, so a refused (losing) context can
--- never retire the winner. Returns one entry per retired
+-- generation starts unflagged). Tables this context marked but
+-- never claimed through have their opaque marks dropped too, and
+-- nothing else: no attachment, claim, or retired-set change.
+-- Tables this context never claimed through — including a
+-- sibling context's tables on the same store — are otherwise
+-- untouched, so a refused (losing) context can never retire the
+-- winner. Returns one entry per retired
 -- attachment with its mark error, if any. This is whole-context
 -- retirement for single-table owners (the Standard adapter, whose
 -- instance owns exactly one table and one detach context);
@@ -1553,50 +1575,58 @@ retireLiveTable dc = do
 -- context cannot retire the winner's table): the call returns
 -- @[]@ and only records the table in this context's refused
 -- set, so this context's own later claims through it are
--- refused while other contexts are unaffected. Returns one entry
--- per retired attachment with its mark error, if any
--- (rolled-back claims are not retired attachments: their durable
--- jobs stand untouched and joinable). The retiring table's
--- opaque marks drop with it (see 'retireMatching'); sibling
--- tables' marks stay.
+-- refused while other contexts are unaffected; if this context
+-- marked jobs on the table, the table's opaque marks drop too.
+-- Returns one entry per retired attachment with its mark error,
+-- if any (rolled-back claims are not retired attachments: their
+-- durable jobs stand untouched and joinable). The retiring
+-- table's opaque marks drop with it whenever this context served
+-- or marked it (see 'retireMatching'); sibling tables' marks
+-- stay.
 retireLiveTableFor
   :: DetachCtx -> AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireLiveTableFor dc tid = retireMatching dc (Just tid)
 
--- | Shared retire worker over the tables this context served:
--- 'Nothing' retires all of them (whole context), @'Just' tid@
--- only that one. When this context never claimed through @tid@,
--- the shared authority is untouched and @tid@ only joins this
--- context's refused set (its later claims through @tid@ refuse;
--- an unserved table is never written into the shared retired
--- set, which would let a loser defeat the winner's in-flight
--- commit). Otherwise, one STM step on the shared authority: the
+-- | Shared retire worker over the tables this context served or
+-- marked: 'Nothing' covers all of them (whole context), @'Just'
+-- tid@ only that one. When this context never claimed through
+-- @tid@, @tid@ joins this context's refused set (its later claims
+-- through @tid@ refuse) and, in the shared authority, at most
+-- @tid@'s opaque marks drop (when this context marked it): an
+-- unserved table is never written into the shared retired set,
+-- which would let a loser defeat the winner's in-flight commit.
+-- Served tables, in one STM step on the shared authority: the
 -- retiring tables record their identity (so the claims' late
 -- commits — and any later claim from those tables — are refused
 -- rather than publishing a live binding after the drain), their
 -- in-progress claims roll back to exactly what they replaced,
--- their opaque marks drop, and their actives are collected.
--- The durable cancel marks run after the STM step, outside it,
--- and only when there are actives to mark.
+-- their opaque marks drop, and their actives are collected; the
+-- same step drops the marks of in-scope tables this context
+-- marked but never served. The durable cancel marks run after the
+-- STM step, outside it, and only when there are actives to mark.
 retireMatching
   :: DetachCtx -> Maybe AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireMatching dc mTid = do
   actives <- atomically $ do
     served <- readTVar (dcServed dc)
-    tids <- case mTid of
-      Nothing -> pure served
-      Just tid
-        | tid `Set.member` served -> pure (Set.singleton tid)
-        | otherwise -> do
-            refused <- readTVar (dcRefused dc)
-            writeTVar (dcRefused dc) (Set.insert tid refused)
-            pure Set.empty
-    if Set.null tids
+    marked <- readTVar (dcMarked dc)
+    let inScope t = maybe True (== t) mTid
+        tids = Set.filter inScope served
+        unmark = Set.union tids (Set.filter inScope marked)
+    case mTid of
+      Just tid | tid `Set.notMember` served -> do
+        refused <- readTVar (dcRefused dc)
+        writeTVar (dcRefused dc) (Set.insert tid refused)
+      _ -> pure ()
+    writeTVar (dcMarked dc) (Set.difference marked unmark)
+    if Set.null unmark
       then pure []
       else do
         tc <- readClaims dc
         let attach = tcAttach tc
             owned owner = owner `Set.member` tids
+            opaque' =
+              Map.filterWithKey (\(t, _) _ -> t `Set.notMember` unmark) (tcOpaque tc)
             actives =
               [ pid
               | (pid, AttActive owner _) <- Map.toList attach
@@ -1607,11 +1637,17 @@ retireMatching dc mTid = do
               | (pid, AttClaim owner _ _ prior) <- Map.toList attach
               , owned owner
               ]
-        writeClaims dc tc
-          { tcAttach = foldr rollbackClaimed attach claims
-          , tcOpaque = Map.filterWithKey (\(t, _) _ -> not (owned t)) (tcOpaque tc)
-          , tcRetired = Set.union tids (tcRetired tc)
-          }
+        if Set.null tids
+          then
+            -- Marked but never served: drop the marks only; the
+            -- shared retired set and every attachment stay as they are.
+            writeClaims dc tc { tcOpaque = opaque' }
+          else
+            writeClaims dc tc
+              { tcAttach = foldr rollbackClaimed attach claims
+              , tcOpaque = opaque'
+              , tcRetired = Set.union tids (tcRetired tc)
+              }
         pure actives
   if null actives
     then pure []

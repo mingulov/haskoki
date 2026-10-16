@@ -108,6 +108,7 @@ import Haskoki.Runtime.Storage
   , emptyDelta
   , encodeHexWord64
   , jobIdCounterKey
+  , markCensus
   , objectToRecord
   , planSlotMoves
   , reconcileCredentialsReload
@@ -130,7 +131,9 @@ import Haskoki.FFI.Standard
   , openStdInstance
   , openStdStore
   )
+import Haskoki.Runtime.Async (newAsyncTable)
 import Haskoki.Runtime.Catalog (effectiveCatalog, identityCatalog)
+import Haskoki.Runtime.Detached (markJobOpaque, openDetached)
 import Haskoki.Runtime.Config
   ( Config (..)
   , ConfigError (..)
@@ -147,6 +150,7 @@ import Haskoki.Transition (publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
+  , JobId (..)
   , ObjectId (..)
   , ReturnCode (..)
   , Revision (..)
@@ -1131,20 +1135,32 @@ testReserveIncreasing o = withStore o $ \s -> do
 -- a record-update wrapper of a handle (the fault-injection idiom)
 -- shares the handle's authority, while a close and reopen of the
 -- same identity mints a fresh, empty one — the authority is never
--- world- or file-scoped and never durable.
+-- world- or file-scoped and never durable. The authority is filled
+-- (through a detach context over the wrapper) before the close, so
+-- the reopened handle's emptiness is observed, not assumed.
 testClaimAuthorityHandleScoped :: Opener -> IO ()
 testClaimAuthorityHandleScoped o = withStore o $ \s -> do
+  (tok, _) <- seedStore s
   let wrapped = s { storeCommit = storeCommit s, storeReload = storeReload s }
+      tid = trId tok
   assertBool "record-update wrapper shares the authority"
     (storeClaims wrapped == storeClaims s)
-  census0 <- claimCensus (storeClaims wrapped) (TokenId 1)
-  assertEqual "a fresh handle's authority is empty" (0, 0, 0) census0
+  marks0 <- markCensus (storeClaims s) tid
+  assertEqual "a fresh handle's authority holds no marks" 0 marks0
+  dc <- openDetached wrapped tid
+    >>= either (\e -> assertFailure ("open detached: " ++ show e)) pure
+  table <- newAsyncTable 8
+  markJobOpaque dc table (JobId 0) "fill before close"
+  marks1 <- markCensus (storeClaims s) tid
+  assertEqual "a mark through the wrapper lands in the handle's authority" 1 marks1
   storeClose s
   s2 <- openCurrent o >>= either (\e -> assertFailure ("reopen: " ++ show e)) pure
   assertBool "reopen mints a fresh authority"
     (storeClaims s2 /= storeClaims s)
-  census1 <- claimCensus (storeClaims s2) (TokenId 1)
-  assertEqual "the reopened authority is empty" (0, 0, 0) census1
+  marks2 <- markCensus (storeClaims s2) tid
+  assertEqual "the reopened authority holds no marks" 0 marks2
+  census2 <- claimCensus (storeClaims s2) tid
+  assertEqual "the reopened authority holds no attachments" (0, 0, 0) census2
   storeClose s2
 
 -- | A store with hand-seated jobs reconciles the mark with the

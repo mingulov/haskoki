@@ -12,8 +12,9 @@ close) starts with a fresh, empty authority, like quarantine.
 
 The authority is keyed by 'TokenId', then by persistent id: one
 handle can serve several tokens, and a token never sees another
-token's attachments (a cross-token join keeps answering unknown
-through the token check instead of an attachment refusal).
+token's attachments (a cross-token join of a live row keeps
+answering unknown through the token check instead of an
+attachment refusal).
 
 This is a private leaf module (no Store, Async, or Lifecycle
 import), so both the storage layer and the async runtime can
@@ -40,6 +41,7 @@ module Haskoki.Runtime.Attach
   , readTokenClaims
   , writeTokenClaims
   , claimCensus
+  , markCensus
   ) where
 
 import Control.Concurrent.STM
@@ -158,3 +160,9 @@ claimCensus auth tok = do
       active = length [() | AttActive _ _ <- atts]
       terminal = length [() | AttTerminal _ <- atts]
   pure (active, length atts - active - terminal, terminal)
+
+-- | Opaque-mark census for one token: how many native-opaque
+-- marks the authority holds (every table, every job).
+markCensus :: ClaimAuthority -> TokenId -> IO Int
+markCensus auth tok =
+  Map.size . tcOpaque <$> atomically (readTokenClaims auth tok)

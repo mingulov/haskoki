@@ -24,11 +24,12 @@ Canonical record encoding (design 08, section 3):
 The contract layers capabilities: open\/load\/commit\/close\/inspect,
 the commit protocol (fault injection, quarantine, reload),
 adversarial validation, detached-job records, and token reset.
+
+Each open 'Store' handle owns one detached-job claim authority
+('storeClaims'); a reopened handle starts empty, so closing a store
+while detached attachments are live is a documented boundary (see
+docs\/operations-notes.md).
 -}
--- Each open 'Store' handle owns one detached-job claim authority
--- ("Haskoki.Runtime.Attach"); a reopened handle starts empty, so
--- closing a store while detached attachments are live is a
--- documented boundary (see docs/operations-notes.md).
 module Haskoki.Runtime.Storage
   ( -- * Limits
     StoreLimits (..)
@@ -88,6 +89,7 @@ module Haskoki.Runtime.Storage
   , Store (..)
   , ClaimAuthority
   , claimCensus
+  , markCensus
   , StoredDoc (..)
   , HandleState (..)
   , storeClosed
@@ -137,7 +139,7 @@ import qualified Data.Text.Encoding as TE
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Model (Model (..), ObjectState (..))
-import Haskoki.Runtime.Attach (ClaimAuthority, JobExecState (..), claimCensus)
+import Haskoki.Runtime.Attach (ClaimAuthority, JobExecState (..), claimCensus, markCensus)
 import Haskoki.Session
   ( TokenAuth (..)
   , clearTransientAuth
