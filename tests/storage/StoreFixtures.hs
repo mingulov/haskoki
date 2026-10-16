@@ -12,7 +12,7 @@ module StoreFixtures
   , StoreState (..), captureState, assertUnchanged, makeSchemaStore
   , writeStoreConfig, expectStdNeedsMigration, fixtureToken
   , spawnedPid, claimReap, waitBounded, releaseHolder, awaitHolderExit
-  , pragmaInt
+  , pragmaInt, waitForFile
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -353,6 +353,15 @@ expectStdNeedsMigration found r = case r of
     assertEqual "target schema" 3 t
   Left other -> assertFailure ("refused for the wrong reason: " ++ show other)
   Right acq -> closeAcquired acq >> assertFailure "an old-schema store opened"
+
+-- | Wait for a child process to create a file: 10ms polls, a
+-- bounded number of them, then a failure naming the file.
+waitForFile :: FilePath -> Int -> IO ()
+waitForFile p polls = do
+  ok <- doesFileExist p
+  if ok then pure ()
+    else if polls <= 0 then assertFailure ("timed out waiting for " ++ p)
+    else threadDelay 10000 >> waitForFile p (polls - 1)
 
 -- | The single integer a pragma returns, read on an open handle.
 pragmaInt :: S.Database -> T.Text -> IO Int

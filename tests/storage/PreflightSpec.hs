@@ -4,33 +4,40 @@
 released-binary fixtures, refused opens that write nothing, the
 read-only snapshot and plan, the owned migration, and recovery.
 -}
-module PreflightSpec (spec) where
+module PreflightSpec (spec, migrateChildMain) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import qualified Data.Map.Strict as Map
+import Control.Concurrent (threadDelay)
 import Control.Exception (AsyncException (ThreadKilled), IOException, bracket, throwIO, try)
+import Control.Monad (forever)
 import Data.Bits ((.&.))
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
-import Data.List (isInfixOf, isSuffixOf, nub, sort)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, stripPrefix)
 import qualified Database.SQLite3 as S
 import Foreign.C.Types (CInt (..))
 import qualified Data.Text as T
-import System.Directory (createDirectory, doesFileExist, listDirectory, removeFile)
+import System.Directory (createDirectory, doesFileExist, listDirectory, removeFile, renameFile)
+import System.Environment (getExecutablePath)
+import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath ((</>))
-import System.Posix.Files (createSymbolicLink, fileMode, getFileStatus, modificationTime)
+import System.Posix.Files (createSymbolicLink, fileMode, fileSize, getFileStatus, modificationTime)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
+import System.Posix.Signals (sigKILL, signalProcess)
 import System.IO.Error (fullErrorType, mkIOError)
 import System.Posix.User (getEffectiveUserID)
+import System.Process (CreateProcess (..), createProcess, getPid, proc, waitForProcess)
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (HUnitFailure, assertBool, assertEqual, assertFailure, testCase)
 
+import Haskoki.Ctl (CtlExit (..), runCtl)
 import Haskoki.FFI.Standard (StdStoreError (..))
 import Haskoki.Runtime.Storage
-  (CommitResult (..), CredentialRecord (..), IdentityRefusal (..), StoreError (..), TokenRecord (..), Store (..), emptyDelta)
+  (CommitResult (..), CredentialRecord (..), IdentityRefusal (..), StoreDelta (..), StoreError (..), TokenRecord (..), Store (..), emptyDelta)
 import Haskoki.Types (SlotId (..), TokenId (..))
 import Haskoki.Runtime.Catalog (asyncHomeConfig, asyncHomeEntry, homeCatalogEntry, identityCatalog)
-import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..))
+import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..), loadConfigFile)
 
 import Haskoki.Runtime.Storage.Preflight
   ( MigrateError (..), MigrateHooks (..), MigrateOutcome (..), MigrationOp (..), MigrationReceipt (..)
@@ -128,6 +135,15 @@ spec = testGroup "Store preflight"
       , testCase "appended catalog tokens are left to the next open" caseMigrateLeavesSeedsToOpen
       , testCase "naming: candidate backup names" caseBackupCandidates
       , testCase "migrate errors render tags and paths, never PINs" caseMigrateErrorRender
+      ]
+  , testGroup "recovery"
+      [ after AllFinish "/death after reservation leaves a gap, never reuse/" $
+          testCase "a killed migration: refused, rolled back by the open, retried" caseKilledMigrationRecovers
+      , after AllFinish "/death after reservation leaves a gap, never reuse/" $
+          testCase "a killed migration: restore with the journal moved aside" caseKilledRestoreMovesJournal
+      , testCase "restore brings back the older credentials and schema" caseRestoreBringsBackOldCredentials
+      , testCase "a newer schema is refused by open, check and migrate" caseNewerSchemaRefusedEverywhere
+      , testCase "check reports from a read-only directory; migrate cannot own it" caseCheckNeverOwns
       ]
   ]
 
@@ -1246,3 +1262,162 @@ caseMigrateErrorRender = do
           assertNoPins "show" (show err)) cases
   mapM_ (\err -> assertBool ("names the backup: " ++ show err) (bak `isInfixOf` snd (renderMigrateError err)))
     [MigrateTxnFailed bak (StoreFull "disk full"), MigrateVerifyFailed bak "x", MigrateReceiptFailed bak "x"]
+
+-- | Child process for the kill test: a real migration that pauses
+-- forever after its transaction body, just before COMMIT.
+migrateChildMain :: FilePath -> FilePath -> FilePath -> FilePath -> IO ()
+migrateChildMain store cfgPath backups ready = do
+  cfg <- loadConfigFile cfgPath >>= either (fail . show) pure
+  let pause = noMigrateHooks { mhSQLite = noMigrationHooks { mgBeforeCommit = \db -> do
+        -- Force the journal hot before pausing: overwrite one meta
+        -- row with a 20MB value, far beyond the 8MB default page
+        -- cache, so dirty pages spill to the database file and SQLite
+        -- finalizes the journal header. A small transaction kept
+        -- entirely in cache leaves a cold journal no open ever rolls
+        -- back. The write is uncommitted (the parent kills us), so it
+        -- vanishes with the rollback. The ready file goes out only
+        -- after the spill, so the parent can only observe a hot
+        -- journal; a kill before that fails loudly on the ready wait.
+        S.exec db ("UPDATE store_meta SET value = '" <> T.replicate 20000000 "x" <> "' WHERE key = 'schema_version'")
+        writeFile ready "paused\n"
+        forever (threadDelay 1000000) } }
+  _ <- migrateStoreWith pause store cfg backups
+  exitWith (ExitFailure 3)
+
+-- | Start a migrate child on a copy of the v0.4.0.0 fixture, wait
+-- until it pauses before COMMIT, SIGKILL it and reap it.
+killMidMigration :: FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
+killMidMigration dir = do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; ready = dir </> "ready"
+  createDirectory backups
+  pre <- BS.readFile store
+  exe <- getExecutablePath
+  (_, _, _, ph) <- createProcess (proc exe ["--migrate-child", store, cfgPath, backups, ready]) { close_fds = True }
+  waitForFile ready 3000
+  getPid ph >>= maybe (assertFailure "migrate child exited early") (signalProcess sigKILL)
+  _ <- waitForProcess ph
+  -- Premise of the killed-migration scenario: the journal carries a
+  -- finalized header (SQLite's documented magic), i.e. it is hot and
+  -- the next serving open rolls it back. A zeroed header would be a
+  -- cold journal the open leaves in place.
+  jMagic <- BS.take 8 <$> BS.readFile (store ++ "-journal")
+  assertEqual "the killed transaction left a hot journal"
+    (BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]) jMagic
+  pure (store, cfgPath, backups, pre)
+
+caseKilledMigrationRecovers :: IO ()
+caseKilledMigrationRecovers = withScratch "killed" $ \dir -> do
+  (store, cfgPath, backups, pre) <- killMidMigration dir
+  let journal = store ++ "-journal"
+  jSize <- fileSize <$> getFileStatus journal
+  assertBool "the killed transaction left a hot journal" (jSize > 0)
+  jBytes <- BS.readFile journal
+  dbBytes <- BS.readFile store
+  c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  assertEqual "check refuses" 1 (ceCode c)
+  assertBool "check names the journal" ("store-journal-present:" `isPrefixOf` ceErr c)
+  m <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "migrate refuses" 1 (ceCode m)
+  BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBytes)
+  BS.readFile store >>= \b -> assertBool "db untouched" (b == dbBytes)
+  baks <- filter (".bak" `isSuffixOf`) <$> listDirectory backups
+  case baks of
+    [b] -> BS.readFile (backups </> b) >>= \bb -> assertBool "the killed run's backup is complete" (bb == pre)
+    other -> assertFailure ("expected one backup, found " ++ show other)
+  rcpts <- filter (".receipt" `isSuffixOf`) <$> listDirectory backups
+  assertEqual "no receipt for the killed run" [] rcpts
+  -- the serving open rolls the interrupted transaction back, then refuses
+  cfg <- loadConfigOrFail cfgPath
+  openReconciled store cfg >>= expectStdNeedsMigration 2
+  gone <- not <$> doesFileExist journal
+  assertBool "journal rolled back" gone
+  BS.readFile store >>= \b -> assertBool "store equals its pre-migration bytes" (b == pre)
+  r <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "retry migrates" 0 (ceCode r)
+  baks2 <- filter (".bak" `isSuffixOf`) <$> listDirectory backups
+  assertEqual "the retry wrote a new backup" 2 (length baks2)
+
+caseKilledRestoreMovesJournal :: IO ()
+caseKilledRestoreMovesJournal = withScratch "killed" $ \dir -> do
+  (store, cfgPath, backups, pre) <- killMidMigration dir
+  let aside = dir </> "aside"
+  createDirectory aside
+  renameFile store (aside </> "store.sqlite")
+  renameFile (store ++ "-journal") (aside </> "store.sqlite-journal")
+  baks <- filter (".bak" `isSuffixOf`) <$> listDirectory backups
+  b <- case baks of
+    [one] -> pure one
+    other -> assertFailure ("expected one backup, found " ++ show other)
+  BS.readFile (backups </> b) >>= BS.writeFile store
+  c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  assertEqual "restored store checks as migration-required" 1 (ceCode c)
+  assertBool "verdict" ("verdict: migration-required" `isInfixOf` ceOut c)
+  BS.readFile store >>= \s -> assertBool "restored bytes" (s == pre)
+  kept <- (&&) <$> doesFileExist (aside </> "store.sqlite") <*> doesFileExist (aside </> "store.sqlite-journal")
+  assertBool "the moved-aside pair is kept" kept
+
+caseRestoreBringsBackOldCredentials :: IO ()
+caseRestoreBringsBackOldCredentials = withScratch "restore" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  pre <- captureState store
+  r <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "migrated" 0 (ceCode r)
+  -- after the upgrade, token 2's PIN changes durably
+  e <- openSQLiteStore store
+  s <- either (assertFailure . show) pure e
+  c <- storeCommit s emptyDelta { sdPutCredentials = [CredentialRecord (TokenId 2) "69324057" (Just "45106798")] }
+  storeClose s
+  assertEqual "post-upgrade PIN change" Committed c
+  -- restore: move the migrated store aside, copy the backup in
+  bak <- case [l' | l <- lines (ceOut r), Just l' <- [stripPrefix "backup: " l]] of
+    [one] -> pure one
+    other -> assertFailure ("expected one backup line, found " ++ show other)
+  renameFile store (dir </> "store.sqlite.migrated")
+  BS.readFile bak >>= BS.writeFile store
+  after' <- captureState store
+  assertBool "restored bytes are the pre-migration bytes" (ssBytes after' == ssBytes pre)
+  assertEqual "old schema is back" ["2"] (ssSchema after')
+  assertBool "old credential rows are back (token 2's v0.4 PIN, token 1 rowless)"
+    (ssCredentials after' == ssCredentials pre)
+  ch <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  assertEqual "restored store needs migration again" 1 (ceCode ch)
+
+caseNewerSchemaRefusedEverywhere :: IO ()
+caseNewerSchemaRefusedEverywhere = withScratch "newer" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  rawExec store "UPDATE store_meta SET value = '4' WHERE key = 'schema_version'"
+  before <- captureState store
+  c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+  m <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
+  cfg <- loadConfigOrFail cfgPath
+  o <- openReconciled store cfg
+  assertBool "check refuses" ("store-unsupported-version:" `isPrefixOf` ceErr c)
+  assertBool "migrate refuses" ("store-unsupported-version:" `isPrefixOf` ceErr m)
+  case o of
+    Left (StdStoreSQLite (StoreSchemaVersion 3 "4")) -> pure ()
+    other -> assertFailure ("open: " ++ either show (const "opened") other)
+  assertUnchanged "newer schema" before store
+  listDirectory backups >>= assertEqual "no backup" []
+
+caseCheckNeverOwns :: IO ()
+caseCheckNeverOwns = withScratch "ro" $ \dir -> do
+  let sub = dir </> "ro"; backups = dir </> "backups"
+  createDirectory sub
+  createDirectory backups
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" sub
+  withFileMode store 0o444 $ withFileMode sub 0o555 $ do
+    c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+    assertBool "check read the store" ("verdict: migration-required" `isInfixOf` ceOut c)
+    m <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
+    assertEqual "migrate cannot take ownership here" 1 (ceCode m)
+    -- Pinned to the observed tag: a sidecar the owner probe
+    -- cannot create reads as a live owner.
+    assertBool "migrate names the live owner" ("store-live:" `isPrefixOf` ceErr m)
+  noLock <- not <$> doesFileExist (store ++ ".lock")
+  assertBool "no lock created" noLock
+  listDirectory backups >>= assertEqual "no backup" []

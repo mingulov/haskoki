@@ -30,6 +30,7 @@ main = do
   args <- getArgs
   case args of
     ["--holder", path, doneFile, readyFile] -> StoreSpec.holderMain path doneFile readyFile
+    ["--migrate-child", store, cfg, backups, ready] -> PreflightSpec.migrateChildMain store cfg backups ready
     _ -> do
       -- Never above the capability count: tasty raises the RTS
       -- capabilities to match NumThreads, which would turn a -N1 run
