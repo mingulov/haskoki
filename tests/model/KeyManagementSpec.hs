@@ -385,6 +385,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "RSA exponent plans, agrees and refuses" caseRsaExponentPlanner
   , testCase "RSA stamping refuses mismatched halves" caseRsaStampMismatch
   , testCase "EC stamping lands CKA_EC_POINT" caseEcPointStamped
+  , testCase "EC planner refuses disagreeing curve parameters" caseEcParamsDisagree
   , testCase "Wrap length query then wrap/unwrap roundtrip" caseWrapRoundtrip
   , testCase "AES-KW wrap/unwrap roundtrips with +8 expansion" caseAesKwWrapRoundtrip
   , testCase "AES-KWP wrap/unwrap roundtrips ragged (PAD alias)" caseAesKwpWrapRoundtrip
@@ -3025,21 +3026,66 @@ caseEcPointStamped = do
       spki = ecPublicDer p256oid point
       ecPub = pendingFromAttrs st (Map.fromList ecPubTmpl)
       ecPriv = pendingFromAttrs st (Map.fromList ecPrivTmpl)
+      barePriv = pendingFromAttrs st (Map.delete AttrEcParams (Map.fromList ecPrivTmpl))
   -- A parseable EC SPKI stamps CKA_EC_POINT (DER OCTET STRING
-  -- of the uncompressed point) on the public half; the private
-  -- half is untouched.
-  case stampPairComponents ecPub ecPriv spki "opaque-priv" of
+  -- of the uncompressed point) on the public half; a private
+  -- half lacking CKA_EC_PARAMS inherits the public curve,
+  -- and its other attributes are unchanged.
+  case stampPairComponents ecPub barePriv spki "opaque-priv" of
     Just (pub', priv') -> do
       -- CKA_EC_POINT is the DER OCTET STRING of the point
       -- (0x04 0x41 header over the 65 uncompressed bytes).
       assertEqual "EC_POINT stamped"
         (Just (ValBytes ("\x04\x41" <> point))) (Map.lookup AttrEcPoint (poAttrs pub'))
-      assertEqual "priv untouched" (poAttrs ecPriv) (poAttrs priv')
+      assertEqual "EC_PARAMS inherited"
+        (Just (ValBytes "P-256")) (Map.lookup AttrEcParams (poAttrs priv'))
+      assertEqual "other private attrs unchanged"
+        (Map.delete AttrEcParams (poAttrs ecPriv))
+        (Map.delete AttrEcParams (poAttrs priv'))
+    Nothing -> assertFailure "EC SPKI halves must stamp"
+  -- Equal values pass through untouched.
+  case stampPairComponents ecPub ecPriv spki "opaque-priv" of
+    Just (_, priv') ->
+      assertEqual "equal params untouched" (poAttrs ecPriv) (poAttrs priv')
     Nothing -> assertFailure "EC SPKI halves must stamp"
   -- Opaque halves (synthetic HKS1 frames) pass through: no
   -- EC_POINT, no rejection.
   assertEqual "opaque passthrough" (Just (ecPub, ecPriv))
     (stampPairComponents ecPub ecPriv "pub" "priv")
+
+caseEcParamsDisagree :: IO ()
+caseEcParamsDisagree = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let dropT t = filter ((/= t) . fst)
+      disagreePriv = (AttrEcParams, ValBytes "P-384") : dropT AttrEcParams ecPrivTmpl
+      barePrivTmpl = dropT AttrEcParams ecPrivTmpl
+  -- Disagreeing halves refuse at plan time, before any driver
+  -- call: the public result is CKR_TEMPLATE_INCONSISTENT.
+  case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech ecPubTmpl disagreePriv of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "disagreeing curves refuse" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("disagreeing curves must refuse at plan time: " ++ show other)
+  -- Equal values are accepted.
+  case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech ecPubTmpl ecPrivTmpl of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("equal curves must plan: " ++ show other)
+  -- A private template lacking CKA_EC_PARAMS plans, and the
+  -- minted private object carries the public curve.
+  case planGenerateKeyPair defaultRules m0 st ecKeyPairGenMech ecPubTmpl barePrivTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m0 fx
+      c <- finishCommit m0 st pw res 2
+      pubH <- handleOf (pcOutputs c !! 0)
+      privH <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m0 (pcDelta c))
+      Just pub <- pure (resolveHandle m' pubH)
+      Just priv <- pure (resolveHandle m' privH)
+      assertEqual "minted public keeps the curve"
+        (Just (ValBytes "P-256")) (Map.lookup AttrEcParams (osAttrs pub))
+      assertEqual "minted private carries the curve"
+        (Just (ValBytes "P-256")) (Map.lookup AttrEcParams (osAttrs priv))
+    other -> assertFailure ("lacking private params must plan: " ++ show other)
 
 caseWrapRoundtrip :: IO ()
 caseWrapRoundtrip = withSynth $ \answer -> do

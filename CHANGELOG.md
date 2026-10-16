@@ -381,6 +381,14 @@ record: symbol separation, sanitizer runs, evidence limits) and
   the cursor lookup, refusals leave the output buffer and count
   untouched; the cursor retires with its session, and a fresh session
   inherits no cursor, still reporting `CKR_OPERATION_NOT_INITIALIZED`.
+- A generated EC private key now carries `CKA_EC_PARAMS`, copied from
+  the public half when the private template omits it. Clients that
+  read the curve from the private key, such as Java's jarsigner
+  through SunPKCS11, no longer fail with
+  `CKR_ATTRIBUTE_TYPE_INVALID` (0x12). A private template naming a
+  different curve than the public half is refused with
+  `CKR_TEMPLATE_INCONSISTENT` before generation; equal values are
+  accepted.
 
 ## [0.4.0.0] - Unreleased
 

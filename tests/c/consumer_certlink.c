@@ -475,6 +475,22 @@ int main(int argc, char **argv) {
     CHECKC(rv == CKR_OK && pub != 0 && priv != 0 && pub != priv,
            "linked pair mints");
     {
+      CK_BYTE pbuf[64], pubbuf[64];
+      CK_ATTRIBUTE pra[] = { { CKA_EC_PARAMS, pbuf, sizeof(pbuf) } };
+      CK_ATTRIBUTE pubra[] = { { CKA_EC_PARAMS, pubbuf, sizeof(pubbuf) } };
+      CK_ULONG plen, publen;
+      CK_RV prv;
+      rv = f->C_GetAttributeValue(sess, priv, pra, 1);
+      prv = rv;
+      plen = pra[0].ulValueLen;
+      rv = f->C_GetAttributeValue(sess, pub, pubra, 1);
+      publen = pubra[0].ulValueLen;
+      CHECKC(prv == CKR_OK && rv == CKR_OK && plen == publen &&
+                 plen == sizeof(kP256) && memcmp(pbuf, pubbuf, plen) == 0 &&
+                 memcmp(pbuf, kP256, plen) == 0,
+             "linked private key reports the curve parameters");
+    }
+    {
       CK_ATTRIBUTE set[] = {
         { CKA_ID, (CK_VOID_PTR)kLinkId, sizeof(kLinkId) }
       };

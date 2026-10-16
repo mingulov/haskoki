@@ -1511,8 +1511,14 @@ storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAtt
 -- Opaque halves (synthetic test doubles, not DER) pass through
 -- unstamped rather than rejecting, mirroring the EC arm. An EC
 -- pair stamps @CKA_EC_POINT@ (the DER OCTET STRING of the
--- uncompressed SPKI point) on the public half; opaque halves
--- pass through unstamped rather than rejecting. An Edwards pair
+-- uncompressed SPKI point) on the public half and copies the
+-- public half's @CKA_EC_PARAMS@ onto a private half whose
+-- template lacks it (the value is template-derived, so the copy
+-- holds even for opaque halves); opaque halves pass through
+-- without @CKA_EC_POINT@ rather than rejecting. Halves that
+-- disagree on the curve never reach the stamp: the planner
+-- ('ecCurveOf') refuses them before generation, and equal values
+-- pass through. An Edwards pair
 -- stamps the raw @CKA_EC_POINT@ on the public half and the
 -- agreed engine curve name as @CKA_EC_PARAMS@ on the private
 -- half (whose template lacks it); disagreeing or opaque halves
@@ -1595,11 +1601,15 @@ stampPairComponents pub priv pubM privM
               in Just (pub { poAttrs = pubA }, priv { poAttrs = privA })
         _ -> Just (pub, priv)
   | Map.lookup AttrKeyType (poAttrs pub) == Just (ValULong ckkEc) =
-      case spkiPoint pubM of
-        Just pt | BS.take 1 pt == BS.singleton 0x04 ->
-          let pubA = Map.insert AttrEcPoint (ValBytes (derOctet pt)) (poAttrs pub)
-          in Just (pub { poAttrs = pubA }, priv)
-        _ -> Just (pub, priv)
+      let pub' = case spkiPoint pubM of
+            Just pt | BS.take 1 pt == BS.singleton 0x04 ->
+              pub { poAttrs = Map.insert AttrEcPoint (ValBytes (derOctet pt)) (poAttrs pub) }
+            _ -> pub
+          priv' = case Map.lookup AttrEcParams (poAttrs pub) of
+            Just p | Map.notMember AttrEcParams (poAttrs priv) ->
+              priv { poAttrs = Map.insert AttrEcParams p (poAttrs priv) }
+            _ -> priv
+      in Just (pub', priv')
   | Map.lookup AttrKeyType (poAttrs pub) /= Just (ValULong ckkRsa) =
       Just (pub, priv)
   | otherwise = do
