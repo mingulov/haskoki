@@ -984,7 +984,7 @@ OWNERSHIP_CASES = [
     ("m4-store-contract", 123, False),
     ("m4-multi-session", 34, False),
     ("m5-attachment-claims", 5, True),
-    ("m5-detached-jobs", 35, True),
+    ("m5-detached-jobs", 55, True),
     ("m5-scoped-detach-leases", 9, False),
     ("m6-two-contexts-distinct-ids", 1, False),
     ("m6-store-wide-counter", 1, False),
@@ -992,7 +992,7 @@ OWNERSHIP_CASES = [
     ("m7-retirement", 5, False),
 ]
 # Appended by their own WPs; the driver lists them but never counts them.
-OWNERSHIP_PENDING = ["wp07-pending", "wp08-pending", "wp09-pending"]
+OWNERSHIP_PENDING = ["wp08-pending", "wp09-pending"]
 OWNERSHIP_RECEIPT_RE = re.compile(r"^(?P<case>.+)\.N(?P<n>[0-9]+)\.json$")
 
 
@@ -1420,7 +1420,7 @@ def _ownership_controls(controls, fresh_dir):
         r[f"{plain}.N1.json"]["passed"] -= 1
 
     def pending_ran(r, idx):
-        r["wp07-pending.N1.json"] = dict(r[f"{plain}.N1.json"], case="wp07-pending")
+        r["wp08-pending.N1.json"] = dict(r[f"{plain}.N1.json"], case="wp08-pending")
 
     def no_counters(r, idx):
         r[f"{gated}.N1.json"]["counters"] = []
