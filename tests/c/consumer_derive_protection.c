@@ -423,8 +423,8 @@ int main(int argc, char **argv) {
         CHECK(rv == CKR_OK, "omitted extract destroyed");
       }
     }
-    /* History attributes in a derive template refuse typed at the
-     * frame boundary (no weakening through an unstamped flag). */
+    /* History attributes in a derive template refuse inconsistent:
+     * caller templates may not forge them. */
     {
       CK_BBOOL hist = CK_TRUE;
       CK_ATTRIBUTE dt[] = {
@@ -436,8 +436,8 @@ int main(int argc, char **argv) {
       };
       h = 0;
       rv = f->C_DeriveKey(sess, &m, pbase, dt, 5, &h);
-      CHECK(rv == CKR_ATTRIBUTE_TYPE_INVALID && h == 0,
-            "history-attr template refused typed (rv=0x%lx)",
+      CHECK(rv == CKR_TEMPLATE_INCONSISTENT && h == 0,
+            "history-attr template refused inconsistent (rv=0x%lx)",
             (unsigned long)rv);
     }
   }

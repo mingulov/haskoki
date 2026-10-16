@@ -32,9 +32,11 @@ import Haskoki.Attribute
   , AttributeType (..)
   , AttributeValue (..)
   , PartialReads (..)
+  , Shape (..)
   , attributeTypeByName
   , encodeValue
   , getAttributes
+  , shapeOf
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Der (curveTable, dhParamsDer, dhParamsDerQ, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, montgomeryPrivateDer, montgomeryPublicDer, parseDhParams, parseDsaParams, rsaPrivateDer, rsaPublicDer)
@@ -453,6 +455,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Byte-op plans rows, refuses bad shapes" caseByteOpsPlans
   , testCase "Real byte-op derives match the KATs" caseRealByteOpsVector
   , testCase "Byte-op derives preserve source protection" caseByteOpsProtection
+  , testCase "Generate refuses history attributes in the caller template" caseKeyTemplatesRefuseHistory
   , testCase "Key-material plans rows, refuses bad shapes" caseKeyMatPlans
   , testCase "Real key-material derives match the KATs" caseRealKeyMatVector
   , testCase "SSL3 plans rows, refuses bad shapes" caseSsl3DerivePlans
@@ -6572,14 +6575,20 @@ caseByteOpsProtection = withSynth $ \answer -> do
     KeyDenied (KeyDeny code _) ->
       assertEqual "wrap code" CKR_KEY_UNEXTRACTABLE code
     other -> assertFailure ("sealed child wrap must deny, got: " ++ show other)
-  -- History attributes stay unmapped: native templates carrying
-  -- them refuse at the FFI chase and reads report
-  -- 'CKR_ATTRIBUTE_TYPE_INVALID' (existing boundary behavior, no
-  -- silent weakening through an unstamped flag).
-  assertEqual "ALWAYS_SENSITIVE unmapped"
-    Nothing (attributeTypeByName "CKA_ALWAYS_SENSITIVE")
-  assertEqual "NEVER_EXTRACTABLE unmapped"
-    Nothing (attributeTypeByName "CKA_NEVER_EXTRACTABLE")
+  -- History attributes are inventoried: the names map and the
+  -- mechanism-id shape is unsigned-long. Caller templates carrying
+  -- them refuse inconsistent at every creation entry (the derive
+  -- leg below proves the lenient choke point; generation proves
+  -- the strict one).
+  assertEqual "ALWAYS_SENSITIVE mapped"
+    (Just AttrAlwaysSensitive) (attributeTypeByName "CKA_ALWAYS_SENSITIVE")
+  assertEqual "NEVER_EXTRACTABLE mapped"
+    (Just AttrNeverExtractable) (attributeTypeByName "CKA_NEVER_EXTRACTABLE")
+  assertEqual "LOCAL mapped"
+    (Just AttrLocal) (attributeTypeByName "CKA_LOCAL")
+  assertEqual "KEY_GEN_MECHANISM mapped"
+    (Just AttrKeyGenMechanism) (attributeTypeByName "CKA_KEY_GEN_MECHANISM")
+  assertEqual "KGM shape" ShapeULong (shapeOf AttrKeyGenMechanism)
   -- Unaffected inputs: unprotected byte-op derivations keep the
   -- caller's readable template, and omitted attributes stay
   -- omitted (template or default wins when nothing is required).
@@ -6599,6 +6608,15 @@ caseByteOpsProtection = withSynth $ \answer -> do
       assertEqual "plain omitted extractable"
         Nothing (Map.lookup AttrExtractable (poAttrs po))
     other -> assertFailure ("plain concat-key must plan, got: " ++ show other)
+  -- A history attribute in the derive template refuses
+  -- inconsistent and allocates nothing.
+  let histBefore = Map.size (mObjects m5)
+  case planDerive defaultRules m5 st concatKeyMech plainBaseH
+      (encodeDeriveParams fKeyPlainAux [kidOmit 64 ++ [(AttrLocal, ValBool True)]]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "history derive code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("history derive must deny, got: " ++ show other)
+  assertEqual "refused history derive allocates nothing" histBefore (Map.size (mObjects m5))
   -- Unaffected family: HKDF carries no §6.43 inheritance rule, so
   -- a readable template over a protected base still plans with the
   -- caller's flags (scoping control against a global rule).
@@ -6611,6 +6629,26 @@ caseByteOpsProtection = withSynth $ \answer -> do
       assertEqual "hkdf template extractable"
         (Just (ValBool True)) (Map.lookup AttrExtractable (poAttrs po))
     other -> assertFailure ("HKDF control must plan, got: " ++ show other)
+
+-- | A history attribute in a generation template refuses
+-- inconsistent at the strict choke point and allocates nothing.
+caseKeyTemplatesRefuseHistory :: IO ()
+caseKeyTemplatesRefuseHistory = do
+  m0 <- seedModel
+  st <- getSession m0
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        , (AttrAlwaysSensitive, ValBool True)
+        ]
+      before = Map.size (mObjects m0)
+  case planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty tmpl of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "history generate code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("history generate must deny, got: " ++ show other)
+  assertEqual "refused history generate allocates nothing" before (Map.size (mObjects m0))
 
 keyMat10Mech, keyMat12Mech, keyMatSafeMech :: MechanismId
 keyMat10Mech = MechanismId ckm_TLS_KEY_AND_MAC_DERIVE

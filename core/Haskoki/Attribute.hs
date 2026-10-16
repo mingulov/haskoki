@@ -15,6 +15,7 @@ module Haskoki.Attribute
   , getAttributes
   , payloadSealed
   , sealedAttrs
+  , historyAttrs
   , encodeValue
   , decodeValue
   , maxAttributeBytes
@@ -105,6 +106,10 @@ data AttributeType
   | AttrCertificateCategory
   | AttrStartDate
   | AttrEndDate
+  | AttrAlwaysSensitive
+  | AttrNeverExtractable
+  | AttrLocal
+  | AttrKeyGenMechanism
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -188,6 +193,17 @@ sealedAttrs =
   , AttrExponent1
   , AttrExponent2
   , AttrCoefficient
+  ]
+
+-- | Token-assigned history/origin attributes: the module stamps
+-- them at creation, so caller templates and copy overrides may
+-- never carry them (every entry refuses them as inconsistent).
+historyAttrs :: [AttributeType]
+historyAttrs =
+  [ AttrAlwaysSensitive
+  , AttrNeverExtractable
+  , AttrLocal
+  , AttrKeyGenMechanism
   ]
 
 -- | Whether the payload ('AttrValue') of the given attribute map is
@@ -278,6 +294,10 @@ shapeOf t = case t of
   AttrSubprimeBits -> ShapeULong
   AttrStartDate -> ShapeBytes
   AttrEndDate -> ShapeBytes
+  AttrAlwaysSensitive -> ShapeBool
+  AttrNeverExtractable -> ShapeBool
+  AttrLocal -> ShapeBool
+  AttrKeyGenMechanism -> ShapeULong
 
 -- | Whether a value carries its type's shape. The template
 -- wrong-type gate ('Haskoki.Object.validateTemplate' refuses
@@ -409,6 +429,10 @@ attributeTypeByName name = case name of
   "CKA_CERTIFICATE_CATEGORY" -> Just AttrCertificateCategory
   "CKA_START_DATE" -> Just AttrStartDate
   "CKA_END_DATE" -> Just AttrEndDate
+  "CKA_ALWAYS_SENSITIVE" -> Just AttrAlwaysSensitive
+  "CKA_NEVER_EXTRACTABLE" -> Just AttrNeverExtractable
+  "CKA_LOCAL" -> Just AttrLocal
+  "CKA_KEY_GEN_MECHANISM" -> Just AttrKeyGenMechanism
   _ -> Nothing
 
 -- | 8-byte big-endian decoding; total over 8-byte inputs (only

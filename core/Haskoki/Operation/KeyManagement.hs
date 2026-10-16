@@ -230,6 +230,7 @@ import Control.Monad (guard)
 import Data.Bits ((.|.), countLeadingZeros, shiftL)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -240,6 +241,7 @@ import Haskoki.Attribute
   , AttributeValue (..)
   , attributeTypeByName
   , encodeValue
+  , historyAttrs
   )
 import Haskoki.Attribute.Generated
   ( classNameById
@@ -1776,6 +1778,7 @@ ensureTemplateClass wantClass tmpl
   | otherwise = (AttrClass, ValULong wantClass) : tmpl
 
 -- | Check one key template against its expected class and key type:
+-- a history attribute refuses before any other check,
 -- contradictions reject, a missing class defaults to the
 -- mechanism-implied class, a class that is present but wrong is
 -- inconsistent, then the template rule for the @(class, key-type)@
@@ -1784,7 +1787,11 @@ ensureTemplateClass wantClass tmpl
 checkKeyTemplate
   :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
-checkKeyTemplate wantClass wantKey tmpl =
+checkKeyTemplate wantClass wantKey tmpl
+  | Just (t, _) <- find ((`elem` historyAttrs) . fst) tmpl =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("history attribute not allowed in key template: " ++ show t))
+  | otherwise =
   case validateTemplate (ensureTemplateClass wantClass tmpl) of
   Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     ("contradictory attribute: " ++ show t))
@@ -1867,7 +1874,8 @@ applyRules wantClass wantKey attrs =
     _ -> Right ()
 
 -- | Check one key template against its expected class with any key
--- type: contradictions reject, a missing class defaults to the
+-- type: a history attribute refuses before any other check,
+-- contradictions reject, a missing class defaults to the
 -- mechanism-implied class, a class that is present but wrong is
 -- inconsistent, and a missing key type defaults to the caller's
 -- default. Derivation templates use this (derived keys span key
@@ -1875,7 +1883,11 @@ applyRules wantClass wantKey attrs =
 checkKeyTemplateAny
   :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
-checkKeyTemplateAny wantClass defaultKey tmpl =
+checkKeyTemplateAny wantClass defaultKey tmpl
+  | Just (t, _) <- find ((`elem` historyAttrs) . fst) tmpl =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("history attribute not allowed in key template: " ++ show t))
+  | otherwise =
   case validateTemplate (ensureTemplateClass wantClass tmpl) of
   Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     ("contradictory attribute: " ++ show t))

@@ -107,9 +107,11 @@ import Haskoki.Runtime.Storage
   , StoredDoc (..)
   , TokenRecord (..)
   , claimCensus
+  , decodeAttrsDoc
   , defaultLimits
   , docTopKeys
   , emptyDelta
+  , encodeAttrsDoc
   , encodeHex16
   , encodeHexWord64
   , jobIdCounterKey
@@ -402,7 +404,23 @@ spec = testGroup "store contract"
       , testCase "a schema-1 identity refusal writes nothing" caseOpenSchema1IdentityRefusalWithoutWrite
       , testCase "publication resolves moved slots through the reconciled layout" caseProjectionUsesReconciledLayout
       ]
+  , testGroup "attribute codec"
+      [ testCase "history attributes round-trip" testHistoryAttrsRoundTrip
+      ]
   ]
+
+-- | The history attributes survive the attribute-document codec in
+-- both directions: the three flags as booleans, the mechanism id as
+-- an unsigned long.
+testHistoryAttrsRoundTrip :: IO ()
+testHistoryAttrsRoundTrip = do
+  let m = Map.fromList
+        [ (AttrAlwaysSensitive, ValBool True)
+        , (AttrNeverExtractable, ValBool False)
+        , (AttrLocal, ValBool True)
+        , (AttrKeyGenMechanism, ValULong 0x1082)
+        ]
+  assertEqual "history codec round-trip" (Just m) (decodeAttrsDoc (encodeAttrsDoc m))
 
 -- | The shared backend contract. Every backend runs every case here.
 contractSpec :: String -> IO Opener -> TestTree

@@ -98,6 +98,7 @@ spec = testGroup "objects and attributes"
   , testCase "copy: inherits source, overrides template" caseCopyFlow
   , testCase "copy: unsealing overrides rejected, sealed copies stay sealed" caseCopySealRatchet
   , testCase "copy: absent EXTRACTABLE cannot be copied to true" caseCopyExtractableAbsent
+  , testCase "create/copy: history attributes in templates refused" caseCreateRefusesHistory
   , testCase "find: template match returns handles" caseFindFlow
   , testCase "find: sealed payloads never match a value guess" caseFindSealedNoOracle
   , testCase "find: contradictory template rejected, nothing bound" caseFindContradiction
@@ -623,6 +624,24 @@ caseCopyExtractableAbsent = do
   he <- commitHandle pcE
   (pcT, _) <- runCommit m5 (copyReq sid he [(AttrExtractable, ValBool True)])
   assertEqual "explicitly extractable source copies as extractable" CKR_OK (pcCode pcT)
+
+-- | Caller templates may not carry history attributes: creation
+-- refuses inconsistent, and so does a copy override naming one.
+-- Both refusals leave the object count unchanged.
+caseCreateRefusesHistory :: IO ()
+caseCreateRefusesHistory = do
+  (sid, m0) <- openSession seeded
+  let nBefore = Map.size (mObjects m0)
+  (code, m1) <- runReject m0
+    (createReq sid (secretAes (BS.replicate 16 7) ++ [(AttrLocal, ValBool True)]))
+  assertEqual "history create refused" CKR_TEMPLATE_INCONSISTENT code
+  assertEqual "no history object created" nBefore (Map.size (mObjects m1))
+  (pc, m2) <- runCommit m1 (createReq sid (secretAes (BS.replicate 16 3)))
+  h <- commitHandle pc
+  let nBeforeCopy = Map.size (mObjects m2)
+  (codeC, m3) <- runReject m2 (copyReq sid h [(AttrNeverExtractable, ValBool False)])
+  assertEqual "history copy override refused" CKR_TEMPLATE_INCONSISTENT codeC
+  assertEqual "no history copy created" nBeforeCopy (Map.size (mObjects m3))
 
 caseFindFlow :: IO ()
 caseFindFlow = do

@@ -62,6 +62,7 @@ import Haskoki.Attribute
   , decodeValue
   , encodeValue
   , getAttributes
+  , historyAttrs
   , payloadSealed
   , shapeMatches
   )
@@ -472,7 +473,11 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
     ("wrong shape for attribute: " ++ show t)
   Left TemplateIncomplete -> templateReject CKR_TEMPLATE_INCOMPLETE
     "template is missing the class"
-  Right attrs -> case checkCertificateDates attrs of
+  Right attrs
+    | Just t <- find (`elem` historyAttrs) (Map.keys attrs) ->
+        templateReject CKR_TEMPLATE_INCONSISTENT
+          ("history attribute not allowed in creation template: " ++ show t)
+    | otherwise -> case checkCertificateDates attrs of
     Left e -> templateReject CKR_TEMPLATE_INCONSISTENT
       ("certificate date: " ++ show e)
     Right () -> case checkCertificateTemplate attrs of
@@ -1016,7 +1021,8 @@ planDestroyObject model st h = case resolveHandle model h of
 -- sealed flags otherwise inherit, so a copy of a sealed object is
 -- sealed too. Wrongly shaped overrides refuse before any rule;
 -- TRUSTED=true overrides need the SO login; certificate sources
--- refuse overrides of the certificate-immutable set (all
+-- refuse overrides of the certificate-immutable set, and overrides
+-- naming a history attribute refuse on any source (all
 -- 'CKR_TEMPLATE_INCONSISTENT'). An explicit @CKA_COPYABLE=false@ on
 -- the source prohibits the copy ('CKR_ACTION_PROHIBITED').
 planCopyObject
@@ -1058,6 +1064,9 @@ planCopyObject model st h tmpl = case resolveHandle model h of
             , Just t <- find (`elem` certImmutable) (Map.keys over) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT
                   ("copy cannot override certificate field: " ++ show t)
+            | Just t <- find (`elem` historyAttrs) (Map.keys over) ->
+                templateReject CKR_TEMPLATE_INCONSISTENT
+                  ("copy cannot override history attribute: " ++ show t)
             | Just msg <- valueLenConflict (Map.union over (osAttrs src)) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT msg
             | Left deny <- admitPrivate (ssLogin st)
