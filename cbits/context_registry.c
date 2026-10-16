@@ -25,10 +25,15 @@
  * and the caller drains and frees taken roots. Taken roots come
  * only from entries holding no borrow, so a freed root can never
  * still be dereferenced.
+ *
+ * The process residue cell (see the header note) shares this file
+ * but not the registry mutex: a realloc-grown array of Store roots
+ * under its own mutex, with the same one-locked-step discipline.
  */
 
 #include <pthread.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #include "context_registry.h"
@@ -295,4 +300,155 @@ haskoki_ctx_stats(unsigned long long *displaced_out,
   if (freed_out != NULL)
     *freed_out = g_freed;
   pthread_mutex_unlock(&g_mu);
+}
+
+/* ------------------------------------------------------------------
+ * Process residue cell
+ * ------------------------------------------------------------------
+ * Invariant (under g_residue_mu): g_residue_cap >= queued + in flight
+ * + reserved. Queued roots occupy g_residue[0 .. len); take pops the
+ * tail (LIFO). In-flight entries and reservations hold capacity
+ * without occupying an index, so a put-back and a reserved push
+ * always fit.
+ */
+
+static pthread_mutex_t g_residue_mu = PTHREAD_MUTEX_INITIALIZER;
+static void **g_residue = NULL;
+static size_t g_residue_cap = 0;
+static size_t g_residue_len = 0;       /* queued roots */
+static size_t g_residue_in_flight = 0; /* taken, not yet closed or put back */
+static size_t g_residue_reserved = 0;  /* slots held for a later push */
+static unsigned long long g_residue_anomalies = 0;
+
+/* Caller holds g_residue_mu. Ensures room for one more slot beyond
+ * the queued, in-flight and reserved ones; 0 when the cell cannot
+ * grow (it is left unchanged). */
+static int residue_room_for_one(void) {
+  size_t used = g_residue_len + g_residue_in_flight + g_residue_reserved;
+  size_t want;
+  void **grown;
+  if (used < g_residue_cap)
+    return 1;
+  want = (g_residue_cap == 0) ? 16 : (g_residue_cap * 2);
+  if (want <= g_residue_cap || want > SIZE_MAX / sizeof(*g_residue))
+    return 0;
+  grown = (void **)realloc(g_residue, want * sizeof(*g_residue));
+  if (grown == NULL)
+    return 0;
+  g_residue = grown;
+  g_residue_cap = want;
+  return 1;
+}
+
+__attribute__((visibility("hidden"))) int
+haskoki_residue_reserve(void) {
+  int ok;
+  pthread_mutex_lock(&g_residue_mu);
+  ok = residue_room_for_one();
+  if (ok)
+    g_residue_reserved++;
+  pthread_mutex_unlock(&g_residue_mu);
+  return ok;
+}
+
+__attribute__((visibility("hidden"))) void
+haskoki_residue_release(void) {
+  pthread_mutex_lock(&g_residue_mu);
+  if (g_residue_reserved > 0)
+    g_residue_reserved--;
+  else
+    g_residue_anomalies++;
+  pthread_mutex_unlock(&g_residue_mu);
+}
+
+__attribute__((visibility("hidden"))) int
+haskoki_residue_push(void *root) {
+  int ok;
+  if (root == NULL)
+    return 0;
+  pthread_mutex_lock(&g_residue_mu);
+  if (g_residue_reserved > 0) {
+    g_residue_reserved--;
+    ok = 1; /* the reservation's slot */
+  } else {
+    g_residue_anomalies++;
+    ok = residue_room_for_one();
+  }
+  if (ok) {
+    g_residue[g_residue_len] = root;
+    g_residue_len++;
+  }
+  pthread_mutex_unlock(&g_residue_mu);
+  return ok;
+}
+
+__attribute__((visibility("hidden"))) int
+haskoki_residue_take(void **root_out) {
+  int taken = 0;
+  if (root_out != NULL)
+    *root_out = NULL;
+  pthread_mutex_lock(&g_residue_mu);
+  if (g_residue_len > 0) {
+    g_residue_len--;
+    if (root_out != NULL)
+      *root_out = g_residue[g_residue_len];
+    g_residue_in_flight++;
+    taken = 1;
+  }
+  pthread_mutex_unlock(&g_residue_mu);
+  return taken;
+}
+
+__attribute__((visibility("hidden"))) void
+haskoki_residue_put_back(void *root) {
+  if (root == NULL)
+    return;
+  pthread_mutex_lock(&g_residue_mu);
+  if (g_residue_in_flight > 0) {
+    /* Fits: the entry kept its slot while in flight. */
+    g_residue_in_flight--;
+  } else {
+    /* Protocol slip: nothing is in flight. Still keep the root;
+     * never drop it, and stop the process when the cell cannot grow. */
+    g_residue_anomalies++;
+    if (!residue_room_for_one())
+      abort();
+  }
+  g_residue[g_residue_len] = root;
+  g_residue_len++;
+  pthread_mutex_unlock(&g_residue_mu);
+}
+
+__attribute__((visibility("hidden"))) void
+haskoki_residue_note_closed(int n) {
+  if (n <= 0)
+    return;
+  pthread_mutex_lock(&g_residue_mu);
+  if ((size_t)n > g_residue_in_flight) {
+    /* Underflow: more closes than entries in flight. Recorded, not
+     * hidden; the in-flight count cannot go below zero. */
+    g_residue_anomalies++;
+    g_residue_in_flight = 0;
+  } else {
+    g_residue_in_flight -= (size_t)n;
+  }
+  pthread_mutex_unlock(&g_residue_mu);
+}
+
+__attribute__((visibility("hidden"))) int
+haskoki_residue_count(void) {
+  size_t count;
+  pthread_mutex_lock(&g_residue_mu);
+  count = g_residue_len + g_residue_in_flight;
+  pthread_mutex_unlock(&g_residue_mu);
+  return count > (size_t)INT32_MAX ? INT32_MAX : (int)count;
+}
+
+__attribute__((visibility("hidden"))) unsigned long long
+haskoki_residue_anomalies(void) {
+  unsigned long long n;
+  pthread_mutex_lock(&g_residue_mu);
+  n = g_residue_anomalies;
+  pthread_mutex_unlock(&g_residue_mu);
+  return n;
 }

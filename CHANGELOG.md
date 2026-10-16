@@ -141,6 +141,31 @@ record: symbol separation, sanitizer runs, evidence limits) and
   allocation; one that shrank it left scratch bytes uncleansed.
   Return values are unchanged: padding failures still answer the
   uniform verdict.
+- Standalone async acquisition now cleans up after itself. When a
+  standalone store, context, or store-bound context open fails or is
+  canceled after acquiring a resource, the open closes what it held
+  (Store, backend, pointer, registry entry) before reporting NULL, and
+  the primary error is kept when a cleanup close also fails. A Store
+  whose cleanup closes both failed, and which no caller can receive,
+  is recovered by the next standalone open or close in the process
+  instead of staying unreachable with its lock held (`ResidueOwner`
+  in `ffi/Haskoki/FFI/Async.hs`).
+- Standalone context close is now cancellable at every blocking wait
+  but the bounded SQLite busy waits inside FFI calls, and resumable.
+  A close canceled in the borrower wait reopens the context; one
+  canceled past it leaves the context owned by its slot in a closing
+  state that admits nothing, and the next close through the slot
+  resumes teardown where it stopped. The final nonblocking pointer
+  transfer (retire the registry entry, free the pointer, null the
+  slot) runs uninterruptibly, as do the bounded backend-drain and
+  Store-close tails. A failed or canceled store-box close likewise
+  keeps its slot until a retry closes the Store for real.
+- Calls through an unregistered async context key (never registered,
+  or parked by a test hook only) are now refused before any
+  dereference, the same as retired keys; previously they could be
+  admitted through a production fallback. Fixture registration is now
+  the separately named TEST-ONLY `registerFixtureCtx`, and no caller
+  under `ffi/` or `src/` uses it.
 
 ## [0.4.0.0] - Unreleased
 

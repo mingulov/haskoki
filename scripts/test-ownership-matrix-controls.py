@@ -164,7 +164,7 @@ class DriverControls(unittest.TestCase):
         self.no_build()
 
     def test_pending_case_cannot_be_selected(self):
-        p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="wp08-pending")
+        p = self.run_driver(fake_bins=False, HASKOKI_OWN_CASE="wp09-pending")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("pending", p.stdout + p.stderr)
         self.no_build()
@@ -247,7 +247,7 @@ class DriverControls(unittest.TestCase):
         # Gated cases carry an explicit, duplicate-free label list.
         names = {r["case"] for r in GATED}
         for want in ("m1-native-transfers", "m2-lifetime-gate", "m3-handle-registry",
-                     "m3-ffi-acquisition", "m3-async-engine"):
+                     "m3-ffi-acquisition", "m3-async-engine", "m3-standalone-ownership"):
             self.assertIn(want, names)
         for r in GATED:
             labels = r["counters"].split(",")
@@ -340,9 +340,9 @@ class DriverControls(unittest.TestCase):
     def test_full_table_runs_every_nonpending_case_and_lists_pending(self):
         p = self.run_driver(FAKE_COUNTER=1)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("PENDING wp08-pending", p.stdout)
+        self.assertIn("PENDING wp09-pending", p.stdout)
         ids = {json.loads(r.read_text())["case"] for r in self.receipts()}
-        self.assertNotIn("wp08-pending", ids)
+        self.assertNotIn("wp09-pending", ids)
         self.assertEqual(len(self.receipts()), 3 * len(ids))
         self.assertTrue((self.out / "index.tsv").is_file())
 

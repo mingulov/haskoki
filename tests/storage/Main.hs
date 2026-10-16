@@ -1,8 +1,10 @@
 -- REGISTRATION: haskoki-storage-tests
 module Main (main) where
 
+import Control.Concurrent (getNumCapabilities)
 import System.Environment (getArgs)
-import Test.Tasty (defaultMain, testGroup)
+import Test.Tasty (defaultMain, localOption, testGroup)
+import Test.Tasty.Runners (NumThreads (..))
 
 import qualified CommitSpec
 import qualified MultiSessionSpec
@@ -11,14 +13,30 @@ import qualified StoreSpec
 
 -- | The storage suite; re-invoked with @--holder@ it runs a lock
 -- holder child instead (see 'StoreSpec.spawnHolder').
+--
+-- The suite is capped at two worker threads (overriding @-j N@).
+-- With three or more concurrent MVar-intensive tests the run hung,
+-- idle, in about 1-4% of executions at @-N4@; with two workers it
+-- never hung in 600 runs. An audit of the test bodies, both store
+-- backends and tasty's scheduler found no blocking point, and any
+-- instrumentation made the hang disappear, so the cause is presumed
+-- to lie below the Haskell code. It needs three or more capabilities
+-- running Haskell code at once. The shipped library starts the RTS
+-- with default settings, a single capability, so it does not run in
+-- that mode. Revisit if a smaller reproduction appears.
 main :: IO ()
 main = do
   args <- getArgs
   case args of
     ["--holder", path, doneFile, readyFile] -> StoreSpec.holderMain path doneFile readyFile
-    _ -> defaultMain $ testGroup "haskoki storage"
-      [ StoreSpec.spec
-      , CommitSpec.spec
-      , StoreCtlSpec.spec
-      , MultiSessionSpec.spec
-      ]
+    _ -> do
+      -- Never above the capability count: tasty raises the RTS
+      -- capabilities to match NumThreads, which would turn a -N1 run
+      -- into -N2.
+      caps <- getNumCapabilities
+      defaultMain $ localOption (NumThreads (min 2 caps)) $ testGroup "haskoki storage"
+        [ StoreSpec.spec
+        , CommitSpec.spec
+        , StoreCtlSpec.spec
+        , MultiSessionSpec.spec
+        ]

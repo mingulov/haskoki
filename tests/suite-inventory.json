@@ -647,8 +647,13 @@
         "haskoki storage"
       ],
       "allowed_imports": {
+        "Control.Concurrent": ["getNumCapabilities"],
         "System.Environment": ["getArgs"],
-        "Test.Tasty": ["defaultMain", "testGroup"]
+        "Test.Tasty": ["defaultMain", "localOption", "testGroup"],
+        "Test.Tasty.Runners": ["NumThreads"]
+      },
+      "allowed_dotdot": {
+        "Test.Tasty.Runners": ["NumThreads"]
       },
       "executed_by": [
         {
