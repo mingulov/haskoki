@@ -2069,8 +2069,8 @@ caseStorageDefaultsNonStorage = mapM_ one
         expectedDefaults
 
 -- | Failure precedence is unchanged for attributes that really are
--- unavailable: sensitive still dominates, an absent non-storage
--- attribute still fails the read, and the defaulted attribute rides
+-- unavailable: sensitive still dominates, an attribute a data object
+-- does not own (CKA_KEY_TYPE) still fails the read, and the defaulted attribute rides
 -- along as a readable value in the same outcome.
 caseStorageDefaultsPrecedence :: IO ()
 caseStorageDefaultsPrecedence = do
@@ -2082,14 +2082,14 @@ caseStorageDefaultsPrecedence = do
       , (AttrValue, ValBytes "s3cret")
       ])
   h <- commitHandle pc
-  (rej, _) <- runRejectFull m1 (getReq sid h [AttrValue, AttrPrivate, AttrApplication])
+  (rej, _) <- runRejectFull m1 (getReq sid h [AttrValue, AttrPrivate, AttrKeyType])
   assertEqual "sensitive dominates" CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
   assertEqual "default rides along" [encodeValue (ValBool False)]
     [outBytes o | o <- rejOutputs rej]
   assertEqual "per-attribute reasons"
-    ["AttrValue: sensitive", "AttrPrivate: ok", "AttrApplication: unavailable"]
+    ["AttrValue: sensitive", "AttrPrivate: ok", "AttrKeyType: unavailable"]
     (rejReasons rej)
-  (rej2, _) <- runRejectFull m1 (getReq sid h [AttrPrivate, AttrApplication])
+  (rej2, _) <- runRejectFull m1 (getReq sid h [AttrPrivate, AttrKeyType])
   assertEqual "unavailable still fails" CKR_ATTRIBUTE_TYPE_INVALID (rejCode rej2)
   assertEqual "default still delivered" [encodeValue (ValBool False)]
     [outBytes o | o <- rejOutputs rej2]

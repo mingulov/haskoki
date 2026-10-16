@@ -109,9 +109,9 @@ record: symbol separation, sanitizer runs, evidence limits) and
   `C_FindObjects` matches the same values, so a template with
   `CKA_PRIVATE` false finds an object created without `CKA_PRIVATE`,
   and one with `CKA_PRIVATE` true does not. A template with an empty
-  `CKA_LABEL` now matches objects created without a label. The values are worked out
-  when read, never stored, so stored objects and SQLite databases are
-  unchanged. Hardware feature, mechanism, profile and validation
+  `CKA_LABEL` now matches objects created without a label. The values
+  are worked out when read, never stored, so stored objects and SQLite
+  databases are unchanged. Hardware feature, mechanism, profile and validation
   objects are not storage objects and still report these attributes
   as unavailable. `CKA_UNIQUE_ID` is not implemented and stays
   unavailable. A proxy that hides objects of unknown privacy from a

@@ -1848,9 +1848,12 @@ assertEmptyLabelFind tag ctx h obj key = do
   assertEqual (tag ++ " empty LABEL find") [obj] hits
 
 -- | The stored map carries none of the defaulted attributes.
-assertNotMaterialised :: String -> ObjectState -> IO ()
-assertNotMaterialised tag ost =
-  forM_ [AttrPrivate, AttrModifiable, AttrCopyable, AttrDestroyable] $ \t ->
+-- The label-less data object must not gain a stored empty label
+-- either; the certificate carries its own label.
+assertNotMaterialised :: String -> Bool -> ObjectState -> IO ()
+assertNotMaterialised tag labelLess ost =
+  forM_ ([AttrPrivate, AttrModifiable, AttrCopyable, AttrDestroyable]
+          ++ [AttrLabel | labelLess]) $ \t ->
     assertEqual (tag ++ " " ++ show t ++ " not stored") Nothing
       (Map.lookup t (osAttrs ost))
 
@@ -1885,8 +1888,8 @@ caseStorageDefaultsSqliteReload envLock = do
     assertNativeDefaultFinds "cert before reload" ctx h hc certKey
     assertNativeDefaultFinds "data before reload" ctx h hd appKey
     assertEmptyLabelFind "data before reload" ctx h hd appKey
-    objectStateOfLabel inst certLabel >>= assertNotMaterialised "cert before reload"
-    objectStateOfApp inst app >>= assertNotMaterialised "data before reload"
+    objectStateOfLabel inst certLabel >>= assertNotMaterialised "cert before reload" False
+    objectStateOfApp inst app >>= assertNotMaterialised "data before reload" True
   withCertInstance envLock dbPath probe $ \ctx inst -> do
     h <- openRwSession ctx
     hc <- findByLabel ctx h certLabel >>= only "cert refind"
@@ -1896,8 +1899,8 @@ caseStorageDefaultsSqliteReload envLock = do
     assertNativeDefaultFinds "cert after reload" ctx h hc certKey
     assertNativeDefaultFinds "data after reload" ctx h hd appKey
     assertEmptyLabelFind "data after reload" ctx h hd appKey
-    objectStateOfLabel inst certLabel >>= assertNotMaterialised "cert after reload"
-    objectStateOfApp inst app >>= assertNotMaterialised "data after reload"
+    objectStateOfLabel inst certLabel >>= assertNotMaterialised "cert after reload" False
+    objectStateOfApp inst app >>= assertNotMaterialised "data after reload" True
 
 -- | Memory storage: the same reads and finds on token and session
 -- objects created without any common storage attribute but TOKEN.
