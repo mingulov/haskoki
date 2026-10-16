@@ -34,6 +34,7 @@
 #include <openssl/crypto.h>
 #include <openssl/dh.h>
 #include <openssl/encoder.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
@@ -1122,229 +1123,534 @@ DERIVE_CASES(ecdh, K_ECDH)
 DERIVE_CASES(xdh, K_XDH)
 DERIVE_CASES(dh, K_DH_NAMED)
 
-/* A failed OAEP decrypt cleanses the allocation it made, not the length
- * the failing call reported: the seam fills the buffer and moves the
- * reported length by delta, so cleansing the reported length overruns
- * (grow) or leaves a dirty tail byte (shrink). */
-static void oaep_fail_case(int grow)
+/* --- per-helper failure-path extent cases -------------------------------
+ * Every helper that cleanses an allocation after a length-mutating output
+ * call gets its own shrink/grow pair: the seam fills the buffer and moves
+ * the reported length by delta, so cleansing the reported length overruns
+ * (grow) or leaves a dirty tail byte (shrink). One driver serves them all;
+ * each fail-leg cleanse is covered by its own helper pair. */
+typedef struct {
+    EVP_PKEY *key;          /* live key, when keygen was used */
+    unsigned char *priv;    /* PKCS#8 private DER (sign/decrypt) */
+    size_t privlen;
+    unsigned char *pub;     /* SPKI public DER (encrypt) */
+    size_t publen;
+    unsigned char *in;      /* decrypt input (OAEP zeroes, PKCS#1 ct) */
+    size_t inlen;
+    const unsigned char *msg;
+    size_t msglen;
+    long warm_len;          /* warmup exact length, 0 = any positive */
+} fail_keys_t;
+
+typedef struct {
+    void (*arm)(long delta, int mode);
+    int arm_mode;           /* decrypt realfirst / digest succeed */
+    int slot;               /* seam slot for the extent check */
+    long armed_rc;          /* expected armed-call return */
+    long warm_fail_rc;      /* 0 = the warmup must succeed */
+    int (*prepare)(fail_keys_t *k);
+    long (*invoke)(fail_keys_t *k, unsigned char **out);
+} fail_spec_t;
+
+static const unsigned char fail_msg5[5] = { 'h', 'e', 'l', 'l', 'o' };
+/* The DSA raw operation enforces a 20-byte digest floor and the X9.31
+ * prehash signs a caller digest, so those two cases use longer fixed
+ * inputs. */
+static unsigned char fail_msg20[20];
+static unsigned char fail_msg32[32];
+static int fail_msg_filled;
+
+static void fill_fail_msgs(void)
 {
-    EVP_PKEY *rsa = NULL;
-    unsigned char *priv = NULL;
-    size_t privlen = 0;
-    unsigned char *in = NULL, *out = NULL;
-    size_t k = 0;
+    size_t i;
+    if (fail_msg_filled)
+        return;
+    for (i = 0; i < sizeof(fail_msg20); i++)
+        fail_msg20[i] = (unsigned char)(i + 1);
+    for (i = 0; i < sizeof(fail_msg32); i++)
+        fail_msg32[i] = (unsigned char)(0xA0 + i);
+    fail_msg_filled = 1;
+}
+
+static void arm2_encrypt(long delta, int mode)
+{
+    (void)mode;
+    hsk_ossl4_test_seam_arm_encrypt(delta);
+}
+
+static void arm2_pkey_sign(long delta, int mode)
+{
+    (void)mode;
+    hsk_ossl4_test_seam_arm_pkey_sign(delta);
+}
+
+static void fail_keys_free(fail_keys_t *k)
+{
+    OPENSSL_free(k->priv);
+    OPENSSL_free(k->pub);
+    OPENSSL_free(k->in);
+    EVP_PKEY_free(k->key);
+    memset(k, 0, sizeof(*k));
+}
+
+static void fail_case(const fail_spec_t *spec, int grow)
+{
+    fail_keys_t keys;
+    unsigned char *out = NULL;
     long before, rc;
     long delta = grow ? 1 : -1;
-    int ksize;
+    memset(&keys, 0, sizeof(keys));
     trk_quarantine = 1; /* unique addresses: one free per allocation */
-    rsa = gen_from("RSA", NULL);
-    REQ(rsa != NULL, "keys");
-    ksize = EVP_PKEY_get_size(rsa);
-    REQ(ksize > 0, "key-size");
-    k = (size_t)ksize;
-    REQ(priv_der(rsa, &priv, &privlen), "priv-der");
-    in = OPENSSL_malloc(k);
-    REQ(in != NULL, "input");
-    memset(in, 0, k);
-    /* Warmup: an unarmed decrypt populates the libctx caches before the
-     * live mark (all-zero input is never valid OAEP padding). Drop the
-     * note the warmup recorded. */
-    rc = hsk_ossl4_rsa_oaep_decrypt(g_lib, "SHA256", "SHA256", NULL, 0, "",
-                                    priv, privlen, in, k, &out);
-    REQ(rc == HSK_OSSL4_ERR_AUTHFAIL && out == NULL, "warmup");
+    fill_fail_msgs();
+    REQ(spec->prepare(&keys), "keys");
+    /* Warmup: an unarmed call populates the libctx caches before the
+     * live mark. Drop the note the warmup recorded. */
+    rc = spec->invoke(&keys, &out);
+    if (spec->warm_fail_rc != 0) {
+        REQ(rc == spec->warm_fail_rc && out == NULL, "warmup");
+    } else {
+        REQ(rc > 0 && out != NULL, "warmup");
+        if (keys.warm_len > 0)
+            REQ(rc == keys.warm_len, "warmup-len");
+        hsk_ossl4_free(out, (size_t)rc);
+        out = NULL;
+    }
     hsk_ossl4_test_seam_reset();
+    /* Drain OpenSSL's per-thread error state around the measurement:
+     * provider calls raise soft errors whose file/func/data strings
+     * live in thread state until the next clear, so a stale entry
+     * freed by the measured call (or a fresh one it raises) would
+     * move the live count without any shim leak. The drains only
+     * release error-state strings; every shim block stays counted. */
+    ERR_clear_error();
     before = mark_live();
     if (!g_noarm)
-        hsk_ossl4_test_seam_arm_decrypt(delta, 0);
-    rc = hsk_ossl4_rsa_oaep_decrypt(g_lib, "SHA256", "SHA256", NULL, 0, "",
-                                    priv, privlen, in, k, &out);
+        spec->arm(delta, spec->arm_mode);
+    rc = spec->invoke(&keys, &out);
     seam_fired_check();
     REQ(*g_reason == 0, g_reason);
-    REQ(rc == HSK_OSSL4_ERR_AUTHFAIL, "rc-code");
+    REQ(rc == spec->armed_rc, "rc-code");
     REQ(out == NULL, "out-set");
-    check_target(HSK_OSSL4_SEAM_OAEP);
+    check_target(spec->slot);
+    ERR_clear_error();
     REQ_LIVE(before);
-    OPENSSL_free(in);
-    OPENSSL_free(priv);
-    EVP_PKEY_free(rsa);
+    fail_keys_free(&keys);
 }
 
-static void case_seam_oaep_fail_shrink(void)
+/* --- RSA key material (decrypt, encrypt, raw/hash/PSS/X9.31 sign) --- */
+static int prep_rsa_priv(fail_keys_t *k)
 {
-    oaep_fail_case(0);
+    int ksize;
+    k->key = gen_from("RSA", NULL);
+    if (k->key == NULL)
+        return 0;
+    ksize = EVP_PKEY_get_size(k->key);
+    if (ksize <= 0 || !priv_der(k->key, &k->priv, &k->privlen))
+        return 0;
+    k->msg = fail_msg5;
+    k->msglen = sizeof(fail_msg5);
+    k->warm_len = ksize;
+    return 1;
 }
 
-static void case_seam_oaep_fail_grow(void)
+static int prep_rsa_pub(fail_keys_t *k)
 {
-    oaep_fail_case(1);
+    int n;
+    if (!prep_rsa_priv(k))
+        return 0;
+    n = i2d_PUBKEY(k->key, &k->pub);
+    if (n <= 0 || k->pub == NULL)
+        return 0;
+    k->publen = (size_t)n;
+    return 1;
 }
 
-/* A failed PKCS#1 encrypt cleanses the allocation it made, not the length
- * the failing call reported: the seam fills the buffer and moves the
- * reported length by delta, so cleansing the reported length overruns
- * (grow) or leaves a dirty tail byte (shrink). The OAEP encrypt shares
- * the same output seam. */
-static void encrypt_fail_case(int grow)
+/* OAEP decrypt: the all-zero input is never valid padding, so the warmup
+ * fails the same way the armed call does. */
+static int prep_oaep(fail_keys_t *k)
 {
-    EVP_PKEY *rsa = NULL;
-    unsigned char *pub = NULL;
-    size_t publen = 0;
+    if (!prep_rsa_priv(k))
+        return 0;
+    k->in = OPENSSL_malloc((size_t)k->warm_len);
+    if (k->in == NULL)
+        return 0;
+    k->inlen = (size_t)k->warm_len;
+    memset(k->in, 0, k->inlen);
+    return 1;
+}
+
+/* PKCS#1 decrypt: a valid ciphertext (built with an unarmed encrypt),
+ * so the realfirst seam performs the real call before reporting failure
+ * and provider state matches the unarmed run. */
+static int prep_pkcs1dec(fail_keys_t *k)
+{
+    unsigned char *ct = NULL;
+    long rc;
+    if (!prep_rsa_pub(k))
+        return 0;
+    rc = hsk_ossl4_rsa_pkcs1_encrypt(g_lib, "", k->pub, k->publen, k->msg,
+                                     k->msglen, &ct);
+    if (rc <= 0 || ct == NULL) {
+        OPENSSL_free(ct);
+        return 0;
+    }
+    k->in = ct;
+    k->inlen = (size_t)rc;
+    k->warm_len = (long)k->msglen; /* the warmup recovers the input */
+    return 1;
+}
+
+static int prep_x931_prehash(fail_keys_t *k)
+{
+    if (!prep_rsa_priv(k))
+        return 0;
+    /* A fixed digest stand-in: the prehash path signs the caller digest
+     * directly (mdname selects the X9.31 hash id only). */
+    k->msg = fail_msg32;
+    k->msglen = sizeof(fail_msg32);
+    return 1;
+}
+
+static long inv_rsa_oaep_decrypt(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_oaep_decrypt(g_lib, "SHA256", "SHA256", NULL, 0, "",
+                                      k->priv, k->privlen, k->in, k->inlen,
+                                      out);
+}
+
+static long inv_rsa_pkcs1_decrypt(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_pkcs1_decrypt(g_lib, "", k->priv, k->privlen, k->in,
+                                       k->inlen, out);
+}
+
+static long inv_rsa_pkcs1_encrypt(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_pkcs1_encrypt(g_lib, "", k->pub, k->publen, k->msg,
+                                       k->msglen, out);
+}
+
+static long inv_rsa_oaep_encrypt(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_oaep_encrypt(g_lib, "SHA256", "SHA256", NULL, 0, "",
+                                      k->pub, k->publen, k->msg, k->msglen,
+                                      out);
+}
+
+static long inv_rsa_raw_sign(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_sign(g_lib, NULL, "", k->priv, k->privlen, k->msg,
+                              k->msglen, 1, out);
+}
+
+static long inv_rsa_hash_sign(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_sign(g_lib, "SHA256", "", k->priv, k->privlen, k->msg,
+                              k->msglen, 0, out);
+}
+
+static long inv_pss_sign(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_pss_sign(g_lib, "SHA256", "SHA256", 32, "", k->priv,
+                                  k->privlen, k->msg, k->msglen, out);
+}
+
+static long inv_x931_prehash(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_x931_sign(g_lib, "SHA256", "", k->priv, k->privlen,
+                                   k->msg, k->msglen, 1, out);
+}
+
+static long inv_x931_digested(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_rsa_x931_sign(g_lib, "SHA256", "", k->priv, k->privlen,
+                                   k->msg, k->msglen, 0, out);
+}
+
+/* --- ECDSA/DSA (raw and hash branches each own a pair) --- */
+static int prep_ec(fail_keys_t *k)
+{
+    k->key = gen_from("EC", "P-256");
+    if (k->key == NULL || !priv_der(k->key, &k->priv, &k->privlen))
+        return 0;
+    k->msg = fail_msg5;
+    k->msglen = sizeof(fail_msg5);
+    k->warm_len = 0; /* DER length varies per signature */
+    return 1;
+}
+
+static int prep_dsa(fail_keys_t *k)
+{
+    unsigned char *pd = NULL;
+    long prc;
+    int kr;
+    prc = hsk_ossl4_dsa_gen_params(g_lib, "", 1024, 160, &pd);
+    if (prc <= 0) {
+        OPENSSL_free(pd);
+        return 0;
+    }
+    kr = hsk_ossl4_dsa_gen_keypair(g_lib, "", pd, (size_t)prc, &k->priv,
+                                   &k->privlen, &k->pub, &k->publen);
+    OPENSSL_free(pd);
+    if (kr != 0)
+        return 0;
+    k->msg = fail_msg5;
+    k->msglen = sizeof(fail_msg5);
+    k->warm_len = 0;
+    return 1;
+}
+
+static int prep_dsa_raw(fail_keys_t *k)
+{
+    if (!prep_dsa(k))
+        return 0;
+    /* The raw operation enforces the 20-byte digest floor. */
+    k->msg = fail_msg20;
+    k->msglen = sizeof(fail_msg20);
+    return 1;
+}
+
+static long inv_ecdsa_raw(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_ecdsa_sign(g_lib, NULL, "", k->priv, k->privlen, k->msg,
+                                k->msglen, 0, 1, out);
+}
+
+static long inv_ecdsa_hash(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_ecdsa_sign(g_lib, "SHA256", "", k->priv, k->privlen,
+                                k->msg, k->msglen, 0, 0, out);
+}
+
+static long inv_dsa_raw(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_dsa_sign(g_lib, NULL, "", k->priv, k->privlen, k->msg,
+                              k->msglen, 0, 1, out);
+}
+
+static long inv_dsa_hash(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_dsa_sign(g_lib, "SHA1", "", k->priv, k->privlen, k->msg,
+                              k->msglen, 0, 0, out);
+}
+
+static long inv_ecdsa_hash_raw(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_ecdsa_sign(g_lib, "SHA256", "", k->priv, k->privlen,
+                                k->msg, k->msglen, 1, 0, out);
+}
+
+static long inv_dsa_hash_raw(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_dsa_sign(g_lib, "SHA1", "", k->priv, k->privlen, k->msg,
+                              k->msglen, 1, 0, out);
+}
+
+/* --- EdDSA/ML-DSA/SLH-DSA (fixed signature lengths pin the warmup) --- */
+static int prep_evp(fail_keys_t *k, const char *alg, long siglen)
+{
+    k->key = gen_from(alg, NULL);
+    if (k->key == NULL || !priv_der(k->key, &k->priv, &k->privlen))
+        return 0;
+    k->msg = fail_msg5;
+    k->msglen = sizeof(fail_msg5);
+    k->warm_len = siglen;
+    return 1;
+}
+
+static int prep_ed25519(fail_keys_t *k)
+{
+    return prep_evp(k, "Ed25519", 64);
+}
+
+static int prep_mldsa44(fail_keys_t *k)
+{
+    return prep_evp(k, "ML-DSA-44", 2420);
+}
+
+static int prep_slhdsa128s(fail_keys_t *k)
+{
+    return prep_evp(k, "SLH-DSA-SHA2-128s", 7856);
+}
+
+static long inv_eddsa(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_eddsa_sign(g_lib, "ED25519", "", k->priv, k->privlen,
+                                k->msg, k->msglen, out);
+}
+
+static long inv_mldsa(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_mldsa_sign(g_lib, "ML-DSA-44", "", k->priv, k->privlen,
+                                k->msg, k->msglen, NULL, 0, 0, out);
+}
+
+static long inv_slhdsa(fail_keys_t *k, unsigned char **out)
+{
+    return hsk_ossl4_slhdsa_sign(g_lib, "SLH-DSA-SHA2-128s", "", k->priv,
+                                 k->privlen, k->msg, k->msglen, NULL, 0, 0,
+                                 out);
+}
+
+/* One row per helper and per branch; the pair name follows the row. */
+static const fail_spec_t spec_oaep_decrypt = {
+    hsk_ossl4_test_seam_arm_decrypt, 0, HSK_OSSL4_SEAM_OAEP,
+    HSK_OSSL4_ERR_AUTHFAIL, HSK_OSSL4_ERR_AUTHFAIL,
+    prep_oaep, inv_rsa_oaep_decrypt
+};
+static const fail_spec_t spec_pkcs1_decrypt = {
+    hsk_ossl4_test_seam_arm_decrypt, 1, HSK_OSSL4_SEAM_OAEP,
+    HSK_OSSL4_ERR_AUTHFAIL, 0,
+    prep_pkcs1dec, inv_rsa_pkcs1_decrypt
+};
+static const fail_spec_t spec_rsa_pkcs1_encrypt = {
+    arm2_encrypt, 0, HSK_OSSL4_SEAM_ENCRYPT,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_rsa_pub, inv_rsa_pkcs1_encrypt
+};
+static const fail_spec_t spec_oaep_encrypt = {
+    arm2_encrypt, 0, HSK_OSSL4_SEAM_ENCRYPT,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_rsa_pub, inv_rsa_oaep_encrypt
+};
+static const fail_spec_t spec_rsa_raw = {
+    arm2_pkey_sign, 0, HSK_OSSL4_SEAM_PKEY_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_rsa_priv, inv_rsa_raw_sign
+};
+static const fail_spec_t spec_rsa_hash = {
+    hsk_ossl4_test_seam_arm_digest_sign, 0, HSK_OSSL4_SEAM_DIGEST_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_rsa_priv, inv_rsa_hash_sign
+};
+static const fail_spec_t spec_ecdsa_raw = {
+    arm2_pkey_sign, 0, HSK_OSSL4_SEAM_PKEY_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_ec, inv_ecdsa_raw
+};
+static const fail_spec_t spec_ecdsa_hash = {
+    hsk_ossl4_test_seam_arm_digest_sign, 0, HSK_OSSL4_SEAM_DIGEST_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_ec, inv_ecdsa_hash
+};
+static const fail_spec_t spec_dsa_raw = {
+    arm2_pkey_sign, 0, HSK_OSSL4_SEAM_PKEY_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_dsa_raw, inv_dsa_raw
+};
+static const fail_spec_t spec_dsa_hash = {
+    hsk_ossl4_test_seam_arm_digest_sign, 0, HSK_OSSL4_SEAM_DIGEST_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_dsa, inv_dsa_hash
+};
+static const fail_spec_t spec_eddsa = {
+    hsk_ossl4_test_seam_arm_digest_sign, 0, HSK_OSSL4_SEAM_DIGEST_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_ed25519, inv_eddsa
+};
+static const fail_spec_t spec_mldsa = {
+    hsk_ossl4_test_seam_arm_digest_sign, 0, HSK_OSSL4_SEAM_DIGEST_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_mldsa44, inv_mldsa
+};
+static const fail_spec_t spec_slhdsa = {
+    hsk_ossl4_test_seam_arm_digest_sign, 0, HSK_OSSL4_SEAM_DIGEST_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_slhdsa128s, inv_slhdsa
+};
+static const fail_spec_t spec_pss = {
+    hsk_ossl4_test_seam_arm_digest_sign, 0, HSK_OSSL4_SEAM_DIGEST_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_rsa_priv, inv_pss_sign
+};
+static const fail_spec_t spec_x931_prehash = {
+    arm2_pkey_sign, 0, HSK_OSSL4_SEAM_PKEY_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_x931_prehash, inv_x931_prehash
+};
+static const fail_spec_t spec_x931_digested = {
+    hsk_ossl4_test_seam_arm_digest_sign, 0, HSK_OSSL4_SEAM_DIGEST_SIGN,
+    HSK_OSSL4_ERR_NATIVE, 0,
+    prep_rsa_priv, inv_x931_digested
+};
+
+#define FAIL_CASES(tag, spec)                                             \
+    static void case_seam_##tag##_shrink(void)                             \
+    {                                                                      \
+        fail_case(&(spec), 0);                                            \
+    }                                                                      \
+    static void case_seam_##tag##_grow(void)                               \
+    {                                                                      \
+        fail_case(&(spec), 1);                                            \
+    }
+
+FAIL_CASES(oaep_fail, spec_oaep_decrypt)
+FAIL_CASES(encrypt_fail, spec_rsa_pkcs1_encrypt)
+FAIL_CASES(pkey_sign_fail, spec_rsa_raw)
+FAIL_CASES(digest_sign_fail, spec_rsa_hash)
+FAIL_CASES(ecdsa_raw_fail, spec_ecdsa_raw)
+FAIL_CASES(ecdsa_hash_fail, spec_ecdsa_hash)
+FAIL_CASES(dsa_raw_fail, spec_dsa_raw)
+FAIL_CASES(dsa_hash_fail, spec_dsa_hash)
+FAIL_CASES(eddsa_fail, spec_eddsa)
+FAIL_CASES(mldsa_fail, spec_mldsa)
+FAIL_CASES(slhdsa_fail, spec_slhdsa)
+FAIL_CASES(pss_fail, spec_pss)
+FAIL_CASES(x931_prehash_fail, spec_x931_prehash)
+FAIL_CASES(x931_digested_fail, spec_x931_digested)
+FAIL_CASES(oaep_encrypt_fail, spec_oaep_encrypt)
+FAIL_CASES(pkcs1_decrypt_fail, spec_pkcs1_decrypt)
+
+/* The ECDSA/DSA shared end block frees the DER buffer after a successful
+ * output call on the want_raw path; the fail pairs above never reach it.
+ * The succeed+shrink seam runs the real DigestSign and then shortens the
+ * reported length by one, so the DER parse fails deterministically and
+ * the end block frees a diverged length. */
+static void ok_shrink_raw_case(int is_dsa)
+{
+    fail_keys_t keys;
     unsigned char *out = NULL;
-    static const unsigned char msg[5] = { 'h', 'e', 'l', 'l', 'o' };
+    long (*invoke)(fail_keys_t *k, unsigned char **out);
     long before, rc;
-    long delta = grow ? 1 : -1;
-    int ksize, n;
+    memset(&keys, 0, sizeof(keys));
     trk_quarantine = 1; /* unique addresses: one free per allocation */
-    rsa = gen_from("RSA", NULL);
-    REQ(rsa != NULL, "keys");
-    ksize = EVP_PKEY_get_size(rsa);
-    REQ(ksize > 0, "key-size");
-    n = i2d_PUBKEY(rsa, &pub);
-    REQ(n > 0 && pub != NULL, "pub-der");
-    publen = (size_t)n;
-    /* Warmup: an unarmed encrypt populates the libctx caches before the
+    fill_fail_msgs();
+    if (is_dsa) {
+        REQ(prep_dsa(&keys), "keys");
+        invoke = inv_dsa_hash_raw;
+    } else {
+        REQ(prep_ec(&keys), "keys");
+        invoke = inv_ecdsa_hash_raw;
+    }
+    /* Warmup: an unarmed call populates the libctx caches before the
      * live mark. Drop the note the warmup recorded. */
-    rc = hsk_ossl4_rsa_pkcs1_encrypt(g_lib, "", pub, publen, msg, sizeof(msg),
-                                     &out);
-    REQ(rc == (long)ksize && out != NULL, "warmup");
+    rc = invoke(&keys, &out);
+    REQ(rc > 0 && out != NULL, "warmup");
     hsk_ossl4_free(out, (size_t)rc);
     out = NULL;
     hsk_ossl4_test_seam_reset();
     before = mark_live();
     if (!g_noarm)
-        hsk_ossl4_test_seam_arm_encrypt(delta);
-    rc = hsk_ossl4_rsa_pkcs1_encrypt(g_lib, "", pub, publen, msg, sizeof(msg),
-                                     &out);
-    seam_fired_check();
-    REQ(*g_reason == 0, g_reason);
-    REQ(rc == HSK_OSSL4_ERR_NATIVE, "rc-code");
-    REQ(out == NULL, "out-set");
-    check_target(HSK_OSSL4_SEAM_ENCRYPT);
-    REQ_LIVE(before);
-    OPENSSL_free(pub);
-    EVP_PKEY_free(rsa);
-}
-
-static void case_seam_encrypt_fail_shrink(void)
-{
-    encrypt_fail_case(0);
-}
-
-static void case_seam_encrypt_fail_grow(void)
-{
-    encrypt_fail_case(1);
-}
-
-/* A failed raw RSA sign cleanses the allocation it made, not the length
- * the failing call reported. The X9.31 prehash and the ECDSA/DSA raw
- * paths share the same output seam. */
-static void pkey_sign_fail_case(int grow)
-{
-    EVP_PKEY *rsa = NULL;
-    unsigned char *priv = NULL;
-    size_t privlen = 0;
-    unsigned char *out = NULL;
-    static const unsigned char msg[5] = { 'h', 'e', 'l', 'l', 'o' };
-    long before, rc;
-    long delta = grow ? 1 : -1;
-    int ksize;
-    trk_quarantine = 1; /* unique addresses: one free per allocation */
-    rsa = gen_from("RSA", NULL);
-    REQ(rsa != NULL, "keys");
-    ksize = EVP_PKEY_get_size(rsa);
-    REQ(ksize > 0, "key-size");
-    REQ(priv_der(rsa, &priv, &privlen), "priv-der");
-    /* Warmup: an unarmed sign populates the libctx caches before the
-     * live mark. Drop the note the warmup recorded. */
-    rc = hsk_ossl4_rsa_sign(g_lib, NULL, "", priv, privlen, msg, sizeof(msg),
-                            1, &out);
-    REQ(rc == (long)ksize && out != NULL, "warmup");
-    hsk_ossl4_free(out, (size_t)rc);
-    out = NULL;
-    hsk_ossl4_test_seam_reset();
-    before = mark_live();
-    if (!g_noarm)
-        hsk_ossl4_test_seam_arm_pkey_sign(delta);
-    rc = hsk_ossl4_rsa_sign(g_lib, NULL, "", priv, privlen, msg, sizeof(msg),
-                            1, &out);
-    seam_fired_check();
-    REQ(*g_reason == 0, g_reason);
-    REQ(rc == HSK_OSSL4_ERR_NATIVE, "rc-code");
-    REQ(out == NULL, "out-set");
-    check_target(HSK_OSSL4_SEAM_PKEY_SIGN);
-    REQ_LIVE(before);
-    OPENSSL_free(priv);
-    EVP_PKEY_free(rsa);
-}
-
-static void case_seam_pkey_sign_fail_shrink(void)
-{
-    pkey_sign_fail_case(0);
-}
-
-static void case_seam_pkey_sign_fail_grow(void)
-{
-    pkey_sign_fail_case(1);
-}
-
-/* A failed hash RSA sign cleanses the allocation it made, not the length
- * the failing call reported. The PSS, X9.31 digested, ECDSA/DSA hash,
- * EdDSA, ML-DSA and SLH-DSA paths share the same output seam. */
-static void digest_sign_fail_case(int grow)
-{
-    EVP_PKEY *rsa = NULL;
-    unsigned char *priv = NULL;
-    size_t privlen = 0;
-    unsigned char *out = NULL;
-    static const unsigned char msg[5] = { 'h', 'e', 'l', 'l', 'o' };
-    long before, rc;
-    long delta = grow ? 1 : -1;
-    int ksize;
-    trk_quarantine = 1; /* unique addresses: one free per allocation */
-    rsa = gen_from("RSA", NULL);
-    REQ(rsa != NULL, "keys");
-    ksize = EVP_PKEY_get_size(rsa);
-    REQ(ksize > 0, "key-size");
-    REQ(priv_der(rsa, &priv, &privlen), "priv-der");
-    /* Warmup: an unarmed sign populates the libctx caches before the
-     * live mark. Drop the note the warmup recorded. */
-    rc = hsk_ossl4_rsa_sign(g_lib, "SHA256", "", priv, privlen, msg,
-                            sizeof(msg), 0, &out);
-    REQ(rc == (long)ksize && out != NULL, "warmup");
-    hsk_ossl4_free(out, (size_t)rc);
-    out = NULL;
-    hsk_ossl4_test_seam_reset();
-    before = mark_live();
-    if (!g_noarm)
-        hsk_ossl4_test_seam_arm_digest_sign(delta, 0);
-    rc = hsk_ossl4_rsa_sign(g_lib, "SHA256", "", priv, privlen, msg,
-                            sizeof(msg), 0, &out);
+        hsk_ossl4_test_seam_arm_digest_sign(-1, 1);
+    rc = invoke(&keys, &out);
     seam_fired_check();
     REQ(*g_reason == 0, g_reason);
     REQ(rc == HSK_OSSL4_ERR_NATIVE, "rc-code");
     REQ(out == NULL, "out-set");
     check_target(HSK_OSSL4_SEAM_DIGEST_SIGN);
     REQ_LIVE(before);
-    OPENSSL_free(priv);
-    EVP_PKEY_free(rsa);
+    fail_keys_free(&keys);
 }
 
-static void case_seam_digest_sign_fail_shrink(void)
+static void case_seam_ecdsa_hash_raw_ok_shrink(void)
 {
-    digest_sign_fail_case(0);
+    ok_shrink_raw_case(0);
 }
 
-static void case_seam_digest_sign_fail_grow(void)
+static void case_seam_dsa_hash_raw_ok_shrink(void)
 {
-    digest_sign_fail_case(1);
+    ok_shrink_raw_case(1);
 }
-
-/* The PKCS#1 decrypt shares the output-decrypt seam with the OAEP decrypt
- * (same HSK_PKEY_DECRYPT_OUT macro and HSK_OSSL4_SEAM_OAEP slot); the OAEP
- * pair above pins the family extent. A dedicated PKCS#1-decrypt pair was
- * tried and showed the same dirty-tail/overrun signature, but the
- * NO_PADDING path moves the live count by itself, so no clean live-neutral
- * case exists for it here. */
 
 /* The detector itself: a partly cleansed block and a one-byte overrun
  * must both be reported. */
@@ -1424,6 +1730,32 @@ static const case_t cases[] = {
     { "seam-pkey-sign-fail-grow", case_seam_pkey_sign_fail_grow, 1, 0, 0 },
     { "seam-digest-sign-fail-shrink", case_seam_digest_sign_fail_shrink, 1, 0, 0 },
     { "seam-digest-sign-fail-grow", case_seam_digest_sign_fail_grow, 1, 0, 0 },
+    { "seam-ecdsa-raw-fail-shrink", case_seam_ecdsa_raw_fail_shrink, 1, 0, 0 },
+    { "seam-ecdsa-raw-fail-grow", case_seam_ecdsa_raw_fail_grow, 1, 0, 0 },
+    { "seam-ecdsa-hash-fail-shrink", case_seam_ecdsa_hash_fail_shrink, 1, 0, 0 },
+    { "seam-ecdsa-hash-fail-grow", case_seam_ecdsa_hash_fail_grow, 1, 0, 0 },
+    { "seam-dsa-raw-fail-shrink", case_seam_dsa_raw_fail_shrink, 1, 0, 0 },
+    { "seam-dsa-raw-fail-grow", case_seam_dsa_raw_fail_grow, 1, 0, 0 },
+    { "seam-dsa-hash-fail-shrink", case_seam_dsa_hash_fail_shrink, 1, 0, 0 },
+    { "seam-dsa-hash-fail-grow", case_seam_dsa_hash_fail_grow, 1, 0, 0 },
+    { "seam-eddsa-fail-shrink", case_seam_eddsa_fail_shrink, 1, 0, 0 },
+    { "seam-eddsa-fail-grow", case_seam_eddsa_fail_grow, 1, 0, 0 },
+    { "seam-mldsa-fail-shrink", case_seam_mldsa_fail_shrink, 1, 0, 0 },
+    { "seam-mldsa-fail-grow", case_seam_mldsa_fail_grow, 1, 0, 0 },
+    { "seam-slhdsa-fail-shrink", case_seam_slhdsa_fail_shrink, 1, 0, 0 },
+    { "seam-slhdsa-fail-grow", case_seam_slhdsa_fail_grow, 1, 0, 0 },
+    { "seam-pss-fail-shrink", case_seam_pss_fail_shrink, 1, 0, 0 },
+    { "seam-pss-fail-grow", case_seam_pss_fail_grow, 1, 0, 0 },
+    { "seam-x931-prehash-fail-shrink", case_seam_x931_prehash_fail_shrink, 1, 0, 0 },
+    { "seam-x931-prehash-fail-grow", case_seam_x931_prehash_fail_grow, 1, 0, 0 },
+    { "seam-x931-digested-fail-shrink", case_seam_x931_digested_fail_shrink, 1, 0, 0 },
+    { "seam-x931-digested-fail-grow", case_seam_x931_digested_fail_grow, 1, 0, 0 },
+    { "seam-oaep-encrypt-fail-shrink", case_seam_oaep_encrypt_fail_shrink, 1, 0, 0 },
+    { "seam-oaep-encrypt-fail-grow", case_seam_oaep_encrypt_fail_grow, 1, 0, 0 },
+    { "seam-pkcs1-decrypt-fail-shrink", case_seam_pkcs1_decrypt_fail_shrink, 1, 0, 0 },
+    { "seam-pkcs1-decrypt-fail-grow", case_seam_pkcs1_decrypt_fail_grow, 1, 0, 0 },
+    { "seam-ecdsa-hash-raw-ok-shrink", case_seam_ecdsa_hash_raw_ok_shrink, 1, 0, 0 },
+    { "seam-dsa-hash-raw-ok-shrink", case_seam_dsa_hash_raw_ok_shrink, 1, 0, 0 },
     { "canary-selftest", case_canary_selftest, 1, 1, 0 },
 #endif
 };

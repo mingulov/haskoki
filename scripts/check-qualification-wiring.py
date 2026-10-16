@@ -1274,7 +1274,25 @@ SAN_SEAM = tuple(["seam-bn-named", "seam-bn-explicit"]
                     "seam-encrypt-fail-shrink", "seam-encrypt-fail-grow",
                     "seam-pkey-sign-fail-shrink", "seam-pkey-sign-fail-grow",
                     "seam-digest-sign-fail-shrink",
-                    "seam-digest-sign-fail-grow"])
+                    "seam-digest-sign-fail-grow"]
+                 + ["seam-ecdsa-raw-fail-shrink", "seam-ecdsa-raw-fail-grow",
+                    "seam-ecdsa-hash-fail-shrink", "seam-ecdsa-hash-fail-grow",
+                    "seam-dsa-raw-fail-shrink", "seam-dsa-raw-fail-grow",
+                    "seam-dsa-hash-fail-shrink", "seam-dsa-hash-fail-grow",
+                    "seam-eddsa-fail-shrink", "seam-eddsa-fail-grow",
+                    "seam-mldsa-fail-shrink", "seam-mldsa-fail-grow",
+                    "seam-slhdsa-fail-shrink", "seam-slhdsa-fail-grow",
+                    "seam-pss-fail-shrink", "seam-pss-fail-grow",
+                    "seam-x931-prehash-fail-shrink",
+                    "seam-x931-prehash-fail-grow",
+                    "seam-x931-digested-fail-shrink",
+                    "seam-x931-digested-fail-grow",
+                    "seam-oaep-encrypt-fail-shrink",
+                    "seam-oaep-encrypt-fail-grow",
+                    "seam-pkcs1-decrypt-fail-shrink",
+                    "seam-pkcs1-decrypt-fail-grow",
+                    "seam-ecdsa-hash-raw-ok-shrink",
+                    "seam-dsa-hash-raw-ok-shrink"])
 SAN_HOOKS_TRACK = ("live-1000", "credit-gone", "address-reuse", "copy-fault",
                    "adoption-alloc", "adoption-load", "final-fault",
                    "canary-selftest") + SAN_SEAM + SAN_COMMON
@@ -2206,7 +2224,7 @@ def self_test():
         controls.expect_fail("report sanitizer verifier uses the checkout sha", root, "QW-LANE-SANVERIFY")
         # Static drift between the sanitizer driver and the expected sets.
         root = fresh()
-        _rewrite(root / SANITIZER_DRIVER, "seam-digest-sign-fail-grow\"", "\"")
+        _rewrite(root / SANITIZER_DRIVER, "seam-dsa-hash-raw-ok-shrink\"", "\"")
         controls.expect_fail("sanitizer driver drops a seam case", root, "QW-SAN-TABLE")
         root = fresh()
         _rewrite(root / SANITIZER_DRIVER,

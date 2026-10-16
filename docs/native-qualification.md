@@ -96,13 +96,23 @@ no-op) in production:
 
 Forced paths: a BN conversion that fails after the buffer is allocated, a
 derive that reports a length different from the allocation (shorter or
-longer), each with the derive both failing and succeeding, and a decrypt,
+longer), each with the derive both failing and succeeding, a decrypt,
 encrypt, PKEY sign or DigestSign that reports failure with a moved length
-(shorter or longer). The harness checks the exact extent, canary bytes
-around the allocation, and exact free counts. The PKCS#1 decrypt shares
-the decrypt seam with the OAEP decrypt; its dedicated pair was tried but
-the NO_PADDING path moves the live count by itself, so the OAEP pair pins
-the family and no separate PKCS#1-decrypt case exists.
+(shorter or longer), a decrypt that performs the real call and then
+reports failure (so provider state matches the unarmed run), and a
+DigestSign that performs the real call and then reports a shortened
+length. The PKEY-sign seam reports failure as -1, pinning the <= 0
+checks. The harness checks the exact extent, canary bytes around the
+allocation, and exact free counts. Every helper with a failure-path
+cleanse owns its pair: ECDSA and DSA in both the raw and hash branches,
+EdDSA, ML-DSA-44, SLH-DSA-SHA2-128s, RSA raw and hash, PSS, X9.31 prehash
+and digested, OAEP and PKCS#1 encrypt, and OAEP and PKCS#1 decrypt (the
+PKCS#1 pair uses the real-call-first decrypt mode). The ECDSA/DSA
+hash-raw ok-shrink cases reach the shared end block with a diverged
+length after the DER parse fails. The live check drains OpenSSL's
+per-thread error state around the measurement: provider calls raise
+soft errors whose file/func/data strings would otherwise move the
+count without any shim leak.
 
 Success-path extent change (production behavior): after a successful derive,
 a reported length above the allocation fails closed and the whole allocation
@@ -118,7 +128,7 @@ tail was left as the derive wrote it. The KAT and consumer suites
 builds are the same flags without the sanitizers). It first probes for
 libcrypto, compile, run and LeakSanitizer. It then runs each variant's case
 list in both memory modes, `track` (the tracking allocator) and `plain`
-(OpenSSL's default allocator): 164 runs. `address-reuse` and
+(OpenSSL's default allocator): 268 runs. `address-reuse` and
 `canary-selftest` run in `track` mode only, because they test the tracker
 itself. It runs seven negative controls:
 
