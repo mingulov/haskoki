@@ -141,6 +141,28 @@ Receipt verifier (judges a real run, build-free):
 * QW-LANE-GATE (ruling 7): qualify keeps `needs: toolchain`, and the
   loaded image's id must equal the toolchain job's recorded
   builder_image_id ("toolchain image id mismatch" guard).
+* QW-LANE-SANITIZER: the qualify job runs scripts/test-native-sanitizers.sh
+  in exactly one step, through docker run, on `if: always()`, under
+  `set -euo pipefail`, never swallowed, with the exact SHA and its
+  receipt directory under $RUNNER_TEMP/qualify-evidence/sanitizer.
+* QW-LANE-SANVERIFY: qualify and report each run --verify-sanitizer on
+  that directory against the requested revision, never swallowed.
+* QW-SAN-TABLE: the driver's case lists, run loops and negative
+  controls equal the expected sets below (build-free drift check).
+
+Sanitizer receipt verifier (judges a real run, build-free):
+  python3 scripts/check-qualification-wiring.py --verify-sanitizer DIR --expect-sha SHA
+* QW-SAN-MISSING/SHAPE: receipt.json exists, schema
+  haskoki-native-sanitizer-receipt/1.
+* QW-SAN-GATE: gate is pass. An open gate (a sanitizer unavailable) or a
+  failed gate fails here; neither is ever reported as a pass.
+* QW-SAN-SHA/DIRTY/IMAGE: sha equals --expect-sha, sha_source is
+  measured or caller, dirty is false, the run was in a container image.
+* QW-SAN-SOURCES: the recorded hashes of the shim, the harness and the
+  driver equal the files of this checkout.
+* QW-SAN-VARIANTS/CASES/NEG: the four variants, the exact (binary,
+  memory mode, case) set all passing with exit 0, and the exact
+  negative-control set all firing.
 """
 import json
 import re
@@ -765,6 +787,56 @@ def check_lane(root, failures):
                      "ownership step must run on if: always() (record both verdicts)")
             if "continue-on-error" in ost or "|| true" in code or "|| :" in code:
                 _add(failures, "QW-LANE-OWNERSHIP", "ownership failure is swallowed")
+    if QUALIFY_JOB in blocks:
+        ssteps = [st for st in re.split(r"(?m)^      - name:", blocks[QUALIFY_JOB])
+                  if SANITIZER_DRIVER in "\n".join(_code_lines(st))]
+        if len(ssteps) != 1:
+            _add(failures, "QW-LANE-SANITIZER",
+                 f"{QUALIFY_JOB} must run {SANITIZER_DRIVER} in exactly one step (found {len(ssteps)})")
+        else:
+            sst = ssteps[0]
+            code = "\n".join(_code_lines(sst))
+            if "docker run" not in code or f'"$HASKOKI_IMAGE" {SANITIZER_DRIVER}' not in code:
+                _add(failures, "QW-LANE-SANITIZER",
+                     "sanitizer driver must run through docker run in the toolchain image")
+            if "set -euo pipefail" not in code:
+                _add(failures, "QW-LANE-SANITIZER",
+                     "sanitizer step must run under set -euo pipefail (the tee would hide the exit)")
+            if "HASKOKI_SAN_SHA" not in code or "git rev-parse HEAD" not in code:
+                _add(failures, "QW-LANE-SANITIZER", "sanitizer driver must receive the exact SHA")
+            if 'SAN_DIR="$RUNNER_TEMP/qualify-evidence/sanitizer"' not in code \
+                    or '-v "$SAN_DIR:/san"' not in code or "HASKOKI_SAN_ART=/san/art" not in code:
+                _add(failures, "QW-LANE-SANITIZER",
+                     "sanitizer receipt (SAN_DIR) must be $RUNNER_TEMP/qualify-evidence/sanitizer "
+                     "mounted at /san, with HASKOKI_SAN_ART=/san/art")
+            if not re.search(r"(?m)^        if: always\(\)", sst):
+                _add(failures, "QW-LANE-SANITIZER",
+                     "sanitizer step must run on if: always() (record its verdict)")
+            if "continue-on-error" in sst or "|| true" in code or "|| :" in code:
+                _add(failures, "QW-LANE-SANITIZER", "sanitizer failure is swallowed")
+    for job in (QUALIFY_JOB, REPORT_JOB):
+        if job not in blocks:
+            continue
+        vsteps = [st for st in re.split(r"(?m)^      - name:", blocks[job])
+                  if "--verify-sanitizer" in "\n".join(_code_lines(st))]
+        if len(vsteps) != 1:
+            _add(failures, "QW-LANE-SANVERIFY",
+                 f"{job}: need exactly one --verify-sanitizer step (found {len(vsteps)})")
+            continue
+        code = "\n".join(_code_lines(vsteps[0]))
+        if '--expect-sha "$REQUESTED_REVISION"' not in code \
+                or "REQUESTED_REVISION: ${{ inputs.revision || github.sha }}" not in vsteps[0]:
+            _add(failures, "QW-LANE-SANVERIFY",
+                 f"{job}: sanitizer verifier must check the requested revision "
+                 "(REQUESTED_REVISION = inputs.revision || github.sha)")
+        if "|| true" in code or "|| :" in code or "continue-on-error" in vsteps[0]:
+            _add(failures, "QW-LANE-SANVERIFY", f"{job}: sanitizer verifier failure is swallowed")
+        if not re.search(r"(?m)^        if: always\(\)\s*$", vsteps[0]):
+            _add(failures, "QW-LANE-SANVERIFY", f"{job}: sanitizer verifier must run on if: always()")
+        want = ("$RUNNER_TEMP/qualify-evidence/sanitizer/art" if job == QUALIFY_JOB
+                else "evidence-in/qualify-evidence/sanitizer/art")
+        if want not in code:
+            _add(failures, "QW-LANE-SANVERIFY", f"{job}: sanitizer verifier must read {want}")
     for name, block in blocks.items():
         if not re.search(r"(?m)^    timeout-minutes:\s*\d+\s*$", block):
             _add(failures, "QW-LANE-TIMEOUT", f"job {name} has no timeout-minutes")
@@ -842,6 +914,7 @@ def run_all(root):
     check_lane(root, failures)
     check_matrix_wiring(root, failures)
     check_ownership_table(root, failures)
+    check_sanitizer_table(root, failures)
     return failures
 
 
@@ -1137,6 +1210,179 @@ def check_ownership_table(root, failures):
     if sorted(pending) != sorted(OWNERSHIP_PENDING):
         _add(failures, "QW-OWN-TABLE",
              f"pending rows {sorted(pending)} != OWNERSHIP_PENDING {sorted(OWNERSHIP_PENDING)}")
+
+
+# ------------------------------------------------------------------
+# QW-SAN-*: native sanitizer receipt (--verify-sanitizer DIR --expect-sha
+# SHA) and the driver's case table. The expected sets are kept here,
+# independent of the driver, so a dropped case or control fails twice:
+# statically (QW-SAN-TABLE) and on the receipt (QW-SAN-CASES/NEG).
+# ------------------------------------------------------------------
+
+SANITIZER_DRIVER = "scripts/test-native-sanitizers.sh"
+SAN_SCHEMA = "haskoki-native-sanitizer-receipt/1"
+SAN_VARIANTS = ("san-hooks", "san-prod", "plain-hooks", "plain-prod")
+SAN_SOURCES = ("cbits/ossl4_ctx.c", "cbits/ossl4_ctx.h", "tests/c/ossl4_sanitize.c",
+               SANITIZER_DRIVER)
+SAN_COMMON = ("prod-digest-cycle", "prod-env-cycle", "prod-dh-kat", "prod-ecdh",
+              "prod-xdh", "prod-aead")
+SAN_SEAM = tuple(["seam-bn-named", "seam-bn-explicit"]
+                 + [f"seam-derive-{m}-{d}-{k}" for k in ("ecdh", "xdh", "dh")
+                    for m in ("fail", "ok") for d in ("shrink", "grow")])
+SAN_HOOKS_TRACK = ("live-1000", "credit-gone", "address-reuse", "copy-fault",
+                   "adoption-alloc", "adoption-load", "final-fault",
+                   "canary-selftest") + SAN_SEAM + SAN_COMMON
+SAN_HOOKS_PLAIN = ("live-1000", "credit-gone", "copy-fault", "adoption-alloc",
+                   "adoption-load", "final-fault") + SAN_SEAM + SAN_COMMON
+SAN_LISTS = {"COMMON_CASES": SAN_COMMON, "SEAM_CASES": SAN_SEAM,
+             "HOOKS_TRACK_CASES": SAN_HOOKS_TRACK, "HOOKS_PLAIN_CASES": SAN_HOOKS_PLAIN}
+# (binary, memory mode, case list variable)
+SAN_RUNS = (
+    ("san-hooks", "track", "HOOKS_TRACK_CASES"),
+    ("san-hooks", "plain", "HOOKS_PLAIN_CASES"),
+    ("san-prod", "track", "COMMON_CASES"),
+    ("san-prod", "plain", "COMMON_CASES"),
+    ("plain-hooks", "track", "HOOKS_TRACK_CASES"),
+    ("plain-hooks", "plain", "HOOKS_PLAIN_CASES"),
+    ("plain-prod", "track", "COMMON_CASES"),
+    ("plain-prod", "plain", "COMMON_CASES"),
+)
+SAN_NEGATIVE = (
+    ("san-prod", "plain", "neg-double-free"),
+    ("san-prod", "plain", "neg-handle-double-free"),
+    ("san-prod", "plain", "neg-env-double-free"),
+    ("san-prod", "plain", "neg-heap-overflow"),
+    ("san-prod", "plain", "neg-ubsan"),
+    ("san-hooks", "track", "exit-gate"),
+    ("san-hooks", "track", "seam-bn-named"),
+)
+
+
+def _san_expected_cases():
+    return [(b, m, c) for b, m, var in SAN_RUNS for c in SAN_LISTS[var]]
+
+
+def _sha256(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def verify_sanitizer(receipt_dir, expect_sha, root=ROOT):
+    """Return QW-SAN failure strings for a sanitizer receipt directory."""
+    failures = _failures()
+    if not re.fullmatch(r"[0-9a-f]{40}", expect_sha or ""):
+        _add(failures, "QW-SAN-SHA", f"expected sha is not 40 lowercase hex: {expect_sha!r}")
+    path = Path(receipt_dir) / "receipt.json"
+    try:
+        body = json.loads(path.read_text())
+    except OSError as exc:
+        _add(failures, "QW-SAN-MISSING", f"sanitizer receipt {path} is absent or unreadable: {exc}")
+        return failures
+    except ValueError as exc:
+        _add(failures, "QW-SAN-SHAPE", f"{path} is not valid JSON: {exc}")
+        return failures
+    if not isinstance(body, dict) or body.get("schema") != SAN_SCHEMA:
+        _add(failures, "QW-SAN-SHAPE", f"receipt schema is not {SAN_SCHEMA}")
+        return failures
+    if body.get("gate") != "pass" or body.get("open_reason"):
+        _add(failures, "QW-SAN-GATE",
+             f"gate={body.get('gate')!r} open_reason={body.get('open_reason')!r} (only pass qualifies)")
+    if body.get("sha") != expect_sha:
+        _add(failures, "QW-SAN-SHA", f"sha {body.get('sha')!r} != expected {expect_sha!r}")
+    if body.get("sha_source") not in ("measured", "caller"):
+        _add(failures, "QW-SAN-SHA", f"sha_source {body.get('sha_source')!r} is not measured or caller")
+    if body.get("dirty") is not False:
+        _add(failures, "QW-SAN-DIRTY", f"dirty={body.get('dirty')!r}, need false")
+    if not str(body.get("image_id", "")).startswith("sha256:"):
+        _add(failures, "QW-SAN-IMAGE", f"image_id {body.get('image_id')!r} is not a container image id")
+    sources = body.get("sources")
+    if not isinstance(sources, dict) or sorted(sources) != sorted(SAN_SOURCES):
+        _add(failures, "QW-SAN-SOURCES",
+             f"sources keys {sorted(sources) if isinstance(sources, dict) else sources!r} "
+             f"!= {sorted(SAN_SOURCES)}")
+    else:
+        for rel in SAN_SOURCES:
+            try:
+                want = _sha256(Path(root) / rel)
+            except OSError as exc:
+                _add(failures, "QW-SAN-SOURCES", f"cannot hash {rel} in this checkout: {exc}")
+                continue
+            if sources.get(rel) != want:
+                _add(failures, "QW-SAN-SOURCES", f"{rel}: receipt hash {sources.get(rel)!r} != checkout {want}")
+    variants = body.get("variants")
+    names = [v.get("name") for v in variants if isinstance(v, dict)] if isinstance(variants, list) else None
+    if names is None or sorted(names) != sorted(SAN_VARIANTS):
+        _add(failures, "QW-SAN-VARIANTS", f"variants {names!r} != {list(SAN_VARIANTS)}")
+    for key, rule, expected, ok in (
+            ("cases", "QW-SAN-CASES", _san_expected_cases(),
+             lambda r: r.get("verdict") == "pass" and r.get("exit") == 0),
+            ("negative_controls", "QW-SAN-NEG", list(SAN_NEGATIVE),
+             lambda r: r.get("verdict") == "pass" and _int(r.get("exit")) and r.get("exit") != 0)):
+        rows = body.get(key)
+        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+            _add(failures, rule, f"{key} must be a list of objects")
+            continue
+        got = [(r.get("binary"), r.get("mem"), r.get("case")) for r in rows]
+        for dup in _dups(got):
+            _add(failures, rule, f"{key}: duplicate row {dup}")
+        for miss in sorted(set(expected) - set(got)):
+            _add(failures, rule, f"{key}: missing {miss}")
+        for extra in sorted(set(got) - set(expected)):
+            _add(failures, rule, f"{key}: unexpected {extra}")
+        for row, keyt in zip(rows, got):
+            if keyt in set(expected) and not ok(row):
+                _add(failures, rule,
+                     f"{key}: {keyt} verdict={row.get('verdict')!r} exit={row.get('exit')!r}")
+    return failures
+
+
+def check_sanitizer_table(root, failures):
+    """QW-SAN-TABLE: the driver's lists, run loops and controls equal the expected sets."""
+    try:
+        text = (Path(root) / SANITIZER_DRIVER).read_text()
+    except OSError as exc:
+        _add(failures, "QW-SAN-TABLE", f"cannot read {SANITIZER_DRIVER}: {exc}")
+        return
+    code = "\n".join(_code_lines(text))
+    raw = {}
+    for name in SAN_LISTS:
+        m = re.search(rf'(?m)^{name}="([^"]*)"\s*$', code)
+        if not m:
+            _add(failures, "QW-SAN-TABLE", f"{SANITIZER_DRIVER}: no {name}=\"...\" line")
+            return
+        raw[name] = m.group(1).split()
+
+    def expand(name, seen=()):
+        out = []
+        for tok in raw.get(name, []):
+            if tok.startswith("$"):
+                ref = tok[1:].strip("{}")
+                if ref in seen or ref not in raw:
+                    _add(failures, "QW-SAN-TABLE", f"{name}: bad reference {tok}")
+                    continue
+                out += expand(ref, seen + (name,))
+            else:
+                out.append(tok)
+        return out
+    for name, want in SAN_LISTS.items():
+        got = expand(name)
+        if sorted(got) != sorted(want) or _dups(got):
+            _add(failures, "QW-SAN-TABLE",
+                 f"{name}: missing {sorted(set(want) - set(got))}, "
+                 f"unexpected {sorted(set(got) - set(want))}, duplicate {_dups(got)}")
+    runs = []
+    for var, body in re.findall(r"(?m)^for c in \$(\w+); do (.*?)done\s*$", code):
+        for b, mem in re.findall(r'run_case (\S+) (\S+) "\$c"', body):
+            runs.append((b, mem, var))
+    if sorted(runs) != sorted(SAN_RUNS):
+        _add(failures, "QW-SAN-TABLE",
+             f"run loops differ: missing {sorted(set(SAN_RUNS) - set(runs))}, "
+             f"unexpected {sorted(set(runs) - set(SAN_RUNS))}")
+    negs = [tuple(m) for m in re.findall(r"(?m)^expect_fail (\S+) (\S+) (\S+) ", code)]
+    if sorted(negs) != sorted(SAN_NEGATIVE):
+        _add(failures, "QW-SAN-TABLE",
+             f"negative controls differ: missing {sorted(set(SAN_NEGATIVE) - set(negs))}, "
+             f"unexpected {sorted(set(negs) - set(SAN_NEGATIVE))}")
 
 
 # ------------------------------------------------------------------
@@ -1482,6 +1728,90 @@ def _ownership_controls(controls, fresh_dir):
         controls.failed.append(f"absent ownership dir: got {failures}")
 
 
+def _write_sanitizer(directory, mutate=None):
+    """Write a passing sanitizer receipt for this checkout's sources."""
+    directory.mkdir(parents=True, exist_ok=True)
+    body = {
+        "schema": SAN_SCHEMA, "sha": FIXTURE_SHA, "sha_source": "measured", "dirty": False,
+        "image_id": "sha256:" + "ab" * 32, "compiler": "gcc (fixture) 15.2.0",
+        "sources": {rel: _sha256(ROOT / rel) for rel in SAN_SOURCES},
+        "variants": [{"name": n} for n in SAN_VARIANTS],
+        "cases": [{"binary": b, "mem": m, "case": c, "exit": 0, "verdict": "pass"}
+                  for b, m, c in _san_expected_cases()],
+        "negative_controls": [{"binary": b, "mem": m, "case": c, "marker": "x",
+                               "exit": 1, "verdict": "pass"} for b, m, c in SAN_NEGATIVE],
+        "gate": "pass", "open_reason": "",
+    }
+    if mutate:
+        mutate(body)
+    (directory / "receipt.json").write_text(body if isinstance(body, str) else json.dumps(body))
+
+
+def _sanitizer_controls(controls, fresh_dir):
+    def case(label, rule, mutate=None, expect_sha=FIXTURE_SHA, drop=False):
+        directory = fresh_dir()
+        _write_sanitizer(directory, mutate)
+        if drop:
+            (directory / "receipt.json").unlink()
+        failures = verify_sanitizer(directory, expect_sha)
+        if rule is None:
+            if failures:
+                controls.failed.append(f"{label}: expected pass, got {failures}")
+            else:
+                controls.passed += 1
+                print(f"PASS (control): {label}")
+        elif any(f.startswith(rule + ":") for f in failures):
+            controls.passed += 1
+            print(f"PASS (negative): {label} -> {rule}")
+        else:
+            controls.failed.append(f"{label}: expected {rule} failure, got {failures}")
+
+    def setter(key, value):
+        return lambda b: b.__setitem__(key, value)
+
+    def case_field(idx, key, value):
+        return lambda b: b["cases"][idx].__setitem__(key, value)
+
+    def neg_field(idx, key, value):
+        return lambda b: b["negative_controls"][idx].__setitem__(key, value)
+
+    case("passing sanitizer receipt", None)
+    case("missing receipt", "QW-SAN-MISSING", drop=True)
+    case("wrong schema", "QW-SAN-SHAPE", setter("schema", "other/1"))
+    case("open gate (sanitizer unavailable) never passes", "QW-SAN-GATE",
+         lambda b: b.update(gate="open", open_reason="lsan-unavailable"))
+    case("failed gate", "QW-SAN-GATE", setter("gate", "fail"))
+    case("receipt for another sha", "QW-SAN-SHA", setter("sha", "f" * 40))
+    case("caller expects another sha", "QW-SAN-SHA", expect_sha="e" * 40)
+    case("sha of unknown origin", "QW-SAN-SHA", setter("sha_source", "none"))
+    case("dirty tree", "QW-SAN-DIRTY", setter("dirty", True))
+    case("host run, not the image", "QW-SAN-IMAGE", setter("image_id", "host (no container)"))
+    case("shim hash differs from the checkout", "QW-SAN-SOURCES",
+         lambda b: b["sources"].__setitem__("cbits/ossl4_ctx.c", "0" * 64))
+    case("driver hash not recorded", "QW-SAN-SOURCES",
+         lambda b: b["sources"].pop(SANITIZER_DRIVER))
+    case("variant missing", "QW-SAN-VARIANTS", lambda b: b["variants"].pop())
+    case("case dropped", "QW-SAN-CASES", lambda b: b["cases"].pop())
+    case("case duplicated", "QW-SAN-CASES", lambda b: b["cases"].append(dict(b["cases"][0])))
+    case("unexpected case", "QW-SAN-CASES",
+         lambda b: b["cases"].append({"binary": "san-prod", "mem": "plain", "case": "x",
+                                      "exit": 0, "verdict": "pass"}))
+    case("failed case", "QW-SAN-CASES", case_field(0, "verdict", "fail"))
+    case("pass verdict with nonzero exit", "QW-SAN-CASES", case_field(1, "exit", 1))
+    case("negative control dropped", "QW-SAN-NEG", lambda b: b["negative_controls"].pop(1))
+    case("negative control did not fire", "QW-SAN-NEG", neg_field(0, "verdict", "fail"))
+    case("negative control exited 0", "QW-SAN-NEG", neg_field(0, "exit", 0))
+    case("receipt is not an object", "QW-SAN-SHAPE", lambda b: b.clear())
+    directory = fresh_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "receipt.json").write_text("{not json")
+    if any(f.startswith("QW-SAN-SHAPE:") for f in verify_sanitizer(directory, FIXTURE_SHA)):
+        controls.passed += 1
+        print("PASS (negative): unparseable receipt -> QW-SAN-SHAPE")
+    else:
+        controls.failed.append("unparseable sanitizer receipt was not rejected")
+
+
 def self_test():
     controls = _Controls()
     try:
@@ -1503,6 +1833,7 @@ def self_test():
 
         _receipt_controls(controls, fresh_dir)
         _ownership_controls(controls, fresh_dir)
+        _sanitizer_controls(controls, fresh_dir)
 
         def fresh():
             tmp = Path(tempfile.mkdtemp(prefix="haskoki-qw-mut-"))
@@ -1785,6 +2116,63 @@ def self_test():
         _rewrite(root / QUALIFICATION_YML, '--verify-ownership \\\n            evidence-in/qualify-evidence/ownership --expect-sha "$REQUESTED_REVISION"',
                  '--verify-ownership \\\n            evidence-in/qualify-evidence/ownership --expect-sha "$(git rev-parse HEAD)"')
         controls.expect_fail("report ownership verifier uses the checkout sha", root, "QW-LANE-OWNVERIFY")
+        # Native sanitizer step: present, unswallowed, exact sha, receipt
+        # under the evidence root, verified in both jobs.
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, '"$HASKOKI_IMAGE" scripts/test-native-sanitizers.sh')
+        controls.expect_fail("qualify never runs the sanitizer driver", root, "QW-LANE-SANITIZER")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, 'tee "$SAN_DIR/native-sanitizers.log"',
+                 'tee "$SAN_DIR/native-sanitizers.log" || true')
+        controls.expect_fail("swallow a sanitizer failure", root, "QW-LANE-SANITIZER")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "          set -euo pipefail\n          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3\n          SAN_DIR",
+                 "          set -eu\n          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3\n          SAN_DIR")
+        controls.expect_fail("sanitizer step without pipefail", root, "QW-LANE-SANITIZER")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML,
+                 "        if: always() && steps.select.outputs.mode == 'behavioral'\n        run: |\n          set -euo pipefail\n          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3\n          SAN_DIR",
+                 "        if: steps.select.outputs.mode == 'behavioral'\n        run: |\n          set -euo pipefail\n          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3\n          SAN_DIR")
+        controls.expect_fail("sanitizer step skipped after a matrix failure", root, "QW-LANE-SANITIZER")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, 'SAN_DIR="$RUNNER_TEMP/qualify-evidence/sanitizer"',
+                 'SAN_DIR="dist-newstyle/san-art"')
+        controls.expect_fail("sanitizer receipt inside the checkout", root, "QW-LANE-SANITIZER")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, '-e HASKOKI_SAN_SHA="$SAN_SHA"')
+        controls.expect_fail("sanitizer driver loses the exact SHA", root, "QW-LANE-SANITIZER")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--verify-sanitizer \\\n            "$RUNNER_TEMP/qualify-evidence/sanitizer/art"',
+                 '--self-test \\\n            "$RUNNER_TEMP/qualify-evidence/sanitizer/art"')
+        controls.expect_fail("drop the qualify sanitizer verifier", root, "QW-LANE-SANVERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--verify-sanitizer \\\n            evidence-in/qualify-evidence/sanitizer/art',
+                 '--self-test \\\n            evidence-in/qualify-evidence/sanitizer/art')
+        controls.expect_fail("drop the report sanitizer verifier", root, "QW-LANE-SANVERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '"$RUNNER_TEMP/qualify-evidence/sanitizer/art" --expect-sha "$REQUESTED_REVISION"',
+                 '"$RUNNER_TEMP/qualify-evidence/sanitizer/art" --expect-sha "$REQUESTED_REVISION" || true')
+        controls.expect_fail("swallow the qualify sanitizer verifier", root, "QW-LANE-SANVERIFY")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, 'evidence-in/qualify-evidence/sanitizer/art --expect-sha "$REQUESTED_REVISION"',
+                 'evidence-in/qualify-evidence/sanitizer/art --expect-sha "$(git rev-parse HEAD)"')
+        controls.expect_fail("report sanitizer verifier uses the checkout sha", root, "QW-LANE-SANVERIFY")
+        # Static drift between the sanitizer driver and the expected sets.
+        root = fresh()
+        _rewrite(root / SANITIZER_DRIVER, "seam-derive-ok-grow-dh\"", "\"")
+        controls.expect_fail("sanitizer driver drops a seam case", root, "QW-SAN-TABLE")
+        root = fresh()
+        _rewrite(root / SANITIZER_DRIVER,
+                 'HOOKS_PLAIN_CASES="live-1000 credit-gone copy-fault ',
+                 'HOOKS_PLAIN_CASES="live-1000 credit-gone ')
+        controls.expect_fail("sanitizer driver drops a plain-mode case", root, "QW-SAN-TABLE")
+        root = fresh()
+        _drop_lines(root / SANITIZER_DRIVER, "expect_fail san-prod plain neg-handle-double-free ")
+        controls.expect_fail("sanitizer driver drops a negative control", root, "QW-SAN-TABLE")
+        root = fresh()
+        _drop_lines(root / SANITIZER_DRIVER, 'do run_case san-hooks plain "$c"; done')
+        controls.expect_fail("sanitizer driver drops a run loop", root, "QW-SAN-TABLE")
         # Static drift between the driver's case table and the expected set.
         driver = "scripts/" + OWNERSHIP_DRIVER
         root = fresh()
@@ -1857,9 +2245,19 @@ def main(argv):
         print(f"PASS: ownership receipts ({total}/{total}: {len(OWNERSHIP_CASES)} cases x "
               f"RTS {'/'.join(map(str, OWNERSHIP_RTS))}, sha {argv[4]})")
         return 0
+    if len(argv) == 5 and argv[1] == "--verify-sanitizer" and argv[3] == "--expect-sha":
+        failures = verify_sanitizer(argv[2], argv[4])
+        if failures:
+            print(f"FAIL: sanitizer receipt ({len(failures)} findings):")
+            for failure in failures:
+                print(f"  {failure}")
+            return 1
+        print(f"PASS: sanitizer receipt (gate pass, {len(_san_expected_cases())} cases, "
+              f"{len(SAN_NEGATIVE)} negative controls, sha {argv[4]})")
+        return 0
     if len(argv) != 1:
         print("usage: check-qualification-wiring.py [--self-test | --verify-matrix DIR --expect-sha SHA"
-              " | --verify-ownership DIR --expect-sha SHA]")
+              " | --verify-ownership DIR --expect-sha SHA | --verify-sanitizer DIR --expect-sha SHA]")
         return 2
     failures = run_all(ROOT)
     if failures:

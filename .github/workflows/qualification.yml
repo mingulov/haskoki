@@ -622,26 +622,33 @@ jobs:
       - name: Run native sanitizer driver
         # Separate obligation (scripts/driver-inventory.json role
         # qualification): ASan/UBSan/LSan over the native shim in the
-        # toolchain image. The container has no git directory for the
-        # mounted checkout, so the host supplies the commit and the
-        # cleanliness measured here. Receipt and logs land in
-        # dist-newstyle/san-art and are uploaded below.
+        # toolchain image. The receipt and logs land under the evidence
+        # root, outside the checkout: the matrix cells leave
+        # dist-newstyle owned by the image user, so the host runner
+        # cannot create directories there. The parent directory is
+        # mounted because the driver replaces its art directory. The
+        # checkout carries its git directory, so the driver measures the
+        # commit and cleanliness itself (sha_source "measured"); the
+        # values passed here are its fallback (sha_source "caller").
+        # An open gate (exit 3) fails this step and the receipt verifier.
         if: always() && steps.select.outputs.mode == 'behavioral'
         run: |
           set -euo pipefail
           export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
+          SAN_DIR="$RUNNER_TEMP/qualify-evidence/sanitizer"
+          mkdir -p "$SAN_DIR"
+          chmod a+rwx "$SAN_DIR"
           SAN_SHA="$(git rev-parse HEAD)"
           SAN_DIRTY=false
-          [ -z "$(git status --porcelain)" ] || SAN_DIRTY=true
+          [ -z "$(git status --porcelain -- cbits tests/c scripts/test-native-sanitizers.sh)" ] \
+            || SAN_DIRTY=true
           IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$HASKOKI_IMAGE")"
-          mkdir -p dist-newstyle/san-art
-          chmod a+rwx dist-newstyle dist-newstyle/san-art
           docker run --rm -e HASKOKI_IMAGE_ID="$IMAGE_ID" \
             -e HASKOKI_SAN_SHA="$SAN_SHA" -e HASKOKI_SAN_DIRTY="$SAN_DIRTY" \
-            -e HASKOKI_SAN_ART=/work/dist-newstyle/san-art \
+            -v "$SAN_DIR:/san" -e HASKOKI_SAN_ART=/san/art \
             -v "$PWD:/work" -w /work \
             "$HASKOKI_IMAGE" scripts/test-native-sanitizers.sh 2>&1 \
-            | tee "$RUNNER_TEMP/qualify-evidence/native-sanitizers.log"
+            | tee "$SAN_DIR/native-sanitizers.log"
       - name: Run the build-only fallback manifest
         if: steps.select.outputs.mode == 'buildonly'
         run: |
@@ -726,13 +733,17 @@ jobs:
             ${{ runner.temp }}/qualify-evidence/
             ${{ runner.temp }}/qualify-evidence-run.log
           if-no-files-found: error
-      - name: Upload native sanitizer artifacts
-        if: always() && steps.select.outputs.mode == 'behavioral'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-sanitizer-artifacts
-          path: dist-newstyle/san-art
-          if-no-files-found: error
+      - name: Verify sanitizer receipt
+        if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          # Post-hoc: gate pass (an open gate fails here), the requested
+          # sha, a clean tree, source hashes equal to this checkout, and
+          # the exact case and negative-control sets, all passing.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-sanitizer \
+            "$RUNNER_TEMP/qualify-evidence/sanitizer/art" --expect-sha "$REQUESTED_REVISION"
       - name: Verify ownership receipts
         if: always()
         env:
@@ -832,6 +843,15 @@ jobs:
           set -euo pipefail
           python3 scripts/check-qualification-wiring.py --verify-matrix \
             evidence-in/qualify-evidence --expect-sha "$REQUESTED_REVISION"
+      - name: Verify sanitizer receipt
+        if: always()
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          # Same checks as the qualify job, on the downloaded artifact.
+          set -euo pipefail
+          python3 scripts/check-qualification-wiring.py --verify-sanitizer \
+            evidence-in/qualify-evidence/sanitizer/art --expect-sha "$REQUESTED_REVISION"
       - name: Verify ownership receipts
         if: always()
         env:
