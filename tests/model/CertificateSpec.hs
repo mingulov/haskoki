@@ -50,6 +50,7 @@ import Haskoki.Outcome
   , PlanResult (..)
   , PreparedCommit (..)
   , Rejection (..)
+  , StateDelta (..)
   )
 import Haskoki.Request (FunctionId (..), Request (..))
 import Haskoki.Rules (defaultRules)
@@ -290,7 +291,7 @@ caseTrustedBoundary = do
           Execute _ _ -> assertFailure "context trusted=true set reserved execution"
         case planCopyObject mC granted hC [trustedTrue] of
           Reject rej -> assertEqual "context copy trusted=true"
-            CKR_TEMPLATE_INCONSISTENT (rejCode rej)
+            CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
           Immediate _ -> assertFailure "context trusted=true copy committed"
           Execute _ _ -> assertFailure "context trusted=true copy reserved execution"
     Reject rej -> assertFailure ("context setup rejected: " ++ show (rejCode rej))
@@ -327,7 +328,7 @@ caseTrustedBoundary = do
     (createReq sidD [(AttrClass, ValULong dataClass), (AttrLabel, ValBytes "d")])
   hD <- commitHandle pcD
   (codeDC, mD2) <- runReject mD1 (copyReq sidD hD [trustedTrue])
-  assertEqual "public data copy trusted=true" CKR_TEMPLATE_INCONSISTENT codeDC
+  assertEqual "public data copy trusted=true" CKR_ATTRIBUTE_READ_ONLY codeDC
   mD3 <- loginAsSO mD2 sidD
   (pcDSC, mD4) <- runCommit mD3 (copyReq sidD hD [trustedTrue])
   hDSC <- commitHandle pcDSC
@@ -406,7 +407,7 @@ caseTrustedBoundary = do
   hDU <- commitHandle pcDU
   (rejDU, _) <- runRejectFull mDU2 (copyReq sidDU hDU [trustedTrue])
   assertEqual "user data copy trusted=true"
-    CKR_TEMPLATE_INCONSISTENT (rejCode rejDU)
+    CKR_ATTRIBUTE_READ_ONLY (rejCode rejDU)
   assertEqual "user data copy SO message"
     ["only the security officer may copy to TRUSTED=true"] (rejReasons rejDU)
   -- Context DATA-source copy: same off-class SO pin via direct
@@ -420,7 +421,7 @@ caseTrustedBoundary = do
         case planCopyObject mGD granted hGD [trustedTrue] of
           Reject rej -> do
             assertEqual "context data copy trusted=true"
-              CKR_TEMPLATE_INCONSISTENT (rejCode rej)
+              CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
             assertEqual "context data copy SO message"
               ["only the security officer may copy to TRUSTED=true"] (rejReasons rej)
           Immediate _ -> assertFailure "context data trusted=true copy committed"
@@ -461,7 +462,7 @@ caseCategoryRoundtrip = do
   assertEqual "category set refused" CKR_ATTRIBUTE_READ_ONLY codeS
   (codeC, m3) <- runReject m2
     (copyReq sid h0 [(AttrCertificateCategory, ValULong 7)])
-  assertEqual "category copy-override refused" CKR_TEMPLATE_INCONSISTENT codeC
+  assertEqual "category copy-override refused" CKR_ATTRIBUTE_READ_ONLY codeC
   assertEqual "no copy created"
     (Map.size (mObjects m2)) (Map.size (mObjects m3))
 
@@ -528,10 +529,9 @@ fullCert = certAttrs
      , (AttrEndDate, ValBytes "20250131")
      ]
 
--- | Copy/set of every certificate-immutable member refuses — a CLASS
--- copy-override refuses read-only (the class is immutable on copy),
--- every other member inconsistent — except TRUSTED=false set
--- (allowed all logins) and SO TRUSTED=true set (allowed).
+-- | Copy/set of every certificate-immutable member refuses read-only
+-- (the set path's code) — except TRUSTED=false set (allowed all
+-- logins) and SO TRUSTED=true set (allowed).
 -- LABEL/APPLICATION/ID overrides stay allowed on both paths.
 caseCertImmutableMatrix :: IO ()
 caseCertImmutableMatrix = do
@@ -555,12 +555,9 @@ caseCertImmutableMatrix = do
         ]
       checkCopy entry = do
         (code, m') <- runReject m1 (copyReq sid h [entry])
-        -- The class is immutable on copy (the set path's code);
-        -- every other member keeps the certificate message code.
-        let want = if fst entry == AttrClass
-              then CKR_ATTRIBUTE_READ_ONLY
-              else CKR_TEMPLATE_INCONSISTENT
-        assertEqual ("copy refused: " ++ show (fst entry)) want code
+        -- Every member refuses read-only (the set path's code).
+        assertEqual ("copy refused: " ++ show (fst entry))
+          CKR_ATTRIBUTE_READ_ONLY code
         assertEqual ("no copy created: " ++ show (fst entry))
           (Map.size (mObjects m1)) (Map.size (mObjects m'))
       checkSet entry = do
@@ -583,7 +580,7 @@ caseCertImmutableMatrix = do
     Just ost -> assertEqual "trusted=false set stored"
       (Just (ValBool False)) (Map.lookup AttrTrusted (osAttrs ost))
   -- SO TRUSTED=true set is allowed; SO copy TRUSTED=true still
-  -- refuses INCONSISTENT (the immutable set has no SO exception).
+  -- refuses read-only (the immutable set has no SO exception).
   (sidS, mS0) <- openSession seeded
   mS1 <- loginAsSO mS0 sidS
   (pcS, mS2) <- runCommit mS1 (createReq sidS fullCert)
@@ -595,7 +592,7 @@ caseCertImmutableMatrix = do
     Just ost -> assertEqual "SO trusted=true set stored"
       (Just (ValBool True)) (Map.lookup AttrTrusted (osAttrs ost))
   (codeSC, _) <- runReject mS3 (copyReq sidS hS [trustedTrue])
-  assertEqual "SO trusted=true copy refused" CKR_TEMPLATE_INCONSISTENT codeSC
+  assertEqual "SO trusted=true copy refused" CKR_ATTRIBUTE_READ_ONLY codeSC
   -- LABEL/APPLICATION/ID overrides stay allowed on both paths.
   (pcCL, m3) <- runCommit m2
     (copyReq sid h [(AttrLabel, ValBytes "copy-label")])
@@ -642,9 +639,10 @@ caseCopyScopeRegression = do
       assertEqual "label inherited"
         (Just (ValBytes "src")) (Map.lookup AttrLabel (osAttrs ost))
   let (nObjs, nHandles) = (Map.size (mObjects m2), Map.size (mHandles m2))
-  (codeC2, m3) <- runReject m2
+  (rejC2, m3) <- runRejectFull m2
     (copyReq sid h [(AttrClass, ValULong secretClass)])
-  assertEqual "class-override copy refused read-only" CKR_ATTRIBUTE_READ_ONLY codeC2
+  assertEqual "class-override copy refused read-only" CKR_ATTRIBUTE_READ_ONLY (rejCode rejC2)
+  assertEqual "class-override empty delta" (StateDelta []) (rejDelta rejC2)
   assertEqual "no class-override copy created" (nObjs, nHandles)
     (Map.size (mObjects m3), Map.size (mHandles m3))
 
@@ -693,7 +691,7 @@ caseCopyPrecedence = do
     Immediate _ -> assertFailure "wrong-shape copy committed"
     Execute _ _ -> assertFailure "wrong-shape copy reserved execution"
   (rejImm, _) <- runRejectFull m3 (copyReq sid hC [(AttrValue, ValBytes "x")])
-  assertEqual "immutable code" CKR_TEMPLATE_INCONSISTENT (rejCode rejImm)
+  assertEqual "immutable code" CKR_ATTRIBUTE_READ_ONLY (rejCode rejImm)
   assertEqual "certificate message"
     ["copy cannot override certificate field: AttrValue"] (rejReasons rejImm)
   -- Mixed-fault precedence: a sensitive certificate copied with
@@ -704,7 +702,7 @@ caseCopyPrecedence = do
   hSens <- commitHandle pcSens
   (rejMix, _) <- runRejectFull m4
     (copyReq sid hSens [(AttrSensitive, ValBool False), (AttrValue, ValBytes "x")])
-  assertEqual "mixed-fault code" CKR_TEMPLATE_INCONSISTENT (rejCode rejMix)
+  assertEqual "mixed-fault code" CKR_ATTRIBUTE_READ_ONLY (rejCode rejMix)
   assertEqual "seal before immutable"
     ["copy cannot clear the sensitive flag"] (rejReasons rejMix)
 

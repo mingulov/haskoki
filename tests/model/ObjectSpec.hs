@@ -77,6 +77,7 @@ import Haskoki.Types
   ( EngineResourceId (..)
   , ExternalHandle (..)
   , Generation (..)
+  , ObjectId (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
   , SessionId (..)
@@ -110,6 +111,22 @@ spec = testGroup "objects and attributes"
   , testCase "copy: class/type overrides refused (aes-secret, unextractable)" caseCopyImmutableAesUnextractable
   , testCase "copy: class/type overrides refused (aes-secret, legacy)" caseCopyImmutableAesLegacy
   , testCase "copy: same-value class/type override still copies" caseCopyNoopClassAndType
+  , testCase "copy: value override on sensitive secret refused" caseCopyValueOverrideRefused
+  , testCase "copy: RSA component overrides refused" caseCopyRsaComponentRefused
+  , testCase "copy: EC component override refused" caseCopyEcComponentRefused
+  , testCase "copy: PQC component override refused" caseCopyPqcComponentRefused
+  , testCase "copy: EC params relabel refused" caseCopyEcParamsRelabelRefused
+  , testCase "copy: TRUSTED forged override refused read-only" caseCopyTrustedForgedRefused
+  , testCase "copy: TRUSTED inherited copy refused for non-SO" caseCopyTrustedInheritedRefused
+  , testCase "copy: ALWAYS_AUTHENTICATE drop refused" caseCopyAlwaysAuthenticateDropRefused
+  , testCase "copy: ALLOWED_MECHANISMS widening refused" caseCopyAllowedMechanismsWidenRefused
+  , testCase "copy: DECRYPT added on non-modifiable refused" caseCopyDecryptAddedRefused
+  , testCase "copy: non-exempt change on non-modifiable refused" caseCopyNonModifiableRefused
+  , testCase "copy: wrap-then-decrypt chain impossible" caseCopyWrapDecryptChainImpossible
+  , testCase "copy: exemptions still work on non-modifiable" caseCopyExemptionsStillWork
+  , testCase "copy: tightening still works" caseCopyTighteningStillWorks
+  , testCase "copy: same-value overrides still work" caseCopySameValueStillWorks
+  , testCase "copy: inconsistent NEVER forced false on tighten" caseCopyInconsistentNeverForcedFalse
   , testCase "key defaults: legacy key value seals" caseKeyEffectiveSeal
   , testCase "key defaults: find matches the effective protection" caseKeyEffectiveFind
   , testCase "key defaults: protection ratchets on legacy keys" caseKeyEffectiveRatchets
@@ -603,14 +620,14 @@ caseCopySealRatchet = do
   let nBefore = Map.size (mObjects m2)
   (code, m3) <- runReject m2
     (copyReq sid h [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)])
-  assertEqual "unsealing copy rejected" CKR_TEMPLATE_INCONSISTENT code
+  assertEqual "unsealing copy rejected" CKR_ATTRIBUTE_READ_ONLY code
   assertEqual "no unsealed copy created" nBefore (Map.size (mObjects m3))
   (codeS, m4) <- runReject m3
     (copyReq sid h [(AttrSensitive, ValBool False)])
-  assertEqual "sensitive-only unseal rejected" CKR_TEMPLATE_INCONSISTENT codeS
+  assertEqual "sensitive-only unseal rejected" CKR_ATTRIBUTE_READ_ONLY codeS
   (codeE, m5) <- runReject m4
     (copyReq sid h [(AttrExtractable, ValBool True)])
-  assertEqual "extractable-only unseal rejected" CKR_TEMPLATE_INCONSISTENT codeE
+  assertEqual "extractable-only unseal rejected" CKR_ATTRIBUTE_READ_ONLY codeE
   assertEqual "still no copy created" nBefore (Map.size (mObjects m5))
   (pcC, m6) <- runCommit m5 (copyReq sid h [])
   h2 <- commitHandle pcC
@@ -632,7 +649,7 @@ caseCopyExtractableAbsent = do
   let nBefore = Map.size (mObjects m1)
   (code, m2) <- runReject m1 (copyReq sid h [(AttrExtractable, ValBool True)])
   assertEqual "absent EXTRACTABLE cannot be copied to true"
-    CKR_TEMPLATE_INCONSISTENT code
+    CKR_ATTRIBUTE_READ_ONLY code
   assertEqual "no extractable copy created" nBefore (Map.size (mObjects m2))
   (pcF, m3) <- runCommit m2 (copyReq sid h [(AttrExtractable, ValBool False)])
   assertEqual "copy may tighten to EXTRACTABLE=false" CKR_OK (pcCode pcF)
@@ -645,8 +662,8 @@ caseCopyExtractableAbsent = do
   assertEqual "explicitly extractable source copies as extractable" CKR_OK (pcCode pcT)
 
 -- | Caller templates may not carry history attributes: creation
--- refuses inconsistent, and so does a copy override naming one.
--- Both refusals leave the object count unchanged.
+-- refuses inconsistent, and a copy override naming one refuses
+-- read-only (the set path's code). Both leave the count unchanged.
 caseCreateRefusesHistory :: IO ()
 caseCreateRefusesHistory = do
   (sid, m0) <- openSession seeded
@@ -659,7 +676,7 @@ caseCreateRefusesHistory = do
   h <- commitHandle pc
   let nBeforeCopy = Map.size (mObjects m2)
   (codeC, m3) <- runReject m2 (copyReq sid h [(AttrNeverExtractable, ValBool False)])
-  assertEqual "history copy override refused" CKR_TEMPLATE_INCONSISTENT codeC
+  assertEqual "history copy override refused" CKR_ATTRIBUTE_READ_ONLY codeC
   assertEqual "no history copy created" nBeforeCopy (Map.size (mObjects m3))
 
 -- | Copying a legacy key materializes the absent protection flags:
@@ -738,8 +755,9 @@ caseCopySensitizeKeepsAlwaysFalse = do
   assertEqual "sensitized always-sensitive" (Just (ValBool False))
     (Map.lookup AttrAlwaysSensitive dst)
 
--- | A refused copy changes nothing: the source map is identical
--- afterwards and the object count is unchanged.
+-- | A refused copy changes nothing: the rejection carries an empty
+-- delta, the source map is identical afterwards, and the object
+-- count is unchanged.
 caseRefusedCopyChangesNothing :: IO ()
 caseRefusedCopyChangesNothing = do
   (sid, m0) <- openSession seeded
@@ -750,8 +768,9 @@ caseRefusedCopyChangesNothing = do
     Nothing -> assertFailure "source resolves before the refused copy"
     Just ost -> pure (osAttrs ost)
   let nBefore = Map.size (mObjects m1)
-  (code, m2) <- runReject m1 (copyReq sid h [(AttrExtractable, ValBool True)])
-  assertEqual "unsealing copy refused" CKR_TEMPLATE_INCONSISTENT code
+  (rej, m2) <- runRejectFull m1 (copyReq sid h [(AttrExtractable, ValBool True)])
+  assertEqual "unsealing copy refused" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual "empty delta" (StateDelta []) (rejDelta rej)
   assertEqual "no copy created" nBefore (Map.size (mObjects m2))
   srcAfter <- case resolveHandle m2 h of
     Nothing -> assertFailure "source resolves after the refused copy"
@@ -761,8 +780,7 @@ caseRefusedCopyChangesNothing = do
 -- | One immutable-override refusal leg: copying the source with the
 -- given class or key-type override is refused read-only (the set
 -- path's code for these immutable attributes), with no handle
--- emitted and the store unchanged. The rejection's own delta is
--- published, so an allocating refusal would move the counts.
+-- emitted, an empty delta, and the store unchanged.
 copyImmutableRefused
   :: String -> [(AttributeType, AttributeValue)]
   -> (AttributeType, AttributeValue) -> IO ()
@@ -775,6 +793,7 @@ copyImmutableRefused name src over = do
   (rej, m2) <- runRejectFull m1 (copyReq sid h [over])
   assertEqual ("refused: " ++ name) CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
   assertEqual ("no handle emitted: " ++ name) [] (rejOutputs rej)
+  assertEqual ("empty delta: " ++ name) (StateDelta []) (rejDelta rej)
   assertEqual ("object count unchanged: " ++ name) nObjs (Map.size (mObjects m2))
   assertEqual ("handle count unchanged: " ++ name) nHandles (Map.size (mHandles m2))
 
@@ -862,6 +881,335 @@ caseCopyNoopClassAndType = mapM_ noopLeg
             (Map.lookup AttrClass (osAttrs srcOst))
             (Map.lookup AttrClass (osAttrs dstOst))
         _ -> assertFailure ("no-op copy handles lost: " ++ name)
+
+-- | One copy-policy refusal leg: the copy is refused read-only (the
+-- set path's code), with no handle emitted, an empty delta, and the
+-- store unchanged.
+copyPolicyRefused
+  :: String -> [(AttributeType, AttributeValue)]
+  -> [(AttributeType, AttributeValue)] -> IO ()
+copyPolicyRefused name src over = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid src)
+  h <- commitHandle pc
+  let nObjs = Map.size (mObjects m1)
+      nHandles = Map.size (mHandles m1)
+  (rej, m2) <- runRejectFull m1 (copyReq sid h over)
+  assertEqual ("refused: " ++ name) CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual ("no handle emitted: " ++ name) [] (rejOutputs rej)
+  assertEqual ("empty delta: " ++ name) (StateDelta []) (rejDelta rej)
+  assertEqual ("object count unchanged: " ++ name) nObjs (Map.size (mObjects m2))
+  assertEqual ("handle count unchanged: " ++ name) nHandles (Map.size (mHandles m2))
+
+-- | P-256 and P-384 EC_PARAMS DER blobs (the wire OIDs).
+ecParamsP256b, ecParamsP384b :: ByteString
+ecParamsP256b = BS.pack [0x06,0x08,0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07]
+ecParamsP384b = BS.pack [0x06,0x05,0x2B,0x81,0x04,0x00,0x22]
+
+-- | A minimal EC private-key template: class, key type, P-256 params,
+-- a 32-byte scalar, and the session mark.
+ecPrivLegacy :: [(AttributeType, AttributeValue)]
+ecPrivLegacy =
+  [ (AttrClass, ValULong (mustClassId "CKO_PRIVATE_KEY"))
+  , (AttrKeyType, ValULong (mustKeyTypeId "CKK_EC"))
+  , (AttrToken, ValBool False)
+  , (AttrEcParams, ValBytes ecParamsP256b)
+  , (AttrValue, ValBytes (BS.replicate 32 0x07))
+  ]
+
+-- | Publish a bare storage row plus its handle, bypassing creation
+-- validation (for sources the public API cannot build: PQC fixtures
+-- without driver vectors, inconsistent history rows).
+publishBare
+  :: Model -> SessionId -> [(AttributeType, AttributeValue)]
+  -> IO (ExternalHandle, Model)
+publishBare m sid attrs = do
+  let oid = ObjectId (mNextObject m)
+      h = ExternalHandle (mNextHandle m)
+      delta = StateDelta
+        [ DeltaCreateObjectFull oid (Map.fromList attrs) (Just sid) slot0
+        , DeltaBindHandle h oid
+        ]
+  case publishDelta m delta of
+    Left fault -> assertFailure ("bare publish fault: " ++ show fault)
+    Right m' -> pure (h, m')
+
+-- | A bare ML-DSA private row: class, key type, value, seed,
+-- parameter set, and the session mark. No import validation runs.
+mldsaBare :: [(AttributeType, AttributeValue)]
+mldsaBare =
+  [ (AttrClass, ValULong (mustClassId "CKO_PRIVATE_KEY"))
+  , (AttrKeyType, ValULong (mustKeyTypeId "CKK_ML_DSA"))
+  , (AttrToken, ValBool False)
+  , (AttrValue, ValBytes (BS.replicate 64 0x11))
+  , (AttrSeed, ValBytes (BS.replicate 32 0x22))
+  , (AttrParameterSet, ValULong 44)
+  , (AttrSensitive, ValBool True)
+  , (AttrExtractable, ValBool False)
+  ]
+
+-- | A sensitive AES key copied with a changed CKA_VALUE (same length,
+-- so no length conflict) is refused read-only.
+caseCopyValueOverrideRefused :: IO ()
+caseCopyValueOverrideRefused =
+  copyPolicyRefused "aes-sensitive/value"
+    (secretAes (BS.replicate 16 7)
+      ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)])
+    [(AttrValue, ValBytes (BS.replicate 16 9))]
+
+-- | An RSA private key copied with a changed private exponent or a
+-- changed modulus is refused read-only.
+caseCopyRsaComponentRefused :: IO ()
+caseCopyRsaComponentRefused = do
+  copyPolicyRefused "rsa-private/privexp"
+    (privateRsaLegacy ++ [(AttrSensitive, ValBool True)])
+    [(AttrPrivateExponent, ValBytes "forged-privexp")]
+  copyPolicyRefused "rsa-private/modulus"
+    (privateRsaLegacy ++ [(AttrSensitive, ValBool True)])
+    [(AttrModulus, ValBytes "forged-modulus")]
+
+-- | An EC private key copied with a changed CKA_VALUE is refused
+-- read-only.
+caseCopyEcComponentRefused :: IO ()
+caseCopyEcComponentRefused =
+  copyPolicyRefused "ec-private/value"
+    (ecPrivLegacy ++ [(AttrSensitive, ValBool True)])
+    [(AttrValue, ValBytes (BS.replicate 32 0x09))]
+
+-- | A PQC private key copied with a changed CKA_SEED is refused
+-- read-only.
+caseCopyPqcComponentRefused :: IO ()
+caseCopyPqcComponentRefused = do
+  (sid, m0) <- openSession seeded
+  (h, m1) <- publishBare m0 sid mldsaBare
+  let nObjs = Map.size (mObjects m1)
+      nHandles = Map.size (mHandles m1)
+  (rej, m2) <- runRejectFull m1
+    (copyReq sid h [(AttrSeed, ValBytes (BS.replicate 32 0x33))])
+  assertEqual "refused: mldsa/seed" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual "no handle emitted: mldsa/seed" [] (rejOutputs rej)
+  assertEqual "empty delta: mldsa/seed" (StateDelta []) (rejDelta rej)
+  assertEqual "object count unchanged: mldsa/seed" nObjs (Map.size (mObjects m2))
+  assertEqual "handle count unchanged: mldsa/seed" nHandles (Map.size (mHandles m2))
+
+-- | An EC private key copied with relabelled EC_PARAMS (P-256 to
+-- P-384) is refused read-only.
+caseCopyEcParamsRelabelRefused :: IO ()
+caseCopyEcParamsRelabelRefused =
+  copyPolicyRefused "ec-private/params"
+    (ecPrivLegacy ++ [(AttrSensitive, ValBool True)])
+    [(AttrEcParams, ValBytes ecParamsP384b)]
+
+-- | A key copied with a forged TRUSTED=true by a non-SO user is
+-- refused with the set path's read-only code.
+caseCopyTrustedForgedRefused :: IO ()
+caseCopyTrustedForgedRefused = do
+  (sid, m0) <- openSession seeded
+  m1 <- loginAs m0 sid
+  (pc, m2) <- runCommit m1 (createReq sid (secretAes (BS.replicate 16 7)))
+  h <- commitHandle pc
+  let nObjs = Map.size (mObjects m2)
+      nHandles = Map.size (mHandles m2)
+  (rej, m3) <- runRejectFull m2
+    (copyReq sid h [(AttrTrusted, ValBool True)])
+  assertEqual "refused: trusted-forged" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual "no handle emitted: trusted-forged" [] (rejOutputs rej)
+  assertEqual "empty delta: trusted-forged" (StateDelta []) (rejDelta rej)
+  assertEqual "object count unchanged: trusted-forged" nObjs (Map.size (mObjects m3))
+  assertEqual "handle count unchanged: trusted-forged" nHandles (Map.size (mHandles m3))
+
+-- | A TRUSTED source copied with an empty template by a non-SO user
+-- is refused read-only: the copy would otherwise inherit TRUSTED.
+caseCopyTrustedInheritedRefused :: IO ()
+caseCopyTrustedInheritedRefused = do
+  (sid, m0) <- openSession seeded
+  mSO <- snd <$> runCommit m0 (soLoginReq sid)
+  (pc, m1) <- runCommit mSO
+    (createReq sid [classData, label "trusted-src", (AttrTrusted, ValBool True)])
+  h <- commitHandle pc
+  let mU = m1
+        { mSessions = Map.adjust (\st -> st { ssLogin = LoginUser }) sid (mSessions m1) }
+      nObjs = Map.size (mObjects mU)
+      nHandles = Map.size (mHandles mU)
+  (rej, m2) <- runRejectFull mU (copyReq sid h [])
+  assertEqual "refused: trusted-inherited" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual "no handle emitted: trusted-inherited" [] (rejOutputs rej)
+  assertEqual "empty delta: trusted-inherited" (StateDelta []) (rejDelta rej)
+  assertEqual "object count unchanged: trusted-inherited" nObjs (Map.size (mObjects m2))
+  assertEqual "handle count unchanged: trusted-inherited" nHandles (Map.size (mHandles m2))
+
+-- | A signing key with ALWAYS_AUTHENTICATE=TRUE copied with FALSE is
+-- refused read-only.
+caseCopyAlwaysAuthenticateDropRefused :: IO ()
+caseCopyAlwaysAuthenticateDropRefused =
+  copyPolicyRefused "rsa-private/always-auth"
+    (privateRsaLegacy
+      ++ [(AttrAlwaysAuthenticate, ValBool True), (AttrSign, ValBool True)])
+    [(AttrAlwaysAuthenticate, ValBool False)]
+
+-- | A key whose ALLOWED_MECHANISMS lists one mechanism, copied with a
+-- widened two-mechanism list, is refused read-only.
+caseCopyAllowedMechanismsWidenRefused :: IO ()
+caseCopyAllowedMechanismsWidenRefused =
+  copyPolicyRefused "aes/allowed-widen"
+    (secretAes (BS.replicate 16 7)
+      ++ [(AttrAllowedMechanisms, ValBytes (BS.pack [1,2,3,4,5,6,7,8]))])
+    [(AttrAllowedMechanisms, ValBytes (BS.pack [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]))]
+
+-- | On a MODIFIABLE=false source, adding DECRYPT=TRUE by copy is
+-- refused read-only, and the set path refuses it too.
+caseCopyDecryptAddedRefused :: IO ()
+caseCopyDecryptAddedRefused = do
+  let src = secretAes (BS.replicate 16 7)
+        ++ [(AttrModifiable, ValBool False), (AttrDecrypt, ValBool False)]
+  copyPolicyRefused "aes-nonmod/decrypt" src [(AttrDecrypt, ValBool True)]
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid src)
+  h <- commitHandle pc
+  (code, _) <- runReject m1 (setReq sid h [(AttrDecrypt, ValBool True)])
+  assertEqual "set decrypt on non-modifiable" CKR_ATTRIBUTE_READ_ONLY code
+
+-- | On a MODIFIABLE=false source, a non-exempt label change by copy
+-- is refused read-only, and the set path refuses it too.
+caseCopyNonModifiableRefused :: IO ()
+caseCopyNonModifiableRefused = do
+  let src = secretAes (BS.replicate 16 7)
+        ++ [(AttrModifiable, ValBool False), label "a"]
+  copyPolicyRefused "aes-nonmod/label" src [label "b"]
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid src)
+  h <- commitHandle pc
+  (code, _) <- runReject m1 (setReq sid h [label "b"])
+  assertEqual "set label on non-modifiable" CKR_ATTRIBUTE_READ_ONLY code
+
+-- | The wrap-then-decrypt chain: a wrapping key (WRAP-only, DECRYPT
+-- denied, mechanisms pinned to wrap) copied with a decrypt-capable
+-- widened template is refused read-only, so no decrypt-capable copy
+-- ever exists to recover a wrapped target.
+caseCopyWrapDecryptChainImpossible :: IO ()
+caseCopyWrapDecryptChainImpossible = do
+  (sid, m0) <- openSession seeded
+  let wrapKey = secretAes (BS.replicate 16 0xA1)
+        ++ [ (AttrWrap, ValBool True)
+           , (AttrDecrypt, ValBool False)
+           , (AttrAllowedMechanisms, ValBytes (BS.pack [1,2,3,4,5,6,7,8]))
+           , label "wrap-key"
+           ]
+      target = secretAes (BS.replicate 16 0xC3)
+        ++ [ (AttrSensitive, ValBool True)
+           , (AttrExtractable, ValBool True)
+           , label "wrap-target"
+           ]
+  (pcW, m1) <- runCommit m0 (createReq sid wrapKey)
+  hw <- commitHandle pcW
+  (pcT, m2) <- runCommit m1 (createReq sid target)
+  _ <- commitHandle pcT
+  let nObjs = Map.size (mObjects m2)
+      nHandles = Map.size (mHandles m2)
+  (rej, m3) <- runRejectFull m2 (copyReq sid hw
+    [ (AttrAllowedMechanisms, ValBytes (BS.pack [9,10,11,12,13,14,15,16]))
+    , (AttrDecrypt, ValBool True)
+    , label "evil-copy"
+    ])
+  assertEqual "chain copy refused" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual "chain no handle" [] (rejOutputs rej)
+  assertEqual "chain empty delta" (StateDelta []) (rejDelta rej)
+  assertEqual "chain object count" nObjs (Map.size (mObjects m3))
+  assertEqual "chain handle count" nHandles (Map.size (mHandles m3))
+  (pcF, _) <- runCommit m3 (findReq sid [label "evil-copy"])
+  evil <- findHandles pcF
+  assertEqual "no evil copy exists" [] evil
+
+-- | Copy exemptions on a non-modifiable source: TOKEN, PRIVATE,
+-- MODIFIABLE, DESTROYABLE and COPYABLE-to-false still copy.
+caseCopyExemptionsStillWork :: IO ()
+caseCopyExemptionsStillWork = do
+  (sid, m0) <- openSession seeded
+  m1 <- loginAs m0 sid
+  let src = [classData, label "nonmod-src", (AttrModifiable, ValBool False)]
+  (pc, m2) <- runCommit m1 (createReq sid src)
+  h <- commitHandle pc
+  let okLeg name over check = do
+        (pcC, m3) <- runCommit m2 (copyReq sid h over)
+        assertEqual ("exemption copies: " ++ name) CKR_OK (pcCode pcC)
+        h2 <- commitHandle pcC
+        assertBool ("exemption fresh handle: " ++ name) (h2 /= h)
+        ost <- mustResolve m3 h2
+        check ost
+  okLeg "token" [(AttrToken, ValBool True)] $ \ost ->
+    assertEqual "token stored" (Just (ValBool True)) (Map.lookup AttrToken (osAttrs ost))
+  okLeg "private" [(AttrPrivate, ValBool True)] $ \ost ->
+    assertEqual "private stored" (Just (ValBool True)) (Map.lookup AttrPrivate (osAttrs ost))
+  okLeg "modifiable" [(AttrModifiable, ValBool True)] $ \ost ->
+    assertEqual "modifiable stored" (Just (ValBool True)) (Map.lookup AttrModifiable (osAttrs ost))
+  okLeg "destroyable" [(AttrDestroyable, ValBool False)] $ \ost ->
+    assertEqual "destroyable stored" (Just (ValBool False)) (Map.lookup AttrDestroyable (osAttrs ost))
+  okLeg "copyable" [(AttrCopyable, ValBool False)] $ \ost ->
+    assertEqual "copyable stored" (Just (ValBool False)) (Map.lookup AttrCopyable (osAttrs ost))
+
+-- | One-way tightening by copy still works: SENSITIVE false-to-true
+-- and EXTRACTABLE true-to-false.
+caseCopyTighteningStillWorks :: IO ()
+caseCopyTighteningStillWorks = do
+  (sid, m0) <- openSession seeded
+  (pcS, m1) <- runCommit m0
+    (createReq sid (secretAes (BS.replicate 16 7) ++ [(AttrSensitive, ValBool False)]))
+  hs <- commitHandle pcS
+  (pcC1, m2) <- runCommit m1 (copyReq sid hs [(AttrSensitive, ValBool True)])
+  assertEqual "sensitive tightens" CKR_OK (pcCode pcC1)
+  (pcE, m3) <- runCommit m2
+    (createReq sid (secretAes (BS.replicate 16 3) ++ [(AttrExtractable, ValBool True)]))
+  he <- commitHandle pcE
+  (pcC2, _) <- runCommit m3 (copyReq sid he [(AttrExtractable, ValBool False)])
+  assertEqual "extractable tightens" CKR_OK (pcCode pcC2)
+
+-- | Same-value overrides still copy: VALUE, MODULUS, EC_PARAMS and
+-- SEED echoing the stored bytes are no-ops.
+caseCopySameValueStillWorks :: IO ()
+caseCopySameValueStillWorks = do
+  (sid, m0) <- openSession seeded
+  let v = BS.replicate 16 7
+  (pcV, m1) <- runCommit m0 (createReq sid (secretAes v))
+  hv <- commitHandle pcV
+  (pcC1, _) <- runCommit m1 (copyReq sid hv [(AttrValue, ValBytes v)])
+  assertEqual "same value copies" CKR_OK (pcCode pcC1)
+  (pcR, m2) <- runCommit m1 (createReq sid privateRsaLegacy)
+  hr <- commitHandle pcR
+  (pcC2, _) <- runCommit m2
+    (copyReq sid hr [(AttrModulus, ValBytes "legacy-modulus")])
+  assertEqual "same modulus copies" CKR_OK (pcCode pcC2)
+  (pcE, m3) <- runCommit m2 (createReq sid ecPrivLegacy)
+  he <- commitHandle pcE
+  ostE <- mustResolve m3 he
+  case Map.lookup AttrEcParams (osAttrs ostE) of
+    Nothing -> assertFailure "ec params stored"
+    Just pv -> do
+      (pcC3, _) <- runCommit m3 (copyReq sid he [(AttrEcParams, pv)])
+      assertEqual "same params copy" CKR_OK (pcCode pcC3)
+  (hP, m4) <- publishBare m3 sid mldsaBare
+  (pcC4, _) <- runCommit m4
+    (copyReq sid hP [(AttrSeed, ValBytes (BS.replicate 32 0x22))])
+  assertEqual "same seed copies" CKR_OK (pcCode pcC4)
+
+-- | The flip-forcing arm fires on an inconsistent stored row: a
+-- source claiming EXTRACTABLE=TRUE with NEVER_EXTRACTABLE=TRUE,
+-- copied with EXTRACTABLE=FALSE, stores NEVER=FALSE on the copy.
+caseCopyInconsistentNeverForcedFalse :: IO ()
+caseCopyInconsistentNeverForcedFalse = do
+  (sid, m0) <- openSession seeded
+  let badRow = secretAes (BS.replicate 16 7)
+        ++ [ (AttrExtractable, ValBool True)
+           , (AttrNeverExtractable, ValBool True)
+           ]
+  (h, m1) <- publishBare m0 sid badRow
+  (pcC, m2) <- runCommit m1 (copyReq sid h [(AttrExtractable, ValBool False)])
+  assertEqual "inconsistent tighten copies" CKR_OK (pcCode pcC)
+  h2 <- commitHandle pcC
+  dst <- mustResolve m2 h2
+  assertEqual "forced never-extractable"
+    (Just (ValBool False)) (Map.lookup AttrNeverExtractable (osAttrs dst))
+  assertEqual "tightened extractable"
+    (Just (ValBool False)) (Map.lookup AttrExtractable (osAttrs dst))
 
 -- | A legacy key (no protection flags stored) seals: its absent
 -- EXTRACTABLE reads as unextractable, so the value redacts.
@@ -985,9 +1333,9 @@ casePublicKeysStayReadable = do
   assertEqual "public misses never-extractable default" [] histN
 
 -- | A sealed RSA private key withholds every private component in
--- find, not only the value: a guessed private exponent, prime or
--- coefficient never matches, while the public modulus still does.
--- The read path already seals these; find must agree with it.
+-- find, not only the value: a guessed private exponent, prime,
+-- exponent or coefficient never matches, while the public modulus
+-- still does. The read path already seals these; find must agree.
 caseRsaPrivateFindWithholds :: IO ()
 caseRsaPrivateFindWithholds = do
   (sid, m0) <- openSession seeded
@@ -995,6 +1343,12 @@ caseRsaPrivateFindWithholds = do
   h <- commitHandle pc
   (rej, _) <- runRejectFull m1 (getReq sid h [AttrPrivateExponent])
   assertEqual "legacy private exponent seals" CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
+  (rejP2, _) <- runRejectFull m1 (getReq sid h [AttrPrime2])
+  assertEqual "legacy prime2 seals" CKR_ATTRIBUTE_SENSITIVE (rejCode rejP2)
+  (rejE1, _) <- runRejectFull m1 (getReq sid h [AttrExponent1])
+  assertEqual "legacy exponent1 seals" CKR_ATTRIBUTE_SENSITIVE (rejCode rejE1)
+  (rejE2, _) <- runRejectFull m1 (getReq sid h [AttrExponent2])
+  assertEqual "legacy exponent2 seals" CKR_ATTRIBUTE_SENSITIVE (rejCode rejE2)
   (pcG, _) <- runCommit m1
     (findReq sid [(AttrPrivateExponent, ValBytes "legacy-privexp-guess")])
   oracle <- findHandles pcG
@@ -1002,6 +1356,15 @@ caseRsaPrivateFindWithholds = do
   (pcP, _) <- runCommit m1 (findReq sid [(AttrPrime1, ValBytes "legacy-prime1")])
   oracleP <- findHandles pcP
   assertEqual "sealed prime never matches" [] oracleP
+  (pcP2, _) <- runCommit m1 (findReq sid [(AttrPrime2, ValBytes "legacy-prime2")])
+  oracleP2 <- findHandles pcP2
+  assertEqual "sealed prime2 never matches" [] oracleP2
+  (pcE1, _) <- runCommit m1 (findReq sid [(AttrExponent1, ValBytes "legacy-exp1")])
+  oracleE1 <- findHandles pcE1
+  assertEqual "sealed exponent1 never matches" [] oracleE1
+  (pcE2, _) <- runCommit m1 (findReq sid [(AttrExponent2, ValBytes "legacy-exp2")])
+  oracleE2 <- findHandles pcE2
+  assertEqual "sealed exponent2 never matches" [] oracleE2
   (pcC, _) <- runCommit m1
     (findReq sid [(AttrCoefficient, ValBytes "legacy-coeff")])
   oracleC <- findHandles pcC

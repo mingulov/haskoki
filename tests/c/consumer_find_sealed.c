@@ -216,6 +216,21 @@ int main(int argc, char **argv) {
             "sealed prime guess matches nothing");
     }
     {
+      CK_ATTRIBUTE q[] = { { CKA_PRIME_2, sP2, sizeof(sP2) - 1 } };
+      CHECK(count_matches(sess, q, 1, "sealed prime2") == 0,
+            "sealed prime2 guess matches nothing");
+    }
+    {
+      CK_ATTRIBUTE q[] = { { CKA_EXPONENT_1, sE1, sizeof(sE1) - 1 } };
+      CHECK(count_matches(sess, q, 1, "sealed exp1") == 0,
+            "sealed exponent1 guess matches nothing");
+    }
+    {
+      CK_ATTRIBUTE q[] = { { CKA_EXPONENT_2, lE2, sizeof(lE2) - 1 } };
+      CHECK(count_matches(sess, q, 1, "legacy exp2") == 0,
+            "legacy exponent2 guess matches nothing");
+    }
+    {
       CK_ATTRIBUTE q[] = { { CKA_COEFFICIENT, lC, sizeof(lC) - 1 } };
       CHECK(count_matches(sess, q, 1, "legacy coeff") == 0,
             "legacy coefficient guess matches nothing");
@@ -262,6 +277,27 @@ int main(int argc, char **argv) {
       rv = f->C_GetAttributeValue(sess, legacyH, q, 1);
       CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
             "legacy exponent read refused (rv=0x%lx)", (unsigned long)rv);
+    }
+    {
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE q[] = { { CKA_PRIME_2, buf, sizeof(buf) } };
+      rv = f->C_GetAttributeValue(sess, sealedH, q, 1);
+      CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
+            "sealed prime2 read refused (rv=0x%lx)", (unsigned long)rv);
+    }
+    {
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE q[] = { { CKA_EXPONENT_1, buf, sizeof(buf) } };
+      rv = f->C_GetAttributeValue(sess, sealedH, q, 1);
+      CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
+            "sealed exponent1 read refused (rv=0x%lx)", (unsigned long)rv);
+    }
+    {
+      CK_BYTE buf[64];
+      CK_ATTRIBUTE q[] = { { CKA_EXPONENT_2, buf, sizeof(buf) } };
+      rv = f->C_GetAttributeValue(sess, legacyH, q, 1);
+      CHECK(rv == CKR_ATTRIBUTE_SENSITIVE,
+            "legacy exponent2 read refused (rv=0x%lx)", (unsigned long)rv);
     }
     {
       CK_BYTE buf[64];

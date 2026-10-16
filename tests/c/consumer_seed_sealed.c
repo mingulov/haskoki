@@ -67,6 +67,17 @@ static void fill_pat(CK_BYTE *p, CK_ULONG n, unsigned tag) {
   }
 }
 
+/* True when every byte is still the 0xA5 canary. */
+static int filled_canary(const CK_BYTE *p, CK_ULONG n) {
+  CK_ULONG j;
+  for (j = 0; j < n; j++) {
+    if (p[j] != 0xA5) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 /* Import one PQC private key with a known seed. hasSens/hasExtr
  * select whether the protection flags are stored (legacy legs omit
  * both). Returns 1 on success. */
@@ -157,6 +168,7 @@ static void check_sealed(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE priv,
   CHECK(q[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
         "%s seed length unavailable (len=0x%lx)", what,
         (unsigned long)q[0].ulValueLen);
+  CHECK(filled_canary(buf, sizeof(buf)), "%s seed buffer untouched", what);
   CHECK(seed_find(s, seed, seedLen, found, what) == 0,
         "%s find by true seed matches nothing", what);
 }
@@ -375,6 +387,8 @@ int main(int argc, char **argv) {
       CHECK(q[0].ulValueLen == CK_UNAVAILABLE_INFORMATION,
             "generated ML-DSA seed length unavailable (len=0x%lx)",
             (unsigned long)q[0].ulValueLen);
+      CHECK(filled_canary(buf, sizeof(buf)),
+            "generated ML-DSA seed buffer untouched");
     }
   }
 

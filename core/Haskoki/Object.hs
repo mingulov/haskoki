@@ -51,7 +51,7 @@ module Haskoki.Object
 import Data.Bits (countLeadingZeros)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
-import Data.List (find)
+import Data.List (find, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing, listToMaybe)
@@ -617,6 +617,9 @@ ckkAes = mustKeyTypeId "CKK_AES"
 ckoCertificate :: Word64
 ckoCertificate = mustClassId "CKO_CERTIFICATE"
 
+ckoData :: Word64
+ckoData = mustClassId "CKO_DATA"
+
 -- | CKC_X_509 per the pinned header (spec/vendor/pkcs11.h:300);
 -- there is no model inventory of certificate types.
 ckcX509 :: Word64
@@ -1093,8 +1096,9 @@ planDestroyObject model st h = case resolveHandle model h of
 -- history/origin rows per the copy rule (a true->false EXTRACTABLE
 -- flip forces NEVER_EXTRACTABLE false, since the key was
 -- extractable once; the other rows inherit the source-effective
--- values). Public key copies carry no history rows: any
--- ALWAYS/NEVER the merged map picked up from the source is dropped.
+-- values). Public key copies carry no history rows (defensive: drops
+-- any stored ALWAYS/NEVER a public source carries; class-changing
+-- copies are refused, so private history cannot arrive here).
 deriveCopyAttrs
   :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
   -> Map AttributeType AttributeValue
@@ -1124,26 +1128,85 @@ deriveCopyAttrs srcAttrs over
         | t == AttrKeyGenMechanism -> ValULong maxBound
         | otherwise -> ValBool False
 
+-- | The shared per-attribute mutability policy behind
+-- 'planSetAttributes' and 'planCopyObject': Nothing = mutable,
+-- Just = refusal. Each ratchet compares against the effective value
+-- (the reported view): writing what a read reports succeeds and only
+-- a flip against the ratchet refuses. Non-key classes own no key
+-- flags and read FALSE, so their enforcement is unchanged by
+-- construction. Copy and set call this one function, so the two
+-- paths cannot drift on any attribute.
+setAttributePolicy
+  :: Map AttributeType AttributeValue
+  -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
+setAttributePolicy cur t v
+  | not (flagOr modifiableDefault AttrModifiable cur)
+  , Map.lookup t cur /= Just v = Just (CKR_ATTRIBUTE_READ_ONLY,
+      "object is not modifiable (CKA_MODIFIABLE=false)")
+  | t `elem` [AttrLabel, AttrApplication, AttrId] = Nothing
+  | t `elem` [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
+             , AttrSignRecover, AttrVerifyRecover
+             , AttrWrap, AttrUnwrap, AttrDerive
+             , AttrEncapsulate, AttrDecapsulate ] = Nothing
+  | t == AttrToken = ratchet (flagOr tokenDefault AttrToken cur) True
+      "CKA_TOKEN can only change false->true"
+  | t == AttrExtractable = ratchet (effectiveExtractable cur) False
+      "CKA_EXTRACTABLE can only change true->false"
+  | t == AttrSensitive = ratchet (effectiveSensitive cur) True
+      "CKA_SENSITIVE can only change false->true"
+  | t == AttrCopyable = ratchet (flagOr copyableDefault AttrCopyable cur) False
+      "CKA_COPYABLE can only change true->false"
+  | t == AttrDestroyable = ratchet (flagOr destroyableDefault AttrDestroyable cur) False
+      "CKA_DESTROYABLE can only change true->false"
+  | t == AttrTrusted = Nothing
+  | otherwise = Just (CKR_ATTRIBUTE_READ_ONLY,
+      "attribute is not modifiable: " ++ show t)
+  where
+    ratchet c allowTrue msg = case v of
+      ValBool n
+        | c == n -> Nothing
+        | n == allowTrue -> Nothing
+      _ -> Just (CKR_ATTRIBUTE_READ_ONLY, msg)
+
+-- | Copy-template check order. Seal (sensitive/extractable) precedes
+-- certificate immutability, so a mixed template reports the seal;
+-- class/key-type precede both. Within one priority the attribute
+-- order decides.
+copyPriority :: AttributeType -> Int
+copyPriority t
+  | t `elem` [AttrClass, AttrKeyType] = 0
+  | t `elem` [AttrSensitive, AttrExtractable] = 1
+  | t == AttrTrusted = 2
+  | t `elem` certImmutable = 3
+  | t `elem` historyAttrs = 4
+  | otherwise = 5
+
+-- | Attributes a copy template may set even on a non-modifiable
+-- source (PKCS#11 3.2 C_CopyObject): the storage flags. Ratchets
+-- still apply to TOKEN/COPYABLE/DESTROYABLE; PRIVATE keeps its
+-- sealed-object guard; MODIFIABLE is freely settable on the copy.
+copyExempt :: AttributeType -> Bool
+copyExempt t = t `elem`
+  [AttrToken, AttrPrivate, AttrModifiable, AttrDestroyable, AttrCopyable]
+
 -- | Plan object copy: the source handle must resolve and be
 -- visible to the calling session, the override template must be
 -- contradiction-free, and the merged attributes must still carry a
 -- class. The copy gets a fresh id and handle; the source is
--- untouched. Class and key type are immutable: an override that
--- changes either is refused ('CKR_ATTRIBUTE_READ_ONLY', the set
--- path's code for these attributes); a no-op same-value override
--- still copies. Seal ratchet: overrides that flip sensitive true->false,
--- or set extractable true on a source whose effective flag is not
--- extractable, are rejected ('CKR_TEMPLATE_INCONSISTENT');
--- sealed flags otherwise inherit, so a copy of a sealed object is
--- sealed too. Stored key copies materialize absent protection from
--- the source-effective view, with a true->false EXTRACTABLE flip
+-- untouched. Every override is validated through the shared
+-- 'setAttributePolicy' against the source (same code as the set
+-- path: 'CKR_ATTRIBUTE_READ_ONLY'); a no-op same-value override
+-- still copies. Copy exemptions: TOKEN, PRIVATE, MODIFIABLE,
+-- DESTROYABLE and COPYABLE may be set even on a non-modifiable
+-- source (ratchets still apply; PRIVATE true->false on a sealed
+-- object refuses); data-object CKA_VALUE overrides still merge.
+-- TRUSTED=true overrides need the SO login, and a merged
+-- TRUSTED=true without the SO refuses (no silent inheritance).
+-- Stored key copies materialize absent protection from the
+-- source-effective view, with a true->false EXTRACTABLE flip
 -- forcing NEVER_EXTRACTABLE false. Wrongly shaped overrides refuse
--- before any rule; TRUSTED=true overrides need the SO login;
--- certificate sources refuse overrides of the certificate-immutable
--- set, and overrides naming a history attribute refuse on any
--- source (all 'CKR_TEMPLATE_INCONSISTENT'). An explicit
--- @CKA_COPYABLE=false@ on the source prohibits the copy
--- ('CKR_ACTION_PROHIBITED').
+-- before any rule. An explicit @CKA_COPYABLE=false@ on the source
+-- prohibits the copy ('CKR_ACTION_PROHIBITED').
 planCopyObject
   :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)]
   -> PlanResult
@@ -1162,39 +1225,15 @@ planCopyObject model st h tmpl = case resolveHandle model h of
           Just t -> templateReject CKR_TEMPLATE_INCONSISTENT
             ("wrong shape for attribute: " ++ show t)
           Nothing
-            -- Class and key type are immutable on copy (PKCS#11
-            -- Table 4: neither may appear changed in a copy
-            -- template): a changed override is refused read-only,
-            -- the set path's code for these attributes, so a copy
-            -- can never rewrite its source's class. A no-op
-            -- same-value override still copies.
-            | Just t <- immutableChange (osAttrs src) over ->
-                templateReject CKR_ATTRIBUTE_READ_ONLY
-                  ("copy cannot override immutable attribute: " ++ show t)
-            | effectiveSensitive (osAttrs src)
-            , Map.lookup AttrSensitive over == Just (ValBool False) ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
-                  "copy cannot clear the sensitive flag"
-            -- A copy may set EXTRACTABLE=true only when the source is
-            -- effectively extractable. The effective flag decides
-            -- here, as on the set path and at wrap, so a key that
-            -- cannot be wrapped cannot become wrappable through a
-            -- copy.
-            | not (effectiveExtractable (osAttrs src))
-            , Map.lookup AttrExtractable over == Just (ValBool True) ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
-                  "copy cannot set extractable on an unextractable source"
             | Map.lookup AttrTrusted over == Just (ValBool True)
             , ssLogin st /= LoginSO ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
+                templateReject CKR_ATTRIBUTE_READ_ONLY
                   "only the security officer may copy to TRUSTED=true"
-            | isCertSource
-            , Just t <- find (`elem` certImmutable) (Map.keys over) ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
-                  ("copy cannot override certificate field: " ++ show t)
-            | Just t <- find (`elem` historyAttrs) (Map.keys over) ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
-                  ("copy cannot override history attribute: " ++ show t)
+            | Just (code, msg) <- copyRefusal (osAttrs src) over ->
+                templateReject code msg
+            | mergedTrusted, ssLogin st /= LoginSO ->
+                templateReject CKR_ATTRIBUTE_READ_ONLY
+                  "copy would inherit TRUSTED=true without the security officer"
             | Just msg <- valueLenConflict (Map.union over (osAttrs src)) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT msg
             | Left deny <- admitPrivate (ssLogin st)
@@ -1228,18 +1267,69 @@ planCopyObject model st h tmpl = case resolveHandle model h of
               else templateReject CKR_TEMPLATE_INCOMPLETE
                 "merged template is missing the class"
             where
+              mergedTrusted =
+                Map.lookup AttrTrusted (Map.union over (osAttrs src))
+                  == Just (ValBool True)
               isCertSource =
                 Map.lookup AttrClass (osAttrs src) == Just (ValULong ckoCertificate)
-              -- The first of the class/key-type pair the override
-              -- changes (a value the source lacks counts as
-              -- changed); 'Nothing' when the override carries no
-              -- changed value for either.
-              immutableChange srcAttrs overM =
-                find changed [AttrClass, AttrKeyType]
+              isDataSource =
+                Map.lookup AttrClass (osAttrs src) == Just (ValULong ckoData)
+              -- First copy-template refusal in priority order, if any.
+              -- TRUSTED on a certificate source stays refused even
+              -- same-value (no SO exception); same-value overrides are
+              -- otherwise no-ops; data VALUE merges; exemptions bypass
+              -- the modifiable gate; everything else goes through the
+              -- shared policy with copy wording.
+              copyRefusal srcAttrs overM = go ordered
                 where
-                  changed t = case Map.lookup t overM of
-                    Just v -> Map.lookup t srcAttrs /= Just v
-                    Nothing -> False
+                  ordered = sortOn (\(t, _) -> (copyPriority t, fromEnum t))
+                    (Map.toList overM)
+                  go [] = Nothing
+                  go ((t, v) : rest)
+                    | isCertSource, t == AttrTrusted =
+                        Just (CKR_ATTRIBUTE_READ_ONLY,
+                          "copy cannot override certificate field: " ++ show t)
+                    | Map.lookup t srcAttrs == Just v = go rest
+                    | t == AttrValue, isDataSource = go rest
+                    | copyExempt t = case exemptRefusal t v of
+                        Just refusal -> Just refusal
+                        Nothing -> go rest
+                    | otherwise = case setAttributePolicy srcAttrs t v of
+                        Nothing -> go rest
+                        Just (code, sharedMsg) ->
+                          Just (code, copyMessage t v sharedMsg)
+                  exemptRefusal t v
+                    | t == AttrModifiable = Nothing
+                    | t == AttrPrivate = privateRefusal v
+                    | otherwise =
+                        setAttributePolicy modCur t v
+                    where
+                      modCur = Map.insert AttrModifiable (ValBool True) srcAttrs
+                  privateRefusal v = case v of
+                    ValBool n
+                      | flagOr privateDefault AttrPrivate srcAttrs == n -> Nothing
+                      | n == False
+                      , flagOr privateDefault AttrPrivate srcAttrs
+                      , payloadSealed (effectiveAttrs srcAttrs) ->
+                          Just (CKR_ATTRIBUTE_READ_ONLY,
+                            "copy cannot make a sealed object public")
+                      | otherwise -> Nothing
+                    _ -> Just (CKR_ATTRIBUTE_READ_ONLY,
+                      "copy cannot override immutable attribute: " ++ show AttrPrivate)
+                  copyMessage t v sharedMsg
+                    | not (flagOr modifiableDefault AttrModifiable srcAttrs) = sharedMsg
+                    | t == AttrSensitive, v == ValBool False
+                    , effectiveSensitive srcAttrs =
+                        "copy cannot clear the sensitive flag"
+                    | t == AttrExtractable, v == ValBool True
+                    , not (effectiveExtractable srcAttrs) =
+                        "copy cannot set extractable on an unextractable source"
+                    | isCertSource, t `elem` certImmutable =
+                        "copy cannot override certificate field: " ++ show t
+                    | t `elem` historyAttrs =
+                        "copy cannot override history attribute: " ++ show t
+                    | otherwise =
+                        "copy cannot override immutable attribute: " ++ show t
 
 -- | Plan an attribute change: the handle must resolve and be
 -- visible to the calling session, the template must be
@@ -1295,44 +1385,9 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
                   }
   where
     firstRefusal _ [] = Nothing
-    firstRefusal cur ((t, v) : rest) = case mutableAs cur t v of
+    firstRefusal cur ((t, v) : rest) = case setAttributePolicy cur t v of
       Just refusal -> Just refusal
       Nothing -> firstRefusal cur rest
-    -- Nothing = mutable, Just = refusal. Each ratchet compares
-    -- against the effective value (the reported view): writing
-    -- what a read reports succeeds and only a flip against the
-    -- ratchet refuses. Non-key classes own no key flags and read
-    -- FALSE, so their enforcement is unchanged by construction.
-    mutableAs :: Map AttributeType AttributeValue
-      -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
-    mutableAs cur t v
-      | not (flagOr modifiableDefault AttrModifiable cur)
-      , Map.lookup t cur /= Just v = Just (CKR_ATTRIBUTE_READ_ONLY,
-          "object is not modifiable (CKA_MODIFIABLE=false)")
-      | t `elem` [AttrLabel, AttrApplication, AttrId] = Nothing
-      | t `elem` [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
-                 , AttrSignRecover, AttrVerifyRecover
-                 , AttrWrap, AttrUnwrap, AttrDerive
-                 , AttrEncapsulate, AttrDecapsulate ] = Nothing
-      | t == AttrToken = ratchet (flagOr tokenDefault AttrToken cur) True
-          "CKA_TOKEN can only change false->true"
-      | t == AttrExtractable = ratchet (effectiveExtractable cur) False
-          "CKA_EXTRACTABLE can only change true->false"
-      | t == AttrSensitive = ratchet (effectiveSensitive cur) True
-          "CKA_SENSITIVE can only change false->true"
-      | t == AttrCopyable = ratchet (flagOr copyableDefault AttrCopyable cur) False
-          "CKA_COPYABLE can only change true->false"
-      | t == AttrDestroyable = ratchet (flagOr destroyableDefault AttrDestroyable cur) False
-          "CKA_DESTROYABLE can only change true->false"
-      | t == AttrTrusted = Nothing
-      | otherwise = Just (CKR_ATTRIBUTE_READ_ONLY,
-          "attribute is not modifiable: " ++ show t)
-      where
-        ratchet c allowTrue msg = case v of
-          ValBool n
-            | c == n -> Nothing
-            | n == allowTrue -> Nothing
-          _ -> Just (CKR_ATTRIBUTE_READ_ONLY, msg)
 
 -- | Plan a one-shot find: matches carry equality over the effective
 -- attributes ('effectiveAttrs': stored values, plus the common
@@ -1356,8 +1411,8 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
     let matches =
           [ (oid, ost)
           | (oid, ost) <- Map.toAscList (mObjects model)
-          , matchAll q ost
           , objectVisible st ost
+          , matchAll q ost
           ]
         (binds, outs) = assign (mNextHandle model) matches
     in Immediate PreparedCommit

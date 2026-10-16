@@ -954,9 +954,9 @@ caseLockoutRetiresSlotCursors = do
     Nothing -> assertFailure "lockout cursor retirement wedged (30s timeout)"
     Just () -> pure ()
 
--- | Copying a secret key with a CKA_VALUE_LEN that does not match
--- the value refuses TEMPLATE_INCONSISTENT (a huge LEN is never an
--- allocation); a label-only copy of the same key admits.
+-- | Copying a secret key with a changed CKA_VALUE_LEN refuses
+-- READ_ONLY (the set path's code for this immutable attribute; a huge
+-- LEN is never an allocation); a label-only copy admits.
 caseCopyValueLenMismatch :: IO ()
 caseCopyValueLenMismatch = do
   mTimed <- timeout 30000000 $ withManualInstance [slot0] $ \inst -> do
@@ -969,7 +969,7 @@ caseCopyValueLenMismatch = do
     assertEqual "secret create" (CULong 0) rvK
     (rvCopy, _) <- copyViaC inst hRW hK
       (frameOf [(AttrValueLen, ValULong 0xFFFFFFFFFFFFFFFF)])
-    assertEqual "huge VALUE_LEN refused" (CULong 0xD1) rvCopy
+    assertEqual "huge VALUE_LEN refused" (CULong 0x10) rvCopy
     (rvCopy2, _) <- copyViaC inst hRW hK (frameOf [(AttrLabel, ValBytes "k2")])
     assertEqual "label-only copy admits" (CULong 0) rvCopy2
   case mTimed of

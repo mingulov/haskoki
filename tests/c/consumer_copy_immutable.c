@@ -1,7 +1,8 @@
 /* tests/c/consumer_copy_immutable.c — C_CopyObject refuses class/key-type rewrites.
  *
- * A sealed RSA private key and a sealed AES key (stored sensitive,
- * stored unextractable, or flag-less) copied with CKA_CLASS =
+ * A sealed RSA private key (stored sensitive or stored
+ * unextractable) and a sealed AES key (stored sensitive, stored
+ * unextractable, or flag-less) copied with CKA_CLASS =
  * CKO_PUBLIC_KEY, CKA_CLASS = CKO_DATA, or a changed CKA_KEY_TYPE is
  * refused with CKR_ATTRIBUTE_READ_ONLY (the C_SetAttributeValue
  * code for these immutable attributes), with no handle emitted and
@@ -276,7 +277,8 @@ int main(int argc, char **argv) {
       if (h2 != 0) {
         track(h2);
         rv = f->C_GetAttributeValue(sess, h2, q, 1);
-        CHECK(rv == CKR_OK && got == CKO_PRIVATE_KEY,
+        CHECK(rv == CKR_OK && got == CKO_PRIVATE_KEY &&
+              q[0].ulValueLen == sizeof(got),
               "same class/type RSA copy keeps its class (rv=0x%lx)",
               (unsigned long)rv);
       }
@@ -296,7 +298,8 @@ int main(int argc, char **argv) {
       if (h2 != 0) {
         track(h2);
         rv = f->C_GetAttributeValue(sess, h2, q, 1);
-        CHECK(rv == CKR_OK && got == CKO_SECRET_KEY,
+        CHECK(rv == CKR_OK && got == CKO_SECRET_KEY &&
+              q[0].ulValueLen == sizeof(got),
               "same class/type AES copy keeps its class (rv=0x%lx)",
               (unsigned long)rv);
       }

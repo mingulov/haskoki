@@ -347,11 +347,9 @@ static void leg_lifecycle(void) {
     "copy-refuse-start-date", "copy-refuse-end-date"};
   for (unsigned i = 0; i < N(cover); ++i) {
     CK_OBJECT_HANDLE n = SENTINEL;
-    /* The class is immutable on copy (the set path's code); every
-     * other member keeps the certificate message code. */
-    CK_RV want = cover[i].type == CKA_CLASS ? CKR_ATTRIBUTE_READ_ONLY
-                                            : CKR_TEMPLATE_INCONSISTENT;
-    RV(a.CopyObject(h, o, &cover[i], 1, &n), want, cnames[i]);
+    /* Every member refuses read-only (the set path's code). */
+    RV(a.CopyObject(h, o, &cover[i], 1, &n), CKR_ATTRIBUTE_READ_ONLY,
+      cnames[i]);
     REQUIRE(n == SENTINEL, "copy-refuse-canary");
   }
   static const char *snames[] = {"set-refuse-class", "set-refuse-type",
@@ -388,7 +386,7 @@ static void leg_lifecycle(void) {
   RV(a.SetAttributeValue(h, o, tset, N(tset)), CKR_OK, "set-trusted-true-so");
   STEP(read_bool(h, o, CKA_TRUSTED, CK_TRUE, "trusted-true-so-readback"));
   CK_OBJECT_HANDLE n = SENTINEL;
-  RV(a.CopyObject(h, o, tset, N(tset), &n), CKR_TEMPLATE_INCONSISTENT,
+  RV(a.CopyObject(h, o, tset, N(tset), &n), CKR_ATTRIBUTE_READ_ONLY,
     "copy-trusted-true-so-refused");
   REQUIRE(n == SENTINEL, "copy-so-refuse-canary");
   STEP(logout(h));
@@ -529,7 +527,7 @@ static void leg_atomicity(void) {
   STEP(find_count(h, NULL, 0, 1, "atomicity-singleton-census"));
   CK_ATTRIBUTE cover[] = {{CKA_VALUE, (CK_VOID_PTR)"other", 5}};
   CK_OBJECT_HANDLE n = SENTINEL;
-  RV(a.CopyObject(h, o, cover, N(cover), &n), CKR_TEMPLATE_INCONSISTENT,
+  RV(a.CopyObject(h, o, cover, N(cover), &n), CKR_ATTRIBUTE_READ_ONLY,
     "atomicity-refused-copy");
   REQUIRE(n == SENTINEL, "atomicity-copy-canary");
   STEP(destroy(h, o, "atomicity-destroy"));
