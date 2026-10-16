@@ -7,7 +7,9 @@ confirm flag. Never mutates a live store.
 -}
 module StoreCtlSpec (spec) where
 
-import Control.Exception (bracket, toException)
+import Control.Concurrent (forkIO, isEmptyMVar, myThreadId, newEmptyMVar, putMVar, takeMVar, threadDelay, throwTo)
+import Control.Exception (AsyncException (..), bracket, catch, throwIO, toException, try)
+import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
@@ -25,7 +27,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Ctl (CtlExit (..), ctlHelp, runCtl)
-import Haskoki.Ctl.Store (renderCheckUnexpectedFailure, renderUnexpectedFailure, storeMigrateCommandWith)
+import Haskoki.Ctl.Store (renderCheckUnexpectedFailure, renderUnexpectedFailure, storeCheckCommand, storeMigrateCommandWith)
 import Haskoki.Runtime.Storage.Preflight (MigrateHooks (..), noMigrateHooks)
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
 import Haskoki.Runtime.Catalog (asyncHomeEntry)
@@ -88,6 +90,10 @@ spec = testGroup "Store commands"
   , testCase "migrate: no output or receipt carries a PIN" caseMigrateCliNoPins
   , testCase "migrate: an unexpected failure is a fixed redacted line" caseMigrateUnexpectedRedacted
   , testCase "check: an unexpected failure is a fixed tagged line with the type only" caseCheckUnexpectedTagged
+  , testCase "migrate: an interrupt after planning is exit 130, never migrate-failed" caseMigrateInterrupt130
+  , testCase "migrate: a sync failure after planning keeps a tag distinct from migrate-failed" caseMigrateSyncFailureDistinctTag
+  , testCase "migrate: a non-interrupt async exception is rethrown, not reported" caseMigrateAsyncRethrown
+  , testCase "check: an interrupt is exit 130, never store-unreadable" caseCheckInterrupt130
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -908,7 +914,7 @@ caseMigrateCliNoPins = withScratch "ctl-migrate" $ \dir -> do
 caseMigrateUnexpectedRedacted :: IO ()
 caseMigrateUnexpectedRedacted = do
   let (tag, detail) = renderUnexpectedFailure (toException (userError "boom 58213946"))
-  assertEqual "tag" "migrate-failed" tag
+  assertEqual "tag" "migrate-unexpected" tag
   assertBool "fixed shape" ("unexpected failure: " `isPrefixOf` detail)
   assertBool "names the exception type" ("IOException" `isInfixOf` detail)
   assertBool "no raw message" (not ("boom" `isInfixOf` detail))
@@ -938,3 +944,94 @@ caseCheckUnexpectedTagged = do
   assertNoPins "unexpected check failure" (tag ++ ": " ++ detail)
   let (_, alpha) = renderCheckUnexpectedFailure (toException (userError "auth ab12CD34"))
   assertBool "no alphanumeric message" (not ("ab12CD34" `isInfixOf` alpha))
+
+-- A true async interrupt during migrate is exit 130 with the fixed
+-- interrupted line: never migrate-failed, which means "rolled back;
+-- the store was not changed". The hook only synchronises: a second
+-- thread throws, so the exception arrives the way SIGINT delivers
+-- it (a 'throwIO' would be a synchronous raise, not an interrupt).
+caseMigrateInterrupt130 :: IO ()
+caseMigrateInterrupt130 = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  me <- myThreadId
+  fired <- newEmptyMVar
+  _ <- forkIO (takeMVar fired >> throwTo me UserInterrupt)
+  let interrupted = noMigrateHooks { mhAfterPlan = putMVar fired () }
+  (code, _, err) <- storeMigrateCommandWith interrupted
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 130" 130 code
+  assertEqual "interrupted line"
+    "migrate-interrupted: store state unknown; run store check\n" err
+
+-- A synchronous failure the plan did not foresee keeps a tag of its
+-- own: migrate-failed is reserved for a rolled-back transaction.
+caseMigrateSyncFailureDistinctTag :: IO ()
+caseMigrateSyncFailureDistinctTag = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  let failing = noMigrateHooks { mhAfterPlan = throwIO (userError "boom") }
+  (code, _, err) <- storeMigrateCommandWith failing
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 1" 1 code
+  assertBool "distinct tag" ("migrate-unexpected:" `isPrefixOf` err)
+  assertBool "not migrate-failed" (not ("migrate-failed:" `isPrefixOf` err))
+
+-- An async exception that is not an interrupt propagates out of the
+-- migrate command instead of being reported as a store outcome. The
+-- kill arrives from a second thread, the way 'killThread' delivers
+-- it (a 'throwIO' would be a synchronous raise).
+caseMigrateAsyncRethrown :: IO ()
+caseMigrateAsyncRethrown = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  me <- myThreadId
+  fired <- newEmptyMVar
+  _ <- forkIO (takeMVar fired >> throwTo me ThreadKilled)
+  let killing = noMigrateHooks { mhAfterPlan = putMVar fired () }
+  r <- try (storeMigrateCommandWith killing
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups])
+    :: IO (Either AsyncException (Int, String, String))
+  case r of
+    Left ThreadKilled -> pure ()
+    Left other -> assertFailure ("wrong async exception: " ++ show other)
+    Right outcome -> assertFailure ("swallowed ThreadKilled: " ++ show outcome)
+
+-- An interrupt during check is exit 130 with the fixed interrupted
+-- line: never store-unreadable. The worker runs the command back to
+-- back while the parent pounds it with interrupts; a throw that
+-- lands between runs is retried, and only the command's own handler
+-- can produce the 130, so the first 130 proves the wiring. (A
+-- queued-then-unmasked interrupt cannot work instead: GHC raises
+-- pending exceptions at the unmask point, before any inner handler
+-- installs.)
+caseCheckInterrupt130 :: IO ()
+caseCheckInterrupt130 = withScratch "ctl-check" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  ready <- newEmptyMVar
+  resVar <- newEmptyMVar
+  let args = ["--path", store, "--config", cfgPath]
+      loop = do
+        r <- (Right <$> storeCheckCommand args) `catch` \e -> case e :: AsyncException of
+          UserInterrupt -> pure (Left ())
+          _ -> throwIO e
+        case r of
+          Right triple@(130, _, _) -> putMVar resVar triple
+          _ -> loop
+  tid <- forkIO (putMVar ready () >> loop)
+  takeMVar ready
+  mR <- timeout 10000000 $ do
+    let pound = do
+          done <- not <$> isEmptyMVar resVar
+          unless done $ throwTo tid UserInterrupt >> threadDelay 500 >> pound
+    pound
+    takeMVar resVar
+  case mR of
+    Nothing -> assertFailure "check worker never reported an interrupt"
+    Just (code, _, err) -> do
+      assertEqual "exit 130" 130 code
+      assertEqual "interrupted line"
+        "check-interrupted: no verdict; rerun store check\n" err

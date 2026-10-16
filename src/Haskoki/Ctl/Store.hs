@@ -1,7 +1,7 @@
 {- | @haskoki-ctl store check@ and @store migrate@: argument parsing,
 exit codes (0 completed with nothing refused, 1 diagnosed refusal,
-2 usage) and the redacted text. The logic lives in
-"Haskoki.Runtime.Storage.Preflight".
+2 usage, 130 interrupted by SIGINT) and the redacted text. The logic
+lives in "Haskoki.Runtime.Storage.Preflight".
 
 Operator config files hold PINs, so a config error is reported as its
 kind and line (or key) only, never the message body.
@@ -15,7 +15,7 @@ module Haskoki.Ctl.Store
   , renderCheckUnexpectedFailure
   ) where
 
-import Control.Exception (IOException, SomeException, fromException, try)
+import Control.Exception (AsyncException (..), IOException, SomeException, asyncExceptionFromException, catch, fromException, throwIO, try)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isPrefixOf, stripPrefix)
 import qualified Data.Map.Strict as Map
@@ -84,25 +84,54 @@ renderConfigError e = ("config-invalid", case e of
       _ | pat `isPrefixOf` str -> Just (drop (length pat) str)
       (_ : t) -> breakOn pat t
 
+-- | 'try' for synchronous exceptions only: an async exception is
+-- re-thrown as itself (so outer handlers still see its type) and
+-- never reported as a store outcome.
+trySync :: IO a -> IO (Either SomeException a)
+trySync act = do
+  r <- try act
+  case r of
+    Left ex -> case asyncExceptionFromException ex :: Maybe AsyncException of
+      Just a -> throwIO a
+      Nothing -> pure (Left ex)
+    Right v -> pure (Right v)
+
+-- | An interrupt anywhere in the check command is exit 130 with a
+-- fixed line, never a verdict. Any other async exception propagates.
+onCheckInterrupt :: AsyncException -> IO (Int, String, String)
+onCheckInterrupt UserInterrupt =
+  pure (130, "", line ("check-interrupted", "no verdict; rerun store check"))
+onCheckInterrupt e = throwIO e
+
+-- | An interrupt anywhere in the migrate command is exit 130 with a
+-- fixed line, never a migration outcome. The cold-journal clearing
+-- line rides along when a clear already happened. Any other async
+-- exception propagates.
+onMigrateInterrupt :: String -> AsyncException -> IO (Int, String, String)
+onMigrateInterrupt coldLine UserInterrupt =
+  pure (130, coldLine, line ("migrate-interrupted", "store state unknown; run store check"))
+onMigrateInterrupt _ e = throwIO e
+
 storeCheckCommand :: [String] -> IO (Int, String, String)
-storeCheckCommand args0 = case strictFlagsSwitch ["--path", "--config"] "--async-home" args0 of
-  Left why -> pure (2, "", "store check: " ++ why ++ "\n" ++ checkUsage)
-  Right (asyncHome, fl) -> case (Map.lookup "--path" fl, Map.lookup "--config" fl) of
-    (Just path, Just cfgPath) -> do
-      eCfg <- loadConfigFile cfgPath
-      case eCfg of
-        Left err -> pure (1, "", line (renderConfigError err))
-        Right cfg0 -> do
-          let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
-          sel <- configSelectsStore path cfg
-          case sel of
-            Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
-            Right () -> checkSelected path cfgPath asyncHome cfg
-    _ -> pure (2, "", checkUsage)
+storeCheckCommand args0 =
+  (case strictFlagsSwitch ["--path", "--config"] "--async-home" args0 of
+    Left why -> pure (2, "", "store check: " ++ why ++ "\n" ++ checkUsage)
+    Right (asyncHome, fl) -> case (Map.lookup "--path" fl, Map.lookup "--config" fl) of
+      (Just path, Just cfgPath) -> do
+        eCfg <- loadConfigFile cfgPath
+        case eCfg of
+          Left err -> pure (1, "", line (renderConfigError err))
+          Right cfg0 -> do
+            let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
+            sel <- configSelectsStore path cfg
+            case sel of
+              Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
+              Right () -> checkSelected path cfgPath asyncHome cfg
+      _ -> pure (2, "", checkUsage)) `catch` onCheckInterrupt
 
 checkSelected :: FilePath -> FilePath -> Bool -> Config -> IO (Int, String, String)
 checkSelected path cfgPath asyncHome cfg = do
-  r <- try (checkStoreOpen path cfg) :: IO (Either SomeException (Either StoreError StoreOpenPlan))
+  r <- trySync (checkStoreOpen path cfg) :: IO (Either SomeException (Either StoreError StoreOpenPlan))
   case r of
     Left ex -> pure (1, "", line (renderCheckUnexpectedFailure ex))
     Right (Left (StoreIO m))
@@ -123,7 +152,7 @@ checkSelected path cfgPath asyncHome cfg = do
     -- reuses the file. Any other retry outcome keeps the cold
     -- refusal.
     coldOkOrRefusal cold = do
-      r2 <- try (checkStoreOpenAllowCold path cfg)
+      r2 <- trySync (checkStoreOpenAllowCold path cfg)
         :: IO (Either SomeException (Either StoreError StoreOpenPlan))
       pure $ case r2 of
         Right (Right plan) | planVerdict plan == VerdictOpenable ->
@@ -144,20 +173,21 @@ storeMigrateCommand = storeMigrateCommandWith noMigrateHooks
 -- storage suite fails the run after the cold-journal clear to pin
 -- the clearing report).
 storeMigrateCommandWith :: MigrateHooks -> [String] -> IO (Int, String, String)
-storeMigrateCommandWith hooks0 args0 = case strictFlagsSwitch ["--path", "--config", "--backup-dir"] "--async-home" args0 of
-  Left why -> pure (2, "", "store migrate: " ++ why ++ "\n" ++ migrateUsage)
-  Right (asyncHome, fl) -> case (Map.lookup "--path" fl, Map.lookup "--config" fl, Map.lookup "--backup-dir" fl) of
-    (Just path, Just cfgPath, Just dir) -> do
-      eCfg <- loadConfigFile cfgPath
-      case eCfg of
-        Left err -> pure (1, "", line (renderConfigError err))
-        Right cfg0 -> do
-          let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
-          sel <- configSelectsStore path cfg
-          case sel of
-            Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
-            Right () -> migrateSelectedWith hooks0 path cfg dir
-    _ -> pure (2, "", migrateUsage)
+storeMigrateCommandWith hooks0 args0 =
+  (case strictFlagsSwitch ["--path", "--config", "--backup-dir"] "--async-home" args0 of
+    Left why -> pure (2, "", "store migrate: " ++ why ++ "\n" ++ migrateUsage)
+    Right (asyncHome, fl) -> case (Map.lookup "--path" fl, Map.lookup "--config" fl, Map.lookup "--backup-dir" fl) of
+      (Just path, Just cfgPath, Just dir) -> do
+        eCfg <- loadConfigFile cfgPath
+        case eCfg of
+          Left err -> pure (1, "", line (renderConfigError err))
+          Right cfg0 -> do
+            let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
+            sel <- configSelectsStore path cfg
+            case sel of
+              Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
+              Right () -> migrateSelectedWith hooks0 path cfg dir
+      _ -> pure (2, "", migrateUsage)) `catch` onMigrateInterrupt ""
 
 -- | The exception's type name only, never its message: PINs are not
 -- digit-only, so no redaction of message text can be complete.
@@ -173,13 +203,15 @@ exceptionTypeName ex =
         Just _ -> "StoreError"
         Nothing -> "SomeException"
 
--- | An unexpected exception as a fixed tagged line: the exception
--- type only, never raw message text, so no credential of any shape
--- can reach operator output. Single line, like every other exit-1
--- refusal.
+-- | An unexpected synchronous exception as a fixed tagged line:
+-- the exception type only, never raw message text, so no credential
+-- of any shape can reach operator output. Single line, like every
+-- other exit-1 refusal. Its own tag: @migrate-failed@ is reserved
+-- for a rolled-back transaction ("the store was not changed"),
+-- which an unforeseen failure cannot promise.
 renderUnexpectedFailure :: SomeException -> (String, String)
 renderUnexpectedFailure ex =
-  ("migrate-failed", "unexpected failure: " ++ exceptionTypeName ex
+  ("migrate-unexpected", "unexpected failure: " ++ exceptionTypeName ex
     ++ "; run store check before anything else")
 
 -- | An unexpected exception through check as a fixed tagged line:
@@ -195,13 +227,19 @@ migrateSelectedWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Int
 migrateSelectedWith hooks0 path cfg dir = do
   clearedRef <- newIORef False
   let hooks = hooks0 { mhOnColdClear = mhOnColdClear hooks0 >> writeIORef clearedRef True }
-  r <- try (migrateStoreWith hooks path cfg dir) :: IO (Either SomeException (Either MigrateError MigrateOutcome))
-  cleared <- readIORef clearedRef
-  let coldLine = if cleared then "cold-journal-removed: yes\n" else ""
-  pure $ case r of
-    Left ex -> (1, coldLine, line (renderUnexpectedFailure ex))
-    Right (Left me) -> (1, coldLine, line (renderMigrateError me))
-    Right (Right MigrateNotNeeded) -> (0, coldLine ++ line ("migrate-not-needed",
-      "the store is at schema " ++ show sqliteSchemaVersion
-        ++ " and every token has a credential row; nothing was written"), "")
-    Right (Right (Migrated rc)) -> (0, renderReceipt rc ++ "receipt: " ++ mrReceipt rc ++ "\nmigrate-done\n", "")
+      onInt e = do
+        cleared <- readIORef clearedRef
+        let coldLine = if cleared then "cold-journal-removed: yes\n" else ""
+        onMigrateInterrupt coldLine e
+      run = do
+        r <- trySync (migrateStoreWith hooks path cfg dir) :: IO (Either SomeException (Either MigrateError MigrateOutcome))
+        cleared <- readIORef clearedRef
+        let coldLine = if cleared then "cold-journal-removed: yes\n" else ""
+        pure $ case r of
+          Left ex -> (1, coldLine, line (renderUnexpectedFailure ex))
+          Right (Left me) -> (1, coldLine, line (renderMigrateError me))
+          Right (Right MigrateNotNeeded) -> (0, coldLine ++ line ("migrate-not-needed",
+            "the store is at schema " ++ show sqliteSchemaVersion
+              ++ " and every token has a credential row; nothing was written"), "")
+          Right (Right (Migrated rc)) -> (0, renderReceipt rc ++ "receipt: " ++ mrReceipt rc ++ "\nmigrate-done\n", "")
+  run `catch` onInt
