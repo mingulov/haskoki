@@ -132,6 +132,7 @@ spec = testGroup "objects and attributes"
   , testCase "copy: data VALUE on non-modifiable refused" caseCopyDataValueNonModRefused
   , testCase "copy: sealed PRIVATE true to false refused" caseCopySealedPrivateToPublicRefused
   , testCase "copy: MODIFIABLE tighten still works" caseCopyModifiableTightenStillWorks
+  , testCase "copy: MODIFIABLE true over absent flag copies" caseCopyModifiableAbsentTrueWorks
   , testCase "copy: tightening still works" caseCopyTighteningStillWorks
   , testCase "copy: same-value overrides still work" caseCopySameValueStillWorks
   , testCase "copy: inconsistent NEVER forced false on tighten" caseCopyInconsistentNeverForcedFalse
@@ -1302,6 +1303,25 @@ caseCopyModifiableTightenStillWorks = do
   hB <- commitHandle pcB
   (pcBC, _) <- runCommit mB1 (copyReq sidB hB [(AttrModifiable, ValBool False)])
   assertEqual "modifiable same-value copies" CKR_OK (pcCode pcBC)
+
+-- | A source with no stored MODIFIABLE flag copied with
+-- MODIFIABLE=TRUE succeeds: the effective value already equals the
+-- override, so the copy is a no-op on that flag.
+caseCopyModifiableAbsentTrueWorks :: IO ()
+caseCopyModifiableAbsentTrueWorks = do
+  (sid, m0) <- openSession seeded
+  let src = [classData, label "noflag-src"]
+  (pc, m1) <- runCommit m0 (createReq sid src)
+  h <- commitHandle pc
+  srcOst <- mustResolve m1 h
+  assertEqual "source stores no flag"
+    Nothing (Map.lookup AttrModifiable (osAttrs srcOst))
+  (pcC, m2) <- runCommit m1 (copyReq sid h [(AttrModifiable, ValBool True)])
+  assertEqual "absent-flag true copies" CKR_OK (pcCode pcC)
+  h2 <- commitHandle pcC
+  dst <- mustResolve m2 h2
+  assertEqual "copy stores true"
+    (Just (ValBool True)) (Map.lookup AttrModifiable (osAttrs dst))
 
 -- | One-way tightening by copy still works: SENSITIVE false-to-true
 -- and EXTRACTABLE true-to-false.

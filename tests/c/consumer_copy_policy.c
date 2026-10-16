@@ -336,18 +336,19 @@ int main(int argc, char **argv) {
           (unsigned long)rv);
   }
 
-  /* Non-modifiable key. */
+  /* Non-modifiable wrapping key. */
   {
     CK_ATTRIBUTE t[] = {
       { CKA_CLASS, &seckls, sizeof(seckls) },
       { CKA_KEY_TYPE, &aeskt, sizeof(aeskt) },
       { CKA_TOKEN, &bFalse, sizeof(bFalse) },
       { CKA_MODIFIABLE, &bFalse, sizeof(bFalse) },
+      { CKA_WRAP, &bTrue, sizeof(bTrue) },
       { CKA_DECRYPT, &bFalse, sizeof(bFalse) },
       { CKA_LABEL, (CK_VOID_PTR)"nonmod-a", 8 },
       { CKA_VALUE, kval, sizeof(kval) }
     };
-    rv = f->C_CreateObject(sess, t, 7, &nonmod);
+    rv = f->C_CreateObject(sess, t, 8, &nonmod);
     CHECK(rv == CKR_OK && nonmod != 0, "non-modifiable imports (rv=0x%lx)",
           (unsigned long)rv);
     (void)genkt;
