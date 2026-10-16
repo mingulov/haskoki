@@ -98,6 +98,38 @@ record: symbol separation, sanitizer runs, evidence limits) and
   that id (through any context) landed between the durable insert and
   the idle record; a third join used to be able to start a second live
   job.
+- Storage objects (data, certificates, keys, domain parameters, trust
+  and vendor-defined objects) report the common storage attributes
+  they were created without. `C_GetAttributeValue` returned
+  `CKR_ATTRIBUTE_TYPE_INVALID` for an omitted `CKA_TOKEN`,
+  `CKA_PRIVATE`, `CKA_MODIFIABLE`, `CKA_COPYABLE`, `CKA_DESTROYABLE`
+  or `CKA_LABEL`. It now returns the value the provider enforces:
+  `CKA_TOKEN` and `CKA_PRIVATE` false, `CKA_MODIFIABLE`,
+  `CKA_COPYABLE` and `CKA_DESTROYABLE` true, and an empty `CKA_LABEL`.
+  `C_FindObjects` matches the same values, so a template with
+  `CKA_PRIVATE` false finds an object created without `CKA_PRIVATE`,
+  and one with `CKA_PRIVATE` true does not. A template with an empty
+  `CKA_LABEL` now matches objects created without a label. The values
+  are worked out when read, never stored, so stored objects and SQLite
+  databases are unchanged. Hardware feature, mechanism, profile and validation
+  objects are not storage objects and still report these attributes
+  as unavailable. `CKA_UNIQUE_ID` is not implemented and stays
+  unavailable. A proxy that hides objects of unknown privacy from a
+  logged-out session could not find such objects again after a client
+  restart.
+- `C_SetAttributeValue` accepts `CKA_COPYABLE` or `CKA_DESTROYABLE`
+  true on an object created without that attribute. Such an object is
+  already copyable and destroyable, but writing true was refused with
+  `CKR_ATTRIBUTE_READ_ONLY`. The write now succeeds and stores the
+  explicit value. Changing either attribute from false to true is
+  still refused.
+- `C_CopyObject` refuses a template that sets `CKA_EXTRACTABLE` true
+  unless the source object is explicitly extractable. A key created
+  without `CKA_EXTRACTABLE` cannot be wrapped, and setting the
+  attribute to true on it is refused, but a copy that set it to true
+  succeeded, and that copy could be wrapped. Such a copy now fails with
+  `CKR_TEMPLATE_INCONSISTENT`. A copy that sets `CKA_EXTRACTABLE` false,
+  or leaves it out, still succeeds.
 
 ## [0.4.0.0] - Unreleased
 

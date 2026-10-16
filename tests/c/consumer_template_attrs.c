@@ -9,7 +9,8 @@
  *     oversized/absurd VALUE_LEN refused; AES lengths restricted to
  *     16/24/32
  *   - CKA_COPYABLE=false blocks C_CopyObject; CKA_DESTROYABLE=false
- *     blocks C_DestroyObject (true allows it)
+ *     blocks C_DestroyObject (true allows it); a copy cannot set
+ *     CKA_EXTRACTABLE=true on a key created without it
  *   - C_SetAttributeValue: LABEL/APPLICATION/ID mutable; TOKEN only
  *     false->true; EXTRACTABLE only true->false; SENSITIVE only
  *     false->true; COPYABLE/DESTROYABLE only true->false; CLASS,
@@ -497,6 +498,83 @@ int main(int argc, char **argv) {
     }
     f->C_DestroyObject(sess, key);
     key = 0;
+  }
+
+  /* ---- 4b. COPYABLE / DESTROYABLE ratchet only true->false ---- */
+  {
+    CK_OBJECT_CLASS dcls = CKO_DATA;
+    CK_ATTRIBUTE_TYPE flags[2] = {CKA_COPYABLE, CKA_DESTROYABLE};
+    const char *names[2] = {"COPYABLE", "DESTROYABLE"};
+    for (int i = 0; i < 2; i++) {
+      CK_OBJECT_HANDLE obj = 0, cpy = 0;
+      CK_ATTRIBUTE dtmpl[] = {
+          {CKA_CLASS, &dcls, sizeof(dcls)},
+          {CKA_TOKEN, &bFalse, sizeof(bFalse)},
+          {CKA_VALUE, (CK_VOID_PTR) "ratchet", 7},
+          {flags[i], &bFalse, sizeof(bFalse)},
+      };
+      CK_ATTRIBUTE fset[] = {
+          {flags[i], &bFalse, sizeof(bFalse)},
+      };
+      /* Created without the flag: it reads true, false commits, and
+       * true is then refused; the gated action is prohibited. */
+      rv = f->C_CreateObject(sess, dtmpl, 3, &obj);
+      CHECK(rv == CKR_OK && obj != 0, "%s absent create ok", names[i]);
+      rv = f->C_SetAttributeValue(sess, obj, fset, 1);
+      CHECK(rv == CKR_OK, "%s absent->false ok", names[i]);
+      fset[0].pValue = &bTrue;
+      rv = f->C_SetAttributeValue(sess, obj, fset, 1);
+      CHECK(rv == CKR_ATTRIBUTE_READ_ONLY, "%s false->true refused (rv=0x%lx)",
+            names[i], (unsigned long)rv);
+      if (i == 0) {
+        rv = f->C_CopyObject(sess, obj, NULL_PTR, 0, &cpy);
+        CHECK(rv == CKR_ACTION_PROHIBITED && cpy == 0,
+              "copy after COPYABLE=false prohibited (rv=0x%lx)",
+              (unsigned long)rv);
+      } else {
+        rv = f->C_DestroyObject(sess, obj);
+        CHECK(rv == CKR_ACTION_PROHIBITED,
+              "destroy after DESTROYABLE=false prohibited (rv=0x%lx)",
+              (unsigned long)rv);
+      }
+      /* Created with an explicit false: true is refused. */
+      obj = 0;
+      rv = f->C_CreateObject(sess, dtmpl, 4, &obj);
+      CHECK(rv == CKR_OK && obj != 0, "%s explicit-false create ok", names[i]);
+      rv = f->C_SetAttributeValue(sess, obj, fset, 1);
+      CHECK(rv == CKR_ATTRIBUTE_READ_ONLY,
+            "%s explicit false->true refused (rv=0x%lx)", names[i],
+            (unsigned long)rv);
+    }
+  }
+
+  /* ---- 4c. a copy cannot make an unextractable key extractable ---- */
+  {
+    CK_OBJECT_CLASS kcls = CKO_SECRET_KEY;
+    CK_KEY_TYPE kkt = CKK_AES;
+    CK_BYTE kval[16];
+    CK_OBJECT_HANDLE k = 0, cpy = 0;
+    memset(kval, 0x5c, sizeof(kval));
+    CK_ATTRIBUTE ktmpl[] = {
+        {CKA_CLASS, &kcls, sizeof(kcls)},
+        {CKA_KEY_TYPE, &kkt, sizeof(kkt)},
+        {CKA_TOKEN, &bFalse, sizeof(bFalse)},
+        {CKA_SENSITIVE, &bTrue, sizeof(bTrue)},
+        {CKA_VALUE, kval, sizeof(kval)},
+    };
+    CK_ATTRIBUTE up[] = {
+        {CKA_EXTRACTABLE, &bTrue, sizeof(bTrue)},
+    };
+    rv = f->C_CreateObject(sess, ktmpl, 5, &k);
+    CHECK(rv == CKR_OK && k != 0, "sensitive key without EXTRACTABLE imported");
+    rv = f->C_CopyObject(sess, k, up, 1, &cpy);
+    CHECK(rv == CKR_TEMPLATE_INCONSISTENT && cpy == 0,
+          "copy to EXTRACTABLE=true refused (rv=0x%lx)", (unsigned long)rv);
+    up[0].pValue = &bFalse;
+    rv = f->C_CopyObject(sess, k, up, 1, &cpy);
+    CHECK(rv == CKR_OK && cpy != 0, "copy to EXTRACTABLE=false ok");
+    if (cpy != 0) f->C_DestroyObject(sess, cpy);
+    f->C_DestroyObject(sess, k);
   }
 
   /* ---- 5. certificate object ---- */

@@ -53,7 +53,7 @@ static const char *legs[] = {"create", "find", "lifecycle", "visibility",
   "atomicity", "restart"};
 static CK_SLOT_ID slots[2];
 static unsigned slot_count;
-static int live, failed;
+static int live, failed, is_proxy;
 static unsigned assertions;
 static void *module;
 static char fixture_config[PATH_MAX];
@@ -70,6 +70,7 @@ static CK_BYTE hsubj[32], hiss[32];
 static int check(int, const char *);
 static int expect(CK_RV, CK_RV, const char *);
 static int filled(const void *, size_t);
+static int topology_check(int, const char *, const char *);
 static void setup_error(const char *);
 static void sha256(const CK_BYTE *, size_t, CK_BYTE[32]);
 static void load_fixture(void);
@@ -101,10 +102,38 @@ static void find_contains(CK_SESSION_HANDLE, CK_ATTRIBUTE *, CK_ULONG,
 static void find_count(CK_SESSION_HANDLE, CK_ATTRIBUTE *, CK_ULONG,
   unsigned, const char *);
 static void destroy(CK_SESSION_HANDLE, CK_OBJECT_HANDLE, const char *);
+static void storage_defaults(CK_SESSION_HANDLE, CK_ATTRIBUTE *);
 static void cleanup(void);
 #define REQUIRE(c, s) do { if (!check((c), (s))) return; } while (0)
 #define RV(c, w, s) do { if (!expect((c), (w), (s))) return; } while (0)
 #define STEP(c) do { c; if (failed) return; } while (0)
+
+/* Common storage-object attributes the template omits read as the
+ * values the provider enforces (PRIVATE and TOKEN false; MODIFIABLE,
+ * COPYABLE and DESTROYABLE true; LABEL empty), and find matches exactly
+ * those values. full[0..3] are CLASS, CERTIFICATE_TYPE, VALUE, SUBJECT. */
+static void storage_defaults(CK_SESSION_HANDLE h, CK_ATTRIBUTE *full) {
+  CK_BBOOL no = CK_FALSE, yes = CK_TRUE;
+  CK_ATTRIBUTE id = {CKA_ID, (CK_VOID_PTR)"create-defaults", 15};
+  CK_ATTRIBUTE bare[] = {full[0], full[1], full[2], full[3], id};
+  CK_OBJECT_HANDLE o = create_ok(h, bare, N(bare), "defaults-create");
+  if (failed) return;
+  STEP(read_bool(h, o, CKA_PRIVATE, CK_FALSE, "defaults-private-false"));
+  STEP(read_bool(h, o, CKA_TOKEN, CK_FALSE, "defaults-token-false"));
+  STEP(read_bool(h, o, CKA_MODIFIABLE, CK_TRUE, "defaults-modifiable-true"));
+  STEP(read_bool(h, o, CKA_COPYABLE, CK_TRUE, "defaults-copyable-true"));
+  STEP(read_bool(h, o, CKA_DESTROYABLE, CK_TRUE, "defaults-destroyable-true"));
+  STEP(read_exact(h, o, CKA_LABEL, (const CK_BYTE *)"", 0, "defaults-label-empty"));
+  CK_ATTRIBUTE pub[] = {id, {CKA_PRIVATE, &no, sizeof no}};
+  STEP(find_count(h, pub, N(pub), 1, "defaults-find-private-false"));
+  CK_ATTRIBUTE priv[] = {id, {CKA_PRIVATE, &yes, sizeof yes}};
+  STEP(find_count(h, priv, N(priv), 0, "defaults-find-private-true"));
+  CK_BYTE anchor = 0;
+  CK_ATTRIBUTE flags[] = {id, {CKA_TOKEN, &no, sizeof no},
+    {CKA_MODIFIABLE, &yes, sizeof yes}, {CKA_COPYABLE, &yes, sizeof yes},
+    {CKA_DESTROYABLE, &yes, sizeof yes}, {CKA_LABEL, &anchor, 0}};
+  STEP(find_count(h, flags, N(flags), 1, "defaults-find-all"));
+}
 
 /* T-C01 caseCertRequiresTypeValueSubject/caseCertEmptySubjectAccepted;
  * T-C03 caseTrustedBoundary/caseCategoryRoundtrip/caseDateRoundtrip/
@@ -131,6 +160,7 @@ static void leg_create(void) {
   STEP(create_rv(h, no_value, N(no_value), CKR_TEMPLATE_INCOMPLETE, "missing-value"));
   CK_ATTRIBUTE no_subject[] = {full[0], full[1], full[2], full[4]};
   STEP(create_rv(h, no_subject, N(no_subject), CKR_TEMPLATE_INCOMPLETE, "missing-subject"));
+  STEP(storage_defaults(h, full));
   CK_BYTE anchor = 0;
   CK_ATTRIBUTE empty_subj[] = {full[0], full[1], full[2], full[4],
     {CKA_SUBJECT, &anchor, 0}};
@@ -509,9 +539,36 @@ static void leg_atomicity(void) {
   STEP(finalize());
 }
 
+/* The pre-restart handle must fault. Proxied, it names the first object
+ * found after re-initialize (the re-found token certificate, whose value
+ * does not fit the buffer), so each topology asserts its own result.
+ * With a canary name, direct also proves the buffer untouched. */
+static void stale_fault(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
+    const char *name, const char *canary) {
+  CK_BYTE buf[64]; memset(buf, 0xa5, sizeof buf);
+  CK_ATTRIBUTE get[] = {{CKA_VALUE, buf, sizeof buf}};
+  CK_RV got = a.GetAttributeValue(h, o, get, N(get));
+  CK_RV want = is_proxy ? CKR_BUFFER_TOO_SMALL : CKR_OBJECT_HANDLE_INVALID;
+  char detail[64];
+  snprintf(detail, sizeof detail, "rv=0x%lx expected=0x%lx",
+    (unsigned long)got, (unsigned long)want);
+  if (!topology_check(got == want, name, detail)) return;
+  if (canary && !is_proxy)
+    (void)topology_check(filled(buf, sizeof buf) &&
+      get[0].ulValueLen == sizeof buf, canary, "buffer");
+}
+
 /* T-C02 caseCertTokenRestart/caseCertSessionVolatile. Token certs
  * survive a SQLite restart with exact readback and fresh handles;
- * session certs never survive; memory stays volatile. */
+ * session certs never survive; memory stays volatile.
+ * Two behaviors are proxy-owned divergences (HASKOKI_CONSUMER_TOPOLOGY=
+ * proxy; docs/proxy-exclusions.md). pkcs11-proxy-ng v0.2.2 keeps the
+ * backend initialized across a client C_Finalize, so a memory-store
+ * token object survives the client restart; and its object handles are
+ * per client context and start again at 1, so the pre-restart handle
+ * names the first object found after re-initialize (both storages).
+ * Each topology asserts its own behavior on a topology: line;
+ * everything else is compared. */
 static void leg_restart(void) {
   STEP(initialize());
   unsigned d = demo_slot();
@@ -550,20 +607,25 @@ static void leg_restart(void) {
       "restart-value-readback"));
     STEP(read_exact(h, fresh[0], CKA_SUBJECT, subj, (CK_ULONG)subj_len,
       "restart-subject-readback"));
+    STEP(read_bool(h, fresh[0], CKA_PRIVATE, CK_FALSE, "restart-private-default"));
+    CK_BBOOL no = CK_FALSE;
+    CK_ATTRIBUTE qp[] = {qt[0], {CKA_PRIVATE, &no, sizeof no}};
+    STEP(find_count(h, qp, N(qp), 1, "restart-private-find"));
     STEP(find_count(h, qs, N(qs), 0, "restart-session-gone"));
-    CK_BYTE buf[64]; memset(buf, 0xa5, sizeof buf);
-    CK_ATTRIBUTE get[] = {{CKA_VALUE, buf, sizeof buf}};
-    RV(a.GetAttributeValue(h, o, get, N(get)), CKR_OBJECT_HANDLE_INVALID,
-      "restart-stale-fault");
-    REQUIRE(filled(buf, sizeof buf) && get[0].ulValueLen == sizeof buf,
-      "restart-stale-canary");
+    STEP(stale_fault(h, o, "restart-stale-fault", "restart-stale-canary"));
   } else {
-    STEP(find_count(h, qt, N(qt), 0, "restart-memory-volatile"));
+    CK_OBJECT_HANDLE kept[8];
+    for (unsigned i = 0; i < N(kept); ++i) kept[i] = SENTINEL;
+    unsigned total = find_all(h, qt, N(qt), kept, N(kept));
+    if (failed) return;
+    /* Proxied, the daemon never finalized the memory store. */
+    unsigned want = is_proxy ? 1 : 0;
+    char detail[64];
+    snprintf(detail, sizeof detail, "matches=%u expected=%u", total, want);
+    if (!topology_check(total == want, "restart-memory-volatile", detail))
+      return;
     STEP(find_count(h, qs, N(qs), 0, "restart-memory-session-gone"));
-    CK_BYTE buf[64]; memset(buf, 0xa5, sizeof buf);
-    CK_ATTRIBUTE get[] = {{CKA_VALUE, buf, sizeof buf}};
-    RV(a.GetAttributeValue(h, o, get, N(get)), CKR_OBJECT_HANDLE_INVALID,
-      "restart-memory-stale-fault");
+    STEP(stale_fault(h, o, "restart-memory-stale-fault", NULL));
   }
   RV(a.CloseSession(h), CKR_OK, "restart-close");
   STEP(finalize());
@@ -583,6 +645,17 @@ static int expect(CK_RV got, CK_RV want, const char *name) {
   printf("certificates:%s/%s/%s/%s rv=0x%lx expected=0x%lx\n", leg, name,
     version, storage, (unsigned long)got, (unsigned long)want);
   return check(got == want, name);
+}
+/* A topology-specific assertion: printed on a topology: line, which the
+ * parity driver drops from the diff, and not counted in the compared
+ * assertions. A mismatch still fails the leg in either topology. */
+static int topology_check(int good, const char *name, const char *detail) {
+  if (failed) return 0;
+  printf("topology: certificates:%s/%s/%s/%s %s %s check=%s\n", leg, name,
+    version, storage, is_proxy ? "proxy" : "direct", detail,
+    good ? "pass" : "FAIL");
+  if (!good) failed = 1;
+  return good;
 }
 static int filled(const void *memory, size_t n) {
   const CK_BYTE *p = memory;
@@ -1029,6 +1102,8 @@ static int child(const char *path, unsigned v, unsigned s, unsigned l) {
     setup_error("owned-child-directory");
   /* A process alarm is a crash/timeout, never assertion exit 1. */
   alarm(150);
+  const char *topology = getenv("HASKOKI_CONSUMER_TOPOLOGY");
+  is_proxy = topology && !strcmp(topology, "proxy");
   configure(l == 3 /* visibility configures two tokens */);
   load_table(path, v);
   load_fixture();

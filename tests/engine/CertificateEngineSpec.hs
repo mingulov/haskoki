@@ -180,6 +180,10 @@ spec envLock = testGroup "Certificates"
     [ testCase "caseTrustNumericPinned" (caseTrustNumericPinned envLock)
     , testCase "caseValidationNumericPinned" (caseValidationNumericPinned envLock)
     ]
+  , testGroup "storage defaults"
+    [ testCase "caseStorageDefaultsSqliteReload" (caseStorageDefaultsSqliteReload envLock)
+    , testCase "caseStorageDefaultsMemory" (caseStorageDefaultsMemory envLock)
+    ]
   ]
 
 -- ---------------------------------------------------------------------------
@@ -1782,3 +1786,139 @@ showHList (x : xs) = showH x ++ "," ++ showHList xs
 only :: String -> [a] -> IO a
 only _ [x] = pure x
 only label xs = assertFailure (label ++ ": expected one, got " ++ show (length xs)) >> fail "unreachable"
+
+-- ---------------------------------------------------------------------------
+-- Common storage-object attributes through the FFI, across a reload
+-- ---------------------------------------------------------------------------
+
+ckaPrivate, ckaApplication, ckaModifiable, ckaCopyable, ckaDestroyable :: Word64
+ckaPrivate = 0x2
+ckaApplication = 0x10
+ckaModifiable = 0x170
+ckaCopyable = 0x171
+ckaDestroyable = 0x172
+
+-- | A DATA template with no label and no common storage attribute
+-- except the token flag; the APPLICATION value is its search key.
+appDataTemplate :: Bool -> ByteString -> ByteString
+appDataTemplate isToken app = buildFrame
+  [ (ckaClass, le64 ckoData)
+  , (ckaToken, uBool isToken)
+  , (ckaApplication, app)
+  , (ckaValue, "defaults payload")
+  ]
+
+-- | The defaults an object created without them must read through
+-- the native getter: PRIVATE false, MODIFIABLE, COPYABLE and
+-- DESTROYABLE true.
+nativeFlagDefaults :: [(Word64, ByteString)]
+nativeFlagDefaults =
+  [ (ckaPrivate, uBool False)
+  , (ckaModifiable, uBool True)
+  , (ckaCopyable, uBool True)
+  , (ckaDestroyable, uBool True)
+  ]
+
+-- | Read every default on one handle, plus the empty LABEL when the
+-- object was created without one.
+assertNativeDefaults :: String -> StablePtr StdInstance -> CULong -> CULong -> Bool -> IO ()
+assertNativeDefaults tag ctx h obj labelless = do
+  forM_ nativeFlagDefaults $ \(cka, want) -> do
+    (rv, got) <- getAttrBytes ctx h obj cka
+    assertEqual (tag ++ " rv " ++ showH (CULong cka)) rvOK rv
+    assertEqual (tag ++ " value " ++ showH (CULong cka)) want got
+  when labelless $ do
+    (rv, got) <- getAttrBytes ctx h obj ckaLabel
+    assertEqual (tag ++ " LABEL rv") rvOK rv
+    assertEqual (tag ++ " LABEL empty") BS.empty got
+
+-- | Find with the defaults matches the one object; find with
+-- PRIVATE=true does not.
+assertNativeDefaultFinds :: String -> StablePtr StdInstance -> CULong -> CULong -> (Word64, ByteString) -> IO ()
+assertNativeDefaultFinds tag ctx h obj key = do
+  hits <- findByTemplate ctx h (buildFrame (key : nativeFlagDefaults))
+  assertEqual (tag ++ " default find") [obj] hits
+  misses <- findByTemplate ctx h (buildFrame [key, (ckaPrivate, uBool True)])
+  assertEqual (tag ++ " PRIVATE=true find") [] misses
+
+-- | Find with the empty LABEL default matches a label-less object.
+assertEmptyLabelFind :: String -> StablePtr StdInstance -> CULong -> CULong -> (Word64, ByteString) -> IO ()
+assertEmptyLabelFind tag ctx h obj key = do
+  hits <- findByTemplate ctx h (buildFrame [key, (ckaLabel, BS.empty)])
+  assertEqual (tag ++ " empty LABEL find") [obj] hits
+
+-- | The stored map carries none of the defaulted attributes.
+-- The label-less data object must not gain a stored empty label
+-- either; the certificate carries its own label.
+assertNotMaterialised :: String -> Bool -> ObjectState -> IO ()
+assertNotMaterialised tag labelLess ost =
+  forM_ ([AttrPrivate, AttrModifiable, AttrCopyable, AttrDestroyable]
+          ++ [AttrLabel | labelLess]) $ \t ->
+    assertEqual (tag ++ " " ++ show t ++ " not stored") Nothing
+      (Map.lookup t (osAttrs ost))
+
+objectStateOfApp :: StdInstance -> ByteString -> IO ObjectState
+objectStateOfApp inst app = do
+  m <- snapshotModel (siEnv inst)
+  case [ o | o <- Map.elems (mObjects m)
+           , Map.lookup AttrApplication (osAttrs o) == Just (ValBytes app) ] of
+    [o] -> pure o
+    found -> assertFailure ("app object not unique: " ++ show (length found)) >> fail "unreachable"
+
+-- | SQLite: a token certificate and a label-less token DATA object,
+-- both created without CKA_PRIVATE, read the defaults and match them
+-- in find before and after the store is reloaded by a new instance.
+-- The reloaded records still lack the defaulted attributes.
+caseStorageDefaultsSqliteReload :: MVar () -> IO ()
+caseStorageDefaultsSqliteReload envLock = do
+  der <- fixtureDer
+  subj <- derSubject der
+  dbPath <- certDbPath "storage-defaults"
+  probe <- newCertProbe
+  let certLabel = "defaults-cert"
+      app = "defaults-app"
+      certKey = (ckaLabel, certLabel)
+      appKey = (ckaApplication, app)
+  withCertInstance envLock dbPath probe $ \ctx inst -> do
+    h <- openRwSession ctx
+    hc <- createObject ctx h (certTemplate True certLabel der subj)
+    hd <- createObject ctx h (appDataTemplate True app)
+    assertNativeDefaults "cert before reload" ctx h hc False
+    assertNativeDefaults "data before reload" ctx h hd True
+    assertNativeDefaultFinds "cert before reload" ctx h hc certKey
+    assertNativeDefaultFinds "data before reload" ctx h hd appKey
+    assertEmptyLabelFind "data before reload" ctx h hd appKey
+    objectStateOfLabel inst certLabel >>= assertNotMaterialised "cert before reload" False
+    objectStateOfApp inst app >>= assertNotMaterialised "data before reload" True
+  withCertInstance envLock dbPath probe $ \ctx inst -> do
+    h <- openRwSession ctx
+    hc <- findByLabel ctx h certLabel >>= only "cert refind"
+    hd <- findByTemplate ctx h (buildFrame [appKey]) >>= only "data refind"
+    assertNativeDefaults "cert after reload" ctx h hc False
+    assertNativeDefaults "data after reload" ctx h hd True
+    assertNativeDefaultFinds "cert after reload" ctx h hc certKey
+    assertNativeDefaultFinds "data after reload" ctx h hd appKey
+    assertEmptyLabelFind "data after reload" ctx h hd appKey
+    objectStateOfLabel inst certLabel >>= assertNotMaterialised "cert after reload" False
+    objectStateOfApp inst app >>= assertNotMaterialised "data after reload" True
+
+-- | Memory storage: the same reads and finds on token and session
+-- objects created without any common storage attribute but TOKEN.
+caseStorageDefaultsMemory :: MVar () -> IO ()
+caseStorageDefaultsMemory envLock = do
+  probe <- newCertProbe
+  let cfg = defaultConfig
+  slots <- certSlots cfg
+  bracket
+    (do ctx <- withEnvLock envLock (openStdInstanceWithSlots (certAcquisition probe) cfg slots)
+        assertBool "memory open" (castStablePtrToPtr ctx /= nullPtr)
+        pure ctx)
+    (\ctx -> haskokiStdClose ctx >> closeSlotEvents slots)
+    (\ctx -> do
+        h <- openRwSession ctx
+        forM_ [(True, "mem-token-app"), (False, "mem-session-app")] $ \(tok, app) -> do
+          o <- createObject ctx h (appDataTemplate tok app)
+          let tag = "memory " ++ BC8.unpack app
+          assertNativeDefaults tag ctx h o True
+          assertNativeDefaultFinds tag ctx h o (ckaApplication, app)
+          assertEmptyLabelFind tag ctx h o (ckaApplication, app))

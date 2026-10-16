@@ -97,6 +97,7 @@ spec = testGroup "objects and attributes"
   , testCase "generated: bumped binding faults while object lives" caseGenerationGuard
   , testCase "copy: inherits source, overrides template" caseCopyFlow
   , testCase "copy: unsealing overrides rejected, sealed copies stay sealed" caseCopySealRatchet
+  , testCase "copy: absent EXTRACTABLE cannot be copied to true" caseCopyExtractableAbsent
   , testCase "find: template match returns handles" caseFindFlow
   , testCase "find: sealed payloads never match a value guess" caseFindSealedNoOracle
   , testCase "find: contradictory template rejected, nothing bound" caseFindContradiction
@@ -110,6 +111,7 @@ spec = testGroup "objects and attributes"
   , testCase "set-attributes: ratchets and atomicity" caseSetAttrRatchets
   , testCase "copy: COPYABLE=false prohibits" caseCopyableGate
   , testCase "destroy: DESTROYABLE=false prohibits" caseDestroyableGate
+  , testCase "set-attributes: COPYABLE/DESTROYABLE ratchet true->false only" caseCopyDestroyRatchets
   , testCase "create: secret VALUE/VALUE_LEN coherence" caseSecretImportCoherence
   , testCase "create: certificate stores verbatim" caseCertCreate
   , testCase "visibility: private objects follow login state" caseVisibilityLogin
@@ -127,6 +129,13 @@ spec = testGroup "objects and attributes"
   , testCase "close: creator-close destroys session objects" caseCreatorClose
   , testCase "codec: 65-entry template refused" caseTemplateEntryBound
   , testCase "create: 65-entry template refused loudly" caseCreateEntryBound
+  , testCase "storage defaults: absent attributes read the enforced value" caseStorageDefaultsRead
+  , testCase "storage defaults: find matches the reported value" caseStorageDefaultsFind
+  , testCase "storage defaults: reported values are the enforced ones" caseStorageDefaultsEnforced
+  , testCase "storage defaults: never written into the stored map" caseStorageDefaultsNotStored
+  , testCase "storage defaults: explicit values win" caseStorageDefaultsExplicitWins
+  , testCase "storage defaults: non-storage classes stay unavailable" caseStorageDefaultsNonStorage
+  , testCase "storage defaults: failure precedence unchanged" caseStorageDefaultsPrecedence
   ]
 
 -- | A sensitive, unextractable object read for a readable label, its
@@ -507,6 +516,31 @@ caseCopySealRatchet = do
   (rej, _) <- runRejectFull m6 (getReq sid h2 [AttrValue])
   assertEqual "copy of sealed still redacts" CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
   assertEqual "no payload bytes escape" [] (rejOutputs rej)
+
+-- | A key without CKA_EXTRACTABLE is not wrappable, and a copy may
+-- not make it so: a copy template that sets EXTRACTABLE=true is
+-- refused unless the source is explicitly extractable. Tightening
+-- (EXTRACTABLE=false) and plain copies still pass.
+caseCopyExtractableAbsent :: IO ()
+caseCopyExtractableAbsent = do
+  (sid, m0) <- openSession seeded
+  let sealedKey = secretAes (BS.replicate 16 9) ++ [(AttrSensitive, ValBool True)]
+  (pc, m1) <- runCommit m0 (createReq sid sealedKey)
+  h <- commitHandle pc
+  let nBefore = Map.size (mObjects m1)
+  (code, m2) <- runReject m1 (copyReq sid h [(AttrExtractable, ValBool True)])
+  assertEqual "absent EXTRACTABLE cannot be copied to true"
+    CKR_TEMPLATE_INCONSISTENT code
+  assertEqual "no extractable copy created" nBefore (Map.size (mObjects m2))
+  (pcF, m3) <- runCommit m2 (copyReq sid h [(AttrExtractable, ValBool False)])
+  assertEqual "copy may tighten to EXTRACTABLE=false" CKR_OK (pcCode pcF)
+  (pcP, m4) <- runCommit m3 (copyReq sid h [])
+  assertEqual "plain copy still allowed" CKR_OK (pcCode pcP)
+  (pcE, m5) <- runCommit m4
+    (createReq sid (secretAes (BS.replicate 16 3) ++ [(AttrExtractable, ValBool True)]))
+  he <- commitHandle pcE
+  (pcT, _) <- runCommit m5 (copyReq sid he [(AttrExtractable, ValBool True)])
+  assertEqual "explicitly extractable source copies as extractable" CKR_OK (pcCode pcT)
 
 caseFindFlow :: IO ()
 caseFindFlow = do
@@ -1758,6 +1792,34 @@ caseDestroyableGate = do
   (pcD, _) <- runCommit m3 (destroyReq sid h2)
   assertEqual "destroyable destroy" CKR_OK (pcCode pcD)
 
+-- | COPYABLE and DESTROYABLE only ratchet true->false. From an
+-- absent flag (read as true): setting false commits, setting true
+-- again is refused, and the gated action is then prohibited. From an
+-- explicit false: setting true is refused.
+caseCopyDestroyRatchets :: IO ()
+caseCopyDestroyRatchets = mapM_ one
+  [ (AttrCopyable, \sid h -> copyReq sid h [])
+  , (AttrDestroyable, destroyReq)
+  ]
+  where
+    one (flag, act) = do
+      (sid, m0) <- openSession seeded
+      (pc, m1) <- runCommit m0 (createReq sid [classData, label "ratchet"])
+      h <- commitHandle pc
+      (pcOff, m2) <- runCommit m1 (setReq sid h [(flag, ValBool False)])
+      assertEqual (show flag ++ " absent -> false") CKR_OK (pcCode pcOff)
+      (codeOn, m3) <- runReject m2 (setReq sid h [(flag, ValBool True)])
+      assertEqual (show flag ++ " false -> true refused")
+        CKR_ATTRIBUTE_READ_ONLY codeOn
+      (codeAct, _) <- runReject m3 (act sid h)
+      assertEqual (show flag ++ " action prohibited") CKR_ACTION_PROHIBITED codeAct
+      (pcX, m4) <- runCommit m0
+        (createReq sid [classData, label "explicit", (flag, ValBool False)])
+      hx <- commitHandle pcX
+      (codeX, _) <- runReject m4 (setReq sid hx [(flag, ValBool True)])
+      assertEqual (show flag ++ " explicit false -> true refused")
+        CKR_ATTRIBUTE_READ_ONLY codeX
+
 caseSecretImportCoherence :: IO ()
 caseSecretImportCoherence = do
   (sid, m0) <- openSession seeded
@@ -1805,3 +1867,229 @@ caseCertCreate = do
     Nothing -> assertFailure "cert handle lost"
     Just ost -> assertEqual "cert stored verbatim"
       (Map.fromList tmpl) (osAttrs ost)
+
+-- ---------------------------------------------------------------------------
+-- Common storage-object attributes: absent means the enforced default
+-- ---------------------------------------------------------------------------
+
+-- | The value each common storage-object attribute must report when
+-- the creating template omitted it. Written out here, independently
+-- of the provider's own table, from what the provider enforces:
+-- absent TOKEN is a session object, absent PRIVATE is public, and
+-- absent MODIFIABLE, COPYABLE and DESTROYABLE refuse nothing.
+-- LABEL is the PKCS#11 empty default.
+expectedDefaults :: [(AttributeType, AttributeValue)]
+expectedDefaults =
+  [ (AttrToken, ValBool False)
+  , (AttrPrivate, ValBool False)
+  , (AttrModifiable, ValBool True)
+  , (AttrCopyable, ValBool True)
+  , (AttrDestroyable, ValBool True)
+  , (AttrLabel, ValBytes "")
+  ]
+
+-- | A value that differs from the expected default, per attribute.
+otherThan :: AttributeValue -> AttributeValue
+otherThan v = case v of
+  ValBool b -> ValBool (not b)
+  ValBytes _ -> ValBytes "not-empty"
+  ValULong n -> ValULong (n + 1)
+
+-- | Search tag shared by the objects the default cases create: an
+-- APPLICATION value, so no case needs the label it inspects.
+dfltTag :: ByteString -> (AttributeType, AttributeValue)
+dfltTag s = (AttrApplication, ValBytes s)
+
+-- | Storage-class templates that omit every common storage attribute.
+storageTemplates :: [(String, [(AttributeType, AttributeValue)])]
+storageTemplates =
+  [ ("data", [classData, dfltTag "dflt-data"])
+  , ("certificate",
+      [ (AttrClass, ValULong (mustClassId "CKO_CERTIFICATE"))
+      , (AttrCertificateType, ValULong 0)
+      , (AttrValue, ValBytes "der")
+      , (AttrSubject, ValBytes "cn")
+      , dfltTag "dflt-cert"
+      ])
+  , ("secret key",
+      [ (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
+      , (AttrKeyType, ValULong (mustKeyTypeId "CKK_AES"))
+      , (AttrValue, ValBytes (BS.replicate 16 7))
+      , dfltTag "dflt-secret"
+      ])
+  ]
+
+-- | Per class and per attribute: a read of the absent attribute
+-- returns CKR_OK with the enforced default, alone and in one read.
+caseStorageDefaultsRead :: IO ()
+caseStorageDefaultsRead = mapM_ one storageTemplates
+  where
+    one (cls, tmpl) = do
+      (sid, m0) <- openSession seeded
+      (pc, m1) <- runCommit m0 (createReq sid tmpl)
+      h <- commitHandle pc
+      mapM_ (readOne cls sid m1 h) expectedDefaults
+      (pcAll, _) <- runCommit m1 (getReq sid h (map fst expectedDefaults))
+      assertEqual (cls ++ ": all defaults in one read")
+        [encodeValue v | (_, v) <- expectedDefaults]
+        [outBytes o | o <- pcOutputs pcAll]
+    readOne cls sid m h (t, v) = case planCall defaultRules m (getReq sid h [t]) of
+      Immediate pcG -> do
+        assertEqual (cls ++ " " ++ show t ++ ": code") CKR_OK (pcCode pcG)
+        assertEqual (cls ++ " " ++ show t ++ ": value")
+          [encodeValue v] [outBytes o | o <- pcOutputs pcG]
+      Reject rej -> assertFailure
+        (cls ++ " " ++ show t ++ ": absent attribute must read its default, got "
+          ++ show (rejCode rej))
+      Execute _ _ -> assertFailure "read must not execute"
+
+-- | Per class and per attribute: a find naming the reported default
+-- matches the object, and a find naming any other value does not.
+caseStorageDefaultsFind :: IO ()
+caseStorageDefaultsFind = mapM_ one storageTemplates
+  where
+    one (cls, tmpl) = do
+      (sid, m0) <- openSession seeded
+      (pc, m1) <- runCommit m0 (createReq sid tmpl)
+      h <- commitHandle pc
+      let tag = [e | e@(AttrApplication, _) <- tmpl]
+      mapM_ (findOne cls sid m1 h tag) expectedDefaults
+    findOne cls sid m h tag (t, v) = do
+      (pcHit, _) <- runCommit m (findReq sid (tag ++ [(t, v)]))
+      hits <- findHandles pcHit
+      assertEqual (cls ++ " " ++ show t ++ ": default matches") [h] hits
+      (pcMiss, _) <- runCommit m (findReq sid (tag ++ [(t, otherThan v)]))
+      misses <- findHandles pcMiss
+      assertEqual (cls ++ " " ++ show t ++ ": other value misses") [] misses
+
+-- | What is reported is what is enforced: the object read as
+-- PRIVATE=false is visible to a public session, TOKEN=false is
+-- session-owned, MODIFIABLE=true accepts a label change,
+-- COPYABLE=true copies, DESTROYABLE=true destroys, and writing a
+-- reported default back is a no-op write that succeeds.
+caseStorageDefaultsEnforced :: IO ()
+caseStorageDefaultsEnforced = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid [classData, dfltTag "enforced"])
+  h <- commitHandle pc
+  ost <- mustResolve m1 h
+  st <- case lookupSession m1 sid of
+    Just s -> pure s
+    Nothing -> assertFailure "session lost"
+  assertBool "public session sees the PRIVATE=false object" (objectVisible st ost)
+  assertEqual "TOKEN=false object is session-owned" (Just sid) (osOwner ost)
+  (pcFind, _) <- runCommit m1 (findReq sid [dfltTag "enforced"])
+  found <- findHandles pcFind
+  assertEqual "logged-out find sees it" [h] found
+  (_, mSet) <- runCommit m1 (setReq sid h [label "changed"])
+  _ <- mustResolve mSet h
+  (pcCopy, _) <- runCommit m1 (copyReq sid h [])
+  assertEqual "COPYABLE=true copies" CKR_OK (pcCode pcCopy)
+  (pcDestroy, _) <- runCommit m1 (destroyReq sid h)
+  assertEqual "DESTROYABLE=true destroys" CKR_OK (pcCode pcDestroy)
+  -- Writing back a reported default is a no-op write that succeeds
+  -- for every settable common attribute. PRIVATE and MODIFIABLE are
+  -- not settable after creation, for any value.
+  mapM_ (\(t, v) ->
+          let code = case planCall defaultRules m1 (setReq sid h [(t, v)]) of
+                Immediate pcW -> pcCode pcW
+                Reject rej -> rejCode rej
+                Execute _ _ -> CKR_GENERAL_ERROR
+          in assertEqual ("write back " ++ show t) CKR_OK code)
+    [ e | e@(t, _) <- expectedDefaults
+        , t `elem` [AttrToken, AttrCopyable, AttrDestroyable, AttrLabel] ]
+  mapM_ (\(t, v) -> do
+          (code, _) <- runReject m1 (setReq sid h [(t, v)])
+          assertEqual ("not settable " ++ show t) CKR_ATTRIBUTE_READ_ONLY code)
+    [ e | e@(t, _) <- expectedDefaults, t `elem` [AttrPrivate, AttrModifiable] ]
+
+-- | Reporting and matching read effective values; they never write
+-- them. The stored map stays exactly the creation template after
+-- create, read, find, and copy, so durable bytes do not change.
+caseStorageDefaultsNotStored :: IO ()
+caseStorageDefaultsNotStored = do
+  (sid, m0) <- openSession seeded
+  let tmpl = [classData, dfltTag "not-stored"]
+  (pc, m1) <- runCommit m0 (createReq sid tmpl)
+  h <- commitHandle pc
+  (_, m2) <- runCommit m1 (getReq sid h (map fst expectedDefaults))
+  (_, m3) <- runCommit m2 (findReq sid (dfltTag "not-stored" : expectedDefaults))
+  (pcC, m4) <- runCommit m3 (copyReq sid h [])
+  hc <- commitHandle pcC
+  ost <- mustResolve m4 h
+  assertEqual "stored map is the template" (Map.fromList tmpl) (osAttrs ost)
+  cpy <- mustResolve m4 hc
+  assertEqual "copy stores the source map" (Map.fromList tmpl) (osAttrs cpy)
+
+-- | Explicitly stored values win over the defaults, on read and find.
+caseStorageDefaultsExplicitWins :: IO ()
+caseStorageDefaultsExplicitWins = do
+  (sid, m0) <- openSession seeded
+  m1 <- loginAs m0 sid
+  let explicit =
+        [ (AttrPrivate, ValBool True)
+        , (AttrModifiable, ValBool False)
+        , (AttrCopyable, ValBool False)
+        , (AttrDestroyable, ValBool False)
+        , (AttrLabel, ValBytes "explicit")
+        ]
+  (pc, m2) <- runCommit m1 (createReq sid (classData : dfltTag "explicit" : explicit))
+  h <- commitHandle pc
+  (pcG, _) <- runCommit m2 (getReq sid h (map fst explicit))
+  assertEqual "explicit values read back"
+    [encodeValue v | (_, v) <- explicit] [outBytes o | o <- pcOutputs pcG]
+  mapM_ (\(t, v) -> do
+          (pcF, _) <- runCommit m2 (findReq sid [dfltTag "explicit", (t, otherThan v)])
+          hits <- findHandles pcF
+          assertEqual ("default does not match explicit " ++ show t) [] hits)
+    explicit
+
+-- | Only storage objects own the common storage attributes: a
+-- hardware feature or mechanism object created without them still
+-- reports them unavailable and never matches a default in find.
+caseStorageDefaultsNonStorage :: IO ()
+caseStorageDefaultsNonStorage = mapM_ one
+  [ ("CKO_HW_FEATURE", mustClassId "CKO_HW_FEATURE")
+  , ("CKO_MECHANISM", mustClassId "CKO_MECHANISM")
+  ]
+  where
+    one (name, cls) = do
+      (sid, m0) <- openSession seeded
+      let tag = dfltTag (BC8.pack name)
+      (pc, m1) <- runCommit m0
+        (createReq sid [(AttrClass, ValULong cls), tag])
+      h <- commitHandle pc
+      mapM_ (\(t, v) -> do
+              (code, _) <- runReject m1 (getReq sid h [t])
+              assertEqual (name ++ " " ++ show t ++ " unavailable")
+                CKR_ATTRIBUTE_TYPE_INVALID code
+              (pcF, _) <- runCommit m1 (findReq sid [tag, (t, v)])
+              hits <- findHandles pcF
+              assertEqual (name ++ " " ++ show t ++ " no default match") [] hits)
+        expectedDefaults
+
+-- | Failure precedence is unchanged for attributes that really are
+-- unavailable: sensitive still dominates, an attribute a data object
+-- does not own (CKA_KEY_TYPE) still fails the read, and the defaulted attribute rides
+-- along as a readable value in the same outcome.
+caseStorageDefaultsPrecedence :: IO ()
+caseStorageDefaultsPrecedence = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0
+    (createReq sid
+      [ classData
+      , (AttrSensitive, ValBool True)
+      , (AttrValue, ValBytes "s3cret")
+      ])
+  h <- commitHandle pc
+  (rej, _) <- runRejectFull m1 (getReq sid h [AttrValue, AttrPrivate, AttrKeyType])
+  assertEqual "sensitive dominates" CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
+  assertEqual "default rides along" [encodeValue (ValBool False)]
+    [outBytes o | o <- rejOutputs rej]
+  assertEqual "per-attribute reasons"
+    ["AttrValue: sensitive", "AttrPrivate: ok", "AttrKeyType: unavailable"]
+    (rejReasons rej)
+  (rej2, _) <- runRejectFull m1 (getReq sid h [AttrPrivate, AttrKeyType])
+  assertEqual "unavailable still fails" CKR_ATTRIBUTE_TYPE_INVALID (rejCode rej2)
+  assertEqual "default still delivered" [encodeValue (ValBool False)]
+    [outBytes o | o <- rejOutputs rej2]

@@ -55,28 +55,71 @@ development workspace, sha256 `ffc57ccded61426c3b8a8bc4479dbf74204aeba676219bfd3
   with an empty diff in all four versions with memory storage (gated);
   with sqlite storage it fails in all four versions.
 
-## Remaining entries (re-probed 2026-10-15 and 2026-10-16)
+## Changes after the storage-attribute fix (2026-10-16)
+
+Haskoki now reports the common storage-object attributes an object was
+created without (see the changelog). Re-probe with that fix, one fresh
+daemon per version and storage (receipt:
+`ws/evidence/v050-attr-defaults/parity-run2/artifacts/reprobe.tsv` in
+the development workspace, sha256
+`916a842f4a70b7d2b462830bc119a782c8639399868b7552bf0f9d1c18594042`):
+
+- `consumer_certificates:restart:sqlite`: KEPT, with a new cause. The
+  assertion it was excluded for, `restart-token-refind`, now passes
+  proxied in all four versions. Its cause was a Haskoki defect, now
+  fixed: an object created without `CKA_PRIVATE` returned
+  `CKR_ATTRIBUTE_TYPE_INVALID` for it, and the proxy hides an object of
+  unknown privacy from a logged-out session unless that client context
+  created it. After the client's `C_Finalize` and `C_Initialize` the
+  context is new, so the object was hidden (0 matches proxied, 1
+  direct). It now reads `CKA_PRIVATE` false and is found. The leg now
+  fails one assertion later, on proxy behavior: `restart-stale-fault`
+  returns `0x150` where direct returns `CKR_OBJECT_HANDLE_INVALID`
+  (`0x82`), in all four versions. The proxy's object handles are per
+  client context and start again at 1, so the handle from before the
+  restart names the first object found after it.
+- `consumer_certificates:restart:memory`: NEW. With `CKA_PRIVATE`
+  reported, the proxied run finds the memory-store object after the
+  client restart: `restart-memory-volatile matches=1 expected=0`, in
+  all four versions (2.40 first failed gated, receipt
+  `ws/evidence/v050-attr-defaults/parity-run1/driver.log`). The daemon
+  does not finalize the backend when a client calls `C_Finalize`, so the
+  object survives; direct, `C_Finalize` drops the memory store. The
+  "passes with memory storage" result in fix round 1 held only because
+  the `CKA_PRIVATE` defect hid that object.
+
+## Restart leg gated (2026-10-16)
+
+Both restart entries are REMOVED. The restart leg runs proxied with
+both storages in all four versions, and its transcript is compared.
+`restart-token-refind`, `restart-private-default` and
+`restart-private-find` are now gated through the proxy. Only the two
+proxy behaviors above stay proxy-owned: the leg branches on topology
+for the stale handle (`restart-stale-fault` with sqlite, and
+`restart-memory-stale-fault` with memory) and for
+`restart-memory-volatile`. Each topology asserts its own result on a
+`topology:` line, and the driver drops those lines from the diff. With
+the leg gated, `restart-memory-stale-fault` ran proxied for the first
+time (the earlier memory failure stopped the leg before it): it returns
+`0x150` proxied and `0x82` direct in all four versions, the same
+stale-handle behavior as sqlite. Receipt (development workspace):
+`ws/evidence/v050-attr-defaults/fix1/parity-dev-restart/driver.log`
+(first proxied run, failing there) and
+`ws/evidence/v050-attr-defaults/fix1/parity-dev-restart2/` (all eight
+cells hold). The divergences are listed in the table below and in the
+findings ledger.
+
+## Remaining entries (re-probed 2026-10-15)
 
 Receipts (development workspace): `ws/evidence/v050-wp11/task3/`
-(`reprobe-artifacts/reprobe.tsv`, the first three rows below) and
-`ws/evidence/v050-wp11/fix1/probe-artifacts/` (the certificate row).
-Every row ran against the pinned pair above.
+(`reprobe-artifacts/reprobe.tsv`). Every row ran against the pinned
+pair above.
 
 | Entry | Upstream | Re-probe result | Why it stays |
 | --- | --- | --- | --- |
 | `message_routed` | [#23](https://github.com/mingulov/pkcs11-proxy-ng/issues/23) | error (exit 1) | 10 failed checks: `C_EncryptMessageNext` IV repair, supply-at-end and replace-at-end; five GCM IV-placement shapes (supply-at-end and recover, sealed and opened); and the GCM KAT sweep (sealed, opened). |
 | `async_routed` | [#24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24) | error (exit 1) | 80 failed checks, and the table-proof child dies with signal 11 under 3.2. Async completion does not preserve the caller's output bindings. |
 | `notifications_routed` | [#25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25) | error (exit 2) | All 72 matrix legs report `setup-error reason=discovery-symbols`. Callback association and provider control are not transported. |
-| `consumer_certificates:restart:sqlite` | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) (closest reference) | error (exit 1) in 2.40, 3.0, 3.1 and 3.2 | Assertion `restart-token-refind` fails: after the client's `C_Finalize` and `C_Initialize`, finding the `CKA_TOKEN` object `restart-token` fails through the proxy and passes direct (committed evidence: the `restart-token-refind` result lines). A temporary debug print on 2026-10-16 showed 0 matches proxied against 1 direct; that print was reverted and no committed log retains it. |
-
-#27 is closed upstream as by design (2026-10-05: backend objects outlive
-a client `C_Finalize`; per-client teardown is deferred to v0.3). Its
-report covers the opposite symptom, memory objects surviving the
-restart, which now passes. The sqlite symptom (object not found) is not
-described there, and its cause is not established. The entry is the
-narrowest the evidence supports, and #27 is the nearest upstream
-reference rather than a confirmed cause. A new upstream report is
-needed before the entry can name its own issue.
 
 ## Policy and metadata scenarios (#17)
 
@@ -121,16 +164,27 @@ config the consumer prints with `--print-config`:
 
 These legs are not `DIRECT_ONLY` entries: the consumer runs proxied and
 is compared, but one leg branches on topology because the pinned shim
-behaves differently from the provider. The proxied branch asserts the
-shim's behavior, so a change in either side fails the run. No upstream
-issue has been filed for either.
+or daemon behaves differently from the provider. The proxied branch
+asserts the proxy's behavior, so a change in either side fails the run.
 
-| Leg | Proxied behavior | Direct behavior | Introduced |
-| --- | --- | --- | --- |
-| `consumer_errors` refusal legs, digest-key control | The shim refuses `C_DigestKey` on a destroyed key handle itself (client-side handle translation), so the backend never sees the error and its digest stays active: the next `C_DigestInit` returns `CKR_OPERATION_ACTIVE`. The consumer prints a `topology:` line (excluded from the diff), finishes the stale digest and re-initializes. | The refused `C_DigestKey` returns `CKR_KEY_HANDLE_INVALID` and terminates the digest (PKCS#11 v3.1 section 5.12), so `C_DigestInit` succeeds. | `f520105` |
-| `consumer_roundtrip` HOTP `CK_OTP_PARAMS` legs | The shim's operation check refuses any parameterized `CKM_HOTP` (0x291 has no entry in its mechanism parameter registry) with `CKR_MECHANISM_PARAM_INVALID` before forwarding, because it does not marshal the pointer inside `CK_OTP_PARAMS`. The proxied run asserts that refusal; the RFC 4226 vectors and the parameter-decoder refusals run direct only. | `CK_OTP_PARAMS` with a `CK_OTP_COUNTER` entry signs and verifies the RFC 4226 vectors. | `8caf66f` |
+| Leg | Upstream | Proxied behavior | Direct behavior | Introduced |
+| --- | --- | --- | --- | --- |
+| `consumer_errors` refusal legs, digest-key control | none filed | The shim refuses `C_DigestKey` on a destroyed key handle itself (client-side handle translation), so the backend never sees the error and its digest stays active: the next `C_DigestInit` returns `CKR_OPERATION_ACTIVE`. The consumer prints a `topology:` line (excluded from the diff), finishes the stale digest and re-initializes. | The refused `C_DigestKey` returns `CKR_KEY_HANDLE_INVALID` and terminates the digest (PKCS#11 v3.1 section 5.12), so `C_DigestInit` succeeds. | `f520105` |
+| `consumer_roundtrip` HOTP `CK_OTP_PARAMS` legs | none filed | The shim's operation check refuses any parameterized `CKM_HOTP` (0x291 has no entry in its mechanism parameter registry) with `CKR_MECHANISM_PARAM_INVALID` before forwarding, because it does not marshal the pointer inside `CK_OTP_PARAMS`. The proxied run asserts that refusal; the RFC 4226 vectors and the parameter-decoder refusals run direct only. | `CK_OTP_PARAMS` with a `CK_OTP_COUNTER` entry signs and verifies the RFC 4226 vectors. | `8caf66f` |
+| `consumer_certificates` restart leg, sqlite `restart-stale-fault` (and memory `restart-memory-stale-fault`) | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) (closest reference) | The proxy's object handles are per client context and start again at 1 after the client's `C_Finalize` and `C_Initialize`, so the pre-restart handle names the re-found certificate (on memory, the surviving original, which exists only because of the `restart-memory-volatile` divergence below): `C_GetAttributeValue` with a 64-byte `CKA_VALUE` buffer returns `CKR_BUFFER_TOO_SMALL` (`0x150`). Asserted on a `topology:` line. | The pre-restart handle returns `CKR_OBJECT_HANDLE_INVALID` (`0x82`); with sqlite the buffer is also proven untouched. | `f84833b` |
+| `consumer_certificates` restart leg, memory, `restart-memory-volatile` | [#27](https://github.com/mingulov/pkcs11-proxy-ng/issues/27) (this exact symptom; closed by design 2026-10-05) | The daemon keeps the backend initialized across the client's `C_Finalize`, so the memory-store token certificate survives the client restart: the re-find matches 1. Asserted on a `topology:` line. | `C_Finalize` drops the memory store: the re-find matches 0. | `f84833b` |
 
-Both are recorded in `proxy_owned_divergences` of the
+#27 reports the memory symptom exactly. The sqlite entry has no upstream issue; #27 is its nearest reference. Handle values restarting at 1 after re-initialization are not forbidden by PKCS#11 (handles are only stable for a session's lifetime); the leg asserts Haskoki's own contract.
+
+The memory `restart-memory-stale-fault` assertion shows the same
+stale-handle behavior as the sqlite entry and shares its row; on memory
+the aliased object is the surviving original certificate.
+
+The restart leg's earlier sqlite symptom, the object not found after
+the restart, was not a proxy issue: it was the Haskoki `CKA_PRIVATE`
+defect described above, now fixed.
+
+All four are recorded in `proxy_owned_divergences` of the
 [findings ledger](../spec/findings-ledger.json), whose gate checks that
 each introducing commit is an ancestor of the checked-out tree.
 
