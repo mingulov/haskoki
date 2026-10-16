@@ -148,6 +148,7 @@ import Control.Exception
   )
 import Data.Bits ((.&.), (.|.), shiftL)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
 import Data.ByteString.Unsafe (unsafeUseAsCString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -193,6 +194,7 @@ import Haskoki.Request
   , OutputRegion (..)
   , Request (..)
   )
+import Haskoki.Runtime.Catalog (homeCatalogEntry)
 import Haskoki.Runtime.Async
   ( AsyncTable
   , AsyncWork (..)
@@ -255,6 +257,7 @@ import Haskoki.Runtime.Lifecycle
   )
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
+  , CredentialRecord (..)
   , Store (..)
   , StoreDelta (..)
   , TokenRecord (..)
@@ -1959,7 +1962,7 @@ ensureHomeToken store = do
       | any ((== storeHomeToken) . trId . fst) toks -> openDc
       | null toks -> do
           res <- storeCommit store
-            emptyDelta { sdPutTokens = [homeToken] }
+            emptyDelta { sdPutTokens = [homeToken], sdPutCredentials = [homeCredential] }
           case res of
             Committed -> openDc
             _ -> pure Nothing
@@ -1972,6 +1975,12 @@ ensureHomeToken store = do
       , trLabel = "haskoki-async"
       , trAuth = tokenAuthNew
       }
+    -- The home token's credential row seeds in the same transaction
+    -- as the token, from the home catalog entry's PINs: a store this
+    -- open creates is a complete schema-3 store.
+    homeCredential =
+      let (_, so, user) = homeCatalogEntry
+      in CredentialRecord storeHomeToken (BC8.pack so) (Just (BC8.pack user))
     openDc = do
       eDc <- openDetached store storeHomeToken
       pure $ case eDc of

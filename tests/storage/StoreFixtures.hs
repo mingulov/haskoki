@@ -9,6 +9,8 @@ module StoreFixtures
   , copyReleasedFixture, readManifest, loadConfigOrFail
   , fixtureLabels, fixtureSo, fixtureUser, fixturePins, assertNoPins
   , withFileMode, reapedPid
+  , StoreState (..), captureState, assertUnchanged, makeSchemaStore
+  , writeStoreConfig, expectStdNeedsMigration, fixtureToken
   , spawnedPid, claimReap, waitBounded, releaseHolder, awaitHolderExit
   ) where
 
@@ -17,7 +19,7 @@ import Control.Exception (bracket, bracket_)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
-import Data.List (isInfixOf, isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf, sort)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive)
@@ -30,12 +32,18 @@ import System.Posix.Process (getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
 import System.Posix.Types (FileMode, ProcessID)
 import System.Process (ProcessHandle, createProcess, getPid, getProcessExitCode, proc, CreateProcess (..))
-import Test.Tasty.HUnit (assertBool, assertFailure)
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure)
 
-import Haskoki.FFI.Standard (StdStore (..), StdStoreError, openStdStore)
+import Haskoki.FFI.Standard (StdStore (..), StdStoreError (..), openStdStore)
 import Haskoki.Runtime.Config
 import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
-import Haskoki.Runtime.Storage (storeClose)
+import Haskoki.Runtime.Storage
+  ( CommitResult (..), CredentialRecord, StoreDelta (..), StoreError (..), TokenRecord (..)
+  , emptyDelta, storeClose, storeCommit
+  )
+import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
+import Haskoki.Session (tokenAuthNew)
+import Haskoki.Types (Generation (..), SlotId (..), TokenId (..))
 
 -- | Run with a fresh scratch directory, removed afterwards.
 withScratch :: String -> (FilePath -> IO a) -> IO a
@@ -239,3 +247,87 @@ reapedPid = go (0 :: Int)
     spawnReaper = do
       (_, _, _, ph) <- createProcess ((proc "/bin/true" []) { close_fds = True })
       pure ph
+
+-- | Everything a refused open must leave as it was. Credential
+-- documents carry base64 PINs: compare them, never print them.
+data StoreState = StoreState
+  { ssBytes :: !BS.ByteString
+  , ssSchema :: ![String]
+  , ssTables :: ![String]
+  , ssCredentials :: ![(String, String)]
+  , ssLockPresent :: !Bool
+  , ssJournalPresent :: !Bool
+  }
+
+captureState :: FilePath -> IO StoreState
+captureState path = do
+  bytes <- BS.readFile path
+  schema <- roTexts path "SELECT value FROM store_meta WHERE key = 'schema_version'"
+  tables <- sort <$> roTexts path "SELECT name FROM sqlite_master WHERE type = 'table'"
+  ids <- if "credentials" `elem` tables
+    then roTexts path "SELECT token_id FROM credentials ORDER BY token_id" else pure []
+  docs <- if "credentials" `elem` tables
+    then roTexts path "SELECT record_json FROM credentials ORDER BY token_id" else pure []
+  lock <- doesFileExist (path ++ ".lock")
+  journal <- doesFileExist (path ++ "-journal")
+  pure (StoreState bytes schema tables (zip ids docs) lock journal)
+
+-- | The store at the path is exactly as captured: raw bytes, schema
+-- marker, table set and credential authority; the transient sidecar
+-- lock and any journal are gone.
+assertUnchanged :: String -> StoreState -> FilePath -> IO ()
+assertUnchanged ctx before path = do
+  after <- captureState path
+  assertBool (ctx ++ ": database bytes unchanged") (ssBytes before == ssBytes after)
+  assertEqual (ctx ++ ": schema marker unchanged") (ssSchema before) (ssSchema after)
+  assertEqual (ctx ++ ": tables unchanged") (ssTables before) (ssTables after)
+  assertBool (ctx ++ ": credential rows unchanged") (ssCredentials before == ssCredentials after)
+  assertBool (ctx ++ ": no lock left behind") (not (ssLockPresent after))
+  assertBool (ctx ++ ": no journal left behind") (not (ssJournalPresent after))
+
+fixtureToken :: Int -> Int -> String -> TokenRecord
+fixtureToken tid slot label =
+  TokenRecord (TokenId (fromIntegral tid)) (SlotId (fromIntegral slot)) (Generation 0) label tokenAuthNew
+
+-- | Build a store file at a given schema through the PRODUCTION
+-- encoders: a fresh schema-3 store, the given rows committed, then
+-- the marker moved down (schema 1 also drops the credentials table,
+-- which is exactly the version-1 shape).
+makeSchemaStore :: Int -> FilePath -> [TokenRecord] -> [CredentialRecord] -> IO ()
+makeSchemaStore v path toks creds = do
+  e <- openSQLiteStore path
+  s <- either (assertFailure . show) pure e
+  r <- storeCommit s emptyDelta { sdPutTokens = toks, sdPutCredentials = creds }
+  storeClose s
+  assertEqual "fixture rows commit" Committed r
+  case v of
+    1 -> do
+      assertBool "a schema-1 store has no credential rows" (null creds)
+      rawExec path "DROP TABLE credentials"
+      rawExec path "UPDATE store_meta SET value = '1' WHERE key = 'schema_version'"
+    2 -> rawExec path "UPDATE store_meta SET value = '2' WHERE key = 'schema_version'"
+    3 -> pure ()
+    _ -> assertFailure "makeSchemaStore: schema 1, 2 or 3"
+
+-- | Write a config file naming a store and a token catalog; returns
+-- the config path.
+writeStoreConfig :: FilePath -> FilePath -> [String] -> [String] -> [String] -> IO FilePath
+writeStoreConfig cfgPath store labels sos users = do
+  writeFile cfgPath $ unlines
+    [ "schema_version = 1", "profile = \"real-crypto\""
+    , "[storage]", "kind = \"sqlite\"", "path = " ++ show store
+    , "[engine]", "kind = \"openssl\"", "allow_synthetic_fallback = false"
+    , "private_library_context = true"
+    , "[trace]", "enabled = false"
+    , "[tokens]", "labels = " ++ show labels, "so_pins = " ++ show sos
+    , "user_pins = " ++ show users
+    ]
+  pure cfgPath
+
+expectStdNeedsMigration :: Int -> Either StdStoreError (Maybe StdStore) -> IO ()
+expectStdNeedsMigration found r = case r of
+  Left (StdStoreSQLite (StoreNeedsMigration f t)) -> do
+    assertEqual "found schema" found f
+    assertEqual "target schema" 3 t
+  Left other -> assertFailure ("refused for the wrong reason: " ++ show other)
+  Right acq -> closeAcquired acq >> assertFailure "an old-schema store opened"

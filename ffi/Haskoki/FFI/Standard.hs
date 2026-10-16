@@ -1000,13 +1000,11 @@ data StdStoreError
   -- 'StdStoreIdentityRefusal' with the reconciler's message.
   | StdStoreCatalogMismatch
   | StdStoreIdentityRefusal !String
-  -- | Stored tokens with no durable credential row (a store
-  -- written before credentials were seeded with each token,
-  -- including every token of a schema-1 store). Lists every
-  -- such token, ascending; the open writes nothing (the SQLite
-  -- open only reads, and a schema-1 store migrates only inside
-  -- a commit, which a refused open never reaches) and never
-  -- invents a credential from the catalog PINs.
+  -- | Stored tokens with no durable credential row in a schema-3
+  -- store. Lists every such token, ascending; the open writes
+  -- nothing and never invents a credential from the catalog PINs.
+  -- (An old-schema store never gets this far: it refuses as
+  -- @StdStoreSQLite (StoreNeedsMigration n 3)@ before identity.)
   | StdStoreMigrationRequired ![TokenId]
   deriving (Eq, Show)
 
@@ -1019,10 +1017,10 @@ openStdStore = openStdStoreWith openSQLiteStore
 -- faults). The reconcile\/seat\/seed flow is identical either
 -- way, so injected faults exercise the production open path.
 -- The seed commit is the open's only write: the SQLite opener
--- only reads an existing store (a schema-1 store migrates inside
--- that commit), and every refusal (identity first, then
--- migration-required) returns before it, so a refused open
--- leaves the database bytes unchanged.
+-- only reads an existing store, and every refusal (an old schema
+-- first, as @StdStoreSQLite (StoreNeedsMigration n 3)@, then
+-- identity, then missing credentials) returns before it, so a
+-- refused open leaves the database bytes unchanged.
 openStdStoreWith
   :: (FilePath -> IO (Either StoreError Store))
   -> Env

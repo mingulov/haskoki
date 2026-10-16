@@ -8,9 +8,12 @@
 # the resulting store digest and its schema/token/credential shape.
 # Fixture PINs are example-grade test values, recorded on purpose.
 #
+# The script verifies the tarball digest against the pinned value and
+# nothing else: the extracted bundle is trusted to match that tarball.
+#
 # Usage (from haskoki/): scripts/make-store-fixtures.sh BUNDLES_DIR
-#   BUNDLES_DIR/<tag>/ holds the downloaded, digest-verified asset and
-#   SHA256SUMS plus the extracted haskoki-<ver>/ bundle.
+#   BUNDLES_DIR/<tag>/ holds the downloaded asset (its digest is checked
+#   against the pinned value) plus the extracted haskoki-<ver>/ bundle.
 set -euo pipefail
 umask 022
 cd "$(dirname "$0")/.."
@@ -60,14 +63,14 @@ make_one() {
   unset HASKOKI_CONFIG
   [ ! -s "$work/store.sqlite-journal" ] || { echo "$tag: journal left behind" >&2; exit 1; }
   # A released module may leave its sidecar lock behind at process exit;
-# that is acceptable only when the recorded owner is gone. The lock is
-# never copied into the fixture.
-local lock_note=none
-if [ -e "$work/store.sqlite.lock" ]; then
-  local owner; owner=$(tr -d '[:space:]' < "$work/store.sqlite.lock")
-  if [ -d "/proc/$owner" ]; then echo "$tag: live lock owner $owner" >&2; exit 1; fi
-  lock_note="stale (owner exited)"
-fi
+  # that is acceptable only when the recorded owner is gone. The lock is
+  # never copied into the fixture.
+  local lock_note=none
+  if [ -e "$work/store.sqlite.lock" ]; then
+    local owner; owner=$(tr -d '[:space:]' < "$work/store.sqlite.lock")
+    if [ -d "/proc/$owner" ]; then echo "$tag: live lock owner $owner" >&2; exit 1; fi
+    lock_note="stale (owner exited)"
+  fi
   mkdir -p "$OUT/$tag"
   cp "$work/store.sqlite" "$OUT/$tag/store.sqlite"
   chmod 0644 "$OUT/$tag/store.sqlite"

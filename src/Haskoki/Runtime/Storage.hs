@@ -448,6 +448,13 @@ data StoreError
   | StoreLimit !String
   | StoreFull !String
   | StoreRevisionConflict !String
+  | StoreNeedsMigration !Int !Int
+    -- ^ Found and target schema: an older store that only the
+    -- explicit @haskoki-ctl store migrate@ upgrades. The open wrote
+    -- nothing.
+  | StoreJournalPresent !FilePath
+    -- ^ An interrupted write left this rollback journal; read-only
+    -- tools refuse rather than recover it (see the recovery guide).
   deriving (Eq, Show)
 
 -- | Store failures throw as exceptions on the paths with no
@@ -864,9 +871,11 @@ checkSlotUnique currentToks delta =
 --   fields: 'TokenRecord' already separates identity
 --   (@token_id@) from assignment (@slot@). Unknown format
 --   versions keep refusing on decode, as before.
--- * The SQLite schema keeps @schema_version = 1@ with no
---   migration: a wrong version refuses at open without writing
---   a byte, as before.
+-- * The SQLite schema marker is @schema_version = 3@: versions 1
+--   and 2 refuse at open as migration-required without writing a
+--   byte (only the explicit @store migrate@ upgrades them), and
+--   any other version refuses as unsupported. The durable
+--   documents keep @format_version = 1@.
 -- * An interrupted multi-step move sequence reopens refused:
 --   the mid-state matches neither endpoint, the reconciler
 --   names the first drifted token, and the operator completes

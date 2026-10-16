@@ -1,4 +1,4 @@
--- Haskoki SQLite store schema, format version 2.
+-- Haskoki SQLite store schema, format version 3.
 --
 -- PROVENANCE: adapted from
 --   ws/docs/incoming/haskell-pkcs11-design/examples/storage-schema.sql
@@ -6,19 +6,17 @@
 --
 -- * `store_format` is `haskoki-demo-v1` (adapted from the bundle's
 --   `hsp11-demo-v1`).
--- * `store_meta` gains a `schema_version` key (`2`): the minimal
+-- * `store_meta` gains a `schema_version` key (`3`): the minimal
 --   integer schema version the opener checks. A wrong/future version
 --   is rejected without rewriting the database.
 -- * `detached_jobs` is created with the rest of the schema but first
 --   populated by the record writer; the store layer owns the lifecycle.
--- * Version 2 adds `credentials` (one provisioned credential row
---   per token, owned by its token). A version-1 database opens
---   without writing and migrates explicitly inside its first
---   commit transaction (the backend creates the empty table and
---   advances the marker together with that commit's data; no row
---   is rewritten or reinterpreted), and anything but version 1 or
---   2 refuses without writing. See `migrateV1InTxn` in
---   `src/Haskoki/Runtime/Storage/SQLite.hs`.
+-- * Version 2 added `credentials` (one provisioned credential row
+--   per token, owned by its token).
+-- * Version 3 marks a store written by a credential-seeding build;
+--   versions 1 and 2 refuse at open without writing and move to 3
+--   only through `haskoki-ctl store migrate` (see `migrateOwned` in
+--   `src/Haskoki/Runtime/Storage/SQLite.hs`).
 --
 -- The Haskell backend (`src/Haskoki/Runtime/Storage/SQLite.hs`)
 -- issues these statements at init; this file is the readable
@@ -76,5 +74,5 @@ CREATE TABLE credentials (
 );
 
 INSERT INTO store_meta(key, value) VALUES ('store_format', 'haskoki-demo-v1');
-INSERT INTO store_meta(key, value) VALUES ('schema_version', '2');
+INSERT INTO store_meta(key, value) VALUES ('schema_version', '3');
 INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001');
