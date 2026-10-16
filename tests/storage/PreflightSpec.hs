@@ -131,6 +131,7 @@ spec = testGroup "Store preflight"
       , testCase "a zero-byte journal is ignored" caseMigrateZeroByteJournal
       , testCase "a cold journal is cleared under exclusive locks, then the migration runs" caseMigrateClearsColdJournal
       , testCase "a cold journal plus a foreign -wal refuses with everything untouched" caseMigrateColdJournalWithWalRefuses
+      , testCase "a migration through a symlink locks the target file" caseMigrateSymlinkLocksTarget
       , testCase "a schema-3 store plus a cold journal needs nothing, journal untouched" caseMigrateSchema3ColdNotNeeded
       , testCase "a migration with no cold journal records cold-journal-removed: no" caseMigrateReceiptColdJournalNo
       , testCase "a cold journal while another process holds RESERVED refuses" caseColdJournalReservedRefuses
@@ -1131,6 +1132,26 @@ caseMigrateColdJournalWithWalRefuses = withScratch "migrate" $ \dir -> do
   BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
   BS.readFile wal >>= \b -> assertBool "wal untouched" (b == wBefore)
   listBackups backups >>= assertEqual "no backup" []
+
+-- Ownership taken through a symlink guards the real file: while the
+-- migration holds ownership, the lock sidecar sits beside the
+-- target, never beside the link.
+caseMigrateSymlinkLocksTarget :: IO ()
+caseMigrateSymlinkLocksTarget = withScratch "migrate" $ \dir -> do
+  (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  seen <- newIORef (True, False)
+  let watch = fixedClock { mhAfterBackup = do
+        l <- doesFileExist (link ++ ".lock")
+        t <- doesFileExist (real ++ ".lock")
+        atomicModifyIORef' seen (const ((l, t), ())) }
+  r <- migrateStoreWith watch link cfg backups
+  case r of
+    Right (Migrated _) -> pure ()
+    other -> assertFailure ("migration through a symlink failed: " ++ show other)
+  readIORef seen >>= assertEqual "lock beside the target only" (False, True)
 
 -- A schema-3 store plus a cold journal needs nothing and the
 -- journal is left untouched: clearing runs only when the plan says

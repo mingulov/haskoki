@@ -57,6 +57,10 @@ spec = testGroup "Store commands"
   , testCase "check: --async-home plans the v0.4 async shape" caseCheckAsyncHomeV04
   , testCase "check: --async-home as a flag value is a usage error" caseCheckAsyncHomeValue
   , testCase "check: a -wal or -shm file is refused" caseCheckWalShm
+  , testCase "check: a foreign WAL through a symlink refuses and writes no shm" caseCheckSymlinkWal
+  , testCase "check: a hot journal through a symlink names the journal" caseCheckSymlinkHotJournal
+  , testCase "migrate: a foreign WAL through a symlink refuses, keeping the credential" caseMigrateSymlinkWal
+  , testCase "migrate: a bare symlink migrates the target" caseMigrateSymlinkBare
   , testCase "migrate: a v0.4 store migrates (exit 0) and then checks ok" caseMigrateCliV04
   , testCase "migrate: a current store needs nothing (exit 0)" caseMigrateCliNotNeeded
   , testCase "migrate: a drifted catalog refuses (exit 1), nothing written" caseMigrateCliRefusesDrift
@@ -351,6 +355,40 @@ caseCheckWalShm = do
     assertEqual "empty wal: exit 1" 1 (ceCode r)
     assertBool "empty wal: ignored" ("verdict: migration-required" `isInfixOf` ceOut r)
 
+-- A foreign WAL beside the real file is refused through a symlink:
+-- the guard follows the link to the real file's sidecars, the store
+-- bytes are unchanged, and no -shm appears at either name.
+caseCheckSymlinkWal :: IO ()
+caseCheckSymlinkWal = withScratch "ctl-check" $ \dir -> do
+  (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
+  plantForeignWal real "meta"
+  dbBefore <- BS.readFile real
+  wBefore <- BS.readFile (real ++ "-wal")
+  r <- check link cfgPath
+  assertEqual "exit 1" 1 (ceCode r)
+  assertEqual "no plan printed" "" (ceOut r)
+  BS.readFile real >>= \b -> assertBool "store untouched" (b == dbBefore)
+  BS.readFile (real ++ "-wal") >>= \b -> assertBool "wal untouched" (b == wBefore)
+  shmReal <- doesFileExist (real ++ "-shm")
+  shmLink <- doesFileExist (link ++ "-shm")
+  assertBool "no -shm at the real path" (not shmReal)
+  assertBool "no -shm at the link name" (not shmLink)
+
+-- A hot journal beside the real file is named as the journal
+-- through a symlink, not reported as an unreadable store.
+caseCheckSymlinkHotJournal :: IO ()
+caseCheckSymlinkHotJournal = withScratch "ctl-check" $ \dir -> do
+  (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
+  dbBefore <- BS.readFile real
+  BS.writeFile (real ++ "-journal")
+    (BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7] <> BS.replicate 504 0)
+  jBefore <- BS.readFile (real ++ "-journal")
+  r <- check link cfgPath
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag names the journal" ("store-journal-present:" `isPrefixOf` ceErr r)
+  BS.readFile (real ++ "-journal") >>= \b -> assertBool "journal untouched" (b == jBefore)
+  BS.readFile real >>= \b -> assertBool "store untouched" (b == dbBefore)
+
 caseHelpListsStoreCommands :: IO ()
 caseHelpListsStoreCommands = do
   assertBool "check line" ("haskoki-ctl store check --path FILE --config FILE [--async-home]" `isInfixOf` ctlHelp)
@@ -484,6 +522,55 @@ caseMigrateCliShm = withScratch "ctl-migrate" $ \dir -> do
   BS.readFile (store ++ "-shm") >>= \b -> assertBool "shm untouched" (b == sBytes)
   BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
   listDirectory backups >>= assertEqual "no backup" []
+
+-- Migrating through a symlink must not merge a foreign WAL sitting
+-- beside the real file: the run refuses, the file keeps its bytes
+-- (a read-only query would see through the WAL, so the credential
+-- check reads the file bytes: the original token-2 SO PIN stays and
+-- the WAL's replacement never lands), and the WAL stays in place
+-- for the operator.
+caseMigrateSymlinkWal :: IO ()
+caseMigrateSymlinkWal = withScratch "ctl-migrate" $ \dir -> do
+  (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      originalSo = "NjkzMjQwNTc="    -- token 2's v0.4 SO PIN, base64
+      foreignSo = "MTExMTExMTE="     -- the WAL's replacement value
+  createDirectory backups
+  plantForeignWal real "credential"
+  dbBefore <- BS.readFile real
+  wBefore <- BS.readFile (real ++ "-wal")
+  assertBool "the WAL carries the replacement" (foreignSo `BS.isInfixOf` wBefore)
+  assertBool "the file starts without it" (not (foreignSo `BS.isInfixOf` dbBefore))
+  r <- migrateCli link cfgPath backups
+  assertEqual "exit 1" 1 (ceCode r)
+  dbAfter <- BS.readFile real
+  assertBool "store untouched" (dbAfter == dbBefore)
+  assertBool "original credential still filed" (originalSo `BS.isInfixOf` dbAfter)
+  assertBool "foreign credential never filed" (not (foreignSo `BS.isInfixOf` dbAfter))
+  BS.readFile (real ++ "-wal") >>= \b -> assertBool "wal untouched" (b == wBefore)
+  shmLeft <- doesFileExist (real ++ "-shm")
+  assertBool "no -shm created" (not shmLeft)
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- A bare symlink is a legitimate store path: check plans it and
+-- migrate moves the real file, leaving no lock at either name.
+caseMigrateSymlinkBare :: IO ()
+caseMigrateSymlinkBare = withScratch "ctl-migrate" $ \dir -> do
+  (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  c <- check link cfgPath
+  assertEqual "check exit 1" 1 (ceCode c)
+  assertBool "plan" ("verdict: migration-required" `isInfixOf` ceOut c)
+  r <- migrateCli link cfgPath backups
+  assertEqual "migrate exit 0" 0 (ceCode r)
+  assertBool "done" ("migrate-done" `elem` lines (ceOut r))
+  roTexts real "SELECT value FROM store_meta WHERE key = 'schema_version'"
+    >>= assertEqual "real file migrated" ["3"]
+  lockLink <- doesFileExist (link ++ ".lock")
+  lockReal <- doesFileExist (real ++ ".lock")
+  assertBool "no lock at the link" (not lockLink)
+  assertBool "no lock at the target" (not lockReal)
 
 -- A cold journal must not bypass the -wal refusal: check names the
 -- -wal (not the cold journal) and migrate refuses with every byte

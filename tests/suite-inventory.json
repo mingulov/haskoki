@@ -652,7 +652,8 @@
         "Control.Concurrent": ["getNumCapabilities"],
         "System.Environment": ["getArgs"],
         "Test.Tasty": ["defaultMain", "localOption", "testGroup"],
-        "Test.Tasty.Runners": ["NumThreads"]
+        "Test.Tasty.Runners": ["NumThreads"],
+        "StoreFixtures": ["fifoWriterMain", "walChildMain"]
       },
       "allowed_dotdot": {
         "Test.Tasty.Runners": ["NumThreads"]

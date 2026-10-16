@@ -64,6 +64,7 @@ module Haskoki.Runtime.Storage.SQLite
   , pidIsDead
   , FileIdentity (..)
   , StoreSnapshot (..)
+  , resolveStorePath
   , readStoreSnapshot
   , readStoreSnapshotAllowCold
   , OwnerState (..)
@@ -90,7 +91,7 @@ import Data.ByteString (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import qualified Data.ByteString.Char8 as BC8
-import Data.List (nub, sort)
+import Data.List (intercalate, nub, sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
@@ -101,7 +102,7 @@ import Database.SQLite3.Direct (getAutoCommit)
 import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
-import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, removeLink, setFdSize, setFileMode)
+import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, readSymbolicLink, removeLink, setFdSize, setFileMode)
 import System.IO (hClose)
 import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWrite, openFd)
 import System.Posix.Process (getParentProcessID, getProcessID)
@@ -264,11 +265,21 @@ openSQLiteStoreWith path limits inj = openSQLiteStoreWithHooks path limits inj n
 
 -- | 'openSQLiteStoreWith' plus test-only connection hooks
 -- ('SQLiteTestHooks'); the storage suites use it to stimulate
--- real statement failures on the store's own connection.
+-- real statement failures on the store's own connection. The path
+-- is resolved once up front: every sidecar and every open below
+-- derives from the real file.
 openSQLiteStoreWithHooks
   :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
   -> IO (Either StoreError Store)
-openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
+openSQLiteStoreWithHooks path0 limits inj hooks = do
+  path <- resolveStorePath path0
+  openSQLiteStoreResolved path limits inj hooks
+
+-- | 'openSQLiteStoreWithHooks' on an already-resolved path.
+openSQLiteStoreResolved
+  :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
+  -> IO (Either StoreError Store)
+openSQLiteStoreResolved path limits inj hooks = mask $ \restore -> do
   procRoot <- procRootFromEnv
   let lockPath = path ++ ".lock"
   eOwn <- takeOwnership path lockPath procRoot 3
@@ -2328,6 +2339,56 @@ anySidecarExists path = do
       pure (case e of
         Right _ -> Just p
         _ -> Nothing)
+
+-- | Resolve a store path once, following every symlink component (a
+-- full realpath over 'readSymbolicLink'): SQLite acts on the real
+-- file's sidecars, so the guards must derive @-journal@, @-wal@,
+-- @-shm@ and @.lock@ from the resolved path, and every open must
+-- use it. Symlinked store paths stay legitimate (they resolve;
+-- they are never refused for being links). Missing components are
+-- kept lexically (the caller reports them); a symlink loop falls
+-- back to the input unchanged (the downstream open then fails
+-- closed). No @filepath@ dependency: the splitting is local.
+resolveStorePath :: FilePath -> IO FilePath
+resolveStorePath p
+  | null p = pure p
+  | otherwise = follow (splitPath p) [] 0
+  where
+    absolute = case p of ('/' : _) -> True; _ -> False
+    follow :: [String] -> [String] -> Int -> IO FilePath
+    follow [] stack _ = pure (joinPath absolute stack)
+    follow (c : cs) stack n
+      | c == ".." = follow cs (popForDotDot stack) n
+      | otherwise = do
+          eLink <- tryIOError (readSymbolicLink (joinPath absolute (stack ++ [c])))
+          case eLink of
+            Left _ -> follow cs (stack ++ [c]) n
+            Right link
+              | n >= 40 -> pure p
+              | otherwise ->
+                  let target = splitPath link
+                  in case link of
+                       ('/' : _) -> follow (target ++ cs) [] (n + 1)
+                       _ -> follow (target ++ cs) stack (n + 1)
+    popForDotDot [] = if absolute then [] else [".."]
+    popForDotDot stack
+      | absolute = init stack
+      | last stack == ".." = stack ++ [".."]
+      | otherwise = init stack
+    splitPath :: FilePath -> [String]
+    splitPath = filter (\c -> c /= "" && c /= ".") . splitOn '/'
+      where
+        splitOn _ [] = [""]
+        splitOn d (x : xs)
+          | x == d = "" : splitOn d xs
+          | otherwise = case splitOn d xs of
+              (y : ys) -> (x : y) : ys
+              [] -> [[x]]
+    joinPath :: Bool -> [String] -> FilePath
+    joinPath True [] = "/"
+    joinPath True cs = "/" ++ intercalate "/" cs
+    joinPath False [] = "."
+    joinPath False cs = intercalate "/" cs
 
 -- | Read a store WITHOUT writing it: no ownership, no sidecar, a
 -- read-only connection (never creates the file, never recovers a

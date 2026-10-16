@@ -60,7 +60,7 @@ import Haskoki.Runtime.Storage
 import Haskoki.Runtime.Storage.SQLite
   ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
   , clearColdJournal, guardFlags, migrateOwned, noMigrationHooks, pidIsDead, probeOwner, readFileCloexec
-  , readStoreSnapshot, readStoreSnapshotAllowCold, sqliteSchemaVersion, withOwnedStoreFile )
+  , readStoreSnapshot, readStoreSnapshotAllowCold, resolveStorePath, sqliteSchemaVersion, withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
 -- | SHA-256 of a byte string as 64 lowercase hex digits, computed by
@@ -166,9 +166,12 @@ planVerdict p = case sopIdentity p of
 
 -- | Diagnose a store for this config WITHOUT writing it: refuses a
 -- live owner, then reads a read-only snapshot and plans. The result
--- names ids, versions and reasons only.
+-- names ids, versions and reasons only. The path is resolved once
+-- up front: every sidecar and every open below derives from the
+-- real file.
 checkStoreOpen :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
-checkStoreOpen path cfg = do
+checkStoreOpen path0 cfg = do
+  path <- resolveStorePath path0
   owner <- probeOwner path
   case owner of
     OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
@@ -179,7 +182,8 @@ checkStoreOpen path cfg = do
 -- whether the cold journal may be cleared. Never exported from this
 -- module's public surface beyond the migration's use.
 checkStoreOpenAllowCold :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
-checkStoreOpenAllowCold path cfg = do
+checkStoreOpenAllowCold path0 cfg = do
+  path <- resolveStorePath path0
   owner <- probeOwner path
   case owner of
     OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
@@ -324,10 +328,17 @@ infixl 1 >>?
 -- transaction, then a read-back check, then a non-overwriting
 -- receipt.
 migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
-migrateStoreWith hooks path cfg backupDir =
-  (first MigrateConfig <$> configSelectsStore path cfg) >>? \() ->
-  checkBackupDir path backupDir >>? \() ->
-  attempt False
+migrateStoreWith hooks path0 cfg backupDir =
+  (first MigrateConfig <$> configSelectsStore path0 cfg) >>? \() ->
+  checkBackupDir path0 backupDir >>? \() -> do
+    path <- resolveStorePath path0
+    migrateResolved hooks path cfg backupDir
+
+-- | 'migrateStoreWith' on an already-resolved path: the config and
+-- backup-directory checks ran on the operator's spelling, and every
+-- sidecar and every open below derives from the real file.
+migrateResolved :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
+migrateResolved hooks path cfg backupDir = attempt False
   where
     -- A cold journal is cleared at most once, and only when the
     -- cold-tolerant plan says the migration proceeds; any other

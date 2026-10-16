@@ -9,6 +9,7 @@ module StoreFixtures
   , copyReleasedFixture, readManifest, loadConfigOrFail
   , fixtureLabels, fixtureSo, fixtureUser, fixturePins, assertNoPins
   , withFileMode, reapedPid
+  , walChildMain, plantForeignWal, withSymlinkedFixture
   , StoreState (..), captureState, assertUnchanged, makeSchemaStore
   , writeStoreConfig, expectStdNeedsMigration, fixtureToken
   , spawnedPid, claimReap, waitBounded, releaseHolder, awaitHolderExit
@@ -24,13 +25,13 @@ import Data.Char (isDigit)
 import Data.List (isPrefixOf, sort)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
-import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive)
+import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Error (catchIOError, isAlreadyExistsError)
-import System.Posix.Files (fileExist, fileMode, getFileStatus, setFileMode)
-import System.Posix.Process (getProcessID)
+import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, setFileMode)
+import System.Posix.Process (exitImmediately, getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
 import System.Posix.Types (FileMode, ProcessID)
 import System.Process (ProcessHandle, createProcess, getPid, getProcessExitCode, proc, CreateProcess (..))
@@ -248,6 +249,65 @@ withFileMode :: FilePath -> FileMode -> IO a -> IO a
 withFileMode p mode action = do
   st <- getFileStatus p
   bracket_ (setFileMode p mode) (setFileMode p (fileMode st)) action
+
+-- | Child process body for planting a foreign WAL: opens the given
+-- scratch store in WAL mode with no autocheckpoint, applies one
+-- foreign write, and _exits without closing, so the -wal file
+-- remains. Mode "meta" inserts a foreign store_meta row; mode
+-- "credential" rewrites token 2's SO PIN inside its credential
+-- document (the v0.4 fixture's token-2 row). Dispatched from the
+-- test binary's @--wal-child@ flag; the parent waits for it.
+walChildMain :: FilePath -> String -> IO ()
+walChildMain store mode = do
+  db <- S.open (T.pack store)
+  S.exec db "PRAGMA journal_mode=WAL"
+  S.exec db "PRAGMA wal_autocheckpoint=0"
+  case mode of
+    "meta" -> S.exec db "INSERT INTO store_meta(key,value) VALUES ('foreign-marker','merged')"
+    "credential" ->
+      S.exec db "UPDATE credentials SET record_json = replace(record_json, 'NjkzMjQwNTc=', 'MTExMTExMTE=')"
+    _ -> exitImmediately (ExitFailure 2)
+  exitImmediately ExitSuccess
+
+-- | Plant a valid foreign -wal beside the target store: the WAL is
+-- built against a scratch copy (the child flips only the copy to WAL
+-- mode) and the resulting -wal file is copied beside the target,
+-- whose own bytes stay exactly as they were. Mirrors a WAL left by
+-- foreign tooling.
+plantForeignWal :: FilePath -> String -> IO ()
+plantForeignWal target mode = do
+  let dir = takeDirectory target
+      scratch = dir </> "wal-scratch.sqlite"
+  BS.readFile target >>= BS.writeFile scratch
+  mapM_ removeIfExists [scratch ++ "-wal", scratch ++ "-shm"]
+  exe <- getExecutablePath
+  reaped <- newIORef False
+  bracket (spawnWalChild exe scratch mode) (releaseHolder reaped) $ \ph ->
+    awaitHolderExit reaped ph "wal-child"
+  walBytes <- BS.readFile (scratch ++ "-wal")
+  assertBool "the WAL child left a non-empty WAL" (not (BS.null walBytes))
+  BS.writeFile (target ++ "-wal") walBytes
+  where
+    spawnWalChild exe scratch m = do
+      (_, _, _, ph) <- createProcess ((proc exe ["--wal-child", scratch, m]) { close_fds = True })
+      pure ph
+    removeIfExists p = do
+      exists <- doesFileExist p
+      when exists (removeFile p)
+
+-- | Copy a released fixture under a real directory, point a symlink
+-- at the copy, and write a config naming the symlink (as an
+-- operator aliasing the store would). Returns the symlink path, the
+-- config path and the real store path.
+withSymlinkedFixture :: String -> FilePath -> IO (FilePath, FilePath, FilePath)
+withSymlinkedFixture tag dir = do
+  let realDir = dir </> "real"
+  createDirectory realDir
+  (realStore, _) <- copyReleasedFixture tag realDir
+  let link = dir </> "link.sqlite"
+  createSymbolicLink realStore link
+  cfgPath <- writeStoreConfig (dir </> "config.toml") link fixtureLabels fixtureSo fixtureUser
+  pure (link, cfgPath, realStore)
 
 -- | A provably-dead pid: spawn a fresh process with no inherited
 -- store descriptors, reap it, and confirm @\/proc@ has no entry
