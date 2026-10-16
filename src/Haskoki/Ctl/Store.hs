@@ -9,10 +9,12 @@ kind and line (or key) only, never the message body.
 module Haskoki.Ctl.Store
   ( storeCheckCommand
   , storeMigrateCommand
-  , strictFlags
+  , strictFlagsSwitch
+  , renderUnexpectedFailure
   ) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, displayException, try)
+import Data.Char (isDigit)
 import Data.List (isPrefixOf, stripPrefix)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -23,26 +25,24 @@ import Haskoki.Runtime.Storage (StoreError (..), renderIdentityRefusal)
 import Haskoki.Runtime.Storage.Preflight
 import Haskoki.Runtime.Storage.SQLite (sqliteSchemaVersion)
 
--- | Exactly the named flags, each once, each with a value.
-strictFlags :: [String] -> [String] -> Either String (Map String String)
-strictFlags names = go Map.empty
+-- | Exactly the named flags, each once, each with a value, plus at
+-- most one standalone switch. The switch is only recognised where a
+-- flag is expected: in a value position it is a usage error, never
+-- silently the switch and never the value.
+strictFlagsSwitch :: [String] -> String -> [String] -> Either String (Bool, Map String String)
+strictFlagsSwitch names switch = go Map.empty False
   where
-    go acc [] = case [n | n <- names, n `Map.notMember` acc] of
-      [] -> Right acc
+    go acc sw [] = case [n | n <- names, n `Map.notMember` acc] of
+      [] -> Right (sw, acc)
       missing -> Left ("missing " ++ unwords missing)
-    go acc (k : rest)
+    go acc sw (k : rest)
+      | k == switch =
+          if sw then Left ("repeated " ++ switch) else go acc True rest
       | k `notElem` names = Left ("unknown argument " ++ show k)
       | k `Map.member` acc = Left ("repeated " ++ k)
       | otherwise = case rest of
-          (v : rest') | not (null v) -> go (Map.insert k v acc) rest'
+          (v : rest') | not (null v) && v /= switch -> go (Map.insert k v acc) sw rest'
           _ -> Left (k ++ " needs a value")
-
--- | Remove a value-less switch; it may appear at most once.
-takeSwitch :: String -> [String] -> Either String (Bool, [String])
-takeSwitch name args = case length (filter (== name) args) of
-  0 -> Right (False, args)
-  1 -> Right (True, filter (/= name) args)
-  _ -> Left ("repeated " ++ name)
 
 checkUsage :: String
 checkUsage = unlines
@@ -82,22 +82,20 @@ renderConfigError e = ("config-invalid", case e of
       (_ : t) -> breakOn pat t
 
 storeCheckCommand :: [String] -> IO (Int, String, String)
-storeCheckCommand args0 = case takeSwitch "--async-home" args0 of
+storeCheckCommand args0 = case strictFlagsSwitch ["--path", "--config"] "--async-home" args0 of
   Left why -> pure (2, "", "store check: " ++ why ++ "\n" ++ checkUsage)
-  Right (asyncHome, args) -> case strictFlags ["--path", "--config"] args of
-    Left why -> pure (2, "", "store check: " ++ why ++ "\n" ++ checkUsage)
-    Right fl -> case (Map.lookup "--path" fl, Map.lookup "--config" fl) of
-      (Just path, Just cfgPath) -> do
-        eCfg <- loadConfigFile cfgPath
-        case eCfg of
-          Left err -> pure (1, "", line (renderConfigError err))
-          Right cfg0 -> do
-            let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
-            sel <- configSelectsStore path cfg
-            case sel of
-              Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
-              Right () -> checkSelected path cfgPath asyncHome cfg
-      _ -> pure (2, "", checkUsage)
+  Right (asyncHome, fl) -> case (Map.lookup "--path" fl, Map.lookup "--config" fl) of
+    (Just path, Just cfgPath) -> do
+      eCfg <- loadConfigFile cfgPath
+      case eCfg of
+        Left err -> pure (1, "", line (renderConfigError err))
+        Right cfg0 -> do
+          let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
+          sel <- configSelectsStore path cfg
+          case sel of
+            Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
+            Right () -> checkSelected path cfgPath asyncHome cfg
+    _ -> pure (2, "", checkUsage)
 
 checkSelected :: FilePath -> FilePath -> Bool -> Config -> IO (Int, String, String)
 checkSelected path cfgPath asyncHome cfg = do
@@ -124,29 +122,42 @@ migrateUsage = unlines
   ]
 
 storeMigrateCommand :: [String] -> IO (Int, String, String)
-storeMigrateCommand args0 = case takeSwitch "--async-home" args0 of
+storeMigrateCommand args0 = case strictFlagsSwitch ["--path", "--config", "--backup-dir"] "--async-home" args0 of
   Left why -> pure (2, "", "store migrate: " ++ why ++ "\n" ++ migrateUsage)
-  Right (asyncHome, args) -> case strictFlags ["--path", "--config", "--backup-dir"] args of
-    Left why -> pure (2, "", "store migrate: " ++ why ++ "\n" ++ migrateUsage)
-    Right fl -> case (Map.lookup "--path" fl, Map.lookup "--config" fl, Map.lookup "--backup-dir" fl) of
-      (Just path, Just cfgPath, Just dir) -> do
-        eCfg <- loadConfigFile cfgPath
-        case eCfg of
-          Left err -> pure (1, "", line (renderConfigError err))
-          Right cfg0 -> do
-            let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
-            sel <- configSelectsStore path cfg
-            case sel of
-              Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
-              Right () -> migrateSelected path cfg dir
-      _ -> pure (2, "", migrateUsage)
+  Right (asyncHome, fl) -> case (Map.lookup "--path" fl, Map.lookup "--config" fl, Map.lookup "--backup-dir" fl) of
+    (Just path, Just cfgPath, Just dir) -> do
+      eCfg <- loadConfigFile cfgPath
+      case eCfg of
+        Left err -> pure (1, "", line (renderConfigError err))
+        Right cfg0 -> do
+          let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
+          sel <- configSelectsStore path cfg
+          case sel of
+            Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
+            Right () -> migrateSelected path cfg dir
+    _ -> pure (2, "", migrateUsage)
+
+-- | An unexpected exception as a fixed tagged line: the first line of
+-- its rendering, with every run of four or more digits redacted, so a
+-- PIN-like value can never survive into operator output. Single line,
+-- like every other exit-1 refusal.
+renderUnexpectedFailure :: SomeException -> (String, String)
+renderUnexpectedFailure ex =
+  ("migrate-failed", "unexpected failure: " ++ redact (takeWhile (/= '\n') (displayException ex))
+    ++ "; run store check before anything else")
+  where
+    redact [] = []
+    redact (c : cs)
+      | isDigit c =
+          let (digits, rest) = span isDigit (c : cs)
+          in (if length digits >= 4 then "[redacted]" else digits) ++ redact rest
+      | otherwise = c : redact cs
 
 migrateSelected :: FilePath -> Config -> FilePath -> IO (Int, String, String)
 migrateSelected path cfg dir = do
   r <- try (migrateStore path cfg dir) :: IO (Either SomeException (Either MigrateError MigrateOutcome))
   pure $ case r of
-    Left ex -> (1, "", line ("migrate-failed", "unexpected failure: " ++ show ex
-      ++ "; run store check before anything else"))
+    Left ex -> (1, "", line (renderUnexpectedFailure ex))
     Right (Left me) -> (1, "", line (renderMigrateError me))
     Right (Right MigrateNotNeeded) -> (0, line ("migrate-not-needed",
       "the store is at schema " ++ show sqliteSchemaVersion

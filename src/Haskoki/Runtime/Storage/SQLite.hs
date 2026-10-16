@@ -2204,11 +2204,38 @@ hotJournal path = do
   e <- tryIOError (getSymbolicLinkStatus (path ++ "-journal"))
   pure (either (const False) (\st -> fileSize st > 0) e)
 
+-- | A sibling the rollback-journal store never writes itself: a
+-- non-empty @-wal@ or @-shm@ file can only come from foreign tooling
+-- and refuses the snapshot like a hot journal. Zero-byte files are
+-- ignored, as zero-byte journals are.
+foreignSidecar :: FilePath -> IO (Maybe FilePath)
+foreignSidecar path = do
+  w <- nonEmpty (path ++ "-wal")
+  s <- nonEmpty (path ++ "-shm")
+  pure (case (w, s) of
+    (Just p, _) -> Just p
+    (_, Just p) -> Just p
+    _ -> Nothing)
+  where
+    nonEmpty p = do
+      e <- tryIOError (getSymbolicLinkStatus p)
+      pure (case e of
+        Right st | fileSize st > 0 -> Just p
+        _ -> Nothing)
+
+-- | A journal or foreign sibling that refuses the snapshot: a hot
+-- journal first, else a non-empty @-wal@ or @-shm@ file.
+journalBlocked :: FilePath -> IO (Maybe FilePath)
+journalBlocked path = do
+  hot <- hotJournal path
+  if hot then pure (Just (path ++ "-journal")) else foreignSidecar path
+
 -- | Read a store WITHOUT writing it: no ownership, no sidecar, a
 -- read-only connection (never creates the file, never recovers a
 -- journal, never migrates). Decodes every record the serving open
 -- decodes, so a corrupt file fails here too; keeps only ids and
--- counts. Refuses a hot journal and a file that changed while read.
+-- counts. Refuses a hot journal, a foreign -wal/-shm sibling, and a
+-- file that changed while read.
 readStoreSnapshot :: FilePath -> IO (Either StoreError StoreSnapshot)
 readStoreSnapshot path = do
   eSt0 <- tryIOError (getFileStatus path)
@@ -2217,23 +2244,25 @@ readStoreSnapshot path = do
     Right st0
       | not (isRegularFile st0) -> pure (Left (StoreIO (path ++ ": not a regular file")))
       | otherwise -> do
-          hot <- hotJournal path
-          if hot then pure (Left (StoreJournalPresent (path ++ "-journal"))) else do
-            eDb <- trySQLite (S.open2 (T.pack path) [S.SQLOpenReadOnly] S.SQLVFSDefault)
-            case eDb of
-              Left err -> pure (Left err)
-              Right db -> do
-                r <- snapshotDb db `finally` closeQuiet db
-                eSt1 <- tryIOError (getFileStatus path)
-                hot1 <- hotJournal path
-                pure $ case (r, eSt1) of
-                  (Left err, _) -> Left err
-                  (_, Left _) -> Left (StoreIO (path ++ ": vanished while read"))
-                  (Right mk, Right st1)
-                    | hot1 -> Left (StoreJournalPresent (path ++ "-journal"))
-                    | fileIdentity st0 /= fileIdentity st1 ->
-                        Left (StoreIO (path ++ ": changed while read; retry with the owner stopped"))
-                    | otherwise -> Right (mk (fileIdentity st1))
+          blocked <- journalBlocked path
+          case blocked of
+            Just j -> pure (Left (StoreJournalPresent j))
+            Nothing -> do
+              eDb <- trySQLite (S.open2 (T.pack path) [S.SQLOpenReadOnly] S.SQLVFSDefault)
+              case eDb of
+                Left err -> pure (Left err)
+                Right db -> do
+                  r <- snapshotDb db `finally` closeQuiet db
+                  eSt1 <- tryIOError (getFileStatus path)
+                  blocked1 <- journalBlocked path
+                  pure $ case (r, eSt1, blocked1) of
+                    (Left err, _, _) -> Left err
+                    (_, Left _, _) -> Left (StoreIO (path ++ ": vanished while read"))
+                    (Right mk, Right st1, Just j) -> Left (StoreJournalPresent j)
+                    (Right mk, Right st1, Nothing)
+                      | fileIdentity st0 /= fileIdentity st1 ->
+                          Left (StoreIO (path ++ ": changed while read; retry with the owner stopped"))
+                      | otherwise -> Right (mk (fileIdentity st1))
   where
     snapshotDb db = do
       eTables <- queryRows db "SELECT name FROM sqlite_master WHERE type = 'table'" []
@@ -2299,7 +2328,13 @@ probeOwner path = do
 -- | Try a SHARED non-blocking flock on a read-only fd and drop it at
 -- once. A missing file has no holder; any other failure to probe is a
 -- 'Left' reason the caller treats as live (fail closed), never as a
--- held lock.
+-- held lock. A lock that reads held is retried briefly (five attempts
+-- over 20 ms): a forked child that has not exec'd yet keeps an
+-- inherited copy past the owner's close, and that transient holder
+-- must not refuse the probe. A truly live owner stays held through
+-- every attempt. The fd is closed on every path, including an
+-- asynchronous exception during the waits (the waits stay
+-- interruptible under the mask).
 kernelLockHeld :: FilePath -> IO (Either String Bool)
 kernelLockHeld path = mask_ $ do
   eFd <- tryIOError (openFd path ReadOnly guardFlags)
@@ -2308,9 +2343,12 @@ kernelLockHeld path = mask_ $ do
       | isDoesNotExistError e -> pure (Right False)
       | otherwise -> pure (Left "the database cannot be opened to probe its lock")
     Right fd -> do
+      held <- attempt fd 0 `finally` closeQuietFd fd
+      pure (Right held)
+  where
+    attempt fd n = do
       ok <- (== 0) <$> c_flock (fromIntegral fd) (lockSh .|. lockNb)
-      closeQuietFd fd
-      pure (Right (not ok))
+      if ok || n >= 4 then pure (not ok) else threadDelay 5000 >> attempt fd (n + 1)
 
 lockSh :: CInt
 lockSh = 1 -- LOCK_SH: shared

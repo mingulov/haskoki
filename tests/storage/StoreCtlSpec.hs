@@ -7,7 +7,7 @@ confirm flag. Never mutates a live store.
 -}
 module StoreCtlSpec (spec) where
 
-import Control.Exception (bracket)
+import Control.Exception (bracket, toException)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
@@ -18,10 +18,12 @@ import Foreign.StablePtr (castStablePtrToPtr)
 import Foreign.Storable (poke)
 import System.Directory (createDirectory, doesFileExist, listDirectory)
 import System.FilePath ((</>))
+import System.Posix.User (getEffectiveUserID)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Ctl (CtlExit (..), ctlHelp, runCtl)
+import Haskoki.Ctl.Store (renderUnexpectedFailure)
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
 import Haskoki.Runtime.Catalog (asyncHomeEntry)
 import Haskoki.Runtime.Storage (CommitResult (..), CredentialRecord (..), Store (..), emptyDelta)
@@ -50,14 +52,23 @@ spec = testGroup "Store commands"
   , testCase "check: mistyped value output carries no PIN" (caseCheckConfigNoPins "badval.toml" "[tokens]\nso_pins = 58213946\nuser_pins = [\"12873465\"]\n")
   , testCase "check: --async-home plans an async-created store" caseCheckAsyncHome
   , testCase "check: --async-home plans the v0.4 async shape" caseCheckAsyncHomeV04
+  , testCase "check: --async-home as a flag value is a usage error" caseCheckAsyncHomeValue
+  , testCase "check: a -wal or -shm file is refused" caseCheckWalShm
   , testCase "migrate: a v0.4 store migrates (exit 0) and then checks ok" caseMigrateCliV04
   , testCase "migrate: a current store needs nothing (exit 0)" caseMigrateCliNotNeeded
   , testCase "migrate: a drifted catalog refuses (exit 1), nothing written" caseMigrateCliRefusesDrift
   , testCase "migrate: a live owner refuses (exit 1)" caseMigrateCliLive
   , testCase "migrate: a hot journal refuses (exit 1), both files untouched" caseMigrateCliJournal
+  , testCase "migrate: a -wal file refuses (exit 1), everything untouched" caseMigrateCliWal
+  , testCase "migrate: a -shm file refuses (exit 1), everything untouched" caseMigrateCliShm
+  , testCase "migrate: --async-home as a flag value is a usage error" caseMigrateCliAsyncHomeValue
+  , testCase "migrate: a missing backup dir refuses (exit 1), nothing written" caseMigrateCliMissingBackupDir
+  , testCase "migrate: an unwritable backup dir refuses (exit 1), nothing written" caseMigrateCliUnwritableBackupDir
+  , testCase "migrate: a wrong config refuses (exit 1), nothing written" caseMigrateCliWrongConfig
   , testCase "migrate: --async-home migrates a v0.4 async-created store, then the async open serves" caseMigrateCliAsyncHome
   , testCase "migrate: usage errors exit 2" caseMigrateCliUsage
   , testCase "migrate: no output or receipt carries a PIN" caseMigrateCliNoPins
+  , testCase "migrate: an unexpected failure is a fixed redacted line" caseMigrateUnexpectedRedacted
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -278,6 +289,45 @@ caseCheckAsyncHomeV04 = withScratch "ctl-check" $ \dir -> do
   assertBool "tag" ("store-migration-required:" `isPrefixOf` ceErr r)
   assertNoPins "async v0.4 check" (ceOut plain ++ ceErr plain ++ ceOut r ++ ceErr r)
 
+-- --async-home is only a standalone switch: where a flag value is
+-- expected it is a usage error, never silently the switch and never
+-- the value.
+caseCheckAsyncHomeValue :: IO ()
+caseCheckAsyncHomeValue = withScratch "ctl-check" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let usage = "usage: haskoki-ctl store check --path FILE --config FILE [--async-home]"
+      one args = do
+        r <- runCtl args
+        assertEqual (unwords args) 2 (ceCode r)
+        assertBool (unwords args ++ ": usage on stderr") (usage `isInfixOf` ceErr r)
+        assertEqual (unwords args ++ ": nothing on stdout") "" (ceOut r)
+  one ["store", "check", "--path", store, "--config", "--async-home", cfgPath]
+  one ["store", "check", "--path", "--async-home", store, "--config", cfgPath]
+
+-- The store is rollback-journal only, so a -wal or -shm file can only
+-- come from foreign tooling: the check refuses it like a journal. A
+-- zero-byte leftover is ignored, as zero-byte journals are.
+caseCheckWalShm :: IO ()
+caseCheckWalShm = do
+  withScratch "ctl-check" $ \dir -> do
+    (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+    BS.writeFile (store ++ "-wal") "foreign write-ahead log"
+    r <- check store cfgPath
+    assertEqual "wal: exit 1" 1 (ceCode r)
+    assertBool "wal: tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+  withScratch "ctl-check" $ \dir -> do
+    (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+    BS.writeFile (store ++ "-shm") "foreign shared memory"
+    r <- check store cfgPath
+    assertEqual "shm: exit 1" 1 (ceCode r)
+    assertBool "shm: tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+  withScratch "ctl-check" $ \dir -> do
+    (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+    BS.writeFile (store ++ "-wal") ""
+    r <- check store cfgPath
+    assertEqual "empty wal: exit 1" 1 (ceCode r)
+    assertBool "empty wal: ignored" ("verdict: migration-required" `isInfixOf` ceOut r)
+
 caseHelpListsStoreCommands :: IO ()
 caseHelpListsStoreCommands = do
   assertBool "check line" ("haskoki-ctl store check --path FILE --config FILE [--async-home]" `isInfixOf` ctlHelp)
@@ -361,6 +411,108 @@ caseMigrateCliJournal = withScratch "ctl-migrate" $ \dir -> do
   BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
   listDirectory backups >>= assertEqual "no backup" []
 
+-- The store is rollback-journal only, so a -wal file can only come
+-- from foreign tooling: migration refuses it like a journal.
+caseMigrateCliWal :: IO ()
+caseMigrateCliWal = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  dbBytes <- BS.readFile store
+  BS.writeFile (store ++ "-wal") "foreign write-ahead log"
+  wBytes <- BS.readFile (store ++ "-wal")
+  r <- migrateCli store cfgPath backups
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+  BS.readFile (store ++ "-wal") >>= \b -> assertBool "wal untouched" (b == wBytes)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- Likewise for a -shm file.
+caseMigrateCliShm :: IO ()
+caseMigrateCliShm = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  dbBytes <- BS.readFile store
+  BS.writeFile (store ++ "-shm") "foreign shared memory"
+  sBytes <- BS.readFile (store ++ "-shm")
+  r <- migrateCli store cfgPath backups
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-journal-present:" `isPrefixOf` ceErr r)
+  BS.readFile (store ++ "-shm") >>= \b -> assertBool "shm untouched" (b == sBytes)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBytes)
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- --async-home is only a standalone switch: where a flag value is
+-- expected it is a usage error, never silently the switch and never
+-- the value.
+caseMigrateCliAsyncHomeValue :: IO ()
+caseMigrateCliAsyncHomeValue = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  before <- captureState store
+  r <- runCtl ["store", "migrate", "--path", store, "--config", "--async-home", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 2" 2 (ceCode r)
+  assertBool "usage on stderr"
+    ("usage: haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR [--async-home]" `isInfixOf` ceErr r)
+  assertEqual "nothing on stdout" "" (ceOut r)
+  assertUnchanged "usage error" before store
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- A missing backup directory is refused through migrate with nothing
+-- written anywhere.
+caseMigrateCliMissingBackupDir :: IO ()
+caseMigrateCliMissingBackupDir = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups" -- never created
+  before <- captureState store
+  r <- migrateCli store cfgPath backups
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr r)
+  assertUnchanged "refused migrate" before store
+  created <- doesFileExist backups
+  assertBool "backup dir not created" (not created)
+
+-- An unwritable backup directory is refused through migrate with
+-- nothing written.
+caseMigrateCliUnwritableBackupDir :: IO ()
+caseMigrateCliUnwritableBackupDir = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  before <- captureState store
+  euid <- getEffectiveUserID
+  if euid == 0
+    then putStrLn "skipped the unwritable backup dir: mode 0555 does not deny root"
+    else withFileMode backups 0o555 $ do
+      r <- migrateCli store cfgPath backups
+      assertEqual "exit 1" 1 (ceCode r)
+      assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr r)
+  assertUnchanged "refused migrate" before store
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- A config that names another store, or one that does not parse, is
+-- refused through migrate with nothing written.
+caseMigrateCliWrongConfig :: IO ()
+caseMigrateCliWrongConfig = withScratch "ctl-migrate" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  other <- writeStoreConfig (dir </> "o.toml") (dir </> "original.sqlite") fixtureLabels fixtureSo fixtureUser
+  writeFile (dir </> "broken.toml") "[tokens]\nso_pins = [\"58213946\"\nlabels = 7\n"
+  before <- captureState store
+  m <- migrateCli store other backups
+  assertEqual "mismatch: exit 1" 1 (ceCode m)
+  assertBool "mismatch: tag" ("config-mismatch:" `isPrefixOf` ceErr m)
+  b <- migrateCli store (dir </> "broken.toml") backups
+  assertEqual "broken: exit 1" 1 (ceCode b)
+  assertBool "broken: tag" ("config-invalid:" `isPrefixOf` ceErr b)
+  assertNoPins "wrong config" (ceOut m ++ ceErr m ++ ceOut b ++ ceErr b)
+  assertUnchanged "refused migrate" before store
+  listDirectory backups >>= assertEqual "no backup" []
+
 -- A v0.4-shape store the async open created (home label, no
 -- credential row) refuses under the standard catalog and migrates
 -- under --async-home, freezing the async home PINs (not the
@@ -432,3 +584,20 @@ caseMigrateCliNoPins = withScratch "ctl-migrate" $ \dir -> do
   assertBool "a receipt was written" (not (null receipts))
   mapM_ (\r -> assertNoPins "migrate output" (ceOut r ++ ceErr r)) [r1, r2, r3]
   mapM_ (assertNoPins "receipt") texts
+
+-- An unexpected exception through migrate prints a fixed tagged line;
+-- the exception detail is confined to one redacted line that cannot
+-- carry a PIN.
+caseMigrateUnexpectedRedacted :: IO ()
+caseMigrateUnexpectedRedacted = do
+  let (tag, detail) = renderUnexpectedFailure (toException (userError "boom 58213946"))
+  assertEqual "tag" "migrate-failed" tag
+  assertBool "fixed shape" ("unexpected failure: " `isPrefixOf` detail)
+  assertBool "names the next step" ("run store check before anything else" `isInfixOf` detail)
+  assertBool "single line" (not ('\n' `elem` detail))
+  assertNoPins "unexpected failure" (tag ++ ": " ++ detail)
+  let (_, multi) = renderUnexpectedFailure (toException (userError "first 1234\nsecond 5678"))
+  assertBool "only the first line" (not ("second" `isInfixOf` multi))
+  assertNoPins "multiline failure" multi
+  let (_, kept) = renderUnexpectedFailure (toException (userError "schema 2 needs x"))
+  assertBool "short numbers survive" ("schema 2" `isInfixOf` kept)

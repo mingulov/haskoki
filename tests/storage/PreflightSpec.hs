@@ -9,7 +9,7 @@ module PreflightSpec (spec, migrateChildMain) where
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import qualified Data.Map.Strict as Map
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Exception (AsyncException (ThreadKilled), IOException, bracket, throwIO, try)
 import Control.Monad (forever)
 import Data.Bits ((.&.))
@@ -96,6 +96,7 @@ spec = testGroup "Store preflight"
       , testCase "the async home entry is the async label with the home PINs" caseAsyncHomeEntry
       , testCase "check on a missing path says there is no store" casePlanMissingPath
       , testCase "check on a store held by another fd is refused as live" casePlanLiveOwner
+      , testCase "check rides out a kernel lock released a moment later" casePlanTransientLockFree
       , testCase "store-full has its own refusal tag" caseStoreFullTag
       , testCase "the redaction check matches PINs at digit boundaries" caseNoPinsDigitBoundary
       ]
@@ -562,6 +563,24 @@ casePlanLiveOwner = withScratch "plan" $ \dir -> do
     case r of
       Left (StoreSecondWriter m) -> assertBool "says in use" ("in use" `isInfixOf` m)
       other -> assertFailure ("wrong result: " ++ show (fmap sopPath other))
+
+-- A kernel lock held only for a moment (a forked child that has not
+-- exec'd yet keeps an inherited copy past the owner's close) does not
+-- refuse the check: the probe retries briefly before reporting live.
+casePlanTransientLockFree :: IO ()
+casePlanTransientLockFree = withScratch "plan" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  cfg <- loadConfigOrFail cfgPath
+  bracket (openFd store ReadOnly defaultFileFlags) closeFd $ \fd -> do
+    rc <- c_flockT (fromIntegral fd) 2 -- LOCK_EX
+    assertEqual "test holds the db lock" 0 rc
+    _ <- forkIO (threadDelay 10000 >> voidFlock fd)
+    r <- checkStoreOpen store cfg
+    case r of
+      Right plan -> assertEqual "migration still planned" VerdictMigrationRequired (planVerdict plan)
+      other -> assertFailure ("transient lock refused: " ++ show (fmap sopPath other))
+  where
+    voidFlock fd = c_flockT (fromIntegral fd) 8 >> pure () -- LOCK_UN
 
 caseStoreFullTag :: IO ()
 caseStoreFullTag = do
