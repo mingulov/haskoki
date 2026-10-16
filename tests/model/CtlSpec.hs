@@ -28,6 +28,8 @@ spec = testGroup "Haskoki-ctl"
   , testCase "scenario fixture carries no ignored rules" caseScenarioRulesEmpty
   , testCase "help never claims live control" caseHelpHonest
   , testCase "openssl catalog serves CKM_SHA256" caseSha256Served
+  , testCase "interfaces line names configured and effective values" caseInterfacesEffective
+  , testCase "scenario result names the simulator scope" caseScenarioScope
   ]
 
 fixture :: FilePath -> FilePath
@@ -151,6 +153,28 @@ caseSha256Served = do
         [] -> []
       prefix = "active-catalog:"
   assertBool "CKM_SHA256 served" ("CKM_SHA256" `elem` active)
+
+-- | The @interfaces:@ line names the configured set plus the
+-- effective native set the module actually serves (3.2/3.1/3.0
+-- via C_GetInterface/C_GetInterfaceList, 2.40 via
+-- C_GetFunctionList): configured values stay distinct from the
+-- served set.
+caseInterfacesEffective :: IO ()
+caseInterfacesEffective = do
+  r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
+  assertEqual "exit 0" 0 (ceCode r)
+  assertBool "configured set marked plus effective native set"
+    ("(configured set; effective native: 3.2 3.1 3.0 via C_GetInterface/C_GetInterfaceList, 2.40 via C_GetFunctionList)" `isInfixOf` ceOut r)
+
+-- | The final @scenario-ok@ line states the simulator scope: the
+-- owned logical simulation, never native serving.
+caseScenarioScope :: IO ()
+caseScenarioScope = do
+  r <- runCtl ["scenario", "run", "--config", fixture "maximal-demo.toml"
+              , "--scenario", fixture "scenario.json"]
+  assertEqual "exit 0" 0 (ceCode r)
+  assertBool "simulator scope stated"
+    ("scenario-ok (owned logical simulation," `isInfixOf` ceOut r)
 
 caseHelpHonest :: IO ()
 caseHelpHonest = do

@@ -59,7 +59,7 @@ Invalid values return `CfgInvalid`; configuration errors stop the open.
 | `tokens.labels` | E | catalog seating + served labels | `MultiTokenSpec` labels + `ConfigSpec` catalog validation | label list, at most 16, headed haskoki-demo (native; catalog seating) |
 | `tokens.so_pins` | E | per-slot SO auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` SO per-slot | per-slot SO PIN, 4..32 bytes (native; login auth) |
 | `tokens.user_pins` | E | per-slot user auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` per-slot PINs | per-slot user PIN, 4..32 bytes (native; login auth) |
-| `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity, and the public token serial is that identity in 16 lowercase hex digits | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) | pins stable identity; serial still slot-derived at this head (native; refreshed for durable identity after the storage landing) |
+| `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity, and the public token serial is that identity in 16 lowercase hex digits | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) | serial is the 16-character TokenId (native TokenInfo, slot-independent); config PINs seed fresh stores only, durable credentials win after |
 
 Sections (9): `storage`, `engine`, `async`, `trace`, `control`,
 `fixtures`, `limits`, `sim`, `tokens`. Any other section name is
@@ -165,9 +165,10 @@ and no transcript, aggregate-payload or depth bound exists. Read the
 The per-key inventory of configured value, effective value and
 native-versus-scenario applicability is the Effective column of the table
 above, checked key-for-key against the parser catalog by the completeness
-test. On a SQLite store the catalog PINs only seed a token when it is
+test. On a SQLite store the catalog PINs seed a token when it is
 first created; after that the stored credential row is the PIN authority,
-and editing `tokens.so_pins` or `tokens.user_pins` does not change what an
+and durable credentials win over later catalog PIN edits: editing
+`tokens.so_pins` or `tokens.user_pins` does not change what an
 existing token accepts (see [operations notes](operations-notes.md)).
 
 ## Resource bounds and aggregate costs
@@ -213,19 +214,54 @@ tokens as present again without resetting their durable objects or lockout
 counters.
 
 The CLI scenario runner and `[sim].token_script` operate on an owned local
-model, separately from native serving. `scenario-ok` means that logical
-simulation completed and every step's expectation matched; it is not a
-statement about native behavior. The runner validates the type of several
-operational scenario arguments but does not consume them: fixture name,
-token name, read/write mode, key name, mechanism, base64 data, output
-capacity (any integer is accepted) and the polled function name are
-documentary, so a step naming a missing token, an unknown mechanism, or
-malformed data can still report `CKR_OK`/`CKR_PENDING` and no signature
-bytes are produced or verified. Login state and finalize are recorded but
-not enforced on later steps. A wrong PIN on `session.login` aborts the
-scenario as a runner error before the step's `expect.return` is compared,
-so an expected `CKR_PIN_INCORRECT` cannot be expressed. Tightening these
-fields is v0.5 work. Native slot changes and Digest
+model, separately from native serving. The final `scenario-ok` line names
+its scope (`owned logical simulation`) and the step count: the logical
+simulation completed and every step's expectation matched. It is not a
+statement about native behavior. The runner consumes every admitted
+argument (see `execStep` in `src/Haskoki/Ctl.hs`):
+
+| Action | Consumed arguments |
+|---|---|
+| `fixture.load` | `fixture` must be `minimal-demo`; the runner seats slot 0 |
+| `session.open` | `token` must equal the config slot-0 label (absent means slot 0); `asynchronous` selects the session mode; `read_write` must be `true` (validation only: the runner models read-write sessions) |
+| `session.login` | `role` and `pin` are checked against the fixture PINs; a second login succeeds, and either role satisfies the signing login gate |
+| `sign.init` | `mechanism` (a known inventory name) and `fixture_key` arm the session; the pair is echoed |
+| `sign` | `data_base64` (strict base64) sets the echoed byte count; `output_capacity` 0 refuses with `CKR_BUFFER_TOO_SMALL`, any positive capacity is accepted without a size comparison |
+| `async.complete` | `function` must be `C_Sign`; each completion counts down the session's pending polls |
+| `token.remove` | `token` resolves like `session.open` |
+| `slot-event.wait` | `nonblocking` selects the wait mode (default true) |
+| `initialize` / `finalize` | lifecycle verbs (below); the sim verbs (`token.insert`, `async.delay`, `fault.window`) are test controls needing a test-enabled instance |
+
+Pending follows the `[async]` knobs: an async session pends while polls
+remain; a sync session never pends. Refusals route three ways, and the
+central checker compares each step's explicit result against its `expect`
+clause:
+
+| Refusal | Route | Examples |
+|---|---|---|
+| scenario bug | hard `Left`: load-time `scenario-rejected`, or run-time `scenario-failed` | load: unknown action/field/argument, unknown mechanism, malformed base64, out-of-range capacity, duplicate session name, nonempty rules; run: unknown session reference, sign without `sign.init`, wait on an empty queue, sim verb without a test-enabled instance |
+| operation outcome | expectable `StepReturn` compared against `expect.return` | `CKR_PIN_INCORRECT`, `CKR_TOKEN_NOT_PRESENT`, `CKR_BUFFER_TOO_SMALL`, `CKR_USER_NOT_LOGGED_IN`, `CKR_CRYPTOKI_NOT_INITIALIZED`, `CKR_CRYPTOKI_ALREADY_INITIALIZED` |
+| device fault | expectable `CKR_DEVICE_ERROR` | `sign` / `async.complete` inside the live fault window |
+
+Lifecycle: the instance starts uninitialized; every verb except
+`initialize`, `finalize` and the sim test controls refuses with
+`CKR_CRYPTOKI_NOT_INITIALIZED` until `initialize` runs, and again after
+`finalize`. `initialize` on a live instance answers
+`CKR_CRYPTOKI_ALREADY_INITIALIZED`; after `finalize` it resets the
+runner (fresh sessions, config fault seed kept) and answers `CKR_OK`.
+`finalize` on a non-live instance answers
+`CKR_CRYPTOKI_NOT_INITIALIZED`. `sign.init`, `sign` and
+`async.complete` additionally require a logged-in session
+(`CKR_USER_NOT_LOGGED_IN`).
+
+Inert prose lives only under `note`: a scenario object and any step may
+carry a `note`, which must be a JSON object; validation checks the shape
+and drops it. Every other unknown field refuses.
+
+Each executed step prints one line, `step[N] <action> -> <RESULT>
+<detail>`, where `<detail>` echoes the consumed values (`token=`,
+`role=`, `mechanism=` with `key=`, `bytes=` with `capacity=`); actions
+with nothing to echo print the bare result. Native slot changes and Digest
 callbacks follow the [runtime contract](operations-notes.md).
 
 ## Example configurations

@@ -145,6 +145,7 @@ spec = testGroup "Config honesty"
     , testCase "catalog names every never-knob" caseAuditNeverKnobs
     , testCase "catalog names every refusal rule" caseAuditRefusals
     , testCase "catalog carries the dogfood matrix" caseAuditDogfood
+    , testCase "token identity rows state the durable rule" caseIdentityRows
     ]
   ]
 
@@ -1079,3 +1080,14 @@ caseResourceInventory = do
     , "limits.attribute_depth", "R32", "A44"]
   mapM_ (\ref -> assertBool ("WP13 outcome named: " ++ ref) (ref `isInfixOf` doc))
     ["buffered-updates", "appendBuffered"]
+
+-- | The identity rows state the durable rule against the landed
+-- storage truth: the serial is the 16-character TokenId, and
+-- config PINs only seed fresh stores.
+caseIdentityRows :: IO ()
+caseIdentityRows = do
+  doc <- honestyCatalog
+  assertBool "token_ids row states the durable serial rule"
+    ("serial is the 16-character TokenId" `isInfixOf` doc)
+  assertBool "PIN authority states durable-first"
+    ("durable credentials win" `isInfixOf` doc)

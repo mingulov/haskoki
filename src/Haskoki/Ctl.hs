@@ -12,7 +12,9 @@ Every command owns its instance or works offline:
   in-memory instance, deterministically (no code execution; a sync
   session never pends; strict load: nonempty rules, unknown step
   fields, mistyped arguments, and misplaced save_as\/expect reject;
-  each step's result is checked centrally against its expectation);
+  each step's result is checked centrally against its expectation;
+  value admission, expectable refusals, lifecycle; inert prose only
+  under `note`);
 * @store inspect@ reads a SQLite store offline (SELECT-only under
   @query_only@; never takes the ownership lock);
 * @store check@ plans an open of a store read-only and reports what
@@ -220,6 +222,7 @@ capabilitiesReport cfg = unlines $
   , reservedAsyncLine
   , reservedLimitsLine
   , "interfaces: " ++ unwords (cfgInterfaces cfg)
+      ++ " (configured set; effective native: 3.2 3.1 3.0 via C_GetInterface/C_GetInterfaceList, 2.40 via C_GetFunctionList)"
   , "active-catalog: " ++ unwords active
   , "gap-set: " ++ unwords gaps
   ] ++ map (\(k, v) -> "limit." ++ k ++ ": " ++ show v) (reportLimits cfg)
@@ -401,7 +404,7 @@ execScenario cfg sc steps = do
               , "steps-executed: " ++ show (length lines_)
               ] ++ scriptLine ++ lines_ ++
             [ "trace-lines: " ++ show (drWritten rep + drFailed rep)
-            , "scenario-ok"
+            , "scenario-ok (owned logical simulation, " ++ show (length lines_) ++ " steps)"
             ]
       pure (CtlExit 0 out "")
   where
