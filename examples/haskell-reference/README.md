@@ -87,3 +87,33 @@ compares it against planner runs, observing through raw maps only.
 The example teaches; the oracle pins. A companion known-answer group
 in the same suite pins one mechanism variant (CKM_AES_GCM init
 framing plus cipher shape) with hand-derived bytes.
+
+## Reference exercise: traced GCM parameters
+
+The logout journey above teaches pipeline shape with simulated engine
+bytes. The bounded extension exercise traces one real parameter path
+instead: a native `CK_GCM_PARAMS` image travels through
+`normalizeMechParams` to the canonical `gcm-params/1` image, an init
+frame, a real `F_EncryptInit`/`F_Encrypt` plan, `checkedCallWork`, the
+real backend seal, finish and commit — and back through the decrypt
+leg. The tests live in `tests/engine/RoutingE2ESpec.hs`:
+
+- `gcm checked parameters drive the backend vector end to end` seals
+  the pinned independent vector (key `00..0f`, nonce `00..0b`, AAD
+  `"aad-data"`) and asserts every stage against hand-derived bytes.
+- `gcm traced drops fail closed` drops the IV byte, the tag width,
+  the AAD byte and the key width in turn (each re-seal must diverge
+  from the pinned seal, and the four mutant seals plus the base seal
+  must differ pairwise), and flips the direction (which must fail
+  authentication) — or an input is not flowing to the backend.
+
+Run them with:
+
+```sh
+E=$(cabal list-bin haskoki:test:haskoki-engine-tests)
+/tmp/claude-1000/hk-lock "$E" -p '$2 == "Routed end-to-end" && /gcm (checked|traced)/'
+```
+
+The mechanism-variant KAT in `tests/model/LogoutOracleMain.hs` stays
+the outer-framing control: it pins the frame bytes and the cipher
+shape with an opaque parameter tail and must stay passing untouched.
