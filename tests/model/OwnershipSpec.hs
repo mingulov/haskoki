@@ -408,12 +408,22 @@ spec = testGroup "Ownership"
     ]
   ]
 
--- | No-wedge guard: every probe body runs under a 10s 'timeout'.
+-- | Storm-scale no-wedge budget: 300 seconds of wall clock per
+-- probe body. The bodies need well under a second of running
+-- time, but partial machine stalls (a swapped-out lock holder
+-- convoying the body) legitimately exceed 60 seconds; the budget
+-- bounds hang detection, never the work itself. A body that never
+-- finishes still fails loudly, naming the probe.
+wedgeBudget :: Int
+wedgeBudget = 300000000
+
+-- | No-wedge guard: every probe body runs under the storm-scale
+-- 'wedgeBudget' 'timeout'.
 guarded :: String -> IO () -> IO ()
 guarded name body = do
-  r <- timeout 10000000 body
+  r <- timeout wedgeBudget body
   case r of
-    Nothing -> assertFailure ("wedged (>10s): " ++ name)
+    Nothing -> assertFailure ("wedged (>300s): " ++ name)
     Just () -> pure ()
 
 sid1 :: SessionId

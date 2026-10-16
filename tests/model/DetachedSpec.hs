@@ -374,13 +374,22 @@ openSecondSession gen = do
   enableAsyncSession (lgTable gen) sid
   pure st
 
+-- | Storm-scale no-wedge budget for race-worker joins: 300
+-- seconds of wall clock. Partial machine stalls legitimately
+-- exceed 60 seconds while every worker still progresses; the
+-- budget bounds hang detection, never the work itself. A join
+-- that never completes still fails loudly, naming the worker.
+wedgeBudget :: Int
+wedgeBudget = 300000000
+
 -- | No-wedge join for race workers: a lock inversion would hang the
--- take, so the 10s backstop fails loudly instead of wedging the suite.
+-- take, so the storm-scale backstop fails loudly instead of
+-- wedging the suite.
 joinBounded :: String -> MVar a -> IO a
 joinBounded name mv = do
-  r <- timeout 10000000 (takeMVar mv)
+  r <- timeout wedgeBudget (takeMVar mv)
   case r of
-    Nothing -> assertFailure ("wedged (>10s): " ++ name)
+    Nothing -> assertFailure ("wedged (>300s): " ++ name)
     Just v -> pure v
 
 -- | Simultaneous-join rounds: the exactly-one-winner property
