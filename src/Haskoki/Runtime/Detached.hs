@@ -235,8 +235,8 @@ import Haskoki.Types
 -- did not serve), the context-local refused set (tables retired
 -- through this context before it ever claimed through them: its
 -- own later claims through them are refused, while the shared
--- authority and sibling contexts are untouched), the adapter's
--- opaque marks, and the TEST-ONLY join-transfer hook (a no-op
+-- authority and sibling contexts are untouched), and the
+-- TEST-ONLY join-transfer hook (a no-op
 -- unless a test sets it).
 -- Persistent ids are NOT minted here: every detach reserves its
 -- id from the store ('storeReserveJobId'), so two contexts on
@@ -256,7 +256,6 @@ data DetachCtx = DetachCtx
   , dcClaims :: !ClaimAuthority
   , dcServed :: !(TVar (Set AsyncTableId))
   , dcRefused :: !(TVar (Set AsyncTableId))
-  , dcOpaque :: !(TVar (Map JobId String))
   , dcJoinHook :: !(TVar (IO ()))
   }
 
@@ -291,7 +290,6 @@ openDetached store tok = do
           Right _ -> do
             servedVar <- newTVarIO Set.empty
             refusedVar <- newTVarIO Set.empty
-            opaqueVar <- newTVarIO Map.empty
             hookVar <- newTVarIO (pure ())
             pure (Right DetachCtx
               { dcStore = store
@@ -300,7 +298,6 @@ openDetached store tok = do
               , dcClaims = storeClaims store
               , dcServed = servedVar
               , dcRefused = refusedVar
-              , dcOpaque = opaqueVar
               , dcJoinHook = hookVar
               })
 
@@ -335,26 +332,36 @@ putAttachment dc pid att = atomically $ do
 -- Saveability
 -- ---------------------------------------------------------------------------
 
--- | Flag a live job as native-opaque: its workflow holds a live
--- native context (a real adapter's un-checkpointable state) that has
--- no pointer-free record. Detach then reports the permitted typed
--- unsaveable outcome with the job preserved. Marks are consumed by
--- the detach attempt (one mark, one verdict) so a later table
--- generation reusing the job id is never misjudged.
-markJobOpaque :: DetachCtx -> JobId -> String -> IO ()
-markJobOpaque dc jid reason = atomically $ do
-  marks <- readTVar (dcOpaque dc)
-  writeTVar (dcOpaque dc) (Map.insert jid reason marks)
+-- | Flag a live job as native-opaque (an explicit fault-injection
+-- API for adapters and tests): its workflow holds a live native
+-- context (a real adapter's un-checkpointable state) that has no
+-- pointer-free record. The mark is keyed by table and job
+-- identity on the store handle's shared claim authority, so two
+-- tables' job zero never share a mark and every context over the
+-- handle sees it. Detach of a non-terminal (pending, ready,
+-- running or held) job then reports the permitted typed
+-- unsaveable outcome with the job preserved, every time: the
+-- mark is not consumed by a refusal. It clears when the job
+-- detaches successfully and when its table retires. Terminal
+-- jobs ignore marks.
+markJobOpaque :: DetachCtx -> AsyncTable -> JobId -> String -> IO ()
+markJobOpaque dc table jid reason = atomically $ do
+  tc <- readClaims dc
+  writeClaims dc tc
+    { tcOpaque = Map.insert (asyncTableId table, jid) reason (tcOpaque tc) }
 
--- | Take (consume) a job's opaque mark, if any.
-takeOpaque :: DetachCtx -> JobId -> IO (Maybe String)
-takeOpaque dc jid = atomically $ do
-  marks <- readTVar (dcOpaque dc)
-  case Map.lookup jid marks of
-    Nothing -> pure Nothing
-    Just reason -> do
-      writeTVar (dcOpaque dc) (Map.delete jid marks)
-      pure (Just reason)
+-- | Read (without consuming) a job's opaque mark, if any.
+readOpaque :: DetachCtx -> AsyncTable -> JobId -> IO (Maybe String)
+readOpaque dc table jid =
+  Map.lookup (asyncTableId table, jid) . tcOpaque
+    <$> atomically (readClaims dc)
+
+-- | Drop a job's opaque mark (after a successful detach).
+clearOpaque :: DetachCtx -> AsyncTable -> JobId -> IO ()
+clearOpaque dc table jid = atomically $ do
+  tc <- readClaims dc
+  writeClaims dc tc
+    { tcOpaque = Map.delete (asyncTableId table, jid) (tcOpaque tc) }
 
 -- ---------------------------------------------------------------------------
 -- Recipes
@@ -713,17 +720,27 @@ detachJob :: DetachCtx -> AsyncTable -> JobId -> JobFunction -> IO DetachOutcome
 detachJob dc table jid func =
   withDetachLease table jid $ \mView -> case mView of
     Nothing -> pure DetachUnknown
-    Just view -> detachUnder dc jid func view
+    Just view -> do
+      out <- detachUnder dc table jid func view
+      case out of
+        DetachOk _ -> clearOpaque dc table jid
+        _ -> pure ()
+      pure out
 
 -- | The detach body under a held lease (aborts on every refusal).
-detachUnder :: DetachCtx -> JobId -> JobFunction -> LeaseView -> IO DetachOutcome
-detachUnder dc jid func view = do
-  mOpaque <- takeOpaque dc jid
+detachUnder
+  :: DetachCtx -> AsyncTable -> JobId -> JobFunction -> LeaseView
+  -> IO DetachOutcome
+detachUnder dc table jid func view = do
+  let snap = lvSnapshot view
+  -- Marks apply to non-terminal jobs only (ruling 3).
+  mOpaque <- case jobSnapshotState snap of
+    SnapTerminal _ -> pure Nothing
+    _ -> readOpaque dc table jid
   case mOpaque of
     Just reason ->
       pure (DetachUnsaveable reason)
     Nothing -> do
-      let snap = lvSnapshot view
       if jobSnapshotFunction snap /= func
         then pure (DetachWrongFunction (jobSnapshotFunction snap) func)
         else case jobSnapshotState snap of
@@ -902,8 +919,8 @@ setIdle dc pid = putAttachment dc pid AttIdle
 -- this context has not refused (retired through it before it
 -- ever claimed through it); anything else (another claim, an
 -- active, a terminal, or a retired or refused table) refuses
--- with 'Nothing' and the authority untouched. The claim lives on the store
--- handle's shared authority, so a claim (or active) taken
+-- with 'Nothing' and the authority untouched. The claim lives on
+-- the store handle's shared authority, so a claim (or active) taken
 -- through any context over the handle refuses this one. The
 -- claim records what it replaced so retirement can roll exactly
 -- it back; a granted claim also records its table in this
@@ -1502,7 +1519,7 @@ markResolved dc table jid st = do
 -- each active attachment owned by a table this context claimed
 -- through resolves canceled, durably and in memory, each of
 -- those tables' in-progress claims rolls back to what it
--- replaced, and the adapter's opaque marks clear (a new table
+-- replaced, and those tables' opaque marks clear (a new table
 -- generation starts unflagged). Tables this context never
 -- claimed through — including a sibling context's tables on the
 -- same store — are untouched, so a refused (losing) context can
@@ -1515,7 +1532,6 @@ markResolved dc table jid st = do
 -- sibling's attachments.
 retireLiveTable :: DetachCtx -> IO [(Word64, Maybe StoreError)]
 retireLiveTable dc = do
-  atomically (writeTVar (dcOpaque dc) Map.empty)
   retireMatching dc Nothing
 
 -- | Retire one live table's attachments (context close on a shared
@@ -1534,11 +1550,8 @@ retireLiveTable dc = do
 -- per retired attachment with its mark error, if any
 -- (rolled-back claims are not retired attachments: their durable
 -- jobs stand untouched and joinable). The retiring table's
--- table-keyed opaque marks in the shared authority drop with it
--- (see 'retireMatching'); this context's legacy per-job-id marks
--- are NOT cleared here: they are table-blind, so a scoped retire
--- cannot attribute them — clearing would drop a sibling table's
--- live marks.
+-- opaque marks drop with it (see 'retireMatching'); sibling
+-- tables' marks stay.
 retireLiveTableFor
   :: DetachCtx -> AsyncTableId -> IO [(Word64, Maybe StoreError)]
 retireLiveTableFor dc tid = retireMatching dc (Just tid)

@@ -193,6 +193,10 @@ spec = testGroup "Detached jobs"
   , testCase "loser cannot retire or cancel the winner" (counted "m5-detached-jobs" "loser-cannot-retire-or-cancel-the-winner" (caseLoserCannotRetireOrCancel))
   , testCase "retired unserved table refuses a late claim through its context" (counted "m5-detached-jobs" "retired-unserved-table-refuses-a-late-claim-through-its-context" (caseRetiredUnservedRefuses))
   , testCase "retire racing a pre-claim join refuses the join" (counted "m5-detached-jobs" "retire-racing-a-pre-claim-join-refuses-the-join" (caseRetireRacesPreClaimJoin))
+  , testCase "opaque marks are keyed by table and job" (counted "m5-detached-jobs" "opaque-marks-are-keyed-by-table-and-job" (caseOpaqueKeyedByTable))
+  , testCase "retiring one table leaves another table's opaque marks" (counted "m5-detached-jobs" "retiring-one-table-leaves-another-table-s-opaque-marks" (caseOpaqueRetireKeepsOther))
+  , testCase "opaque marks are shared across contexts on one store" (counted "m5-detached-jobs" "opaque-marks-are-shared-across-contexts-on-one-store" (caseOpaqueSharedAcrossContexts))
+  , testCase "a marked terminal job answers DetachAlready" (counted "m5-detached-jobs" "a-marked-terminal-job-answers-detachalready" (caseOpaqueTerminalAlready))
   ]
 
 tokHome :: TokenId
@@ -1112,7 +1116,7 @@ caseOpaqueUnsaveable = do
   dc <- mkDetached store
   runs <- newIORef 0
   j0 <- startDigestJob gen "abc" 32 2
-  markJobOpaque dc j0 "live EVP_MD_CTX (test double)"
+  markJobOpaque dc (lgTable gen) j0 "live EVP_MD_CTX (test double)"
   out <- detachJob dc (lgTable gen) j0 JobDigest
   case out of
     DetachUnsaveable reason ->
@@ -1123,11 +1127,94 @@ caseOpaqueUnsaveable = do
   assertEqual "attachment preserved" (PollPending 1) p
   jobs <- loadJobs store
   assertEqual "no record stored" 0 (length jobs)
-  -- The mark is consumed: a retry detaches normally.
-  ok <- detachJob dc (lgTable gen) j0 JobDigest
-  case ok of
+  -- The mark is kept until retirement: every retry refuses too,
+  -- and the live job is still intact after each one.
+  forM_ [1 :: Int .. 3] $ \_ -> do
+    again <- detachJob dc (lgTable gen) j0 JobDigest
+    case again of
+      DetachUnsaveable reason ->
+        assertEqual "reason kept" "live EVP_MD_CTX (test double)" reason
+      other -> assertFailure ("expected repeat DetachUnsaveable, got " ++ show other)
+  p2 <- pollJob (countingRunner runs) (lgEnv gen) (lgTable gen) JobDigest j0
+  -- The second tick of the two-tick job: still live, now ready.
+  assertEqual "live job kept" PollReady p2
+  storeClose store
+
+-- Marks are keyed by table AND job: job zero on table A marked
+-- leaves job zero on table B detachable.
+caseOpaqueKeyedByTable :: IO ()
+caseOpaqueKeyedByTable = do
+  (_world, store) <- mkWorld
+  genA <- openLiveGen
+  genB <- openLiveGen
+  dc <- mkDetached store
+  jA <- startDigestJob genA "abc" 32 2
+  jB <- startDigestJob genB "abc" 32 2
+  assertEqual "both are job zero" (jA, jB) (JobId 0, JobId 0)
+  markJobOpaque dc (lgTable genA) jA "table A native context"
+  outB <- detachJob dc (lgTable genB) jB JobDigest
+  case outB of
     DetachOk _ -> pure ()
-    other -> assertFailure ("retry failed: " ++ show other)
+    other -> assertFailure ("B/0 must detach, got " ++ show other)
+  outA <- detachJob dc (lgTable genA) jA JobDigest
+  assertEqual "A/0 refuses" (DetachUnsaveable "table A native context") outA
+  storeClose store
+
+-- Retiring table A drops A's marks and leaves table B's.
+caseOpaqueRetireKeepsOther :: IO ()
+caseOpaqueRetireKeepsOther = do
+  (_world, store) <- mkWorld
+  genA <- openLiveGen
+  genB <- openLiveGen
+  dc <- mkDetached store
+  jA <- startDigestJob genA "abc" 32 2
+  jB <- startDigestJob genB "abc" 32 2
+  -- Make the context serve table A (a join claims through it).
+  jX <- startDigestJob genA "abc" 32 2
+  DetachOk pidX <- detachJob dc (lgTable genA) jX JobDigest
+  JoinOk _ <- joinJob dc (lgEnv genA) (lgTable genA) JoinRequest
+    { jqPid = pidX
+    , jqFunction = JobDigest
+    , jqSession = ssId (lgSession genA)
+    , jqCapacity = 32
+    }
+  markJobOpaque dc (lgTable genA) jA "A mark"
+  markJobOpaque dc (lgTable genB) jB "B mark"
+  _ <- retireLiveTableFor dc (asyncTableId (lgTable genA))
+  outB <- detachJob dc (lgTable genB) jB JobDigest
+  assertEqual "B mark survives A retirement" (DetachUnsaveable "B mark") outB
+  outA <- detachJob dc (lgTable genA) jA JobDigest
+  case outA of
+    DetachUnsaveable _ -> assertFailure "A mark must drop with A"
+    _ -> pure ()
+  storeClose store
+
+-- A mark set through one context is seen through a sibling
+-- context over the same store.
+caseOpaqueSharedAcrossContexts :: IO ()
+caseOpaqueSharedAcrossContexts = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dcA <- mkDetached store
+  dcB <- mkDetached store
+  j0 <- startDigestJob gen "abc" 32 2
+  markJobOpaque dcA (lgTable gen) j0 "set via A"
+  out <- detachJob dcB (lgTable gen) j0 JobDigest
+  assertEqual "seen via B" (DetachUnsaveable "set via A") out
+  storeClose store
+
+-- Marks apply to non-terminal jobs only: a marked terminal job
+-- answers its terminal state.
+caseOpaqueTerminalAlready :: IO ()
+caseOpaqueTerminalAlready = do
+  (_world, store) <- mkWorld
+  gen <- openLiveGen
+  dc <- mkDetached store
+  j0 <- startDigestJob gen "abc" 32 5
+  markJobOpaque dc (lgTable gen) j0 "stale mark"
+  _ <- cancelJob (lgTable gen) j0
+  out <- detachJob dc (lgTable gen) j0 JobDigest
+  assertEqual "terminal wins over mark" (DetachAlready TermCanceled) out
   storeClose store
 
 -- Retiring the live table (provider close) cancels every active

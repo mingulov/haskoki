@@ -650,7 +650,7 @@ caseNativeUnsaveable = withNative $ \be -> do
   digestInit gen
   dc <- mkDetached store
   j0 <- startPlannedCall gen JobDigest F_Digest "abc" 32 1
-  markJobOpaque dc j0 "live EVP_MD_CTX in the native adapter"
+  markJobOpaque dc (lgTable gen) j0 "live EVP_MD_CTX in the native adapter"
   out <- detachJob dc (lgTable gen) j0 JobDigest
   case out of
     DetachUnsaveable reason ->
@@ -1464,7 +1464,7 @@ caseAsyncOpaqueSurface envLock = do
     -- the opaque native handle's representation, even while it is live.
     ids <- sessionJobs (siAsyncTable inst) (surfaceSid source)
     jid <- case ids of [j] -> pure j; _ -> assertFailure "fresh single-job session required"
-    markJobOpaque dc jid "opaque native adapter fixture"
+    markJobOpaque dc (siAsyncTable inst) jid "opaque native adapter fixture"
     surfaceName "C_Digest" $ \name -> alloca $ \pid -> do
       poke pid 0xa5a5a5a5a5a5a5a5
       surfaceRV "opaque public GetID" CKR_STATE_UNSAVEABLE (haskokiStdAsyncGetId ctx source name pid)
