@@ -1,4 +1,5 @@
 {
+  "$schema": "haskoki-journey-legs/1",
   "clients": {
     "opensc": {
       "package": "opensc",
@@ -6,21 +7,44 @@
       "runtime_argv": ["dpkg-query", "-W", "-f=${Version}", "opensc"],
       "runtime_version": "0.27.0~rc1-1"
     },
+    "gnutls": {
+      "package": "gnutls-bin",
+      "package_version": "3.8.12-2ubuntu1.1",
+      "runtime_argv": ["p11tool", "--version"],
+      "runtime_version": "p11tool 3.8.12"
+    },
+    "java": {
+      "package": "default-jdk-headless",
+      "package_version": "2:1.25-77",
+      "runtime_argv": ["java", "-version"],
+      "runtime_version": "25.0.4.1",
+      "compile_target": "17"
+    },
     "openssl": {
       "package": "openssl",
       "package_version": "3.5.5-1ubuntu3.7",
       "runtime_argv": ["openssl", "version"],
       "runtime_version": "OpenSSL 3.5.5"
+    },
+    "native": {
+      "package": null,
+      "package_version": null,
+      "runtime_argv": null,
+      "runtime_version": null
+    },
+    "runner": {
+      "package": null,
+      "package_version": null,
+      "runtime_argv": null,
+      "runtime_version": null
     }
   },
   "profiles": {
     "portfolio": {
-      "clients": ["opensc", "openssl"],
-      "phases": ["module", "verifier"]
+      "description": "Installed bundle plus pinned clients in a disposable client container."
     },
     "image": {
-      "clients": ["opensc", "openssl"],
-      "phases": ["module", "verifier"]
+      "description": "Candidate demo image: module phase in the image, verifier phase on the host."
     }
   },
   "legs": [
@@ -125,4 +149,5 @@
       "depends_on": ["opensc-provision-enumerate-new-pin"]
     }
   ]
+
 }
