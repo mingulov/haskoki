@@ -130,6 +130,10 @@ record: symbol separation, sanitizer runs, evidence limits) and
   succeeded, and that copy could be wrapped. Such a copy now fails with
   `CKR_TEMPLATE_INCONSISTENT`. A copy that sets `CKA_EXTRACTABLE` false,
   or leaves it out, still succeeds.
+- A failed RSA-OAEP decrypt cleansed the output buffer with the length
+  the failing OpenSSL call reported instead of the allocation size.
+  The failure path now cleanses the recorded allocation. Return values
+  are unchanged: padding failures still answer the uniform verdict.
 
 ## [0.4.0.0] - Unreleased
 
