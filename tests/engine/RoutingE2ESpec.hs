@@ -17,11 +17,18 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.List (nub)
 import qualified Data.Map.Strict as Map
+import Data.Word (Word8)
+import Foreign.C.Types (CULong (..))
+import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Ptr (Ptr, castPtr)
+import Foreign.Storable (pokeByteOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Engine.Backend
   ( BackendEnv
   , CryptoBackend (..)
@@ -52,7 +59,7 @@ import Haskoki.Operation
   , CryptoResult (..)
   , activeSlots
   )
-import Haskoki.Operation.Codec (encodeInitInput, encodeVerifyInput)
+import Haskoki.Operation.Codec (decodeInitInput, encodeInitInput, encodeVerifyInput)
 import Haskoki.Operation.Derive (maxXofTotal)
 import Haskoki.Operation.KeyManagement
   (GenArgs (..), decodeKeyPair, encodeGenArgs, hotpKeyGenMech)
@@ -105,6 +112,7 @@ import Haskoki.Types
   )
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
 import Haskoki.Engine.Synthetic (Synthetic)
+import Haskoki.FFI.NativeParams (gcmNativeSize, normalizeMechParams)
 
 spec :: TestTree
 spec = testGroup "Routed end-to-end"
@@ -149,6 +157,8 @@ spec = testGroup "Routed end-to-end"
   , testCase "routed hmac sign E2E, tag in commit" caseSignE2E
   , testCase "routed hmac verify E2E, verdict commits" caseVerifyE2E
   , testCase "Multipart digest feeds the backend" caseDigestStreamsFeeds
+  , testCase "gcm checked parameters drive the backend vector end to end" caseGcmCheckedVector
+  , testCase "gcm traced drops fail closed" caseGcmTracedDrops
   ]
 
 -- ---------------------------------------------------------------------------
@@ -2593,3 +2603,150 @@ caseVerifyE2E = withBackend $ \env -> do
 -- with a fixed byte is a no-op when a randomized value already ends in it.
 tamperLast :: ByteString -> ByteString
 tamperLast bs = BS.init bs <> BS.singleton (BS.last bs + 1)
+
+caseGcmCheckedVector :: IO ()
+caseGcmCheckedVector = withBackend $ \env -> do
+  -- Pinned triple (the caseAeadReal root, Python-cryptography AESGCM):
+  -- key 00..0f, nonce 00..0b, aad "aad-data", pt "Hello GCM world!".
+  let key128 = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
+      nonce = hex "000102030405060708090a0b"
+      aad = "aad-data" :: ByteString
+      pt = "Hello GCM world!" :: ByteString
+      wantCt = hex "db09cba2093bb01706f216e544cf1429"
+      wantTag = hex "39f0385041afdfd3a2d5a8e8ed69a2e6"
+      -- Hand-derived gcm-params/1 image (Recipe/Gcm.hs layout):
+      -- tagLen u64be 16, ivLen u64be 12, iv, aad.
+      wantParams =
+        BS.pack [0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 12]
+          <> nonce <> aad
+      resolver128 oid
+        | oid == aesOid = Just key128
+        | otherwise = resolver oid
+      w = sizeOf (undefined :: CULong)
+      pw = sizeOf (undefined :: Ptr Word8)
+  -- Stage 1: native CK_GCM_PARAMS image -> canonical params.
+  gotParams <- BS.useAsCStringLen nonce $ \(ivp, ivlen) ->
+    BS.useAsCStringLen aad $ \(aadp, aadlen) ->
+      allocaBytes gcmNativeSize $ \p -> do
+        pokeByteOff p 0 (castPtr ivp)
+        pokeByteOff p pw (CULong (fromIntegral ivlen))
+        pokeByteOff p (pw + w) (CULong (fromIntegral (ivlen * 8)))
+        pokeByteOff p (pw + 2 * w) (castPtr aadp)
+        pokeByteOff p (2 * pw + 2 * w) (CULong (fromIntegral aadlen))
+        pokeByteOff p (2 * pw + 3 * w) (CULong 128)
+        raw <- BS.packCStringLen (castPtr p, gcmNativeSize)
+        normalizeMechParams aesGcmMech p (fromIntegral gcmNativeSize) raw
+  assertEqual "native chase yields the pinned canonical image"
+    wantParams gotParams
+  -- Stage 2: init frame roundtrip around the checked params.
+  let frame = encodeInitInput aesGcmMech [OpEncrypt, OpDecrypt] False gotParams
+  assertEqual "frame decodes to the pinned triple"
+    (Just (aesGcmMech, [OpEncrypt, OpDecrypt], False, gotParams))
+    (decodeInitInput frame)
+  -- Stage 3: real init + one-shot through the planner.
+  (sid, m0) <- openModel
+  let iReq = (mkRequest F_EncryptInit (Just sid))
+        { reqHandle = Just aesHandle, reqInput = frame }
+  m1 <- runCommit m0 iReq
+  let eReq = (mkRequest F_Encrypt (Just sid))
+        { reqInput = pt, reqRegions = [RegionBytes "ct" (IntentBuffer 64)] }
+  (res, eff@(O.EffectCrypto fx)) <- case planCall defaultRules m1 eReq of
+    Execute r e@(O.EffectCrypto _) -> pure (r, e)
+    other -> assertFailure ("expected Execute, got: " ++ show other)
+  -- Stage 4: the planned triple checks.
+  case checkedCallWork sid res eff of
+    Right _ -> pure ()
+    Left mm -> assertFailure ("traced triple must check: " ++ show mm)
+  -- Stage 5: the real backend seals the pinned vector.
+  sealed <- runEffect env resolver128 fx >>= expectBytes
+  assertEqual "traced seal equals the independent vector"
+    (wantCt <> wantTag) sealed
+  -- Stage 6: finish + commit carry the sealed bytes.
+  case finishEffect defaultRules m1 res (encodeResult (GotBytes sealed)) of
+    Left rej -> assertFailure ("finish rejected: " ++ show (rejCode rej))
+    Right pc -> do
+      out <- commitBytes pc
+      assertEqual "commit carries the seal" (wantCt <> wantTag) out
+  -- Stage 7: the decrypt leg reopens to the plaintext on a fresh model.
+  (sid2, mD0) <- openModel
+  let diReq = (mkRequest F_DecryptInit (Just sid2))
+        { reqHandle = Just aesHandle, reqInput = frame }
+  mD1 <- runCommit mD0 diReq
+  let dReq = (mkRequest F_Decrypt (Just sid2))
+        { reqInput = sealed
+        , reqRegions = [RegionBytes "pt" (IntentBuffer 64)]
+        }
+  (dres, deff@(O.EffectCrypto dfx)) <- case planCall defaultRules mD1 dReq of
+    Execute r e@(O.EffectCrypto _) -> pure (r, e)
+    other -> assertFailure ("expected Execute, got: " ++ show other)
+  case checkedCallWork sid2 dres deff of
+    Right _ -> pure ()
+    Left mm -> assertFailure ("decrypt triple must check: " ++ show mm)
+  opened <- runEffect env resolver128 dfx >>= expectBytes
+  assertEqual "traced open recovers the plaintext" pt opened
+
+caseGcmTracedDrops :: IO ()
+caseGcmTracedDrops = withBackend $ \env -> do
+  let key128 = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
+      nonce = hex "000102030405060708090a0b"
+      aad = "aad-data" :: ByteString
+      pt = "Hello GCM world!" :: ByteString
+      wantFull = hex "db09cba2093bb01706f216e544cf1429"
+        <> hex "39f0385041afdfd3a2d5a8e8ed69a2e6"
+      base =
+        BS.pack [0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 12]
+          <> nonce <> aad
+      -- Byte surgery on the pinned image: tagLen 0-7, ivLen 8-15,
+      -- iv 16-27, aad 28-35.
+      pokeByte i v bs = BS.take i bs <> BS.singleton v <> BS.drop (i + 1) bs
+      ivDrop = pokeByte 16 0xFF base
+      tag8 = pokeByte 7 8 base
+      aadDrop = pokeByte 28 0x58 base
+      resolver128 oid
+        | oid == aesOid = Just key128
+        | otherwise = resolver oid
+      resolver192 oid
+        | oid == aesOid =
+            Just (KeyBytes (hex "000102030405060708090a0b0c0d0e0f1011121314151617"))
+        | otherwise = resolver oid
+      sealWith keyRes params = do
+        (s, m0) <- openModel
+        let frame = encodeInitInput aesGcmMech [OpEncrypt, OpDecrypt] False params
+            iReq = (mkRequest F_EncryptInit (Just s))
+              { reqHandle = Just aesHandle, reqInput = frame }
+        m1 <- runCommit m0 iReq
+        let eReq = (mkRequest F_Encrypt (Just s))
+              { reqInput = pt
+              , reqRegions = [RegionBytes "ct" (IntentBuffer 64)]
+              }
+        (r, e@(O.EffectCrypto f)) <- case planCall defaultRules m1 eReq of
+          Execute r e@(O.EffectCrypto _) -> pure (r, e)
+          other -> assertFailure ("expected Execute, got: " ++ show other)
+        case checkedCallWork s r e of
+          Right _ -> pure ()
+          Left mm -> assertFailure ("mutant triple must check: " ++ show mm)
+        runEffect env keyRes f >>= expectBytes
+  -- Live control: the unmutated chain seals the vector.
+  sealBase <- sealWith resolver128 base
+  assertEqual "unmutated seal is the vector" wantFull sealBase
+  -- Each dropped input diverges from the pinned seal.
+  sealIv <- sealWith resolver128 ivDrop
+  assertBool "dropped IV changes the seal" (sealIv /= wantFull)
+  sealTag8 <- sealWith resolver128 tag8
+  assertEqual "tag-8 seal length" (16 + 8) (BS.length sealTag8)
+  assertBool "dropped tag width changes the seal" (sealTag8 /= wantFull)
+  sealAad <- sealWith resolver128 aadDrop
+  assertBool "dropped AAD changes the seal" (sealAad /= wantFull)
+  seal192 <- sealWith resolver192 base
+  assertBool "key width selects the mode" (seal192 /= wantFull)
+  -- Direction: decrypting the plaintext fails authentication.
+  decFail <- runEffect env resolver128
+    (FxCipher DirDecrypt aesGcmMech (Just aesOid) base pt)
+  case decFail of
+    GotCryptoError (CryptoAuthFailed _) -> pure ()
+    other -> assertFailure
+      ("decrypt of plaintext must fail auth, got: " ++ show other)
+  -- Anti-vacuity battery: five distinct seals prove four independent
+  -- flows plus the vector; any coincidence is a failing diagnostic.
+  let seals = [sealBase, sealIv, sealTag8, sealAad, seal192]
+  assertEqual "all five seals differ" 5 (length (nub seals))
