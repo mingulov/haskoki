@@ -33,6 +33,8 @@ the help text says so.
 module Haskoki.Ctl
   ( CtlExit (..)
   , ctlHelp
+  , isLifecycleGated
+  , lifecycleExempt
   , runCtl
   ) where
 
@@ -74,6 +76,7 @@ import Haskoki.Runtime.Events
   )
 import Haskoki.Registry (MechanismId (..), behaviorIds, curatedRegistry)
 import Haskoki.Registry.Generated (generatedInventory)
+import Haskoki.Session (ActiveLogin (..))
 import Haskoki.Runtime.Trace
   ( DrainReport (..)
   , TraceEvent (..)
@@ -303,7 +306,6 @@ data RunStep = RunStep
 data LogicalSession = LogicalSession
   { lsId :: !SessionId
   , lsAsync :: !Bool
-  , lsLoggedIn :: !Bool
   , lsArmed :: !(Maybe (String, String))
   , lsPendingLeft :: !Int
   , lsSignCalls :: !Int
@@ -318,12 +320,16 @@ data LogicalSession = LogicalSession
 -- resolves to the first-opened session rather than the first by
 -- name. 'rnInitialized' with 'rnFinalized' tracks the instance
 -- lifecycle ('lifecycleRefusal' refuses non-live use).
+-- 'rnLogin' is the token-level login (one role for the whole
+-- instance, as in the native token auth): signing needs the
+-- normal user, and a second login refuses.
 data Runner = Runner
   { rnTracer :: !Tracer
   , rnSessions :: !(Map String LogicalSession)
   , rnNextSession :: !Int
   , rnInitialized :: !Bool
   , rnFinalized :: !Bool
+  , rnLogin :: !(Maybe ActiveLogin)
   , rnFault :: !(Maybe (Int, Int))
   , rnOrder :: ![String]
   }
@@ -393,7 +399,7 @@ execScenario cfg sc steps = do
   reg <- newTokenRegistry eq at
   tr <- newTracer (max 8 (tcQueueLimit (cfgTrace cfg))) (\_ -> pure (Right ())) False
   applyTokenScript reg (simScript cfg)
-  let rn0 = Runner tr Map.empty 1 False False (seedFault cfg) []
+  let rn0 = Runner tr Map.empty 1 False False Nothing (seedFault cfg) []
   eOut <- go rn0 reg tr (zip [0 :: Int ..] steps) []
   case eOut of
     Left err -> pure (CtlExit 1 "" ("scenario-failed: " ++ err ++ "\n"))
@@ -460,6 +466,38 @@ lifecycleRefusal rn
   | rnInitialized rn && not (rnFinalized rn) = Nothing
   | otherwise = Just (StepReturn "CKR_CRYPTOKI_NOT_INITIALIZED")
 
+-- | Verbs the lifecycle gate skips: the lifecycle verbs
+-- themselves plus the sim test controls (which run on any
+-- instance state, subject to their own test-enabled gate).
+-- Everything else is gated by default, so a verb added later is
+-- covered without touching this list.
+lifecycleExempt :: [String]
+lifecycleExempt =
+  [ "initialize", "finalize"
+  , "token.insert", "async.delay", "fault.window"
+  ]
+
+-- | Whether a verb refuses with 'lifecycleRefusal' when the
+-- instance is not live. Default-deny over 'lifecycleExempt': any
+-- verb outside the exempt list is gated.
+isLifecycleGated :: String -> Bool
+isLifecycleGated act = act `notElem` lifecycleExempt
+
+-- | The traced call for a lifecycle refusal on a verb: each gated
+-- verb reports the call it would have run. Unknown verbs cannot
+-- arrive (validated), so the fallback names the verb itself.
+refusalFunction :: String -> String
+refusalFunction verb = case verb of
+  "fixture.load" -> "C_InitToken"
+  "session.open" -> "C_OpenSession"
+  "session.login" -> "C_Login"
+  "sign.init" -> "C_SignInit"
+  "sign" -> "C_Sign"
+  "async.complete" -> "C_Sign"
+  "token.remove" -> "C_WaitForSlotEvent"
+  "slot-event.wait" -> "C_WaitForSlotEvent"
+  _ -> verb
+
 -- | Fixture credentials (test-only, from the design §6 fixture set).
 fixtureUserPin, fixtureSoPin :: String
 fixtureUserPin = "1234"
@@ -488,9 +526,19 @@ slotZeroLabel cfg = case tcEntries (cfgTokens cfg) of
 -- without consuming any pending poll.
 execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult, String))
 execStep cfg reg tr rn i st
-  | rsAction st `elem` lifecycleGated
-  , Just refusal <- lifecycleRefusal rn = pure (Right (rn, refusal, ""))
-  | otherwise = case rsAction st of
+  | isLifecycleGated (rsAction st) = case lifecycleRefusal rn of
+      Just refusal -> do
+        emit tr (refusalFunction (rsAction st)) 0x190 (rsAction st)
+        pure (Right (rn, refusal, ""))
+      Nothing -> execVerb cfg reg tr rn i st
+  | otherwise = execVerb cfg reg tr rn i st
+
+-- | Run one step past the lifecycle gate: session resolution,
+-- login (signing ops), arming, capacity, fault, pending. The
+-- expectable refusals below emit their traced call, counted in
+-- the run's trace-lines footer.
+execVerb :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult, String))
+execVerb cfg reg tr rn i st = case rsAction st of
   "initialize" -> do
     if rnInitialized rn && not (rnFinalized rn)
       then pure (Right (rn, StepReturn "CKR_CRYPTOKI_ALREADY_INITIALIZED", ""))
@@ -498,6 +546,7 @@ execStep cfg reg tr rn i st
         emit tr "C_Initialize" 0 "initialized"
         let rn' = rn { rnInitialized = True, rnFinalized = False
                      , rnSessions = Map.empty, rnNextSession = 1
+                     , rnLogin = Nothing
                      , rnOrder = [], rnFault = seedFault cfg }
         pure (Right (rn', StepReturn "CKR_OK", ""))
   "fixture.load" -> do
@@ -527,7 +576,7 @@ execStep cfg reg tr rn i st
           else do
             registerSessionSlot reg sid (SlotId 0)
             emit tr "C_OpenSession" 0 ("session=" ++ name)
-            let ls = LogicalSession sid isAsync False Nothing 0 0
+            let ls = LogicalSession sid isAsync Nothing 0 0
                 rn' = rn { rnSessions = Map.insert name ls (rnSessions rn)
                          , rnNextSession = rnNextSession rn + 1
                          , rnOrder = rnOrder rn ++ [name] }
@@ -535,20 +584,37 @@ execStep cfg reg tr rn i st
   "session.login" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
-      Right (name, ls) -> do
+      Right (name, _) -> do
         let pin = case lookup "pin" (rsArgs st) of Just (JStr p) -> p; _ -> ""
             role = case lookup "role" (rsArgs st) of Just (JStr r) -> r; _ -> ""
             okPin = (role == "USER" && pin == fixtureUserPin)
                  || (role == "SO" && pin == fixtureSoPin)
-        emit tr "C_Login" (if okPin then 0 else 0xA0) ("session=" ++ name)
-        if okPin
-          then pure (Right (rn { rnSessions = Map.insert name (ls { lsLoggedIn = True }) (rnSessions rn) }, StepReturn "CKR_OK", "role=" ++ role))
-          else pure (Right (rn, StepReturn "CKR_PIN_INCORRECT", "role=" ++ role))
+            wantSame = (role == "USER" && rnLogin rn == Just AuthUser)
+                 || (role == "SO" && rnLogin rn == Just AuthSO)
+            wantOther = (role == "USER" && rnLogin rn == Just AuthSO)
+                 || (role == "SO" && rnLogin rn == Just AuthUser)
+        -- State before credentials: an already-logged-in token
+        -- refuses without consulting the PIN, as in the native
+        -- login attempt.
+        if wantSame
+          then do
+            emit tr "C_Login" 0x100 ("session=" ++ name)
+            pure (Right (rn, StepReturn "CKR_USER_ALREADY_LOGGED_IN", "role=" ++ role))
+          else if wantOther
+            then do
+              emit tr "C_Login" 0x104 ("session=" ++ name)
+              pure (Right (rn, StepReturn "CKR_USER_ANOTHER_ALREADY_LOGGED_IN", "role=" ++ role))
+            else do
+              emit tr "C_Login" (if okPin then 0 else 0xA0) ("session=" ++ name)
+              if okPin
+                then pure (Right (rn { rnLogin = Just (if role == "SO" then AuthSO else AuthUser) }, StepReturn "CKR_OK", "role=" ++ role))
+                else pure (Right (rn, StepReturn "CKR_PIN_INCORRECT", "role=" ++ role))
   "sign.init" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
       Right (name, ls)
-        | not (lsLoggedIn ls) ->
+        | rnLogin rn /= Just AuthUser -> do
+            emit tr "C_SignInit" 0x101 ("session=" ++ name)
             pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
         | otherwise -> case (lookup "mechanism" (rsArgs st), lookup "fixture_key" (rsArgs st)) of
             (Just (JStr mech), Just (JStr key)) -> do
@@ -561,13 +627,18 @@ execStep cfg reg tr rn i st
     case sessionOf rn st of
       Left err -> pure (Left err)
       Right (name, ls)
-        | not (lsLoggedIn ls) ->
+        | rnLogin rn /= Just AuthUser -> do
+            emit tr "C_Sign" 0x101 ("session=" ++ name)
             pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
         | isNothing (lsArmed ls) -> pure (Left "sign without sign.init")
         | otherwise -> case signConsumption st of
             Left err -> pure (Left err)
             Right (len, cap)
-              | cap == 0 ->
+              -- Model simplification: zero refuses, while any
+              -- positive capacity is accepted without comparing
+              -- it against the payload length.
+              | cap == 0 -> do
+                  emit tr "C_Sign" 0x150 ("session=" ++ name)
                   pure (Right (rn, StepReturn "CKR_BUFFER_TOO_SMALL", "bytes=" ++ show len ++ " capacity=0"))
               | inFault rn i -> do
                   emit tr "C_Sign" 0x30 ("session=" ++ name)
@@ -590,7 +661,8 @@ execStep cfg reg tr rn i st
     case sessionOf rn st of
       Left err -> pure (Left err)
       Right (name, ls)
-        | not (lsLoggedIn ls) ->
+        | rnLogin rn /= Just AuthUser -> do
+            emit tr "C_Sign" 0x101 ("session=" ++ name)
             pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
         | otherwise -> do
             if inFault rn i
@@ -629,7 +701,9 @@ execStep cfg reg tr rn i st
       WaitNoEvent -> pure (Left "expected a slot event, queue empty")
       WaitFinalized -> pure (Left "instance finalized while waiting")
   "finalize" -> case lifecycleRefusal rn of
-    Just refusal -> pure (Right (rn, refusal, ""))
+    Just refusal -> do
+      emit tr "C_Finalize" 0x190 "finalize"
+      pure (Right (rn, refusal, ""))
     Nothing -> do
       emit tr "C_Finalize" 0 "finalized"
       pure (Right (rn { rnFinalized = True }, StepReturn "CKR_OK", ""))
@@ -662,12 +736,6 @@ execStep cfg reg tr rn i st
       _ -> pure (Left "fault.window needs integer 'start'/'ticks' in 0..1000000")
   other -> pure (Left ("unknown action (rejected, never executed): " ++ other))
   where
-    -- | Actions the lifecycle gate covers: every verb except
-    -- initialize\/finalize and the sim test controls.
-    lifecycleGated =
-      [ "fixture.load", "session.open", "session.login", "sign.init"
-      , "sign", "async.complete", "token.remove", "slot-event.wait"
-      ]
     -- | Refuse sim verbs without mutation unless test-enabled (the
     -- scenario.load gating discipline). These verbs also skip the
     -- lifecycle gate: they are test controls that run on any

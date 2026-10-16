@@ -224,7 +224,7 @@ argument (see `execStep` in `src/Haskoki/Ctl.hs`):
 |---|---|
 | `fixture.load` | `fixture` must be `minimal-demo`; the runner seats slot 0 |
 | `session.open` | `token` must equal the config slot-0 label (absent means slot 0); `asynchronous` selects the session mode; `read_write` must be `true` (validation only: the runner models read-write sessions) |
-| `session.login` | `role` and `pin` are checked against the fixture PINs; a second login succeeds, and either role satisfies the signing login gate |
+| `session.login` | `role` and `pin` are checked against the fixture PINs; login is token-level, so a second login as the same role answers `CKR_USER_ALREADY_LOGGED_IN` and another role answers `CKR_USER_ANOTHER_ALREADY_LOGGED_IN`; only the normal user satisfies the signing login gate |
 | `sign.init` | `mechanism` (a known inventory name) and `fixture_key` arm the session; the pair is echoed |
 | `sign` | `data_base64` (strict base64) sets the echoed byte count; `output_capacity` 0 refuses with `CKR_BUFFER_TOO_SMALL`, any positive capacity is accepted without a size comparison |
 | `async.complete` | `function` must be `C_Sign`; each completion counts down the session's pending polls |
@@ -240,7 +240,7 @@ clause:
 | Refusal | Route | Examples |
 |---|---|---|
 | scenario bug | hard `Left`: load-time `scenario-rejected`, or run-time `scenario-failed` | load: unknown action/field/argument, unknown mechanism, malformed base64, out-of-range capacity, duplicate session name, nonempty rules; run: unknown session reference, sign without `sign.init`, wait on an empty queue, sim verb without a test-enabled instance |
-| operation outcome | expectable `StepReturn` compared against `expect.return` | `CKR_PIN_INCORRECT`, `CKR_TOKEN_NOT_PRESENT`, `CKR_BUFFER_TOO_SMALL`, `CKR_USER_NOT_LOGGED_IN`, `CKR_CRYPTOKI_NOT_INITIALIZED`, `CKR_CRYPTOKI_ALREADY_INITIALIZED` |
+| operation outcome | expectable `StepReturn` compared against `expect.return` | `CKR_PIN_INCORRECT`, `CKR_USER_ALREADY_LOGGED_IN`, `CKR_USER_ANOTHER_ALREADY_LOGGED_IN`, `CKR_TOKEN_NOT_PRESENT`, `CKR_BUFFER_TOO_SMALL`, `CKR_USER_NOT_LOGGED_IN`, `CKR_CRYPTOKI_NOT_INITIALIZED`, `CKR_CRYPTOKI_ALREADY_INITIALIZED` |
 | device fault | expectable `CKR_DEVICE_ERROR` | `sign` / `async.complete` inside the live fault window |
 
 Lifecycle: the instance starts uninitialized; every verb except
@@ -248,11 +248,12 @@ Lifecycle: the instance starts uninitialized; every verb except
 `CKR_CRYPTOKI_NOT_INITIALIZED` until `initialize` runs, and again after
 `finalize`. `initialize` on a live instance answers
 `CKR_CRYPTOKI_ALREADY_INITIALIZED`; after `finalize` it resets the
-runner (fresh sessions, config fault seed kept) and answers `CKR_OK`.
-`finalize` on a non-live instance answers
+runner (fresh sessions and login, config fault seed kept) and answers
+`CKR_OK`. `finalize` on a non-live instance answers
 `CKR_CRYPTOKI_NOT_INITIALIZED`. `sign.init`, `sign` and
-`async.complete` additionally require a logged-in session
-(`CKR_USER_NOT_LOGGED_IN`).
+`async.complete` additionally require a user-logged-in token
+(`CKR_USER_NOT_LOGGED_IN`; an SO login does not satisfy the signing
+gate).
 
 Inert prose lives only under `note`: a scenario object and any step may
 carry a `note`, which must be a JSON object; validation checks the shape
@@ -261,7 +262,9 @@ and drops it. Every other unknown field refuses.
 Each executed step prints one line, `step[N] <action> -> <RESULT>
 <detail>`, where `<detail>` echoes the consumed values (`token=`,
 `role=`, `mechanism=` with `key=`, `bytes=` with `capacity=`); actions
-with nothing to echo print the bare result. Native slot changes and Digest
+with nothing to echo print the bare result. Lifecycle, login-gate,
+capacity and login refusals also emit their traced call, counted in
+the run's `trace-lines:` footer. Native slot changes and Digest
 callbacks follow the [runtime contract](operations-notes.md).
 
 ## Example configurations

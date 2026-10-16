@@ -23,8 +23,8 @@ import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import Haskoki.Ctl (CtlExit (..), runCtl)
 import Haskoki.CallWork (mkFixtureCallWork)
+import Haskoki.Ctl (CtlExit (..), isLifecycleGated, lifecycleExempt, runCtl)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Outcome (EffectRequest (..), Reservation (..))
 import Haskoki.Registry (MechanismId (..))
@@ -59,6 +59,7 @@ import Haskoki.Runtime.Control
   , Scenario (..)
   , base64DecodedLength
   , dispatchControl
+  , knownVerbs
   , newControlState
   , bindPrivatePresenceOwner
   , renderJson
@@ -118,6 +119,20 @@ spec = testGroup "Sim bridge"
   , testCase "post-finalize use refuses" casePostFinalize
   , testCase "signing without login refuses" caseLoginRequired
   , testCase "armed mechanism and key echo in step lines" caseArmedEcho
+  , testCase "unknown verbs are lifecycle-gated by default" caseUnknownVerbGated
+  , testCase "lifecycle exempt list is exactly the ungated verbs" caseLifecycleExemptPinned
+  , testCase "every gated verb refuses outside the live window" caseEveryVerbLifecycleGate
+  , testCase "login-required expectation mismatch fails" caseLoginRequiredControl
+  , testCase "sign and completion refuse without login" caseSigningGatesWithoutLogin
+  , testCase "wrong PIN leaves the session logged out" caseWrongPinStaysLoggedOut
+  , testCase "short capacity precedes the fault window" caseCapacityBeforeFault
+  , testCase "unarmed sign precedes the capacity check" caseArmedBeforeCapacity
+  , testCase "re-initialize clears sessions and restarts names" caseReinitializeResets
+  , testCase "second login as the same role refuses" caseLoginAlready
+  , testCase "login as another role refuses" caseLoginAnother
+  , testCase "signing under SO refuses" caseSoSignRefused
+  , testCase "unit capacity signs" caseCapacityOne
+  , testCase "refusals emit trace events" caseRefusalTraces
   ]
 
 fixture :: FilePath -> FilePath
@@ -1123,3 +1138,346 @@ caseArmedEcho = do
   assertEqual ("arming run passes: " ++ ceErr r) 0 (ceCode r)
   assertBool "armed pair echoed"
     ("mechanism=CKM_RSA_PKCS key=demo-signing-key" `isInfixOf` ceOut r)
+
+-- | Default-deny: a verb the gate has never seen refuses outside
+-- the live window instead of slipping through. The runner rejects
+-- unknown verbs at load, so this pins the gate predicate every
+-- execution consults; the per-verb table below pins each known
+-- verb end to end.
+caseUnknownVerbGated :: IO ()
+caseUnknownVerbGated = do
+  assertBool "future verb gated" (isLifecycleGated "future.verb")
+  assertBool "empty verb gated" (isLifecycleGated "")
+  mapM_ (\v -> assertBool ("known gated verb stays gated: " ++ v)
+    (isLifecycleGated v))
+    [ "fixture.load", "session.open", "session.login", "sign.init"
+    , "sign", "async.complete", "token.remove", "slot-event.wait"
+    ]
+  mapM_ (\v -> assertBool ("exempt verb stays ungated: " ++ v)
+    (not (isLifecycleGated v)))
+    ["initialize", "finalize", "token.insert", "async.delay", "fault.window"]
+
+-- | The exempt list holds exactly the five ungated verbs:
+-- widening it would silently ungate a verb, so the contents are
+-- pinned.
+caseLifecycleExemptPinned :: IO ()
+caseLifecycleExemptPinned =
+  assertEqual "exempt verbs"
+    ["initialize", "finalize", "token.insert", "async.delay", "fault.window"]
+    lifecycleExempt
+
+-- | Every gated verb refuses with CKR_CRYPTOKI_NOT_INITIALIZED
+-- before initialize and after finalize, one row per verb.
+-- slot-event.wait takes no return expectation, so its rows assert
+-- on the printed step line instead of an expect clause. The table
+-- must cover every known verb the gate covers, so a verb added
+-- later cannot slip through untested.
+caseEveryVerbLifecycleGate :: IO ()
+caseEveryVerbLifecycleGate = do
+  let tableVerbs = map fst gatedRows
+  mapM_ (\v -> assertBool ("table covers gated verb: " ++ v)
+    (v `elem` tableVerbs || not (isLifecycleGated v))) knownVerbs
+  mapM_ check gatedRows
+  where
+    gatedRows =
+      [ ("fixture.load", [])
+      , ("session.open", [])
+      , ("session.login",
+          [("session", JStr "s1"), ("role", JStr "USER"), ("pin", JStr "1234")])
+      , ("sign.init",
+          [("session", JStr "s1"), ("fixture_key", JStr "demo-signing-key")
+          , ("mechanism", JStr "CKM_RSA_PKCS")])
+      , ("sign",
+          [("session", JStr "s1"), ("data_base64", JStr "eA==")
+          , ("output_capacity", JNum 256)])
+      , ("async.complete",
+          [("session", JStr "s1"), ("function", JStr "C_Sign")])
+      , ("token.remove", [])
+      , ("slot-event.wait", [("nonblocking", JBool True)])
+      ]
+    check (verb, args) = do
+      rPre <- runTempScenarioFull (fixture "maximal-demo.toml")
+        ("gatepre-" ++ verb) Nothing [gatedStep verb args]
+      assertEqual ("pre-init exit 0: " ++ verb ++ ": " ++ ceErr rPre)
+        0 (ceCode rPre)
+      assertRefused verb (0 :: Int) rPre
+      rPost <- runTempScenarioFull (fixture "maximal-demo.toml")
+        ("gatepost-" ++ verb) Nothing
+        [ step "initialize" [] Nothing, step "finalize" [] Nothing
+        , gatedStep verb args ]
+      assertEqual ("post-finalize exit 0: " ++ verb ++ ": " ++ ceErr rPost)
+        0 (ceCode rPost)
+      assertRefused verb (2 :: Int) rPost
+    gatedStep verb args
+      | verb == "slot-event.wait" = step verb args Nothing
+      | otherwise = step verb args (Just "CKR_CRYPTOKI_NOT_INITIALIZED")
+    assertRefused verb idx r =
+      assertBool ("refusal line: " ++ verb)
+        (("step[" ++ show idx ++ "] " ++ verb ++ " -> CKR_CRYPTOKI_NOT_INITIALIZED")
+          `isInfixOf` ceOut r)
+
+-- | Mismatch control for the unsigned-arming refusal: the
+-- same run that refuses without login fails when it expects
+-- CKR_OK instead.
+caseLoginRequiredControl :: IO ()
+caseLoginRequiredControl = do
+  let prefix = [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+               , step "session.open" [] Nothing ]
+      arming expect = JObj [("action", JStr "sign.init")
+        , ("arguments", JObj initArgs)
+        , ("expect", JObj [("return", JStr expect)])]
+      initArgs = [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")]
+  r <- runTempScenario "unsignedok" (prefix ++ [arming "CKR_OK"])
+  assertEqual "expecting OK fails" 1 (ceCode r)
+  assertBool "mismatch named" ("expect.return mismatch" `isInfixOf` ceErr r)
+
+-- | The signing login gate covers every signing op, not just
+-- arming: an unlogged session refuses sign (before the arming
+-- check) and async.complete alike.
+caseSigningGatesWithoutLogin :: IO ()
+caseSigningGatesWithoutLogin = do
+  let prefix =
+        [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+        , step "session.open" [("asynchronous", JBool False)] Nothing ]
+  rSign <- runTempScenarioFull (fixture "maximal-demo.toml") "nosign" Nothing
+    (prefix ++ [step "sign"
+      [("session", JStr "s1"), ("data_base64", JStr "eA==")
+      , ("output_capacity", JNum 256)] (Just "CKR_USER_NOT_LOGGED_IN")])
+  assertEqual ("sign without login refuses: " ++ ceErr rSign) 0 (ceCode rSign)
+  rComp <- runTempScenarioFull (fixture "maximal-demo.toml") "nocomplete" Nothing
+    (prefix ++ [step "async.complete"
+      [("session", JStr "s1"), ("function", JStr "C_Sign")]
+      (Just "CKR_USER_NOT_LOGGED_IN")])
+  assertEqual ("completion without login refuses: " ++ ceErr rComp)
+    0 (ceCode rComp)
+
+-- | A wrong PIN answers CKR_PIN_INCORRECT and leaves the session
+-- logged out: a later arming still refuses with
+-- CKR_USER_NOT_LOGGED_IN.
+caseWrongPinStaysLoggedOut :: IO ()
+caseWrongPinStaysLoggedOut = do
+  r <- runTempScenario "badpinstaysout"
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "0000")] (Just "CKR_PIN_INCORRECT")
+    , step "sign.init" [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_USER_NOT_LOGGED_IN")
+    ]
+  assertEqual ("wrong PIN stays logged out: " ++ ceErr r) 0 (ceCode r)
+
+-- | Gate order: a zero-capacity sign inside the live fault window
+-- answers CKR_BUFFER_TOO_SMALL, not CKR_DEVICE_ERROR. The sign
+-- sits at index 5, inside sim-demo's seeded (2,4) window.
+caseCapacityBeforeFault :: IO ()
+caseCapacityBeforeFault = do
+  r <- runTempScenario "capfault"
+    [ step "initialize" [] Nothing
+    , step "fixture.load" [] Nothing
+    , step "session.open" [("asynchronous", JBool False)] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] Nothing
+    , step "sign.init" [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
+    , step "sign" [("session", JStr "s1"), ("data_base64", JStr "eA==")
+        , ("output_capacity", JNum 0)] (Just "CKR_BUFFER_TOO_SMALL")
+    ]
+  assertEqual ("short capacity precedes fault: " ++ ceErr r) 0 (ceCode r)
+  assertBool "refusal observed"
+    ("step[5] sign -> CKR_BUFFER_TOO_SMALL" `isInfixOf` ceOut r)
+
+-- | Gate order: an unarmed sign fails the run before the capacity
+-- check runs, even with zero capacity.
+caseArmedBeforeCapacity :: IO ()
+caseArmedBeforeCapacity = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "unarmedcap" Nothing
+    [ step "initialize" [] Nothing
+    , step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] Nothing
+    , step "sign" [("session", JStr "s1"), ("data_base64", JStr "eA==")
+        , ("output_capacity", JNum 0)] Nothing
+    ]
+  assertEqual "unarmed sign fails the run" 1 (ceCode r)
+  assertBool "arming named" ("sign without sign.init" `isInfixOf` ceErr r)
+
+-- | Re-initialize resets the runner: named sessions are gone (a
+-- login on the old name is an unknown reference) and positional
+-- numbering restarts (the second post-reset open is literally
+-- s2, so a login there answers CKR_OK).
+caseReinitializeResets :: IO ()
+caseReinitializeResets = do
+  rGone <- runTempScenarioFull (fixture "maximal-demo.toml") "reinitgone" Nothing
+    [ step "initialize" [] Nothing
+    , stepSaveAs "session.open" [] "zeta"
+    , step "finalize" [] Nothing
+    , step "initialize" [] Nothing
+    , step "session.login" [("session", JStr "zeta"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] Nothing
+    ]
+  assertEqual "old session unknown after reset" 1 (ceCode rGone)
+  assertBool "reference named"
+    ("unknown session reference: zeta" `isInfixOf` ceErr rGone)
+  rRestart <- runTempScenarioFull (fixture "maximal-demo.toml") "reinitnames" Nothing
+    [ step "initialize" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.open" [] Nothing
+    , step "finalize" [] Nothing
+    , step "initialize" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s2"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] (Just "CKR_OK")
+    ]
+  assertEqual ("names restart after reset: " ++ ceErr rRestart) 0 (ceCode rRestart)
+
+-- | Login is token-level: a second login as the same role
+-- refuses with CKR_USER_ALREADY_LOGGED_IN, whether on the same
+-- session or another one, and the token login stays visible
+-- through the other session.
+caseLoginAlready :: IO ()
+caseLoginAlready = do
+  let login sess role pin expect = step "session.login"
+        [("session", JStr sess), ("role", JStr role), ("pin", JStr pin)]
+        (Just expect)
+  rSame <- runTempScenarioFull (fixture "maximal-demo.toml") "already" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , login "s1" "USER" "1234" "CKR_OK"
+    , login "s1" "USER" "1234" "CKR_USER_ALREADY_LOGGED_IN"
+    ]
+  assertEqual ("same-session second login refuses: " ++ ceErr rSame)
+    0 (ceCode rSame)
+  rCross <- runTempScenarioFull (fixture "maximal-demo.toml") "alreadycross" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , stepSaveAs "session.open" [] "zeta"
+    , stepSaveAs "session.open" [] "alpha"
+    , login "zeta" "USER" "1234" "CKR_OK"
+    , login "alpha" "USER" "1234" "CKR_USER_ALREADY_LOGGED_IN"
+    , step "sign.init" [("session", JStr "alpha")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_OK")
+    ]
+  assertEqual ("cross-session second login refuses: " ++ ceErr rCross)
+    0 (ceCode rCross)
+
+-- | A login as another role refuses with
+-- CKR_USER_ANOTHER_ALREADY_LOGGED_IN in both directions, and the
+-- refused login changes nothing: the first role still arms.
+caseLoginAnother :: IO ()
+caseLoginAnother = do
+  let login role pin expect = step "session.login"
+        [("session", JStr "s1"), ("role", JStr role), ("pin", JStr pin)]
+        (Just expect)
+      prefix = [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+               , step "session.open" [] Nothing ]
+      arming = step "sign.init" [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_OK")
+  rSo <- runTempScenarioFull (fixture "maximal-demo.toml") "anotherso" Nothing
+    (prefix ++ [ login "USER" "1234" "CKR_OK"
+               , login "SO" "5678" "CKR_USER_ANOTHER_ALREADY_LOGGED_IN"
+               , arming ])
+  assertEqual ("SO over USER refuses: " ++ ceErr rSo) 0 (ceCode rSo)
+  rUser <- runTempScenarioFull (fixture "maximal-demo.toml") "anotheruser" Nothing
+    (prefix ++ [ login "SO" "5678" "CKR_OK"
+               , login "USER" "1234" "CKR_USER_ANOTHER_ALREADY_LOGGED_IN"
+               ])
+  assertEqual ("USER over SO refuses: " ++ ceErr rUser) 0 (ceCode rUser)
+
+-- | The signing login gate needs the normal user: under an SO
+-- login, arming refuses with CKR_USER_NOT_LOGGED_IN.
+caseSoSignRefused :: IO ()
+caseSoSignRefused = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "sosign" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "SO")
+        , ("pin", JStr "5678")] (Just "CKR_OK")
+    , step "sign.init" [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_USER_NOT_LOGGED_IN")
+    ]
+  assertEqual ("signing under SO refuses: " ++ ceErr r) 0 (ceCode r)
+
+-- | Boundary pin for the capacity model: capacity 1 signs (any
+-- positive capacity is accepted without a size comparison),
+-- while expecting CKR_BUFFER_TOO_SMALL fails.
+caseCapacityOne :: IO ()
+caseCapacityOne = do
+  let signWith cap expect = JObj [("action", JStr "sign")
+        , ("arguments", JObj [("session", JStr "s1")
+          , ("data_base64", JStr "eA=="), ("output_capacity", JNum cap)])
+        , ("expect", JObj [("return", JStr expect)])]
+      prefix = [step "initialize" [] Nothing, step "fixture.load" [] Nothing
+        , step "session.open" [("asynchronous", JBool False)] Nothing
+        , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+          , ("pin", JStr "1234")] Nothing
+        , step "sign.init" [("session", JStr "s1")
+          , ("fixture_key", JStr "demo-signing-key")
+          , ("mechanism", JStr "CKM_RSA_PKCS")] Nothing]
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "onecap" Nothing
+    (prefix ++ [signWith 1 "CKR_OK"])
+  assertEqual ("unit capacity signs: " ++ ceErr r) 0 (ceCode r)
+  r2 <- runTempScenarioFull (fixture "maximal-demo.toml") "onecaprefuse" Nothing
+    (prefix ++ [signWith 1 "CKR_BUFFER_TOO_SMALL"])
+  assertEqual "expecting too-small fails" 1 (ceCode r2)
+
+-- | Expectable refusals emit their traced call, counted in the
+-- run's trace-lines footer: the lifecycle refusal, the finalize
+-- refusal, the signing login gate, short capacity, and the two
+-- second-login refusals.
+caseRefusalTraces :: IO ()
+caseRefusalTraces = do
+  rCycle <- runTempScenarioFull (fixture "maximal-demo.toml") "tracelife" Nothing
+    [step "session.open" [] (Just "CKR_CRYPTOKI_NOT_INITIALIZED")]
+  assertEqual ("lifecycle refusal exit 0: " ++ ceErr rCycle) 0 (ceCode rCycle)
+  assertBool "lifecycle refusal traced"
+    ("trace-lines: 1" `isInfixOf` ceOut rCycle)
+  rFin <- runTempScenarioFull (fixture "maximal-demo.toml") "tracefin" Nothing
+    [step "finalize" [] (Just "CKR_CRYPTOKI_NOT_INITIALIZED")]
+  assertEqual ("finalize refusal exit 0: " ++ ceErr rFin) 0 (ceCode rFin)
+  assertBool "finalize refusal traced"
+    ("trace-lines: 1" `isInfixOf` ceOut rFin)
+  rGate <- runTempScenarioFull (fixture "maximal-demo.toml") "tracegate" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "sign.init" [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_USER_NOT_LOGGED_IN")
+    ]
+  assertEqual ("login-gate refusal exit 0: " ++ ceErr rGate) 0 (ceCode rGate)
+  assertBool "login-gate refusal traced"
+    ("trace-lines: 4" `isInfixOf` ceOut rGate)
+  rCap <- runTempScenarioFull (fixture "maximal-demo.toml") "tracecap" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [("asynchronous", JBool False)] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] Nothing
+    , step "sign.init" [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
+    , step "sign" [("session", JStr "s1"), ("data_base64", JStr "eA==")
+        , ("output_capacity", JNum 0)] (Just "CKR_BUFFER_TOO_SMALL")
+    ]
+  assertEqual ("capacity refusal exit 0: " ++ ceErr rCap) 0 (ceCode rCap)
+  assertBool "capacity refusal traced"
+    ("trace-lines: 6" `isInfixOf` ceOut rCap)
+  rLogin <- runTempScenarioFull (fixture "maximal-demo.toml") "tracelogin" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] (Just "CKR_OK")
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] (Just "CKR_USER_ALREADY_LOGGED_IN")
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "SO")
+        , ("pin", JStr "5678")] (Just "CKR_USER_ANOTHER_ALREADY_LOGGED_IN")
+    ]
+  assertEqual ("login refusal exit 0: " ++ ceErr rLogin) 0 (ceCode rLogin)
+  assertBool "login refusals traced"
+    ("trace-lines: 6" `isInfixOf` ceOut rLogin)

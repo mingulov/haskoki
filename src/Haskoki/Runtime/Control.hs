@@ -47,6 +47,7 @@ module Haskoki.Runtime.Control
   , maxScenarioActions
   , base64DecodedLength
   , knownMechanism
+  , knownVerbs
   ) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
