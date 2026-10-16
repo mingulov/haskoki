@@ -1179,6 +1179,173 @@ static void case_seam_oaep_fail_grow(void)
     oaep_fail_case(1);
 }
 
+/* A failed PKCS#1 encrypt cleanses the allocation it made, not the length
+ * the failing call reported: the seam fills the buffer and moves the
+ * reported length by delta, so cleansing the reported length overruns
+ * (grow) or leaves a dirty tail byte (shrink). The OAEP encrypt shares
+ * the same output seam. */
+static void encrypt_fail_case(int grow)
+{
+    EVP_PKEY *rsa = NULL;
+    unsigned char *pub = NULL;
+    size_t publen = 0;
+    unsigned char *out = NULL;
+    static const unsigned char msg[5] = { 'h', 'e', 'l', 'l', 'o' };
+    long before, rc;
+    long delta = grow ? 1 : -1;
+    int ksize, n;
+    trk_quarantine = 1; /* unique addresses: one free per allocation */
+    rsa = gen_from("RSA", NULL);
+    REQ(rsa != NULL, "keys");
+    ksize = EVP_PKEY_get_size(rsa);
+    REQ(ksize > 0, "key-size");
+    n = i2d_PUBKEY(rsa, &pub);
+    REQ(n > 0 && pub != NULL, "pub-der");
+    publen = (size_t)n;
+    /* Warmup: an unarmed encrypt populates the libctx caches before the
+     * live mark. Drop the note the warmup recorded. */
+    rc = hsk_ossl4_rsa_pkcs1_encrypt(g_lib, "", pub, publen, msg, sizeof(msg),
+                                     &out);
+    REQ(rc == (long)ksize && out != NULL, "warmup");
+    hsk_ossl4_free(out, (size_t)rc);
+    out = NULL;
+    hsk_ossl4_test_seam_reset();
+    before = mark_live();
+    if (!g_noarm)
+        hsk_ossl4_test_seam_arm_encrypt(delta);
+    rc = hsk_ossl4_rsa_pkcs1_encrypt(g_lib, "", pub, publen, msg, sizeof(msg),
+                                     &out);
+    seam_fired_check();
+    REQ(*g_reason == 0, g_reason);
+    REQ(rc == HSK_OSSL4_ERR_NATIVE, "rc-code");
+    REQ(out == NULL, "out-set");
+    check_target(HSK_OSSL4_SEAM_ENCRYPT);
+    REQ_LIVE(before);
+    OPENSSL_free(pub);
+    EVP_PKEY_free(rsa);
+}
+
+static void case_seam_encrypt_fail_shrink(void)
+{
+    encrypt_fail_case(0);
+}
+
+static void case_seam_encrypt_fail_grow(void)
+{
+    encrypt_fail_case(1);
+}
+
+/* A failed raw RSA sign cleanses the allocation it made, not the length
+ * the failing call reported. The X9.31 prehash and the ECDSA/DSA raw
+ * paths share the same output seam. */
+static void pkey_sign_fail_case(int grow)
+{
+    EVP_PKEY *rsa = NULL;
+    unsigned char *priv = NULL;
+    size_t privlen = 0;
+    unsigned char *out = NULL;
+    static const unsigned char msg[5] = { 'h', 'e', 'l', 'l', 'o' };
+    long before, rc;
+    long delta = grow ? 1 : -1;
+    int ksize;
+    trk_quarantine = 1; /* unique addresses: one free per allocation */
+    rsa = gen_from("RSA", NULL);
+    REQ(rsa != NULL, "keys");
+    ksize = EVP_PKEY_get_size(rsa);
+    REQ(ksize > 0, "key-size");
+    REQ(priv_der(rsa, &priv, &privlen), "priv-der");
+    /* Warmup: an unarmed sign populates the libctx caches before the
+     * live mark. Drop the note the warmup recorded. */
+    rc = hsk_ossl4_rsa_sign(g_lib, NULL, "", priv, privlen, msg, sizeof(msg),
+                            1, &out);
+    REQ(rc == (long)ksize && out != NULL, "warmup");
+    hsk_ossl4_free(out, (size_t)rc);
+    out = NULL;
+    hsk_ossl4_test_seam_reset();
+    before = mark_live();
+    if (!g_noarm)
+        hsk_ossl4_test_seam_arm_pkey_sign(delta);
+    rc = hsk_ossl4_rsa_sign(g_lib, NULL, "", priv, privlen, msg, sizeof(msg),
+                            1, &out);
+    seam_fired_check();
+    REQ(*g_reason == 0, g_reason);
+    REQ(rc == HSK_OSSL4_ERR_NATIVE, "rc-code");
+    REQ(out == NULL, "out-set");
+    check_target(HSK_OSSL4_SEAM_PKEY_SIGN);
+    REQ_LIVE(before);
+    OPENSSL_free(priv);
+    EVP_PKEY_free(rsa);
+}
+
+static void case_seam_pkey_sign_fail_shrink(void)
+{
+    pkey_sign_fail_case(0);
+}
+
+static void case_seam_pkey_sign_fail_grow(void)
+{
+    pkey_sign_fail_case(1);
+}
+
+/* A failed hash RSA sign cleanses the allocation it made, not the length
+ * the failing call reported. The PSS, X9.31 digested, ECDSA/DSA hash,
+ * EdDSA, ML-DSA and SLH-DSA paths share the same output seam. */
+static void digest_sign_fail_case(int grow)
+{
+    EVP_PKEY *rsa = NULL;
+    unsigned char *priv = NULL;
+    size_t privlen = 0;
+    unsigned char *out = NULL;
+    static const unsigned char msg[5] = { 'h', 'e', 'l', 'l', 'o' };
+    long before, rc;
+    long delta = grow ? 1 : -1;
+    int ksize;
+    trk_quarantine = 1; /* unique addresses: one free per allocation */
+    rsa = gen_from("RSA", NULL);
+    REQ(rsa != NULL, "keys");
+    ksize = EVP_PKEY_get_size(rsa);
+    REQ(ksize > 0, "key-size");
+    REQ(priv_der(rsa, &priv, &privlen), "priv-der");
+    /* Warmup: an unarmed sign populates the libctx caches before the
+     * live mark. Drop the note the warmup recorded. */
+    rc = hsk_ossl4_rsa_sign(g_lib, "SHA256", "", priv, privlen, msg,
+                            sizeof(msg), 0, &out);
+    REQ(rc == (long)ksize && out != NULL, "warmup");
+    hsk_ossl4_free(out, (size_t)rc);
+    out = NULL;
+    hsk_ossl4_test_seam_reset();
+    before = mark_live();
+    if (!g_noarm)
+        hsk_ossl4_test_seam_arm_digest_sign(delta);
+    rc = hsk_ossl4_rsa_sign(g_lib, "SHA256", "", priv, privlen, msg,
+                            sizeof(msg), 0, &out);
+    seam_fired_check();
+    REQ(*g_reason == 0, g_reason);
+    REQ(rc == HSK_OSSL4_ERR_NATIVE, "rc-code");
+    REQ(out == NULL, "out-set");
+    check_target(HSK_OSSL4_SEAM_DIGEST_SIGN);
+    REQ_LIVE(before);
+    OPENSSL_free(priv);
+    EVP_PKEY_free(rsa);
+}
+
+static void case_seam_digest_sign_fail_shrink(void)
+{
+    digest_sign_fail_case(0);
+}
+
+static void case_seam_digest_sign_fail_grow(void)
+{
+    digest_sign_fail_case(1);
+}
+
+/* The PKCS#1 decrypt shares the output-decrypt seam with the OAEP decrypt
+ * (same HSK_PKEY_DECRYPT_OUT macro and HSK_OSSL4_SEAM_OAEP slot); the OAEP
+ * pair above pins the family extent. A dedicated PKCS#1-decrypt pair was
+ * tried and showed the same dirty-tail/overrun signature, but the
+ * NO_PADDING path moves the live count by itself, so no clean live-neutral
+ * case exists for it here. */
+
 /* The detector itself: a partly cleansed block and a one-byte overrun
  * must both be reported. */
 static void case_canary_selftest(void)
@@ -1251,6 +1418,12 @@ static const case_t cases[] = {
     { "seam-derive-ok-grow-dh", case_seam_ok_grow_dh, 1, 0, 0 },
     { "seam-oaep-fail-shrink", case_seam_oaep_fail_shrink, 1, 0, 0 },
     { "seam-oaep-fail-grow", case_seam_oaep_fail_grow, 1, 0, 0 },
+    { "seam-encrypt-fail-shrink", case_seam_encrypt_fail_shrink, 1, 0, 0 },
+    { "seam-encrypt-fail-grow", case_seam_encrypt_fail_grow, 1, 0, 0 },
+    { "seam-pkey-sign-fail-shrink", case_seam_pkey_sign_fail_shrink, 1, 0, 0 },
+    { "seam-pkey-sign-fail-grow", case_seam_pkey_sign_fail_grow, 1, 0, 0 },
+    { "seam-digest-sign-fail-shrink", case_seam_digest_sign_fail_shrink, 1, 0, 0 },
+    { "seam-digest-sign-fail-grow", case_seam_digest_sign_fail_grow, 1, 0, 0 },
     { "canary-selftest", case_canary_selftest, 1, 1, 0 },
 #endif
 };

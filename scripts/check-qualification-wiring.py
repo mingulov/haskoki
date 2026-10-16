@@ -1266,7 +1266,11 @@ SAN_COMMON = ("prod-digest-cycle", "prod-env-cycle", "prod-dh-kat", "prod-ecdh",
 SAN_SEAM = tuple(["seam-bn-named", "seam-bn-explicit"]
                  + [f"seam-derive-{m}-{d}-{k}" for k in ("ecdh", "xdh", "dh")
                     for m in ("fail", "ok") for d in ("shrink", "grow")]
-                 + ["seam-oaep-fail-shrink", "seam-oaep-fail-grow"])
+                 + ["seam-oaep-fail-shrink", "seam-oaep-fail-grow",
+                    "seam-encrypt-fail-shrink", "seam-encrypt-fail-grow",
+                    "seam-pkey-sign-fail-shrink", "seam-pkey-sign-fail-grow",
+                    "seam-digest-sign-fail-shrink",
+                    "seam-digest-sign-fail-grow"])
 SAN_HOOKS_TRACK = ("live-1000", "credit-gone", "address-reuse", "copy-fault",
                    "adoption-alloc", "adoption-load", "final-fault",
                    "canary-selftest") + SAN_SEAM + SAN_COMMON
@@ -2198,7 +2202,7 @@ def self_test():
         controls.expect_fail("report sanitizer verifier uses the checkout sha", root, "QW-LANE-SANVERIFY")
         # Static drift between the sanitizer driver and the expected sets.
         root = fresh()
-        _rewrite(root / SANITIZER_DRIVER, "seam-oaep-fail-grow\"", "\"")
+        _rewrite(root / SANITIZER_DRIVER, "seam-digest-sign-fail-grow\"", "\"")
         controls.expect_fail("sanitizer driver drops a seam case", root, "QW-SAN-TABLE")
         root = fresh()
         _rewrite(root / SANITIZER_DRIVER,
