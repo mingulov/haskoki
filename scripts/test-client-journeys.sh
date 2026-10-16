@@ -138,15 +138,15 @@ has_dist_newstyle() {
 }
 
 check_inherited_env() {
-    if [ -n "${LD_LIBRARY_PATH-}" ]; then
+    if [ "${LD_LIBRARY_PATH+set}" = set ]; then
         refuse 'inherited LD_LIBRARY_PATH'
         return 2
     fi
-    if [ -n "${LD_PRELOAD-}" ]; then
+    if [ "${LD_PRELOAD+set}" = set ]; then
         refuse 'inherited LD_PRELOAD'
         return 2
     fi
-    if [ -n "${HASKOKI_CONFIG-}" ]; then
+    if [ "${HASKOKI_CONFIG+set}" = set ]; then
         refuse 'inherited HASKOKI_CONFIG'
         return 2
     fi
@@ -204,7 +204,7 @@ check_native_dir() {
         /*) : ;;
         *) refuse 'native dir not absolute'; return 2 ;;
     esac
-    if [ ! -x "$1/token_fixture" ]; then
+    if [ ! -f "$1/token_fixture" ] || [ ! -x "$1/token_fixture" ]; then
         refuse 'native binary missing'
         return 2
     fi
@@ -219,7 +219,7 @@ check_out() {
         refuse 'output root inside the checkout'
         return 2
     fi
-    if [ -e "$1" ]; then
+    if [ -e "$1" ] || [ -L "$1" ]; then
         refuse 'output root exists'
         return 2
     fi
@@ -315,7 +315,7 @@ run_selftest() {
     _tmp=$(mktemp -d "${TMPDIR:-/tmp}/journeys-driver-check.XXXXXX")
     trap 'rm -rf "$_tmp"' EXIT INT TERM
     _pass=0
-    _total=11
+    _total=16
     _fake="$_tmp/fake"
     mkdir -p "$_fake/lib" "$_fake/closure" "$_fake/bin"
     : > "$_fake/lib/libhaskoki.so"
@@ -524,6 +524,73 @@ SYN_EOF
             printf 'FAIL: control 11 aggregate lacks a setup finding\n'
         else
             printf 'ok: control 11 empty module fails the aggregate\n'
+            _pass=$((_pass + 1))
+        fi
+    fi
+    if (LD_LIBRARY_PATH=; export LD_LIBRARY_PATH; check_inherited_env) 2>"$_tmp/c12"; then
+        printf 'FAIL: control 12 accepted an empty inherited library path\n'
+    else
+        _rc=$?
+        if [ "$_rc" -ne 2 ]; then
+            printf 'FAIL: control 12 exit %s, want 2\n' "$_rc"
+        elif ! grep -q 'inherited LD_LIBRARY_PATH' "$_tmp/c12" 2>/dev/null; then
+            printf 'FAIL: control 12 reason mismatch\n'
+        else
+            printf 'ok: control 12 empty inherited library path refused\n'
+            _pass=$((_pass + 1))
+        fi
+    fi
+    if (LD_PRELOAD=; export LD_PRELOAD; check_inherited_env) 2>"$_tmp/c13"; then
+        printf 'FAIL: control 13 accepted an empty inherited preload\n'
+    else
+        _rc=$?
+        if [ "$_rc" -ne 2 ]; then
+            printf 'FAIL: control 13 exit %s, want 2\n' "$_rc"
+        elif ! grep -q 'inherited LD_PRELOAD' "$_tmp/c13" 2>/dev/null; then
+            printf 'FAIL: control 13 reason mismatch\n'
+        else
+            printf 'ok: control 13 empty inherited preload refused\n'
+            _pass=$((_pass + 1))
+        fi
+    fi
+    if (HASKOKI_CONFIG=; export HASKOKI_CONFIG; check_inherited_env) 2>"$_tmp/c14"; then
+        printf 'FAIL: control 14 accepted an empty inherited store config\n'
+    else
+        _rc=$?
+        if [ "$_rc" -ne 2 ]; then
+            printf 'FAIL: control 14 exit %s, want 2\n' "$_rc"
+        elif ! grep -q 'inherited HASKOKI_CONFIG' "$_tmp/c14" 2>/dev/null; then
+            printf 'FAIL: control 14 reason mismatch\n'
+        else
+            printf 'ok: control 14 empty inherited store config refused\n'
+            _pass=$((_pass + 1))
+        fi
+    fi
+    ln -s "$_tmp/no-such-target-$$" "$_tmp/dangling-out"
+    if check_out "$_tmp/dangling-out" "$_co" 2>"$_tmp/c15"; then
+        printf 'FAIL: control 15 accepted a dangling output symlink\n'
+    else
+        _rc=$?
+        if [ "$_rc" -ne 2 ]; then
+            printf 'FAIL: control 15 exit %s, want 2\n' "$_rc"
+        elif ! grep -q 'output root exists' "$_tmp/c15" 2>/dev/null; then
+            printf 'FAIL: control 15 reason mismatch\n'
+        else
+            printf 'ok: control 15 dangling output symlink refused\n'
+            _pass=$((_pass + 1))
+        fi
+    fi
+    mkdir -p "$_tmp/dir-native/token_fixture"
+    if check_native_dir "$_tmp/dir-native" 2>"$_tmp/c16"; then
+        printf 'FAIL: control 16 accepted a native fixture that is a directory\n'
+    else
+        _rc=$?
+        if [ "$_rc" -ne 2 ]; then
+            printf 'FAIL: control 16 exit %s, want 2\n' "$_rc"
+        elif ! grep -q 'native binary missing' "$_tmp/c16" 2>/dev/null; then
+            printf 'FAIL: control 16 reason mismatch\n'
+        else
+            printf 'ok: control 16 native fixture that is a directory refused\n'
             _pass=$((_pass + 1))
         fi
     fi

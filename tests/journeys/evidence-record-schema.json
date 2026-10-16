@@ -12,7 +12,7 @@
     "classification": {"type": "string", "enum": ["independent-client", "independent-verifier", "native-consumer", "setup"]},
     "env_overrides": {"type": "object", "description": "Runner environment deltas, e.g. HASKOKI_CONFIG and GNUTLS_PIN.", "additionalProperties": {"type": "string"}},
     "log": {"type": "string", "description": "Captured combined output file name, relative to the run root."},
-    "exit_code": {"type": "integer"},
+    "exit_code": {"type": ["integer", "null"], "description": "Process exit status; null when the leg never produced one (setup or timeout legs), with failure_stage naming the stage."},
     "status": {"type": "string", "enum": ["pass", "fail"], "description": "pass only when the leg met its expect block."},
     "elapsed_seconds": {"type": "number", "minimum": 0},
     "journey": {"type": "string", "description": "Journey doc anchor defining this leg."},

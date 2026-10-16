@@ -38,16 +38,20 @@ Stdlib only; callers run this file with `python3 -I`.
 """
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
+import posixpath
 import re
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 
 JR_MISSING = "JR-MISSING"
 JR_DUPLICATE = "JR-DUPLICATE"
@@ -716,7 +720,12 @@ def check_leg(name, row, record, run_dir, clients, start_hash, failures):
     if status not in ("pass", "fail"):
         failures.append((JR_STATUS, name, f"status {status!r}"))
     exit_code = record.get("exit_code")
-    if type(exit_code) is not int or exit_code != expect.get("exit"):
+    if exit_code is None and record.get("failure_stage") in (
+            "setup", "timeout"):
+        # No real status exists; the stage carries the verdict.
+        pass
+    elif type(exit_code) is not int \
+            or exit_code != expect.get("exit"):
         failures.append((JR_EXIT, name,
                          f"exit {exit_code!r}, "
                          f"expected {expect.get('exit')!r}"))
@@ -859,8 +868,6 @@ class SetupRefusal(Exception):
 
 EMPTY_SHA = hashlib.sha256(b"").hexdigest()
 DEFAULT_TIMEOUT = 120
-SETUP_EXIT = 127
-TIMEOUT_EXIT = 124
 
 FAILURE_BY_RULE = {
     JR_EXIT: "exit",
@@ -880,10 +887,20 @@ def find_src_root():
 
 
 def substitute_text(text, mapping):
-    out = text
-    for key, value in mapping.items():
-        out = out.replace(key, value)
-    return out
+    """Expand every placeholder in one pass over the raw text.
+
+    A substituted value that itself holds token-shaped text stays
+    literal; replacement output is never rescanned.
+    """
+    def _once(match):
+        token = match.group(0)
+        return mapping.get(token, token)
+    return re.sub(r"@[A-Z_]+@", _once, text)
+
+
+def substitute_config_template(text, journey_dir, module_path):
+    return substitute_text(text, {"@JOURNEY_DIR@": journey_dir,
+                                  "@MODULE@": module_path})
 
 
 def safe_leg(leg):
@@ -1005,9 +1022,9 @@ def run_one_leg(run_dir, row, profile_rows, clients, ctx):
         except OSError as exc:
             raise SetupRefusal(
                 f"config template unreadable for {name}: {exc}")
-        text = text.replace("@JOURNEY_DIR@", str(run_dir / "stores"
-                                                / store))
-        text = text.replace("@MODULE@", ctx["module_path"])
+        text = substitute_config_template(
+            text, str(run_dir / "stores" / store),
+            ctx["module_path"])
     else:
         text = synthesize_config_text(name)
     cfg_path.write_text(text, encoding="utf-8")
@@ -1043,7 +1060,7 @@ def run_one_leg(run_dir, row, profile_rows, clients, ctx):
     if problems:
         setup_note = ("setup: unknown placeholder "
                       + ", ".join(sorted(set(problems))))
-        exit_code = SETUP_EXIT
+        exit_code = None
         log_path.write_text(setup_note + "\n", encoding="utf-8")
     else:
         argv = [substitute_text(a, mapping) for a in argv_raw]
@@ -1081,25 +1098,35 @@ def run_one_leg(run_dir, row, profile_rows, clients, ctx):
                     exit_code = proc.returncode
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except (OSError, ProcessLookupError):
-                        pass
-                    proc.wait()
-                    exit_code = TIMEOUT_EXIT
+                    exit_code = None
                     with open(log_path, "ab") as append:
                         append.write(
                             f"\ntimeout after {timeout}s\n".encode(
                                 "utf-8", "replace"))
+                finally:
+                    # Reap the whole group on every path: a leg that
+                    # exits while a holder child still runs must not
+                    # leave it behind.
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
         except FileNotFoundError as exc:
-            setup_note = f"setup: binary not found: {exc.filename}"
-            exit_code = SETUP_EXIT
+            if exc.filename == cwd:
+                setup_note = f"setup: cwd not found: {exc.filename}"
+            else:
+                setup_note = f"setup: binary not found: {exc.filename}"
+            exit_code = None
             with open(log_path, "ab") as append:
                 append.write((setup_note + "\n").encode(
                     "utf-8", "replace"))
         except OSError as exc:
             setup_note = f"setup: cannot start leg: {exc}"
-            exit_code = SETUP_EXIT
+            exit_code = None
             with open(log_path, "ab") as append:
                 append.write((setup_note + "\n").encode(
                     "utf-8", "replace"))
@@ -1186,9 +1213,11 @@ def finish_leg_record(run_dir, row, profile_rows, clients, ctx,
     if setup_note is not None or seen.get("setup_failed"):
         record["status"] = "fail"
         record["failure_stage"] = "setup"
+        record["exit_code"] = None
     elif timed_out:
         record["status"] = "fail"
         record["failure_stage"] = "timeout"
+        record["exit_code"] = None
     else:
         probe = []
         check_leg(name, row, record, run_dir, clients,
@@ -1338,6 +1367,54 @@ def parse_client_setup(args):
     return value, "caller"
 
 
+def _link_target_escapes(name, target, hard):
+    """True when a tar link target resolves outside the prefix.
+
+    Symlink targets resolve against the link's own directory;
+    hardlink targets name a member from the archive root.
+    """
+    if PurePosixPath(target).is_absolute():
+        return True
+    if hard:
+        shape = PurePosixPath(posixpath.normpath(target))
+    else:
+        parent = PurePosixPath(name).parent
+        shape = PurePosixPath(posixpath.normpath(
+            str(parent / target)))
+    return shape.is_absolute() or ".." in shape.parts
+
+
+def screen_bundle_members(bundle_tar):
+    """Refuse unsafe bundle members before anything is extracted.
+
+    Absolute paths, '..' components and links resolving outside the
+    install prefix are refused here, never after extraction.
+    """
+    try:
+        handle = tarfile.open(bundle_tar, "r:*")
+    except (OSError, tarfile.TarError) as exc:
+        raise SetupRefusal(f"bundle unreadable: {exc}")
+    with handle:
+        for member in handle.getmembers():
+            name = member.name
+            if PurePosixPath(name).is_absolute():
+                raise SetupRefusal(
+                    f"bundle member is absolute: {name[:80]}")
+            if ".." in PurePosixPath(name).parts:
+                raise SetupRefusal(
+                    f"bundle member escapes the prefix: {name[:80]}")
+            if member.issym():
+                if _link_target_escapes(name, member.linkname, False):
+                    raise SetupRefusal(
+                        "bundle link escapes the prefix: "
+                        f"{name[:80]}")
+            elif member.islnk():
+                if _link_target_escapes(name, member.linkname, True):
+                    raise SetupRefusal(
+                        "bundle link escapes the prefix: "
+                        f"{name[:80]}")
+
+
 def install_bundle(bundle_tar, run_dir):
     try:
         t0_ns = time.time_ns()
@@ -1345,9 +1422,11 @@ def install_bundle(bundle_tar, run_dir):
         raise SetupRefusal(f"clock unreadable: {exc}")
     prefix = run_dir / "prefix"
     prefix.mkdir(parents=True, exist_ok=False)
+    screen_bundle_members(bundle_tar)
     try:
         proc = subprocess.run(
-            ["tar", "xzf", bundle_tar, "-C", str(prefix)],
+            ["tar", "xzf", bundle_tar, "--no-same-owner",
+             "--no-same-permissions", "-C", str(prefix)],
             capture_output=True, text=True, errors="replace",
             timeout=300)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -1359,7 +1438,15 @@ def install_bundle(bundle_tar, run_dir):
     matches = sorted(prefix.glob("haskoki-*/lib/libhaskoki.so"))
     if len(matches) != 1:
         raise SetupRefusal("bundle layout unexpected")
-    module_path = str(matches[0].resolve())
+    candidate = matches[0]
+    if candidate.is_symlink() or not candidate.is_file():
+        raise SetupRefusal("bundle module is not a regular file")
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(prefix.resolve())
+    except ValueError:
+        raise SetupRefusal("bundle module escapes the prefix")
+    module_path = str(resolved)
     try:
         bundle_sha = sha256_file(bundle_tar)
     except OSError:
@@ -1434,8 +1521,8 @@ def run_new(args, table, clients, legs_path):
         raise SetupRefusal("module source missing")
     if not args.native_dir or not os.path.isabs(args.native_dir):
         raise SetupRefusal("native dir not absolute")
-    if not os.access(os.path.join(args.native_dir,
-                                  "token_fixture"), os.X_OK):
+    fixture = os.path.join(args.native_dir, "token_fixture")
+    if not os.path.isfile(fixture) or not os.access(fixture, os.X_OK):
         raise SetupRefusal("native binary missing")
     sha, dirty, dirty_basis = parse_source_flags(args)
     setup_seconds, setup_basis = parse_client_setup(args)
@@ -1505,11 +1592,9 @@ def run_new(args, table, clients, legs_path):
         aggregate = "fail"
     else:
         phases_complete = list(entry.get("phases") or [])
-        aggregate = ("pass" if all(
+        aggregate = ("pass" if required and all(
             record.get("status") == "pass"
             for record in records.values()) else "fail")
-        if not required:
-            aggregate = "pass"
     summary = {
         "$schema": "haskoki-journey-summary/1",
         "profile": args.profile,
@@ -1545,6 +1630,10 @@ def run_new(args, table, clients, legs_path):
         return 0 if done == len(required) else 1
     failures, _required = check_run(str(run_dir), args.profile,
                                     legs_path)
+    # The stored claim follows the recomputed verdict, so the two
+    # never disagree; this only ever downgrades a pass to a fail.
+    summary["aggregate"] = "fail" if failures else "pass"
+    write_json(run_dir / "summary.json", summary)
     for rule, leg, detail in failures:
         print(f"{rule}: {leg}: {detail}")
     total = len(_required)
@@ -1689,6 +1778,10 @@ def run_verifier_append(args, table, clients, legs_path):
     write_json(run_dir / "summary.json", summary)
     failures, _required = check_run(str(run_dir), args.profile,
                                     legs_path)
+    # The stored claim follows the recomputed verdict, so the two
+    # never disagree; this only ever downgrades a pass to a fail.
+    summary["aggregate"] = "fail" if failures else "pass"
+    write_json(run_dir / "summary.json", summary)
     for rule, leg, detail in failures:
         print(f"{rule}: {leg}: {detail}")
     total = len(_required)
@@ -1701,7 +1794,9 @@ def run_verifier_append(args, table, clients, legs_path):
 
 # ------------------------------------------------------------------
 # Self-test: a synthetic five-leg fixture run plus one mutation per
-# rule. The fixture lives in temp dirs only, never in the real table.
+# rule, plus live run-path checks over tiny synthetic legs, bundles
+# and runs. Everything lives in temp dirs only, never in the real
+# table.
 # ------------------------------------------------------------------
 
 SETUP_LEG = "setup-client-versions"
@@ -2287,6 +2382,40 @@ def mut_record_client_shapeless(root):
     mutate_record(root, SUCCESS_LEG, update)
 
 
+def mut_exit_null_setup(root):
+    def update(record):
+        record["exit_code"] = None
+        record["failure_stage"] = "setup"
+        record["status"] = "fail"
+    mutate_record(root, SETUP_LEG, update)
+
+
+def mut_exit_null_normal(root):
+    def update(record):
+        record["exit_code"] = None
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_exit_null_timeout_markers_missing(root):
+    (Path(root) / "logs" / f"{SUCCESS_LEG}.log").write_text(
+        "nothing useful here\n", encoding="utf-8")
+
+    def update(record):
+        record["exit_code"] = None
+        record["failure_stage"] = "timeout"
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
+def mut_exit_null_timeout_clean(root):
+    def update(record):
+        record["exit_code"] = None
+        record["failure_stage"] = "timeout"
+        record["status"] = "fail"
+    mutate_record(root, SUCCESS_LEG, update)
+
+
 SELF_TEST_CASES = [
     ("clean run", set(), None,
      (0, "JOURNEYS: PASS 5/5", None)),
@@ -2366,6 +2495,14 @@ SELF_TEST_CASES = [
      mut_log_other_leg, None),
     ("record client is not an object", {JR_RECORD},
      mut_record_client_shapeless, None),
+    ("setup leg with a null exit", {JR_SETUP},
+     mut_exit_null_setup, None),
+    ("ordinary leg with a null exit", {JR_EXIT},
+     mut_exit_null_normal, None),
+    ("timeout leg with a null exit and missing markers", {JR_MARKER},
+     mut_exit_null_timeout_markers_missing, None),
+    ("timeout leg with a null exit and clean evidence",
+     {JR_SELF_REPORT}, mut_exit_null_timeout_clean, None),
 ]
 
 
@@ -2445,16 +2582,461 @@ def structural_checks():
            validate_legs_table(committed))
 
 
+RUN_CHECK_PROFILE = "portfolio"
+
+
+def _run_check_ctx(run_dir,
+                   module_path="/opt/fixture/lib/libhaskoki.so"):
+    return {
+        "module_path": module_path,
+        "native_dir": "/opt/fixture/native",
+        "src_root": find_src_root(),
+        "profile": RUN_CHECK_PROFILE,
+        "source_sha": "ab" * 20,
+        "source_dirty": False,
+        "artifact": {
+            "kind": "bundle",
+            "haskoki_version": "0.5.0.0",
+            "bundle_sha256": FIXTURE_BUNDLE_SHA,
+            "image_id": None,
+            "toolchain_record_sha256": FIXTURE_TOOLCHAIN_SHA,
+        },
+        "start_hash": FIXTURE_MODULE_SHA,
+        "versions": {
+            "runner": {"package_version": None,
+                       "runtime_version": None},
+        },
+    }
+
+
+def _run_check_row(name, argv, env=None, cwd=None, timeout=10,
+                   expect_exit=0):
+    row = {
+        "name": name,
+        "profiles": [RUN_CHECK_PROFILE],
+        "phase": "module",
+        "client": "runner",
+        "store": "synthetic-store",
+        "argv": list(argv),
+        "env": dict(env or {}),
+        "timeout_seconds": timeout,
+        "expect": {"exit": expect_exit, "markers": []},
+        "depends_on": [],
+    }
+    if cwd is not None:
+        row["cwd"] = cwd
+    return row
+
+
+def _run_check_leg(tmp, row, ctx=None):
+    run_dir = Path(tmp) / "run"
+    for sub in ("records", "logs", "cfg", "stores", "home", "out"):
+        (run_dir / sub).mkdir(parents=True, exist_ok=True)
+    if ctx is None:
+        ctx = _run_check_ctx(run_dir)
+    clients = {"runner": {"package": None, "package_version": None,
+                          "runtime_argv": None,
+                          "runtime_version": None}}
+    record = run_one_leg(run_dir, row, [row], clients, ctx)
+    return run_dir, record
+
+
+def _empty_profile_table(desc):
+    return {
+        "$schema": "haskoki-journey-legs/1",
+        "clients": {},
+        "profiles": {RUN_CHECK_PROFILE: {
+            "description": desc,
+            "clients": [],
+            "phases": ["module", "verifier"],
+        }},
+        "legs": [],
+    }
+
+
+def _run_check_args(tmp, legs_path, out="run", module="/abs/fake/x.so",
+                    native_dir="/abs/fake/native"):
+    return argparse.Namespace(
+        profile=RUN_CHECK_PROFILE, out=str(Path(tmp) / out),
+        out_existing=None, module=module, bundle_tar=None,
+        native_dir=native_dir, phase="all", legs=str(legs_path),
+        source_sha="ab" * 20, source_dirty="false",
+        source_dirty_basis="caller", client_setup_seconds=None,
+        artifact_image=None)
+
+
+def check_substitute_once(_tmp):
+    mapping = {"@MODULE@": "M-@RUN@", "@RUN@": "R"}
+    if substitute_text("@MODULE@", mapping) != "M-@RUN@":
+        return "a value holding another token was expanded again"
+    multi = substitute_text("@A@/@B@", {"@A@": "x@B@", "@B@": "y"})
+    if multi != "x@B@/y":
+        return f"multi-token expansion gave {multi!r}"
+    return None
+
+
+def check_config_template_once(_tmp):
+    got = substitute_config_template(
+        "dir=@JOURNEY_DIR@ mod=@MODULE@", "J-@MODULE@", "M")
+    if got != "dir=J-@MODULE@ mod=M":
+        return f"the template pass expanded twice: {got!r}"
+    return None
+
+
+def check_native_fixture_is_file(tmp):
+    native = Path(tmp) / "dir-native"
+    (native / "token_fixture").mkdir(parents=True)
+    table = _empty_profile_table("native shape probe")
+    legs_path = Path(tmp) / "legs.json"
+    write_json(legs_path, table)
+    args = _run_check_args(tmp, legs_path, native_dir=str(native))
+    try:
+        run_new(args, table, {}, str(legs_path))
+    except SetupRefusal as exc:
+        if "native binary missing" in str(exc):
+            return None
+        return f"wrong refusal: {exc}"
+    return "a directory named token_fixture passed the native guard"
+
+
+HOLDER_SCRIPT = (
+    "import fcntl\n"
+    "import os\n"
+    "import sys\n"
+    "import time\n"
+    "from pathlib import Path\n"
+    "lock, pidfile, seconds = (sys.argv[1], sys.argv[2],\n"
+    "                          float(sys.argv[3]))\n"
+    "fh = open(lock, 'w')\n"
+    "fcntl.flock(fh, fcntl.LOCK_EX)\n"
+    "Path(pidfile).write_text(str(os.getpid()))\n"
+    "time.sleep(seconds)\n"
+)
+
+SPAWNER_SCRIPT = (
+    "import subprocess\n"
+    "import sys\n"
+    "import time\n"
+    "from pathlib import Path\n"
+    "holder, lock, pidfile, seconds = (sys.argv[1], sys.argv[2],\n"
+    "                                  sys.argv[3], sys.argv[4])\n"
+    "subprocess.Popen([sys.executable, holder, lock, pidfile, seconds])\n"
+    "for _ in range(100):\n"
+    "    if Path(pidfile).exists():\n"
+    "        break\n"
+    "    time.sleep(0.1)\n"
+)
+
+
+def check_holder_reaped(tmp):
+    import fcntl
+    tmp = Path(tmp)
+    holder = tmp / "holder.py"
+    spawner = tmp / "spawner.py"
+    holder.write_text(HOLDER_SCRIPT, encoding="utf-8")
+    spawner.write_text(SPAWNER_SCRIPT, encoding="utf-8")
+    lock = tmp / "holder.lock"
+    pidfile = tmp / "holder.pid"
+    row = _run_check_row(
+        "holder-probe",
+        [sys.executable, str(spawner), str(holder), str(lock),
+         str(pidfile), "60"])
+    _run_dir, record = _run_check_leg(tmp, row)
+    if record.get("status") != "pass":
+        return ("the spawner leg did not pass: "
+                f"{record.get('failure_stage')}")
+    if not pidfile.exists():
+        return "the holder never signalled readiness"
+    try:
+        pid = int(pidfile.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return "the holder pid file is malformed"
+    # Death by signal is asynchronous; poll for release. A survivor
+    # holds its lock for the full minute, far beyond this window.
+    held = True
+    with open(lock, "w") as handle:
+        for _ in range(50):
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                time.sleep(0.1)
+                continue
+            try:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            held = False
+            break
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    if held:
+        return "an orphaned holder still holds its lock"
+    return None
+
+
+def _write_tar_member(tar, name, data=b"ok", mode=0o644,
+                      linkname=None, linktype=None):
+    info = tarfile.TarInfo(name)
+    if linktype is not None:
+        info.type = linktype
+        info.linkname = linkname or ""
+        info.mode = mode
+        tar.addfile(info)
+        return
+    info.size = len(data)
+    info.mode = mode
+    tar.addfile(info, io.BytesIO(data))
+
+
+def _bundle_layout(tar, leaf="haskoki-9", module_link=None):
+    _write_tar_member(tar, f"{leaf}/ok.txt", data=b"benign")
+    if module_link is None:
+        _write_tar_member(tar, f"{leaf}/lib/libhaskoki.so",
+                           data=b"fake-module-bytes")
+    else:
+        _write_tar_member(tar, f"{leaf}/lib/libhaskoki.so",
+                           linkname=module_link,
+                           linktype=tarfile.SYMTYPE)
+    _write_tar_member(tar, f"{leaf}/toolchain-record.txt",
+                       data=b"fake-toolchain")
+    _write_tar_member(tar, f"{leaf}/closure/review.txt",
+                       data=b"fake-review")
+    _write_tar_member(tar, f"{leaf}/bin/haskoki-ctl",
+                       data=b"#!/bin/sh\nexit 0\n", mode=0o755)
+
+
+def _screen_case(workdir, build, label):
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    run_dir = workdir / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    bundle = workdir / "bundle.tar.gz"
+    with tarfile.open(bundle, "w:gz") as tar:
+        build(tar)
+    try:
+        install_bundle(str(bundle), run_dir)
+    except SetupRefusal:
+        leftovers = list((run_dir / "prefix").iterdir())
+        if leftovers:
+            return (f"{label} was refused after extracting "
+                    f"{len(leftovers)} entries")
+        return None
+    return f"{label} was accepted"
+
+
+def check_bundle_absolute_member(tmp):
+    def build(tar):
+        _bundle_layout(tar)
+        _write_tar_member(tar, "/abs-evil")
+    return _screen_case(tmp, build,
+                        "a bundle member with an absolute path")
+
+
+def check_bundle_dotdot_member(tmp):
+    def build(tar):
+        _bundle_layout(tar)
+        _write_tar_member(tar, "../evil")
+    return _screen_case(tmp, build,
+                        "a bundle member with a .. component")
+
+
+def check_bundle_outside_links(tmp):
+    tmp = Path(tmp)
+    cases = [
+        ("absolute symlink", "haskoki-9/lib/evil-abs", "/etc/passwd",
+         tarfile.SYMTYPE),
+        ("escaping symlink", "haskoki-9/lib/evil-rel",
+         "../../../etc/passwd", tarfile.SYMTYPE),
+        ("escaping hardlink", "haskoki-9/lib/evil-hard", "../outside",
+         tarfile.LNKTYPE),
+    ]
+    for label, name, target, kind in cases:
+        def build(tar, name=name, target=target, kind=kind):
+            _bundle_layout(tar)
+            _write_tar_member(tar, name, linkname=target,
+                               linktype=kind)
+        problem = _screen_case(tmp / label.replace(" ", "-"), build,
+                               f"a bundle with an {label}")
+        if problem is not None:
+            return problem
+    return None
+
+
+def check_bundle_module_is_regular(tmp):
+    def build(tar):
+        _bundle_layout(tar, module_link="../real-lib")
+        _write_tar_member(tar, "haskoki-9/real-lib",
+                           data=b"real-module-bytes")
+    workdir = Path(tmp)
+    run_dir = workdir / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    bundle = workdir / "bundle.tar.gz"
+    with tarfile.open(bundle, "w:gz") as tar:
+        build(tar)
+    try:
+        install_bundle(str(bundle), run_dir)
+    except SetupRefusal:
+        return None
+    return "a bundle whose module is a link was accepted"
+
+
+def check_bundle_installs(tmp):
+    tmp = Path(tmp)
+    run_dir = tmp / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    bundle = tmp / "bundle.tar.gz"
+    with tarfile.open(bundle, "w:gz") as tar:
+        _bundle_layout(tar)
+    try:
+        module_path, _sha, _ver, _tool, _t0 = install_bundle(
+            str(bundle), run_dir)
+    except SetupRefusal as exc:
+        return f"a well-formed bundle was refused: {exc}"
+    if not module_path.endswith("libhaskoki.so"):
+        return f"unexpected module path {module_path!r}"
+    if not Path(module_path).is_file():
+        return "the derived module is not a file"
+    try:
+        Path(module_path).relative_to(run_dir / "prefix")
+    except ValueError:
+        return "the derived module sits outside the prefix"
+    return None
+
+
+def check_cwd_failure_message(tmp):
+    missing = _run_check_row(
+        "cwd-probe", [sys.executable, "-c", "pass"],
+        cwd="@RUN@/no-such-dir")
+    run_dir, record = _run_check_leg(tmp, missing)
+    if record.get("failure_stage") != "setup":
+        return "a missing cwd did not become a setup leg"
+    log_text = (run_dir / record["log"]).read_text(
+        encoding="utf-8", errors="replace")
+    if "cwd not found" not in log_text:
+        return f"a missing cwd was reported as: {log_text.strip()[:80]}"
+    absent = _run_check_row(
+        "binary-probe", ["/nonexistent-journey-binary-xyz"])
+    run_dir, record = _run_check_leg(tmp, absent)
+    log_text = (run_dir / record["log"]).read_text(
+        encoding="utf-8", errors="replace")
+    if "binary not found" not in log_text:
+        return "a missing binary lost its message"
+    return None
+
+
+def check_setup_exit_null(tmp):
+    row = _run_check_row("setup-probe",
+                         ["/nonexistent-journey-binary-xyz"])
+    _run_dir, record = _run_check_leg(tmp, row)
+    if record.get("failure_stage") != "setup":
+        return "a missing binary did not become a setup leg"
+    if record.get("exit_code") is not None:
+        return f"a setup leg recorded exit {record['exit_code']!r}"
+    return None
+
+
+def check_timeout_exit_null(tmp):
+    row = _run_check_row(
+        "timeout-probe", [sys.executable, "-c",
+                           "import time; time.sleep(30)"],
+        timeout=1)
+    _run_dir, record = _run_check_leg(tmp, row)
+    if record.get("failure_stage") != "timeout":
+        return "an overrunning leg did not time out"
+    if record.get("exit_code") is not None:
+        return f"a timeout leg recorded exit {record['exit_code']!r}"
+    return None
+
+
+def check_empty_profile_claims_failure(tmp):
+    tmp = Path(tmp)
+    table = _empty_profile_table("empty profile probe")
+    legs_path = tmp / "legs.json"
+    write_json(legs_path, table)
+    fake = tmp / "fake"
+    (fake / "lib").mkdir(parents=True)
+    (fake / "lib" / "libhaskoki.so").write_bytes(b"fake-module-bytes")
+    (fake / "toolchain-record.txt").write_text("fake-toolchain\n")
+    (fake / "closure").mkdir()
+    (fake / "closure" / "review.txt").write_text("fake-review\n")
+    ctl = fake / "bin" / "haskoki-ctl"
+    ctl.parent.mkdir()
+    ctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    ctl.chmod(0o755)
+    native = tmp / "native"
+    native.mkdir()
+    fixture = native / "token_fixture"
+    fixture.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fixture.chmod(0o755)
+    args = _run_check_args(
+        tmp, legs_path, module=str(fake / "lib" / "libhaskoki.so"),
+        native_dir=str(native))
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = run_new(args, table, {}, str(legs_path))
+    summary = load_json(tmp / "run" / "summary.json")
+    if rc != 1:
+        return f"an empty profile run exited {rc}, want 1"
+    if summary.get("aggregate") != "fail":
+        return "an empty profile run claimed aggregate pass"
+    return None
+
+
+def run_path_checks():
+    """Yield (label, check) for live run-path behavior.
+
+    Each check takes a temp dir and returns None or an error string.
+    """
+    yield ("substitution expands each token once",
+           check_substitute_once)
+    yield ("config template substitution expands once",
+           check_config_template_once)
+    yield ("a directory named token_fixture is refused",
+           check_native_fixture_is_file)
+    yield ("a leg that orphans a child leaves nothing running",
+           check_holder_reaped)
+    yield ("a bundle member with an absolute path is refused",
+           check_bundle_absolute_member)
+    yield ("a bundle member with a .. component is refused",
+           check_bundle_dotdot_member)
+    yield ("bundle links outside the prefix are refused",
+           check_bundle_outside_links)
+    yield ("a bundle whose module is a link is refused",
+           check_bundle_module_is_regular)
+    yield ("a well-formed bundle installs", check_bundle_installs)
+    yield ("a missing leg cwd is reported as the cwd",
+           check_cwd_failure_message)
+    yield ("a setup leg records a null exit", check_setup_exit_null)
+    yield ("a timeout leg records a null exit",
+           check_timeout_exit_null)
+    yield ("an empty profile run claims failure like its verdict",
+           check_empty_profile_claims_failure)
+
+
 def self_test():
     passed = 0
     checks = list(structural_checks())
-    total = len(SELF_TEST_CASES) + len(checks)
+    run_checks = list(run_path_checks())
+    total = len(SELF_TEST_CASES) + len(checks) + len(run_checks)
     for label, problems in checks:
         if not problems:
             passed += 1
             print(f"  ok: {label}")
         else:
             print(f"  FAIL: {label}: {problems[0][1]}")
+    for label, check in run_checks:
+        with tempfile.TemporaryDirectory(
+                prefix="journeys-runcheck-") as tmp:
+            try:
+                problem = check(tmp)
+            except Exception as exc:
+                problem = f"raised {type(exc).__name__}: {exc}"
+        if problem is None:
+            passed += 1
+            print(f"  ok: {label}")
+        else:
+            print(f"  FAIL: {label}: {problem}")
     for label, expected, mutate, cli in SELF_TEST_CASES:
         with tempfile.TemporaryDirectory(prefix="journeys-selftest-") as tmp:
             legs_path = build_clean_run(tmp)
