@@ -59,6 +59,9 @@ fail() {
 # m2-lifetime-gate: gate-race-oneshot, gate-race-init, gate-race-import and
 # gate-race-export never emit (no native outstanding counter) and are
 # excluded from its label set on purpose.
+# m3-standalone-ownership: block-wait-rejects-other-block-reasons never
+# emits (a helper negative-control with no resource to count) and is
+# excluded from its label set on purpose.
 # Patterns are tasty 1.5 awk expressions over the test path
 # ($1 = suite root, $2 = top group, $3 = subgroup). They must not
 # contain `|`. Rows for later fixtures are appended as `pending`
@@ -66,11 +69,11 @@ fail() {
 CASE_TABLE=$(cat <<'TABLE'
 m1-native-transfers|model|$2 == "Ownership" && $3 == "native ownership transfers"|12|active|gated-adoption-alloc,gated-adoption-load,gated-adoption-park,gated-copy-fault,gated-copy-park,gated-digest-alloc,gated-final-fault,gated-final-park,gated-init-alloc,gated-live-300,gated-normal-zero,gated-pair-between
 m1-openssl4-engine|engine|$2 == "openssl4 engine"|70|active|no
-m1-acquisition-hooks|engine|$2 == "Acquisition hooks"|17|active|no
+m1-acquisition-hooks|engine|$2 == "Acquisition hooks"|32|active|no
 m2-lease-protocol|model|$2 == "Ownership" && $3 == "lease protocol"|6|active|no
 m2-lifetime-gate|model|$2 == "Ownership" && $3 == "lifetime gate"|12|active|gate-cancel-closing,gate-close-after-interrupt,gate-close-waits-borrow,gate-close-waits-final,gate-race-final,gate-race-release,gate-race-update,gate-simultaneous-close
 m3-handle-registry|model|$2 == "Ownership" && $3 == "handle registry"|11|active|handle-admission-storm,handle-close-race,handle-kill-storm,handle-resolve-retire,handle-resolve-then-close,handle-retire-then-use
-m3-ffi-acquisition|model|$2 == "FFI acquisition"|23|active|admitted-calls-run-close-retires-the-gate,borrowed-start-works,close-one-keeps-the-other-context-live,close-waits-for-an-entered-caller,concurrent-entry-races-close-cleanly,join-acquire-publishes-a-live-handle,join-handoff-publishes-a-live-handle,kill-after-join-commit-cancels-before-publish,kill-during-acquire-rolls-back-and-nulls,kill-in-the-join-handoff-cancels-the-fresh-join,kill-in-the-submit-transfer-cancels-the-fresh-job,killed-close-releases-retry-completes-teardown
+m3-ffi-acquisition|model|$2 == "FFI acquisition" && $3 != "standalone ownership"|23|active|admitted-calls-run-close-retires-the-gate,borrowed-start-works,close-one-keeps-the-other-context-live,close-waits-for-an-entered-caller,concurrent-entry-races-close-cleanly,join-acquire-publishes-a-live-handle,join-handoff-publishes-a-live-handle,kill-after-join-commit-cancels-before-publish,kill-during-acquire-rolls-back-and-nulls,kill-in-the-join-handoff-cancels-the-fresh-join,kill-in-the-submit-transfer-cancels-the-fresh-job,killed-close-releases-retry-completes-teardown
 m3-async-engine|engine|$2 == "Async engine"|25|active|caseasyncadmissionwidths,caseasyncborrowedownership,caseasynccleanupsurface,caseasyncpubliccompletion,ffi-bogus-handle-refused-nothing-touched,ffi-cancel-frees-late-use-is-stale,ffi-close-drains-pending-jobs-exactly-once,ffi-close-one-keeps-other-context-live,ffi-concurrent-cancel-exactly-one-wins,ffi-concurrent-complete-single-delivery,ffi-cross-context-handle-use-is-stale,ffi-digest-pending-canaries-exact-delivery,ffi-drive-error-frees-the-handle-exactly-once
 m4-store-contract|storage|$2 == "store contract"|123|active|no
 m4-multi-session|storage|$2 == "Multi-session store"|34|active|no
@@ -81,7 +84,7 @@ m6-two-contexts-distinct-ids|model|$2 == "Detached jobs" && /two contexts on one
 m6-store-wide-counter|model|$2 == "Detached jobs" && /two tokens share the store-wide counter/|1|active|no
 m7-attached-async|model|$2 == "Attached async"|37|active|byte-budget-clears-suite-shaped-fills-with-headroom,byte-evicted-store-delivery-retry-cancel-semantics-unchanged,byte-retention-bound-n-max-size-digests-keep-bytes-within-budget,capped-store-delivery-retry-cancel-semantics-unchanged,reap-drops-tombstones-live-jobs-survive,retention-bound-n-delivered-digests-keep-at-most-cap-tombstones,sync-sessions-stay-synchronous-under-async-storm
 m7-retirement|model|$2 == "Ownership" && /retire/|5|active|no
-wp08-pending|model|-|0|pending|no
+m3-standalone-ownership|model|$2 == "FFI acquisition" && $3 == "standalone ownership"|29|active|store-box-killed-after-store-open-closes-the-store,store-box-killed-after-token-setup-closes-the-store,store-box-killed-during-token-load-closes-the-store,sqlite-store-box-killed-after-token-setup-releases-its-lock,context-killed-after-backend-open-closes-the-backend,context-killed-after-session-open-closes-the-backend,context-killed-after-pointer-allocation-frees-it-unregistered,store-bound-context-killed-after-reload-leaves-the-box-usable,export-store-open-residue-is-recovered-by-the-next-open,closer-killed-in-the-store-wait-stays-closing-and-retries,closer-killed-in-a-job-lease-wait-cancels-once-on-retry,closer-killed-in-the-backend-gate-wait-frees-the-env-once-on-retry,store-failure-in-retirement-still-closes-and-keeps-the-record-joinable,table-close-phases-move-only-forward-after-teardown-starts,unknown-registry-key-refuses-before-dereference,hook-only-registry-key-refuses-after-its-hook,close-of-an-unknown-key-nulls-the-slot-only,close-with-a-throwing-retire-resumes-on-retry,close-with-a-throwing-free-resumes-on-retry,store-throw-in-retirement-still-closes-and-keeps-the-record-joinable,value-level-close-killed-in-a-lease-wait-resumes,null-slot-and-null-pointer-closes-are-silent,repeated-context-close-frees-and-retires-once,failed-store-close-keeps-the-box-slot-until-a-retry-succeeds,store-box-close-killed-in-the-lock-wait-keeps-the-box,standalone-churn-leaves-no-orphan-roots-or-native-envs,joined-cleanup-lets-the-same-store-reopen,joined-cleanup-lets-the-same-sqlite-store-reopen
 wp09-pending|model|-|0|pending|no
 TABLE
 )
