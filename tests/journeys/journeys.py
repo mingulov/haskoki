@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Recomputing aggregate check for installed-client journey runs.
+"""Journey runner and recomputing aggregate check for installed runs.
 
-`check` reads a run directory (record files, saved logs, substituted
-configs, summary) plus the required-leg table, and recomputes every
-verdict from the saved evidence. A record's own status claim never
-turns a failing leg into a pass; claiming pass where the recomputation
-fails is reported as JR-SELF-REPORT next to the specific rule.
+`run` executes the required legs of a profile against one installed
+module, writing a record, a combined log and a substituted config per
+leg plus a summary. `check` reads a run directory plus the
+required-leg table and recomputes every verdict from the saved
+evidence. A record's own status claim never turns a failing leg into
+a pass; claiming pass where the recomputation fails is reported as
+JR-SELF-REPORT next to the specific rule.
 
-Run-directory layout (written by the journey driver)::
+Run-directory layout (written by `run`)::
 
     <run>/summary.json
     <run>/records/<leg>.json
     <run>/logs/<leg>.log
-    <run>/cfg/<store>.toml
+    <run>/cfg/<leg>.toml
 
 Log, config and unchanged paths stored in records resolve against the
 run root. The leg table is authoritative for every expectation (exit
@@ -36,10 +38,13 @@ Stdlib only; callers run this file with `python3 -I`.
 import argparse
 import hashlib
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path, PurePath
 
 JR_MISSING = "JR-MISSING"
@@ -783,6 +788,868 @@ def cmd_check(args):
 
 
 # ------------------------------------------------------------------
+# Run: execute the required legs against one installed module.
+#
+# The driver enforces the installed-only contract and owns the output
+# root, then hands off here. Every leg runs as exact argv with a
+# timeout and no pipes; each leg writes its record, its combined log
+# and its substituted config even when it cannot run. Placeholders in
+# argv, cwd and env come from the fixed whitelist; anything else is a
+# setup problem for the leg and the checker reports the table shape
+# separately. Versions are probed per phase for the clients that
+# phase uses. A module-only run writes a partial summary and skips the
+# aggregate judgement; a verifier append reuses the stored module
+# path, recomputes the time to first verified signature over the
+# merged run, then judges.
+# ------------------------------------------------------------------
+
+class SetupRefusal(Exception):
+    pass
+
+
+EMPTY_SHA = hashlib.sha256(b"").hexdigest()
+DEFAULT_TIMEOUT = 120
+SETUP_EXIT = 127
+TIMEOUT_EXIT = 124
+
+FAILURE_BY_RULE = {
+    JR_EXIT: "exit",
+    JR_MARKER: "marker",
+    JR_REFUSAL_UNREACHED: "refusal-unreached",
+    JR_VERIFY: "verification",
+    JR_UNCHANGED: "unchanged",
+    JR_FILE: "file",
+    JR_PIN: "pin",
+    JR_MODULE: "module",
+    JR_CONFIG: "config",
+}
+
+
+def find_src_root():
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def substitute_text(text, mapping):
+    out = text
+    for key, value in mapping.items():
+        out = out.replace(key, value)
+    return out
+
+
+def safe_leg(leg):
+    return leg.replace("/", "_")
+
+
+def classify_row(row):
+    explicit = row.get("classification")
+    if explicit in ("independent-client", "independent-verifier",
+                    "native-consumer", "setup"):
+        return explicit
+    client = row.get("client")
+    if client == "runner":
+        return "setup"
+    if client == "native":
+        return "native-consumer"
+    if row.get("phase") == "verifier":
+        return "independent-verifier"
+    return "independent-client"
+
+
+def find_verifies(leg, rows):
+    for row in rows:
+        if row.get("requires_verification") == leg:
+            return row.get("name")
+    return None
+
+
+def hash_run_file(run_dir, rel):
+    try:
+        return sha256_file(run_dir / rel)
+    except OSError:
+        return EMPTY_SHA
+
+
+def probe_client_versions(pin):
+    pkg_obs = None
+    rt_obs = None
+    failed = False
+    pkg = pin.get("package")
+    if isinstance(pkg, str) and pkg:
+        try:
+            proc = subprocess.run(
+                ["dpkg-query", "-W", "-f=${Version}", pkg],
+                capture_output=True, text=True, errors="replace",
+                timeout=30)
+            out = (proc.stdout or "").strip()
+            if proc.returncode == 0 and out:
+                pkg_obs = out.splitlines()[0].strip()
+                if not pkg_obs:
+                    failed = True
+            else:
+                failed = True
+        except (OSError, subprocess.SubprocessError):
+            failed = True
+    argv = pin.get("runtime_argv")
+    if isinstance(argv, list) and argv and all(
+            isinstance(a, str) for a in argv):
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True,
+                errors="replace", timeout=30)
+            combined = ((proc.stdout or "") + "\n"
+                        + (proc.stderr or "")).strip()
+            if proc.returncode == 0 and combined:
+                rt_obs = combined
+            else:
+                failed = True
+        except (OSError, subprocess.SubprocessError):
+            failed = True
+    return pkg_obs, rt_obs, failed
+
+
+def config_template_for(store, src_root):
+    if not isinstance(store, str) or not store:
+        return None
+    candidate = (src_root / "tests" / "journeys" / store
+                 / f"haskoki-{store}.toml")
+    try:
+        if candidate.is_file():
+            return candidate
+    except OSError:
+        return None
+    return None
+
+
+def synthesize_config_text(leg):
+    return (
+        f"# Synthesized journey config for {leg}; no template "
+        "matched the store.\n"
+        "schema_version = 1\n"
+        "profile = \"demo-maximal\"\n"
+        "\n"
+        "[storage]\n"
+        "kind = \"memory\"\n"
+        "\n"
+        "[engine]\n"
+        "kind = \"openssl\"\n"
+        "allow_synthetic_fallback = false\n"
+        "private_library_context = true\n"
+        "\n"
+        "[trace]\n"
+        "enabled = false\n"
+    )
+
+
+def run_one_leg(run_dir, row, profile_rows, clients, ctx):
+    name = row["name"]
+    tag = safe_leg(name)
+    store = row.get("store") or "default"
+    stores_dir = run_dir / "stores" / store
+    stores_dir.mkdir(parents=True, exist_ok=True)
+    cfg_rel = f"cfg/{tag}.toml"
+    cfg_path = run_dir / cfg_rel
+    template = config_template_for(row.get("store"), ctx["src_root"])
+    if template is not None:
+        try:
+            text = template.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SetupRefusal(
+                f"config template unreadable for {name}: {exc}")
+        text = text.replace("@JOURNEY_DIR@", str(run_dir / "stores"
+                                                / store))
+        text = text.replace("@MODULE@", ctx["module_path"])
+    else:
+        text = synthesize_config_text(name)
+    cfg_path.write_text(text, encoding="utf-8")
+    cfg_sha = sha256_file(cfg_path)
+    mapping = {
+        "@MODULE@": ctx["module_path"],
+        "@RUN@": str(run_dir),
+        "@CFG@": str(cfg_path),
+        "@NATIVE@": ctx["native_dir"],
+        "@SRC@": str(ctx["src_root"]),
+    }
+    argv_raw = row.get("argv", [])
+    problems = unknown_placeholders("\n".join(
+        a for a in argv_raw if isinstance(a, str)))
+    cwd_raw = row.get("cwd")
+    if isinstance(cwd_raw, str):
+        problems.extend(unknown_placeholders(cwd_raw))
+    env_raw = row.get("env") or {}
+    if isinstance(env_raw, dict):
+        joined = "\n".join(
+            [k for k in env_raw if isinstance(k, str)]
+            + [v for v in env_raw.values()
+               if isinstance(v, str)])
+        problems.extend(unknown_placeholders(joined))
+    log_rel = f"logs/{tag}.log"
+    log_path = run_dir / log_rel
+    record_path = run_dir / "records" / f"{tag}.json"
+    started_ns = time.time_ns()
+    mono_start = time.monotonic()
+    exit_code = 0
+    setup_note = None
+    timed_out = False
+    if problems:
+        setup_note = ("setup: unknown placeholder "
+                      + ", ".join(sorted(set(problems))))
+        exit_code = SETUP_EXIT
+        log_path.write_text(setup_note + "\n", encoding="utf-8")
+    else:
+        argv = [substitute_text(a, mapping) for a in argv_raw]
+        if isinstance(cwd_raw, str):
+            cwd = substitute_text(cwd_raw, mapping)
+        else:
+            cwd = str(run_dir)
+        home = run_dir / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(home),
+            "LANG": "C.UTF-8",
+            "HASKOKI_CONFIG": str(cfg_path),
+        }
+        for key, value in env_raw.items():
+            env[substitute_text(key, mapping)] = substitute_text(
+                value, mapping)
+        timeout = row.get("timeout_seconds")
+        if type(timeout) is not int or timeout < 1:
+            timeout = DEFAULT_TIMEOUT
+        unchanged_rel = row.get("unchanged")
+        if not is_run_relative(unchanged_rel):
+            unchanged_rel = None
+        before = (hash_run_file(run_dir, unchanged_rel)
+                  if unchanged_rel else None)
+        try:
+            with open(log_path, "wb") as handle:
+                proc = subprocess.Popen(
+                    argv, cwd=cwd, env=env, stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True)
+                try:
+                    proc.wait(timeout=timeout)
+                    exit_code = proc.returncode
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+                    proc.wait()
+                    exit_code = TIMEOUT_EXIT
+                    with open(log_path, "ab") as append:
+                        append.write(
+                            f"\ntimeout after {timeout}s\n".encode(
+                                "utf-8", "replace"))
+        except FileNotFoundError as exc:
+            setup_note = f"setup: binary not found: {exc.filename}"
+            exit_code = SETUP_EXIT
+            with open(log_path, "ab") as append:
+                append.write((setup_note + "\n").encode(
+                    "utf-8", "replace"))
+        except OSError as exc:
+            setup_note = f"setup: cannot start leg: {exc}"
+            exit_code = SETUP_EXIT
+            with open(log_path, "ab") as append:
+                append.write((setup_note + "\n").encode(
+                    "utf-8", "replace"))
+        ended_ns = time.time_ns()
+        mono_end = time.monotonic()
+        after = (hash_run_file(run_dir, unchanged_rel)
+                 if unchanged_rel else None)
+        return finish_leg_record(
+            run_dir, row, profile_rows, clients, ctx, name, tag,
+            argv, timeout, env, log_rel, record_path, cfg_rel,
+            cfg_sha, exit_code, setup_note, timed_out,
+            unchanged_rel, before, after, started_ns, ended_ns,
+            mono_end - mono_start)
+    ended_ns = time.time_ns()
+    mono_end = time.monotonic()
+    return finish_leg_record(
+        run_dir, row, profile_rows, clients, ctx, name, tag,
+        list(argv_raw), DEFAULT_TIMEOUT, {}, log_rel,
+        record_path, cfg_rel, cfg_sha, exit_code, setup_note,
+        timed_out, None, None, None, started_ns, ended_ns,
+        mono_end - mono_start)
+
+
+def finish_leg_record(run_dir, row, profile_rows, clients, ctx,
+                      name, tag, argv, timeout, env, log_rel,
+                      record_path, cfg_rel, cfg_sha, exit_code,
+                      setup_note, timed_out, unchanged_rel,
+                      before, after, started_ns, ended_ns,
+                      elapsed):
+    client_name = row.get("client")
+    pin = clients.get(client_name)
+    if not isinstance(pin, dict):
+        pin = {}
+    seen = ctx["versions"].get(client_name, {})
+    compile_target = pin.get("compile_target")
+    if not isinstance(compile_target, str):
+        compile_target = None
+    record = {
+        "name": name,
+        "command": list(argv),
+        "timeout_seconds": timeout,
+        "classification": classify_row(row),
+        "env_overrides": dict(env),
+        "log": log_rel,
+        "exit_code": exit_code,
+        "status": "pass",
+        "elapsed_seconds": elapsed,
+        "journey": ctx["profile"],
+        "client": {
+            "name": client_name,
+            "package": pin.get("package"),
+            "package_version": seen.get("package_version"),
+            "runtime_version": seen.get("runtime_version"),
+            "compile_target": compile_target,
+        },
+        "module": {"path": ctx["module_path"],
+                   "sha256": ctx["start_hash"]},
+        "config": {"file": cfg_rel, "sha256": cfg_sha},
+        "expect": {
+            "status": "pass",
+            "exit": row.get("expect", {}).get("exit"),
+            "markers": list(row.get("expect", {}).get("markers")
+                            or []),
+        },
+        "source": {"sha": ctx["source_sha"],
+                   "dirty": ctx["source_dirty"]},
+        "artifact": dict(ctx["artifact"]),
+        "phase": row.get("phase"),
+        "failure_stage": None,
+        "verifies": find_verifies(name, profile_rows),
+        "unchanged": ({"path": unchanged_rel,
+                       "sha256_before": before,
+                       "sha256_after": after}
+                      if unchanged_rel else None),
+        "started_utc_ns": started_ns,
+        "ended_utc_ns": ended_ns,
+    }
+    absent = row.get("expect", {}).get("absent_markers")
+    if isinstance(absent, list) and absent:
+        record["expect"]["absent_markers"] = list(absent)
+    if "expect_refusal" in row and isinstance(
+            row.get("expect_refusal"), dict):
+        record["expect_refusal"] = dict(row["expect_refusal"])
+    if setup_note is not None or seen.get("setup_failed"):
+        record["status"] = "fail"
+        record["failure_stage"] = "setup"
+    elif timed_out:
+        record["status"] = "fail"
+        record["failure_stage"] = "timeout"
+    else:
+        probe = []
+        check_leg(name, row, record, run_dir, clients,
+                  ctx["start_hash"], probe)
+        if probe:
+            record["status"] = "fail"
+            record["failure_stage"] = FAILURE_BY_RULE.get(
+                probe[0][0], "exit")
+    write_json(record_path, record)
+    return record
+
+
+def compute_first_verified(required, by_name, records, run_dir,
+                           t0_ns, t0_basis):
+    for name in required:
+        row = by_name.get(name)
+        record = records.get(name)
+        if row is None or record is None:
+            continue
+        if record.get("status") != "pass":
+            continue
+        target = row.get("requires_verification")
+        if target:
+            other = records.get(target)
+            if other is not None and other.get("status") == "pass":
+                ended = record.get("ended_utc_ns")
+                if isinstance(ended, int) and isinstance(
+                        t0_ns, int):
+                    return {"leg": name,
+                            "seconds": (ended - t0_ns) / 1e9,
+                            "t0_basis": t0_basis}
+            continue
+        if row.get("verification") == "in-leg":
+            marker = row.get("verification_marker")
+            log_rel = record.get("log")
+            if (isinstance(marker, str) and marker
+                    and isinstance(log_rel, str)):
+                try:
+                    text = (run_dir / log_rel).read_text(
+                        encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if marker in text:
+                    ended = record.get("ended_utc_ns")
+                    if isinstance(ended, int) and isinstance(
+                            t0_ns, int):
+                        return {"leg": name,
+                                "seconds": (ended - t0_ns) / 1e9,
+                                "t0_basis": t0_basis}
+    return None
+
+
+def load_table_or_refuse(legs_path):
+    try:
+        table = load_json(legs_path)
+    except (OSError, ValueError) as exc:
+        raise SetupRefusal(f"cannot read leg table: {exc}")
+    if not isinstance(table, dict):
+        raise SetupRefusal("leg table is not an object")
+    return table
+
+
+def profile_rows(table, profile):
+    rows = [row for row in table.get("legs", [])
+            if isinstance(row, dict)
+            and isinstance(row.get("name"), str)
+            and isinstance(row.get("profiles"), list)
+            and profile in row.get("profiles")]
+    return rows
+
+
+def capture_versions(rows, clients):
+    versions = {}
+    for row in rows:
+        client = row.get("client")
+        if client in versions:
+            continue
+        pin = clients.get(client)
+        if not isinstance(pin, dict):
+            versions[client] = {"package_version": None,
+                                "runtime_version": None,
+                                "setup_failed": True}
+            continue
+        pkg_obs, rt_obs, failed = probe_client_versions(pin)
+        versions[client] = {"package_version": pkg_obs,
+                            "runtime_version": rt_obs,
+                            "setup_failed": failed}
+    return versions
+
+
+def cmd_run(args):
+    try:
+        return run_impl(args)
+    except SetupRefusal as exc:
+        print(f"JOURNEY-SETUP: {exc}", file=sys.stderr)
+        return 2
+
+
+def run_impl(args):
+    legs_path = args.legs or str(
+        Path(__file__).with_name("legs.json"))
+    table = load_table_or_refuse(legs_path)
+    profiles_map = table.get("profiles", {})
+    if not isinstance(profiles_map, dict) \
+            or args.profile not in profiles_map:
+        raise SetupRefusal(f"unknown profile {args.profile!r}")
+    clients = table.get("clients", {})
+    if not isinstance(clients, dict):
+        clients = {}
+    if args.out and args.out_existing:
+        raise SetupRefusal("choose one output root")
+    if args.out_existing:
+        return run_verifier_append(args, table, clients,
+                                   legs_path)
+    if not args.out:
+        raise SetupRefusal("output root missing")
+    return run_new(args, table, clients, legs_path)
+
+
+def parse_source_flags(args):
+    sha = args.source_sha
+    if not isinstance(sha, str) or not sha:
+        raise SetupRefusal("source sha unavailable")
+    dirty_flag = args.source_dirty
+    if dirty_flag == "true":
+        dirty = True
+    elif dirty_flag == "false":
+        dirty = False
+    else:
+        raise SetupRefusal("source dirty flag required")
+    basis = args.source_dirty_basis
+    if basis not in ("measured", "caller"):
+        raise SetupRefusal("source dirty basis required")
+    return sha, dirty, basis
+
+
+def parse_client_setup(args):
+    raw = args.client_setup_seconds
+    if raw is None or raw == "":
+        return None, "not-measured"
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise SetupRefusal("client setup seconds malformed")
+    if value < 0:
+        raise SetupRefusal("client setup seconds malformed")
+    return value, "caller"
+
+
+def install_bundle(bundle_tar, run_dir):
+    try:
+        t0_ns = time.time_ns()
+    except OSError as exc:
+        raise SetupRefusal(f"clock unreadable: {exc}")
+    prefix = run_dir / "prefix"
+    prefix.mkdir(parents=True, exist_ok=False)
+    try:
+        proc = subprocess.run(
+            ["tar", "xzf", bundle_tar, "-C", str(prefix)],
+            capture_output=True, text=True, errors="replace",
+            timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SetupRefusal(f"bundle extraction failed: {exc}")
+    if proc.returncode != 0:
+        detail = ((proc.stderr or "").strip()[:200]
+                  or "tar failed")
+        raise SetupRefusal(f"bundle extraction failed: {detail}")
+    matches = sorted(prefix.glob("haskoki-*/lib/libhaskoki.so"))
+    if len(matches) != 1:
+        raise SetupRefusal("bundle layout unexpected")
+    module_path = str(matches[0].resolve())
+    try:
+        bundle_sha = sha256_file(bundle_tar)
+    except OSError:
+        raise SetupRefusal("bundle file missing")
+    leaf = matches[0].parent.parent.name
+    if leaf.startswith("haskoki-") and len(leaf) > len("haskoki-"):
+        version = leaf[len("haskoki-"):]
+    else:
+        version = "unknown"
+    base = matches[0].parent.parent
+    try:
+        toolchain_sha = sha256_file(base / "toolchain-record.txt")
+    except OSError:
+        raise SetupRefusal("not an installed bundle")
+    if not (base / "closure" / "review.txt").is_file():
+        raise SetupRefusal("not an installed bundle")
+    ctl = base / "bin" / "haskoki-ctl"
+    if not ctl.is_file() or not os.access(ctl, os.X_OK):
+        raise SetupRefusal("not an installed bundle")
+    return module_path, bundle_sha, version, toolchain_sha, t0_ns
+
+
+def module_provenance(module_path, artifact_image):
+    real = os.path.realpath(module_path)
+    if "dist-newstyle" in Path(real).parts:
+        raise SetupRefusal("source-tree build path")
+    if not os.path.isfile(real):
+        raise SetupRefusal("module file missing")
+    lib = os.path.dirname(real)
+    base = os.path.dirname(lib)
+    try:
+        toolchain_sha = sha256_file(
+            os.path.join(base, "toolchain-record.txt"))
+    except OSError:
+        raise SetupRefusal("not an installed bundle")
+    if not os.path.isfile(
+            os.path.join(base, "closure", "review.txt")):
+        raise SetupRefusal("not an installed bundle")
+    ctl = os.path.join(base, "bin", "haskoki-ctl")
+    if not os.path.isfile(ctl) or not os.access(ctl, os.X_OK):
+        raise SetupRefusal("not an installed bundle")
+    leaf = os.path.basename(base)
+    if leaf.startswith("haskoki-") and len(leaf) > len("haskoki-"):
+        version = leaf[len("haskoki-"):]
+    else:
+        version = "unknown"
+    try:
+        start_hash = sha256_file(real)
+    except OSError:
+        raise SetupRefusal("module file missing")
+    image_id = artifact_image or None
+    kind = "image" if image_id else "bundle"
+    artifact = {"kind": kind, "haskoki_version": version,
+                "bundle_sha256": None, "image_id": image_id,
+                "toolchain_record_sha256": toolchain_sha}
+    return real, start_hash, artifact
+
+
+def run_new(args, table, clients, legs_path):
+    out = args.out
+    if not os.path.isabs(out):
+        raise SetupRefusal("output root not absolute")
+    run_dir = Path(out)
+    if run_dir.exists() or run_dir.is_symlink():
+        raise SetupRefusal("output root exists")
+    phase = args.phase or "all"
+    if phase not in ("all", "module"):
+        raise SetupRefusal("verifier phase needs an existing run")
+    if args.module and args.bundle_tar:
+        raise SetupRefusal("choose one module source")
+    if not args.module and not args.bundle_tar:
+        raise SetupRefusal("module source missing")
+    if not args.native_dir or not os.path.isabs(args.native_dir):
+        raise SetupRefusal("native dir not absolute")
+    if not os.access(os.path.join(args.native_dir,
+                                  "token_fixture"), os.X_OK):
+        raise SetupRefusal("native binary missing")
+    sha, dirty, dirty_basis = parse_source_flags(args)
+    setup_seconds, setup_basis = parse_client_setup(args)
+    run_dir.mkdir(parents=True, exist_ok=False)
+    for sub in ("records", "logs", "cfg", "stores", "home",
+                "out"):
+        (run_dir / sub).mkdir(parents=True, exist_ok=True)
+    src_root = find_src_root()
+    if args.bundle_tar:
+        if not os.path.isabs(args.bundle_tar):
+            raise SetupRefusal("bundle path not absolute")
+        (module_path, bundle_sha, version, toolchain_sha,
+         t0_ns) = install_bundle(args.bundle_tar, run_dir)
+        t0_basis = "bundle-extract"
+        try:
+            start_hash = sha256_file(module_path)
+        except OSError:
+            raise SetupRefusal("module file missing")
+        image_id = args.artifact_image or None
+        kind = "image" if image_id else "bundle"
+        artifact = {"kind": kind, "haskoki_version": version,
+                    "bundle_sha256": bundle_sha,
+                    "image_id": image_id,
+                    "toolchain_record_sha256": toolchain_sha}
+    else:
+        if not os.path.isabs(args.module):
+            raise SetupRefusal("module path not absolute")
+        try:
+            t0_ns = time.time_ns()
+        except OSError as exc:
+            raise SetupRefusal(f"clock unreadable: {exc}")
+        t0_basis = "module-phase-start"
+        (module_path, start_hash,
+         artifact) = module_provenance(args.module,
+                                       args.artifact_image)
+    rows = profile_rows(table, args.profile)
+    if phase == "module":
+        selected = [row for row in rows
+                    if row.get("phase") == "module"]
+    else:
+        selected = list(rows)
+    versions = capture_versions(selected, clients)
+    ctx = {"module_path": module_path,
+           "native_dir": str(Path(args.native_dir).resolve()),
+           "src_root": src_root,
+           "profile": args.profile,
+           "source_sha": sha,
+           "source_dirty": dirty,
+           "artifact": artifact,
+           "start_hash": start_hash,
+           "versions": versions}
+    records = {}
+    for row in selected:
+        record = run_one_leg(run_dir, row, rows, clients, ctx)
+        records[row["name"]] = record
+    try:
+        end_hash = sha256_file(module_path)
+    except OSError:
+        end_hash = "missing"
+    required = [row["name"] for row in selected]
+    by_name = {row["name"]: row for row in rows}
+    first = compute_first_verified(required, by_name, records,
+                                   run_dir, t0_ns, t0_basis)
+    entry = profiles_map_entry(table, args.profile)
+    if phase == "module":
+        phases_complete = ["module"]
+        aggregate = "fail"
+    else:
+        phases_complete = list(entry.get("phases") or [])
+        aggregate = ("pass" if all(
+            record.get("status") == "pass"
+            for record in records.values()) else "fail")
+        if not required:
+            aggregate = "pass"
+    summary = {
+        "$schema": "haskoki-journey-summary/1",
+        "profile": args.profile,
+        "required": required,
+        "results": {name: records[name].get("status", "fail")
+                    for name in required},
+        "aggregate": aggregate,
+        "phases_complete": phases_complete,
+        "module_sha256_start": start_hash,
+        "module_sha256_end": end_hash,
+        "first_verified_signature": first,
+        "client_setup_seconds": setup_seconds,
+        "client_setup_seconds_basis": setup_basis,
+        "versions": {name: {
+            "package_version": seen.get("package_version"),
+            "runtime_version": seen.get("runtime_version")}
+            for name, seen in versions.items()},
+        "source": {"sha": sha, "dirty": dirty,
+                   "dirty_basis": dirty_basis},
+        "artifact": dict(artifact),
+        "module_path": module_path,
+        "native_dir": ctx["native_dir"],
+        "src_root": str(src_root),
+        "t0_ns": t0_ns,
+        "t0_basis": t0_basis,
+    }
+    write_json(run_dir / "summary.json", summary)
+    if phase == "module":
+        done = sum(1 for name in required
+                   if records[name].get("status") == "pass")
+        print(f"JOURNEYS: PARTIAL {done}/{len(required)} "
+              "(module phase complete)")
+        return 0 if done == len(required) else 1
+    failures, _required = check_run(str(run_dir), args.profile,
+                                    legs_path)
+    for rule, leg, detail in failures:
+        print(f"{rule}: {leg}: {detail}")
+    total = len(_required)
+    if failures:
+        print(f"JOURNEYS: FAIL {len(failures)}/{total}")
+        return 1
+    print(f"JOURNEYS: PASS {total}/{total}")
+    return 0
+
+
+def profiles_map_entry(table, profile):
+    profiles_map = table.get("profiles", {})
+    entry = profiles_map.get(profile)
+    return entry if isinstance(entry, dict) else {}
+
+
+def run_verifier_append(args, table, clients, legs_path):
+    if args.module or args.bundle_tar or args.native_dir \
+            or args.source_sha or args.source_dirty \
+            or args.client_setup_seconds or args.artifact_image:
+        raise SetupRefusal(
+            "existing run reuses its module and provenance")
+    phase = args.phase or "verifier"
+    if phase != "verifier":
+        raise SetupRefusal(
+            "existing run takes the verifier phase only")
+    run_dir = Path(args.out_existing)
+    if not run_dir.is_dir():
+        raise SetupRefusal("run directory missing")
+    try:
+        summary = load_json(run_dir / "summary.json")
+    except (OSError, ValueError) as exc:
+        raise SetupRefusal(
+            f"summary unreadable: {exc}")
+    if not isinstance(summary, dict):
+        raise SetupRefusal("summary is not an object")
+    complete = summary.get("phases_complete")
+    if not isinstance(complete, list) or "module" not in complete:
+        raise SetupRefusal("module phase incomplete")
+    if "verifier" in complete:
+        raise SetupRefusal("verifier phase already complete")
+    module_path = summary.get("module_path")
+    native_dir = summary.get("native_dir")
+    src_root = summary.get("src_root")
+    source = summary.get("source")
+    artifact = summary.get("artifact")
+    t0_ns = summary.get("t0_ns")
+    t0_basis = summary.get("t0_basis")
+    if not isinstance(module_path, str) or not module_path \
+            or not isinstance(native_dir, str) or not native_dir:
+        raise SetupRefusal("stored module path missing")
+    if not isinstance(source, dict) \
+            or not isinstance(source.get("sha"), str) \
+            or not isinstance(source.get("dirty"), bool):
+        raise SetupRefusal("stored source missing")
+    if not isinstance(artifact, dict):
+        raise SetupRefusal("stored artifact missing")
+    try:
+        start_hash = sha256_file(module_path)
+        start_ok = True
+    except OSError:
+        start_ok = False
+        start_hash = summary.get("module_sha256_start")
+    stored_start = summary.get("module_sha256_start")
+    if start_ok and isinstance(stored_start, str) \
+            and stored_start and start_hash != stored_start:
+        start_hash = stored_start
+    elif not isinstance(stored_start, str) or not stored_start:
+        raise SetupRefusal("stored module hash missing")
+    else:
+        start_hash = stored_start
+    rows = profile_rows(table, args.profile)
+    selected = [row for row in rows
+                if row.get("phase") == "verifier"]
+    versions = capture_versions(selected, clients)
+    try:
+        src_path = Path(src_root) if src_root else find_src_root()
+    except (TypeError, ValueError, OSError):
+        src_path = find_src_root()
+    ctx = {"module_path": module_path,
+           "native_dir": native_dir,
+           "src_root": src_path,
+           "profile": args.profile,
+           "source_sha": source["sha"],
+           "source_dirty": source["dirty"],
+           "artifact": artifact,
+           "start_hash": start_hash,
+           "versions": versions}
+    records = {}
+    records_dir = run_dir / "records"
+    if records_dir.is_dir():
+        for path in sorted(records_dir.glob("*.json")):
+            try:
+                record = load_json(path)
+            except (OSError, ValueError):
+                continue
+            name = record.get("name") if isinstance(
+                record, dict) else None
+            if isinstance(name, str):
+                records.setdefault(name, record)
+    for row in selected:
+        if row["name"] in records:
+            raise SetupRefusal(
+                f"verifier leg already recorded: {row['name']}")
+        record = run_one_leg(run_dir, row, rows, clients, ctx)
+        records[row["name"]] = record
+    try:
+        end_hash = sha256_file(module_path)
+    except OSError:
+        end_hash = "missing"
+    required = [row["name"] for row in rows]
+    by_name = {row["name"]: row for row in rows}
+    first = compute_first_verified(required, by_name, records,
+                                   run_dir, t0_ns, t0_basis)
+    entry = profiles_map_entry(table, args.profile)
+    phases = list(entry.get("phases") or ["module", "verifier"])
+    merged_versions = dict(summary.get("versions") or {})
+    for name, seen in versions.items():
+        merged_versions[name] = {
+            "package_version": seen.get("package_version"),
+            "runtime_version": seen.get("runtime_version")}
+    stored_results = summary.get("results")
+    if not isinstance(stored_results, dict):
+        stored_results = {}
+    results = dict(stored_results)
+    for row in selected:
+        results[row["name"]] = records[row["name"]].get(
+            "status", "fail")
+    aggregate = ("pass" if all(
+        results.get(name) == "pass" for name in required)
+        else "fail")
+    summary.update({
+        "required": required,
+        "results": results,
+        "aggregate": aggregate,
+        "phases_complete": phases,
+        "module_sha256_start": start_hash,
+        "module_sha256_end": end_hash,
+        "first_verified_signature": first,
+        "versions": merged_versions,
+    })
+    write_json(run_dir / "summary.json", summary)
+    failures, _required = check_run(str(run_dir), args.profile,
+                                    legs_path)
+    for rule, leg, detail in failures:
+        print(f"{rule}: {leg}: {detail}")
+    total = len(_required)
+    if failures:
+        print(f"JOURNEYS: FAIL {len(failures)}/{total}")
+        return 1
+    print(f"JOURNEYS: PASS {total}/{total}")
+    return 0
+
+
+# ------------------------------------------------------------------
 # Self-test: a synthetic five-leg fixture run plus one mutation per
 # rule. The fixture lives in temp dirs only, never in the real table.
 # ------------------------------------------------------------------
@@ -1442,7 +2309,7 @@ def self_test():
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="journeys.py",
-        description="Recomputing aggregate check for journey runs.")
+        description="Journey runner and recomputing aggregate check.")
     parser.add_argument("--self-test", action="store_true",
                         help="run the fixture mutation suite")
     sub = parser.add_subparsers(dest="command")
@@ -1451,6 +2318,21 @@ def build_parser():
     check.add_argument("--profile", required=True)
     check.add_argument("--legs",
                        default=str(Path(__file__).with_name("legs.json")))
+    run = sub.add_parser("run", help="execute legs against a module")
+    run.add_argument("--profile", required=True)
+    run.add_argument("--out", default=None)
+    run.add_argument("--out-existing", default=None)
+    run.add_argument("--module", default=None)
+    run.add_argument("--bundle-tar", default=None)
+    run.add_argument("--native-dir", default=None)
+    run.add_argument("--phase", default=None)
+    run.add_argument("--legs",
+                     default=str(Path(__file__).with_name("legs.json")))
+    run.add_argument("--source-sha", default=None)
+    run.add_argument("--source-dirty", default=None)
+    run.add_argument("--source-dirty-basis", default=None)
+    run.add_argument("--client-setup-seconds", default=None)
+    run.add_argument("--artifact-image", default=None)
     return parser
 
 
@@ -1460,6 +2342,8 @@ def main(argv=None):
         return self_test()
     if args.command == "check":
         return cmd_check(args)
+    if args.command == "run":
+        return cmd_run(args)
     build_parser().print_usage(sys.stderr)
     return 2
 
