@@ -68,6 +68,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
+import Haskoki.CallWork (mkFixtureCallWork)
 import Haskoki.Model (Model (..))
 import Haskoki.Operation (CryptoEffect (..))
 import Haskoki.Operation.Codec (encodeInitInput)
@@ -99,7 +100,7 @@ import Haskoki.Runtime.Async
   , leaseSnapshot
   , newAsyncTable
   , snapshotJob
-  , startJob
+  , startFixtureJob
   , withDetachLease
   )
 import Haskoki.Runtime.Detached
@@ -168,9 +169,9 @@ digestRequest :: SessionId -> Int -> JobRequest
 digestRequest sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobDigest
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "lease-scope" [] Nothing Nothing)
-      (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+      (EffectCrypto (FxDigest (MechanismId 0x250) "abc")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -184,7 +185,7 @@ mkJob :: IO (AsyncTable, JobId)
 mkJob = do
   table <- newAsyncTable 8
   enableAsyncSession table sid1
-  ej <- startJob table (digestRequest sid1 2)
+  ej <- startFixtureJob table (digestRequest sid1 2)
   case ej of
     Left deny -> assertFailure ("job submit refused: " ++ show deny)
     Right j -> pure (table, j)
@@ -297,7 +298,7 @@ caseKillDuringCommitNeverWedges = do
   enableAsyncSession table sid1
   jids <- mapM
     (\_ -> do
-      ej <- startJob table (digestRequest sid1 2)
+      ej <- startFixtureJob table (digestRequest sid1 2)
       case ej of
         Left deny -> assertFailure ("job submit refused: " ++ show deny)
         Right j -> pure j
@@ -422,7 +423,7 @@ caseRivalTableJoinRefuses = do
       tidB = asyncTableId tableB
   assertBool "table identities distinct" (tidA /= tidB)
   -- A: start, detach, join back (active JobId 1).
-  eA0 <- startJob tableA (digestRequest sid 1)
+  eA0 <- startFixtureJob tableA (digestRequest sid 1)
   jA0 <- case eA0 of
     Right j -> pure j
     Left deny -> assertFailure ("A start denied: " ++ show deny)
@@ -441,11 +442,11 @@ caseRivalTableJoinRefuses = do
     other -> assertFailure ("A join failed: " ++ show other)
   -- B: two jobs, second canceled — a terminal job at the same
   -- numeric id as A's live attachment.
-  eB0 <- startJob tableB (digestRequest sid 1)
+  eB0 <- startFixtureJob tableB (digestRequest sid 1)
   case eB0 of
     Right _ -> pure ()
     Left deny -> assertFailure ("B start denied: " ++ show deny)
-  eB1 <- startJob tableB (digestRequest sid 1)
+  eB1 <- startFixtureJob tableB (digestRequest sid 1)
   jB1 <- case eB1 of
     Right j -> pure j
     Left deny -> assertFailure ("B start denied: " ++ show deny)

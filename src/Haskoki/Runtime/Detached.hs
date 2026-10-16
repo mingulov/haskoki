@@ -134,7 +134,7 @@ import Data.Unique (Unique, newUnique)
 import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute (AttributeType, AttributeValue)
-import Haskoki.CallWork (checkedCallWork)
+import Haskoki.CallWork (callWorkEffect, checkedCallWork)
 import Haskoki.Model (Model, SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
@@ -672,12 +672,13 @@ foldBE = BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0
 -- async function of this facility).
 recipeFromWork :: JobFunction -> AsyncWork -> Int -> Word64 -> Maybe Recipe
 recipeFromWork func work ticks cap = case work of
-  WorkCall _ (EffectCrypto fx) -> case fx of
-    FxDigest {} -> Just RecipeCall
-      { rcFunc = func, rcTicks = ticks, rcCapacity = cap, rcEffect = fx }
-    FxSign {} -> Just RecipeCall
-      { rcFunc = func, rcTicks = ticks, rcCapacity = cap, rcEffect = fx }
-    _ -> Nothing
+  WorkCall w -> case callWorkEffect w of
+    EffectCrypto fx -> case fx of
+      FxDigest {} -> Just RecipeCall
+        { rcFunc = func, rcTicks = ticks, rcCapacity = cap, rcEffect = fx }
+      FxSign {} -> Just RecipeCall
+        { rcFunc = func, rcTicks = ticks, rcCapacity = cap, rcEffect = fx }
+      _ -> Nothing
   WorkKey _ pw fx -> case (pw, fx) of
     (PwGenerateKey k, FxGenerateKey {}) -> Just RecipeGenKey
       { rkTicks = ticks
@@ -1469,7 +1470,7 @@ replanRecipe rules m st recFunc recipe = case recipe of
           | fx' /= fx -> Left "session operation does not match the detached recipe"
           | otherwise -> case checkedCallWork sid res (EffectCrypto fx') of
               Left mm -> Left ("re-planned call work is incoherent: " ++ show mm)
-              Right _ -> Right (WorkCall res (EffectCrypto fx'))
+              Right cw -> Right (WorkCall cw)
         Reject rej -> Left ("plan rejected: " ++ show (rejCode rej))
         Immediate _ -> Left "plan is immediate (operation is not pending on this session)"
     -- | Remap a session-owned template object to the joining

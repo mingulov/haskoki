@@ -513,6 +513,11 @@ test-suite haskoki-model-tests
     tasty-hunit >= 0.10 && < 0.11,
     text        >= 1.2  && < 2.2
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+  -- Suite identity for specs shared with haskoki-core-tests: the
+  -- core suite compiles the same sources WITHOUT the runtime/FFI
+  -- libraries, so runtime-dependent cases hide behind this define
+  -- (default absent = core-safe).
+  cpp-options:      -DHASKOKI_MODEL_SUITE
   default-language: GHC2024
 
 test-suite haskoki-engine-tests

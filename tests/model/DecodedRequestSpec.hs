@@ -38,7 +38,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
-import Haskoki.CallWork (callPairCompatible, checkedCallWork)
+import Haskoki.CallWork (checkedCallWork, mkFixtureCallWork)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -123,6 +123,7 @@ import Haskoki.Runtime.Async
   , enableAsyncSession
   , newAsyncTable
   , pollJob
+  , startFixtureJob
   , startJob
   )
 import Haskoki.Runtime.Lifecycle
@@ -1054,9 +1055,9 @@ caseSubmitRefusesInit = do
   let jr = JobRequest
         { jrSession = sid
         , jrFunction = JobSign
-        , jrWork = WorkCall
+        , jrWork = WorkCall (mkFixtureCallWork sid
             (Reservation "construct" [] Nothing Nothing)
-            (EffectCrypto (FxDigestInit sha256Mech))
+            (EffectCrypto (FxDigestInit sha256Mech)))
         , jrTicks = 1
         , jrCapacity = 64
         }
@@ -1074,16 +1075,16 @@ caseSubmitAcceptsCoherent = do
   let signJr = JobRequest
         { jrSession = sid
         , jrFunction = JobSign
-        , jrWork = WorkCall
+        , jrWork = WorkCall (mkFixtureCallWork sid
             (Reservation "construct-sign" [] Nothing Nothing)
-            (EffectCrypto (FxSign hmacMech Nothing BS.empty "hello"))
+            (EffectCrypto (FxSign hmacMech Nothing BS.empty "hello")))
         , jrTicks = 1
         , jrCapacity = 64
         }
-  rSign <- startJob table signJr
+  rSign <- startFixtureJob table signJr
   case rSign of
     Right _ -> pure ()
-    Left deny -> assertFailure ("coherent sign submit refused: " ++ show deny)
+    Left deny -> assertFailure ("fixture sign submit refused: " ++ show deny)
   st <- sessionOf m0 sid
   (pw, fx) <- case planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty (aesTmpl 32) of
     KeyEffect pw0 fx0 -> pure (pw0, fx0)
@@ -1240,7 +1241,6 @@ caseDecodedInitChecks = do
   case planDecoded defaultRules m0 dreq of
     Execute res eff -> do
       assertBool "decoded init checks" (isRight (checkedCallWork sid res eff))
-      assertEqual "decoded init compatible" True (callPairCompatible sid res eff)
     other -> assertFailure ("decoded init did not execute: " ++ show other)
 
 -- | A planned (stepped) allocation submit still refuses at submit:
@@ -1254,10 +1254,13 @@ casePlannedAllocRefused = do
   let dreq = DRInit sid InitDigest Nothing sha256Mech [] False BS.empty
   case planDecoded defaultRules m0 dreq of
     Execute res eff -> do
+      cw <- case checkedCallWork sid res eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("planned pair must check: " ++ show mm)
       r <- startJob table JobRequest
         { jrSession = sid
         , jrFunction = JobDigest
-        , jrWork = WorkCall res eff
+        , jrWork = WorkCall cw
         , jrTicks = 1
         , jrCapacity = 64
         }

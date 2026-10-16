@@ -31,6 +31,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Model (SessionState (..), lookupSession)
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.Codec (encodeInitInput)
@@ -358,10 +359,13 @@ caseKeyMutation mut = do
   (res, fx) <- planSignShot env sidA
   table <- newAsyncTable 8
   enableAsyncSession table sidA
+  cw <- case checkedCallWork sidA res (EffectCrypto fx) of
+    Right c -> pure c
+    Left mm -> assertFailure ("sign pair must check: " ++ show mm)
   started <- startJob table JobRequest
     { jrSession = sidA
     , jrFunction = JobSign
-    , jrWork = WorkCall res (EffectCrypto fx)
+    , jrWork = WorkCall cw
     , jrTicks = 1
     , jrCapacity = 64
     }

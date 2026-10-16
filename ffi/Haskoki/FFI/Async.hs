@@ -110,6 +110,7 @@ module Haskoki.FFI.Async
   , submitTransfer
   , joinTransfer
   , joinAcquireTransfer
+  , rvOf
   , jobFunctionCode
   , codeJobFunction
   , decodeAsyncFunctionName
@@ -1677,11 +1678,11 @@ submitJob c sid jfunc input cap ticks pHandleOut = do
       -- incoherent pair is an internal breach, refused loudly with
       -- no submission and no id consumed.
       Left _ -> refuse pHandleOut (rvOf CKR_GENERAL_ERROR)
-      Right _ -> do
+      Right cw -> do
         let jobReq = JobRequest
               { jrSession = sid
               , jrFunction = jfunc
-              , jrWork = WorkCall res eff
+              , jrWork = WorkCall cw
               , jrTicks = fromIntegral ticks
               , jrCapacity = cap
               }

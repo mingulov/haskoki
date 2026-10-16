@@ -46,6 +46,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import StormBudget (stormScaleBudget)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.CallWork (mkFixtureCallWork)
 import Haskoki.Model (Model, SessionState (..), lookupSession)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Outcome
@@ -74,7 +75,7 @@ import Haskoki.Runtime.Async
   , enableAsyncSession
   , newAsyncTable
   , pollJob
-  , startJob
+  , startFixtureJob
   , tableStats
   )
 import Haskoki.Runtime.Events
@@ -271,9 +272,9 @@ signRequest :: SessionId -> Int -> JobRequest
 signRequest sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobSign
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "stress-sign" [] Nothing Nothing)
-      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello"))
+      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BS.empty "hello")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -346,7 +347,7 @@ jobOne
   :: AsyncTable -> Env -> Int -> IORef Int -> SessionId
   -> EffectRunner -> Delivery -> Int -> Int -> IO ()
 jobOne table env m starts sid run del t i = do
-  eJid <- startJob table (signRequest sid (1 + (t * m + i) `mod` 3))
+  eJid <- startFixtureJob table (signRequest sid (1 + (t * m + i) `mod` 3))
   jid <- case eJid of
     Left deny -> assertFailure ("start refused: " ++ show deny)
     Right j -> pure j
@@ -397,7 +398,7 @@ regOne :: AsyncTable -> TokenRegistry -> Int -> SessionId -> Int -> Int -> IO ()
 regOne at reg m sid t i = do
   let slot = SlotId (t * m + i)
   registerSessionSlot reg sid slot
-  eJid <- startJob at (signRequest sid 100)
+  eJid <- startFixtureJob at (signRequest sid 100)
   case eJid of
     Left deny -> assertFailure ("quiesce-job start refused: " ++ show deny)
     Right _ -> pure ()

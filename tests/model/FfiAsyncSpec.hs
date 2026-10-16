@@ -133,11 +133,13 @@ import Haskoki.FFI.Async
   , residueCount
   , resolveJobHandle
   , retireCtx
+  , rvOf
   , setEnterTestHook
   , StoreBox (..)
   , submitTransfer
   )
 import Haskoki.FFI.Standard (StdInstance, haskokiStdClose, openStdInstance)
+import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Model (Model (..))
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.Codec (encodeInitInput)
@@ -250,6 +252,7 @@ import Haskoki.Types
   , JobId (..)
   , Outcome (..)
   , Pkcs11Version (..)
+  , ReturnCode (CKR_ARGUMENTS_BAD)
   , SessionId (..)
   , SlotId (..)
   , TokenId (..)
@@ -267,6 +270,7 @@ spec = testGroup "FFI acquisition"
   , testCase "close waits for an entered caller" (counted "m3-ffi-acquisition" "close-waits-for-an-entered-caller" (caseCloseWaitsForEntered))
   , testCase "admitted calls run; close retires the gate" (counted "m3-ffi-acquisition" "admitted-calls-run-close-retires-the-gate" (caseAdmittedCallsRun))
   , testCase "kill in the submit transfer cancels the fresh job" (counted "m3-ffi-acquisition" "kill-in-the-submit-transfer-cancels-the-fresh-job" (caseSubmitKillCancelsFresh))
+  , testCase "submit under a key function refuses without allocating" (counted "m3-ffi-acquisition" "submit-under-a-key-function-refuses-without-allocating" caseSubmitKeyFunctionRefuses)
   , testCase "kill in the join handoff cancels the fresh join" (counted "m3-ffi-acquisition" "kill-in-the-join-handoff-cancels-the-fresh-join" (caseHandoffKillCancelsJoin))
   , testCase "join handoff publishes a live handle" (counted "m3-ffi-acquisition" "join-handoff-publishes-a-live-handle" (caseHandoffPublishes))
   , testCase "kill after join commit cancels before publish" (counted "m3-ffi-acquisition" "kill-after-join-commit-cancels-before-publish" (caseJoinAcquireKillAfterCommit))
@@ -552,10 +556,13 @@ startFfiDigest ctx input cap ticks = do
         [RegionBytes "async" (IntentBuffer maxOutputBytes)]
   case planCall defaultRules m req of
     Execute res eff -> do
+      cw <- case checkedCallWork (acSession ctx) res eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("digest pair must check: " ++ show mm)
       let jr = JobRequest
             { jrSession = acSession ctx
             , jrFunction = JobDigest
-            , jrWork = WorkCall res eff
+            , jrWork = WorkCall cw
             , jrTicks = ticks
             , jrCapacity = cap
             }
@@ -850,13 +857,17 @@ planFfiDigest ctx input cap ticks = do
   let req = Request Pkcs11_3_2 F_Digest (Just (acSession ctx)) Nothing input
         [RegionBytes "async" (IntentBuffer maxOutputBytes)]
   case planCall defaultRules m req of
-    Execute res eff -> pure JobRequest
-      { jrSession = acSession ctx
-      , jrFunction = JobDigest
-      , jrWork = WorkCall res eff
-      , jrTicks = ticks
-      , jrCapacity = cap
-      }
+    Execute res eff -> do
+      cw <- case checkedCallWork (acSession ctx) res eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("digest pair must check: " ++ show mm)
+      pure JobRequest
+        { jrSession = acSession ctx
+        , jrFunction = JobDigest
+        , jrWork = WorkCall cw
+        , jrTicks = ticks
+        , jrCapacity = cap
+        }
     other -> assertFailure ("digest did not plan execute: " ++ show other)
 
 -- | A kill landing in the submit transfer window cancels the
@@ -911,6 +922,36 @@ caseSubmitKillCancelsFresh = do
   asyncCloseCtx ctx
   nLive2 <- asyncLiveHandles ctx
   assertZero "live_handles" "close drains clean" nLive2
+
+caseSubmitKeyFunctionRefuses :: IO ()
+caseSubmitKeyFunctionRefuses = do
+  _store <- mkFfiStore
+  dc <- mkFfiDetached _store
+  ctx <- mkFfiGen dc
+  digestReq <- planFfiDigest ctx "abc" 32 1
+  -- Rebuild (not record-update): 'jrFunction' also belongs to
+  -- 'JobRecord', so an update is ambiguous here.
+  let badReq = case digestReq of
+        JobRequest sid _func work ticks cap ->
+          JobRequest sid JobGenKey work ticks cap
+  before <- tableStats (acTable ctx)
+  alloca $ \pHandleOut -> do
+    poke pHandleOut nullJob
+    rv <- submitTransfer (pure ()) ctx badReq pHandleOut
+    assertEqual "key-function submit refuses"
+      (rvOf CKR_ARGUMENTS_BAD) rv
+    hAfter <- peek pHandleOut
+    assertBool "no handle on refusal"
+      (castStablePtrToPtr hAfter == nullPtr)
+  after <- tableStats (acTable ctx)
+  assertEqual "refusal consumes nothing" before after
+  nLive <- asyncLiveHandles ctx
+  assertZero "live_handles" "no handle admitted" nLive
+  asyncCloseCtx ctx
+  nLive2 <- asyncLiveHandles ctx
+  assertZero "live_handles" "close drains clean" nLive2
+  (liveEnd, _, _) <- tableStats (acTable ctx)
+  assertZero "live_jobs" "no live orphan" liveEnd
 
 -- | A kill landing in the join handoff window cancels the fresh
 -- join through the detach wrapper: the committed attachment

@@ -44,6 +44,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
 
+import Haskoki.CallWork (mkFixtureCallWork)
 import Haskoki.Operation (CryptoEffect (..))
 import Haskoki.Outcome (EffectRequest (..), Reservation (..))
 import Haskoki.Registry (MechanismId (..))
@@ -56,7 +57,7 @@ import Haskoki.Runtime.Async
   , beginDetach
   , enableAsyncSession
   , newAsyncTable
-  , startJob
+  , startFixtureJob
   )
 import Haskoki.Types (SessionId (..))
 
@@ -106,12 +107,12 @@ runDense = do
   table <- newAsyncTable 2048
   let sid = SessionId 1
   enableAsyncSession table sid
-  ej <- startJob table JobRequest
+  ej <- startFixtureJob table JobRequest
     { jrSession = sid
     , jrFunction = JobDigest
-    , jrWork = WorkCall
+    , jrWork = WorkCall (mkFixtureCallWork sid
         (Reservation "dense-rain" [] Nothing Nothing)
-        (EffectCrypto (FxDigest (MechanismId 0x250) "abc"))
+        (EffectCrypto (FxDigest (MechanismId 0x250) "abc")))
     , jrTicks = 2
     , jrCapacity = 64
     }

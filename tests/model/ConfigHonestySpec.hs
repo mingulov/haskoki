@@ -23,6 +23,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Ctl (CtlExit (..), runCtl)
+import Haskoki.CallWork (mkFixtureCallWork)
 import Haskoki.FFI.Instance (Instance (..), buildInstance)
 import Haskoki.Model (Model (..), addToken, emptyModel, lookupSession)
 import Haskoki.Operation (CryptoEffect (..))
@@ -38,7 +39,7 @@ import Haskoki.Runtime.Async
   , StartDeny (..)
   , enableAsyncSession
   , newAsyncTable
-  , startJob
+  , startFixtureJob
   )
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Runtime.Control (ControlState, Json (..), dispatchControl, newControlState, bindPrivatePresenceOwner, renderJson)
@@ -647,9 +648,9 @@ honestySignRequest :: SessionId -> Int -> JobRequest
 honestySignRequest sid ticks = JobRequest
   { jrSession = sid
   , jrFunction = JobSign
-  , jrWork = WorkCall
+  , jrWork = WorkCall (mkFixtureCallWork sid
       (Reservation "jobs-test" [] Nothing Nothing)
-      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BC8.empty "hello"))
+      (EffectCrypto (FxSign (MechanismId 0x251) Nothing BC8.empty "hello")))
   , jrTicks = ticks
   , jrCapacity = 64
   }
@@ -663,7 +664,7 @@ caseJobsBound = withTimeout "jobs bound" $ do
   let table = instAsync inst
       sid = SessionId 7
   enableAsyncSession table sid
-  results <- mapM (\_ -> startJob table (honestySignRequest sid 2)) [1 .. 9 :: Int]
+  results <- mapM (\_ -> startFixtureJob table (honestySignRequest sid 2)) [1 .. 9 :: Int]
   let oks = [j | Right j <- results]
   assertEqual "8 submits accepted" 8 (length oks)
   case reverse results of

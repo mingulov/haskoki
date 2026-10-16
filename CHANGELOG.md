@@ -80,6 +80,13 @@ record: symbol separation, sanitizer runs, evidence limits) and
 
 ### Fixed
 
+- Async submit now carries checked call work end to end: normal
+  submission re-checks the triple and its outer function before any
+  id is consumed, and hand-built fixtures submit through the named
+  test-only admission. No C-visible behavior changes.
+- The reference exercise traces one AES-GCM parameter path from the
+  native struct image through planning, checked construction and the
+  real backend seal, pinned against an independent vector.
 - A hang in hosts that load the provider with at least 2 RTS
   capabilities (`GHCRTS=-N2` or higher, or `-N`). When two threads
   opened the OpenSSL 4 backend at once, they could both evaluate the

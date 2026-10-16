@@ -3,14 +3,15 @@
 A 'CallWork' is one executable call unit — the submitting session,
 the guarding reservation, and the effect the runner executes —
 validated as a triple before anything runs it. 'checkedCallWork'
-is the only constructor: it validates step presence, step/session
-identity, the function/slot family, and effect compatibility, in
-that order, reporting the first failure as a typed 'WorkMismatch'.
-'callPairCompatible' is the total Bool form for injected
-boundaries (async submit, detach rejoin): stepped triples must
-check fully, while legacy unstepped triples admit explicitly
-('admitLegacyUnstepped') without ever sniffing the effect
-content. Normal submission never content-fallbacks: a missing
+is the only checked constructor: it validates step presence,
+step/session identity, the function/slot family, and effect
+compatibility, in that order, reporting the first failure as a
+typed 'WorkMismatch'.
+Hand-built fixtures predate pinned steps: they construct through
+the unchecked test-only 'mkFixtureCallWork' and submit through
+the fixture entrypoint ('Haskoki.Runtime.Async.startFixtureJob'),
+never through normal submission. Normal submission never
+content-fallbacks: a missing
 step is a hard 'WorkUnstepped', never a guessed coherence.
 
 This is a pure leaf over the domain types ('Haskoki.Outcome',
@@ -25,16 +26,16 @@ module Haskoki.CallWork
   ( CallWork
   , WorkMismatch (..)
   , checkedCallWork
-  , callPairCompatible
-  , admitLegacyUnstepped
   , callFunctionSlot
   , callFunctionEffect
   , callWorkSession
   , callWorkReservation
   , callWorkEffect
+  , mkFixtureCallWork
+  , CallFamily (..)
+  , callFunctionFamily
+  , callWorkFamily
   ) where
-
-import Data.Either (isRight)
 
 import Haskoki.Model (SessionState (..))
 import Haskoki.Operation.Effect (CryptoEffect (..))
@@ -49,9 +50,9 @@ import Haskoki.Types (SessionId)
 -- effect compatibility.
 data WorkMismatch
   = -- | The reservation pins no step: nothing to validate the
-    -- triple against. Normal submission refuses; injected
-    -- boundaries admit legacy fixtures explicitly
-    -- ('admitLegacyUnstepped').
+    -- triple against. Normal submission refuses; hand-built
+    -- fixtures construct through 'mkFixtureCallWork' and submit
+    -- through the fixture entrypoint.
     WorkUnstepped
   | -- | The step's session disagrees with the submitting session:
     -- @(want, got)@, the submitting session first.
@@ -64,9 +65,10 @@ data WorkMismatch
     WorkEffectMismatch !FunctionId !CryptoEffect
   deriving (Eq, Show)
 
--- | Checked call work: the constructor is private, so values only
--- ever come from 'checkedCallWork'. Read through the accessors
--- below; the record fields stay internal.
+-- | Checked call work: the constructor is private, so checked
+-- values only ever come from 'checkedCallWork', while
+-- 'mkFixtureCallWork' builds unchecked test-only values. Read
+-- through the accessors below; the record fields stay internal.
 data CallWork = CallWork
   { cwSession :: !SessionId
   , cwReservation :: !Reservation
@@ -302,25 +304,93 @@ checkedCallWork sid res eff = case resStep res of
           Left (WorkEffectMismatch (csFunction step) fx)
       | otherwise -> Right (CallWork sid res eff)
 
--- | Whether a (submitting session, reservation, effect) triple may
--- execute at an injected boundary (async submit, detach rejoin):
--- stepped triples must check fully; legacy unstepped triples
--- admit explicitly ('admitLegacyUnstepped') without sniffing the
--- effect. Total: every triple takes exactly one verdict, and no
--- verdict accepts by default.
-callPairCompatible :: SessionId -> Reservation -> EffectRequest -> Bool
-callPairCompatible sid res eff
-  | admitLegacyUnstepped res = True
-  | otherwise = isRight (checkedCallWork sid res eff)
+-- | INTERNAL TEST-ONLY: build call work without checking. Hand-built
+-- fixtures predate pinned steps; they construct here and submit
+-- through the fixture submit entrypoint. Normal submission
+-- never calls this: production triples come from 'checkedCallWork'.
+mkFixtureCallWork :: SessionId -> Reservation -> EffectRequest -> CallWork
+mkFixtureCallWork sid res eff = CallWork sid res eff
 
--- | INTERNAL: the explicit legacy admission behind
--- 'callPairCompatible'. Unstepped reservations predate pinned
--- steps (hand-built fixtures); injected boundaries admit them
--- AS-IS — the effect family is never guessed from a missing
--- step, so there is no content fallback to drift. Normal
--- submission never calls this: planner-produced pairs always
--- carry steps, and a missing step there is 'WorkUnstepped'.
-admitLegacyUnstepped :: Reservation -> Bool
-admitLegacyUnstepped res = case resStep res of
-  Nothing -> True
-  Just _ -> False
+-- | The serving family of a finishing function: the outer
+-- 'Haskoki.Runtime.Async.JobFunction' coherence relation groups by
+-- this. Sign and digest families serve async jobs; every other
+-- function (cipher, verify, message-cipher, legless) pairs with no
+-- outer function.
+data CallFamily = FamilySign | FamilyDigest | FamilyOther
+  deriving (Eq, Show)
+
+-- | The serving family of one function. Exhaustive over
+-- 'FunctionId' (no wildcard): a new constructor breaks the build
+-- here, forcing an explicit family verdict, exactly as in
+-- 'callFunctionSlot'.
+callFunctionFamily :: FunctionId -> CallFamily
+callFunctionFamily fid = case fid of
+  F_Sign -> FamilySign
+  F_SignFinal -> FamilySign
+  F_SignRecover -> FamilySign
+  F_SignMessage -> FamilySign
+  F_SignMessageNext -> FamilySign
+  F_Digest -> FamilyDigest
+  F_DigestInit -> FamilyDigest
+  F_DigestUpdate -> FamilyDigest
+  F_DigestFinal -> FamilyDigest
+  F_Verify -> FamilyOther
+  F_VerifyFinal -> FamilyOther
+  F_VerifyRecover -> FamilyOther
+  F_Encrypt -> FamilyOther
+  F_EncryptUpdate -> FamilyOther
+  F_EncryptFinal -> FamilyOther
+  F_Decrypt -> FamilyOther
+  F_DecryptUpdate -> FamilyOther
+  F_DecryptFinal -> FamilyOther
+  F_EncryptMessage -> FamilyOther
+  F_DecryptMessage -> FamilyOther
+  F_VerifyMessage -> FamilyOther
+  F_EncryptMessageNext -> FamilyOther
+  F_DecryptMessageNext -> FamilyOther
+  F_VerifyMessageNext -> FamilyOther
+  F_GetInfo -> FamilyOther
+  F_GetSlotList -> FamilyOther
+  F_GetSessionInfo -> FamilyOther
+  F_OpenSession -> FamilyOther
+  F_CloseSession -> FamilyOther
+  F_Login -> FamilyOther
+  F_Logout -> FamilyOther
+  F_SignInit -> FamilyOther
+  F_SignRecoverInit -> FamilyOther
+  F_CreateObject -> FamilyOther
+  F_DestroyObject -> FamilyOther
+  F_CopyObject -> FamilyOther
+  F_FindObjects -> FamilyOther
+  F_GetAttributeValue -> FamilyOther
+  F_SetAttributeValue -> FamilyOther
+  F_SignUpdate -> FamilyOther
+  F_VerifyInit -> FamilyOther
+  F_VerifyRecoverInit -> FamilyOther
+  F_VerifyUpdate -> FamilyOther
+  F_EncryptInit -> FamilyOther
+  F_DecryptInit -> FamilyOther
+  F_MessageEncryptInit -> FamilyOther
+  F_MessageDecryptInit -> FamilyOther
+  F_MessageSignInit -> FamilyOther
+  F_MessageVerifyInit -> FamilyOther
+  F_EncryptMessageBegin -> FamilyOther
+  F_DecryptMessageBegin -> FamilyOther
+  F_SignMessageBegin -> FamilyOther
+  F_VerifyMessageBegin -> FamilyOther
+  F_MessageEncryptFinal -> FamilyOther
+  F_MessageDecryptFinal -> FamilyOther
+  F_MessageSignFinal -> FamilyOther
+  F_MessageVerifyFinal -> FamilyOther
+  F_SessionCancel -> FamilyOther
+  F_InitToken -> FamilyOther
+  F_InitPIN -> FamilyOther
+  F_SetPIN -> FamilyOther
+
+-- | The serving family of checked call work: the pinned step's
+-- function family, or 'FamilyOther' for unstepped fixture work
+-- (which normal submission refuses before this is ever consulted).
+callWorkFamily :: CallWork -> CallFamily
+callWorkFamily w = case resStep (callWorkReservation w) of
+  Nothing -> FamilyOther
+  Just step -> callFunctionFamily (csFunction step)

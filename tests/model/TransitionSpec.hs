@@ -5,6 +5,7 @@ and delta consistency.
 Deterministic: the sequence generator is an inline LCG (no new test
 dependencies), so the same seed always yields the same cases.
 -}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 module TransitionSpec (spec) where
 
@@ -19,12 +20,16 @@ import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.CallWork
-  ( WorkMismatch (..)
-  , admitLegacyUnstepped
+  ( CallFamily (..)
+  , WorkMismatch (..)
   , callFunctionEffect
+  , callFunctionFamily
   , callFunctionSlot
-  , callPairCompatible
+  , callWorkEffect
+  , callWorkReservation
+  , callWorkSession
   , checkedCallWork
+  , mkFixtureCallWork
   )
 import Haskoki.Model
   ( HandleBinding (..)
@@ -113,6 +118,14 @@ import Haskoki.Registry
   , mkCapabilities
   )
 import Haskoki.Rules (defaultRules)
+-- Shared with haskoki-core-tests (core-only): the runtime imports
+-- and the durable-recipe case below exist only under
+-- HASKOKI_MODEL_SUITE. The stale-resource case is core-only and
+-- runs in both suites.
+#ifdef HASKOKI_MODEL_SUITE
+import Haskoki.Runtime.Async (JobFunction (..))
+import Haskoki.Runtime.Detached (Recipe (..), decodeRecipe, encodeRecipe)
+#endif
 import Haskoki.Session (SessionLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition
   ( finishEffect
@@ -152,7 +165,7 @@ spec = testGroup "model transitions"
   , testCase "runFinisher finishing-leg set is pinned" caseFinisherCoverage
   , testCase "call-work slot table matches the finisher legs" caseCallSlotPin
   , testCase "call-work effect matrix refuses cross-family pairs" caseCallEffectMatrix
-  , testCase "legacy unstepped pairs pin the checked/compatible split" caseCallLegacySplit
+  , testCase "legacy unstepped pairs pin the checked/fixture split" caseCallLegacySplit
   , testCase "planned digest dialogue checks coherently" caseCoherentDigest
   , testCase "planned sign dialogue checks coherently" caseCoherentSign
   , testCase "seeded planner emissions check coherently" caseCoherentEmissions
@@ -162,6 +175,12 @@ spec = testGroup "model transitions"
   , testCase "first init without a verdict grants" caseInitTokenFirstInitGrants
   , testCase "init-token argument shape refuses junk" caseInitTokenArgsShape
   , testCase "locked SO: refusal preserves the lock, grant clears it" caseInitTokenLockedSo
+  , testCase "fixture constructor admits unstepped triples explicitly" caseFixtureConstructsUnstepped
+  , testCase "outer family table is pinned" caseFamilyTablePinned
+  , testCase "stale resource finish drains its release" caseStaleResourceReleases
+#ifdef HASKOKI_MODEL_SUITE
+  , testCase "durable recipes roundtrip exactly" caseRecipeRoundtrips
+#endif
   ]
 
 caseUnbindHandle :: IO ()
@@ -680,8 +699,7 @@ caseCallSlotPin = do
 -- | The full cross product: every accepted triple checks, and every
 -- other combination — wrong effect, wrong slot, wrong session, or a
 -- function with no finishing leg — refuses with its exact typed
--- mismatch. 'callPairCompatible' agrees with checked construction on
--- every stepped case.
+-- mismatch.
 caseCallEffectMatrix :: IO ()
 caseCallEffectMatrix = do
   mapM_ checkAccept acceptRows
@@ -699,8 +717,6 @@ caseCallEffectMatrix = do
           let eff = EffectCrypto fx
           assertBool ("accepts" ++ ctx fid fx)
             (isRight (checkedCallWork h1Sid res eff))
-          assertEqual ("compatible" ++ ctx fid fx)
-            True (callPairCompatible h1Sid res eff)
           assertEqual ("slot pins" ++ ctx fid fx)
             (Just slot) (callFunctionSlot fid)
           assertEqual ("effect pins" ++ ctx fid fx)
@@ -713,8 +729,6 @@ caseCallEffectMatrix = do
           let eff = EffectCrypto fx
           assertEqual ("refuses" ++ ctx fid fx)
             (Left (WorkEffectMismatch fid fx)) (checkedCallWork h1Sid res eff)
-          assertEqual ("incompatible" ++ ctx fid fx)
-            False (callPairCompatible h1Sid res eff)
           assertEqual ("effect refuses" ++ ctx fid fx)
             False (callFunctionEffect fid fx)
     checkWrongSlot (fid, slot, fxs) =
@@ -726,8 +740,6 @@ caseCallEffectMatrix = do
               eff = EffectCrypto fx
           assertEqual ("wrong slot refuses" ++ ctx fid fx)
             (Left (WorkFunctionSlotMismatch fid s)) (checkedCallWork h1Sid res eff)
-          assertEqual ("wrong slot incompatible" ++ ctx fid fx)
-            False (callPairCompatible h1Sid res eff)
     checkWrongSession (fid, slot, fxs) = mapM_ check fxs
       where
         res = h1Res fid slot
@@ -738,8 +750,6 @@ caseCallEffectMatrix = do
           assertEqual ("wrong session refuses" ++ ctx fid fx)
             (Left (WorkSessionMismatch h1SidOther h1Sid))
             (checkedCallWork h1SidOther res eff)
-          assertEqual ("wrong session incompatible" ++ ctx fid fx)
-            False (callPairCompatible h1SidOther res eff)
     checkNoLeg fid =
       mapM_ check [s | s <- [minBound .. maxBound]]
       where
@@ -749,18 +759,14 @@ caseCallEffectMatrix = do
               eff = EffectCrypto fx
           assertEqual ("legless refuses" ++ ctx fid fx)
             (Left (WorkFunctionSlotMismatch fid s)) (checkedCallWork h1Sid res eff)
-          assertEqual ("legless incompatible" ++ ctx fid fx)
-            False (callPairCompatible h1Sid res eff)
           assertEqual ("legless slot is Nothing" ++ ctx fid fx)
             Nothing (callFunctionSlot fid)
           assertEqual ("legless effect refuses" ++ ctx fid fx)
             False (callFunctionEffect fid fx)
 
--- | The explicit legacy split: unstepped reservations predate pinned
--- steps, so checked construction refuses them ('WorkUnstepped')
--- while the injected-boundary predicate still admits them — without
--- ever sniffing the effect content (key-management effects admit
--- exactly like call effects here).
+-- Split pin: normal construction refuses unstepped triples. The
+-- fixture-constructor read-backs live only in
+-- 'caseFixtureConstructsUnstepped' below.
 caseCallLegacySplit :: IO ()
 caseCallLegacySplit = mapM_ check allReps
   where
@@ -770,10 +776,42 @@ caseCallLegacySplit = mapM_ check allReps
           ctx = " (" ++ show fx ++ ")"
       assertEqual ("checked refuses unstepped" ++ ctx)
         (Left WorkUnstepped) (checkedCallWork h1Sid res eff)
-      assertEqual ("compatible admits unstepped" ++ ctx)
-        True (callPairCompatible h1Sid res eff)
-      assertBool ("legacy admission names unstepped" ++ ctx)
-        (admitLegacyUnstepped res)
+
+-- Fixture-constructor read-backs (each paired with the
+-- checked-construction refusal, which 'caseCallLegacySplit' above
+-- also pins on its own).
+caseFixtureConstructsUnstepped :: IO ()
+caseFixtureConstructsUnstepped = mapM_ check allReps
+  where
+    res = Reservation "legacy" [] Nothing Nothing
+    check fx = do
+      let eff = EffectCrypto fx
+          ctx = " (" ++ show fx ++ ")"
+      assertEqual ("checked still refuses unstepped" ++ ctx)
+        (Left WorkUnstepped) (checkedCallWork h1Sid res eff)
+      let cw = mkFixtureCallWork h1Sid res eff
+      assertEqual ("fixture session reads back" ++ ctx)
+        h1Sid (callWorkSession cw)
+      assertEqual ("fixture reservation reads back" ++ ctx)
+        res (callWorkReservation cw)
+      assertEqual ("fixture effect reads back" ++ ctx)
+        eff (callWorkEffect cw)
+
+caseFamilyTablePinned :: IO ()
+caseFamilyTablePinned = do
+  mapM_ (check FamilySign)
+    [F_Sign, F_SignFinal, F_SignRecover, F_SignMessage, F_SignMessageNext]
+  mapM_ (check FamilyDigest)
+    [F_Digest, F_DigestInit, F_DigestUpdate, F_DigestFinal]
+  mapM_ (check FamilyOther)
+    [fid | fid <- [minBound .. maxBound], fid `notElem` signFids,
+      fid `notElem` digestFids]
+  where
+    signFids =
+      [F_Sign, F_SignFinal, F_SignRecover, F_SignMessage, F_SignMessageNext]
+    digestFids = [F_Digest, F_DigestInit, F_DigestUpdate, F_DigestFinal]
+    check fam fid = assertEqual ("family " ++ show fid)
+      fam (callFunctionFamily fid)
 
 -- | Open one read-write session on a seated token.
 openTokenSession :: IO (SessionId, Model)
@@ -802,7 +840,6 @@ assertCoherent sid want pr = case pr of
     assertEqual "planned effect" want fx
     assertBool ("checks: " ++ show (resOperation res))
       (isRight (checkedCallWork sid res (EffectCrypto fx)))
-    assertEqual "compatible" True (callPairCompatible sid res (EffectCrypto fx))
     pure res
   other -> fail ("expected Execute, got: " ++ show other)
 
@@ -885,8 +922,6 @@ assertEmission fid slot want outcome = do
       let res = h1Res fid slot
       assertBool ("checks: " ++ show fid)
         (isRight (checkedCallWork h1Sid res (EffectCrypto fx)))
-      assertEqual ("compatible: " ++ show fid)
-        True (callPairCompatible h1Sid res (EffectCrypto fx))
       pure fx
     fxs -> fail ("expected one effect for " ++ show fid ++ ", got: " ++ show fxs)
 
@@ -1144,8 +1179,6 @@ caseCoherentMessage = do
         True (callFunctionEffect fid fx)
       assertBool ("checks " ++ show fid)
         (isRight (checkedCallWork h1Sid res (EffectCrypto fx)))
-      assertEqual ("compatible " ++ show fid)
-        True (callPairCompatible h1Sid res (EffectCrypto fx))
 
 -- | Two seated tokens, one token object each, and a worn
 -- slot-0 auth (one SO strike short of nothing: attempts and
@@ -1283,3 +1316,57 @@ caseInitTokenLockedSo = do
         Right m1 -> assertEqual "lock cleared"
           (Just tokenAuthNew) (lookupTokenAuth m1 (SlotId 0))
     other -> fail ("expected Immediate, got: " ++ show other)
+
+-- | A stale reservation answered with a resource drains the orphan
+-- release on the rejection (never commits, never leaks the rid),
+-- while a stale bytes answer releases nothing.
+caseStaleResourceReleases :: IO ()
+caseStaleResourceReleases = do
+  let res = Reservation "digest"
+        [DepSession (SessionId 1) (Revision 1) (Generation 99)] Nothing Nothing
+      rid = EngineResourceId 7
+  case finishEffect defaultRules oneSessionModel res (EngineOkResource rid) of
+    Left rej -> do
+      assertEqual "code" CKR_GENERAL_ERROR (rejCode rej)
+      assertEqual "orphan drains" [ReleaseEngineResource rid] (rejReleases rej)
+    Right _ -> fail "stale reservation must not commit"
+  -- Contrast arm: a stale bytes answer releases nothing.
+  case finishEffect defaultRules oneSessionModel res (EngineOkBytes "x") of
+    Left rej -> assertEqual "bytes stale releases nothing" [] (rejReleases rej)
+    Right _ -> fail "stale reservation must not commit"
+
+#ifdef HASKOKI_MODEL_SUITE
+-- | Every durable recipe shape roundtrips exactly through its
+-- versioned name, and an unknown name refuses. The goldens pin
+-- the exact durable bytes: a roundtrip alone cannot catch a
+-- symmetric drift that moves the encoder and decoder together.
+caseRecipeRoundtrips :: IO ()
+caseRecipeRoundtrips = do
+  mapM_ check [rCall, rKey, rPair]
+  assertEqual "unknown recipe name refuses" Nothing
+    (decodeRecipe "haskoki-call/v9" (snd (encodeRecipe rCall)))
+  checkGolden "call" goldenCall rCall
+  checkGolden "genkey" goldenKey rKey
+  checkGolden "genkeypair" goldenPair rPair
+  where
+    tmpl = Map.fromList [(AttrClass, ValULong 4)]
+    rCall = RecipeCall JobDigest 3 64
+      (FxDigest (MechanismId 0x250) (BS.pack [0x61, 0x62, 0x63]))
+    rKey = RecipeGenKey 3 64
+      (FxGenerateKey (MechanismId 0x1082) (BS.pack [0x67]) (BS.pack [0x61]))
+      tmpl True
+    rPair = RecipeGenKeyPair 3 64
+      (FxGenerateKey (MechanismId 0x1082) (BS.pack [0x67]) (BS.pack [0x61]))
+      tmpl tmpl True False
+    check r = assertEqual ("roundtrip " ++ show r) (Just r)
+      (uncurry decodeRecipe (encodeRecipe r))
+    checkGolden tag want r =
+      let (name, body) = encodeRecipe r
+      in assertEqual ("golden " ++ tag) want (name, BS.unpack body)
+    goldenCall = ("haskoki-call/v1",
+      [ 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0xd1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x50, 0x00, 0x00, 0x00, 0x03, 0x61, 0x62, 0x63 ])
+    goldenKey = ("haskoki-genkey/v1",
+      [ 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x6b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x82, 0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0x01, 0x61, 0x01, 0x00, 0x00, 0x00, 0x1c, 0x7b, 0x22, 0x63, 0x6c, 0x61, 0x73, 0x73, 0x22, 0x3a, 0x22, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x34, 0x22, 0x7d ])
+    goldenPair = ("haskoki-genkeypair/v1",
+      [ 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x6b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x82, 0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0x01, 0x61, 0x01, 0x00, 0x00, 0x00, 0x00, 0x1c, 0x7b, 0x22, 0x63, 0x6c, 0x61, 0x73, 0x73, 0x22, 0x3a, 0x22, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x34, 0x22, 0x7d, 0x00, 0x00, 0x00, 0x1c, 0x7b, 0x22, 0x63, 0x6c, 0x61, 0x73, 0x73, 0x22, 0x3a, 0x22, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x34, 0x22, 0x7d ])
+#endif

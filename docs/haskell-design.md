@@ -55,18 +55,29 @@ accepted triple and every refused cross-family combination, and the
 planner-produced execution checks.
 
 Enforcement sits at the boundaries that admit held work, never in the
-planner: async submit checks holdability first, then pair coherence,
-then enablement and capacity, refusing with no id consumed and the
-table untouched (see the [submit tests](../tests/model/AsyncSpec.hs));
-the FFI submit leg and the detach rejoin replay check their re-planned
-pairs the same way. Hand-built fixtures without a pinned step admit
-explicitly behind [`admitLegacyUnstepped`](../core/Haskoki/CallWork.hs) —
-the effect family is never guessed from a missing step. Key work keeps
-its own contract: submit admits it and the drive refuses incoherent
-pairs before the runner fires. The key-mutation half of the contract —
-start-time validity for in-flight effects, observed destruction for
-later calls — is recorded in the
+planner: async submit checks holdability first, then re-checks the
+carried triple and its outer function, then enablement and capacity,
+refusing with no id consumed and the table untouched (see the [submit
+tests](../tests/model/AsyncSpec.hs)); the FFI submit leg and the
+detach rejoin replay table only checked proofs the same way.
+Hand-built fixtures without a pinned step construct through
+[`mkFixtureCallWork`](../core/Haskoki/CallWork.hs) and submit through
+the test-only `startFixtureJob` — normal submission refuses them. Key
+work keeps its own contract: the outer single/pair shape pins at
+submit while the drive still refuses incoherent pairs before the
+runner fires. The key-mutation half of the contract — start-time
+validity for in-flight effects, observed destruction for later
+calls — is recorded in the
 [async construction contract](async-config-design.md#construction-and-linearization).
+
+The seal is pinned by [`scripts/check-sealed-callwork.py`](../scripts/check-sealed-callwork.py):
+shipped code reaches the fixture names only at their definitions
+and quoted Haddock references, and no production match inspects
+the raw pair. The abstract type seals the value; gate 3 is a
+textual backstop against direct construction (`WorkCall (`),
+while the closed 1-ary `WorkCall _)` wildcard, which binds
+nothing, stays permitted for the two outer-function refusal arms
+over key functions (see `src/Haskoki/Runtime/Async.hs`).
 
 ## Public Haskell surface
 
