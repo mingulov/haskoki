@@ -1,6 +1,7 @@
 -- REGISTRATION: haskoki-storage-tests
 module Main (main) where
 
+import Control.Concurrent (getNumCapabilities)
 import System.Environment (getArgs)
 import Test.Tasty (defaultMain, localOption, testGroup)
 import Test.Tasty.Runners (NumThreads (..))
@@ -28,9 +29,14 @@ main = do
   args <- getArgs
   case args of
     ["--holder", path, doneFile, readyFile] -> StoreSpec.holderMain path doneFile readyFile
-    _ -> defaultMain $ localOption (NumThreads 2) $ testGroup "haskoki storage"
-      [ StoreSpec.spec
-      , CommitSpec.spec
-      , StoreCtlSpec.spec
-      , MultiSessionSpec.spec
-      ]
+    _ -> do
+      -- Never above the capability count: tasty raises the RTS
+      -- capabilities to match NumThreads, which would turn a -N1 run
+      -- into -N2.
+      caps <- getNumCapabilities
+      defaultMain $ localOption (NumThreads (min 2 caps)) $ testGroup "haskoki storage"
+        [ StoreSpec.spec
+        , CommitSpec.spec
+        , StoreCtlSpec.spec
+        , MultiSessionSpec.spec
+        ]
