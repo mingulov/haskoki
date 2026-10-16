@@ -108,6 +108,7 @@ spec = testGroup "Store commands"
   , testCase "check: a dangling symlink refuses, creating nothing at the target" caseCheckDanglingLink
   , testCase "migrate: a dangling symlink refuses, creating nothing at the target" caseMigrateDanglingLink
   , testCase "open: a dangling symlink refuses, creating nothing at the target" caseOpenDanglingLink
+  , testCase "migrate: the backup-dir guard follows a symlink to the real store dir" caseMigrateSymlinkBackupDir
   , testCase "help lists check and migrate" caseHelpListsStoreCommands
   ]
 
@@ -1278,3 +1279,19 @@ caseOpenDanglingLink = withScratch "ctl-dangling" $ \dir -> do
   lockLeft <- doesFileExist (target ++ ".lock")
   assertBool "nothing created at the target" (not targetLeft)
   assertBool "no lock at the target" (not lockLeft)
+
+-- The backup-dir guard compares against the resolved store path: a
+-- backup dir beside the real file refuses even when --path names a
+-- link from elsewhere.
+caseMigrateSymlinkBackupDir :: IO ()
+caseMigrateSymlinkBackupDir = withScratch "ctl-migrate" $ \dir -> do
+  (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
+  let realDir = dir </> "real"
+  dbBefore <- BS.readFile real
+  r <- migrateCli link cfgPath realDir
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr r)
+  BS.readFile real >>= \b -> assertBool "store untouched" (b == dbBefore)
+  leftovers <- filter (\f -> ".bak" `isSuffixOf` f || ".receipt" `isSuffixOf` f)
+    <$> listDirectory realDir
+  assertEqual "no backup beside the store" [] leftovers

@@ -365,14 +365,16 @@ infixl 1 >>?
 -- reports it.
 migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
 migrateStoreWith hooks path0 cfg backupDir =
-  (first MigrateConfig <$> configSelectsStore path0 cfg) >>? \() ->
-  checkBackupDir path0 backupDir >>? \() -> do
+  (first MigrateConfig <$> configSelectsStore path0 cfg) >>? \() -> do
     path <- resolveStorePath path0
-    migrateResolved hooks path cfg backupDir
+    checkBackupDir path backupDir >>? \() ->
+      migrateResolved hooks path cfg backupDir
 
--- | 'migrateStoreWith' on an already-resolved path: the config and
--- backup-directory checks ran on the operator's spelling, and every
--- sidecar and every open below derives from the real file.
+-- | 'migrateStoreWith' on an already-resolved path: the config check
+-- ran on the operator's spelling, the backup-directory guard ran on
+-- the resolved path (a link must not smuggle backups beside the
+-- real file), and every sidecar and every open below derives from
+-- the real file.
 migrateResolved :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
 migrateResolved hooks path cfg backupDir = do
   ePlan <- first MigrateStore <$> checkStoreOpen path cfg
