@@ -113,8 +113,22 @@ shows how to keep them, generate a key with `pkcs11-tool`, and sign a message.
   shorter width fails with `CKR_KEY_SIZE_RANGE`.
 - A hang in hosts that load the provider with at least 2 RTS
   capabilities is fixed: capability tables are fully evaluated before
-  publication (GHC #27272). The provider runs one RTS capability and
-  ignores `GHCRTS`; see limitations.
+  publication (GHC #27272). When the provider starts the RTS itself
+  it runs one RTS capability and ignores `GHCRTS`; a process
+  already running a GHC RTS keeps its own capability count. See
+  limitations.
+- Closing a session (or the instance, or rolling back a failed open)
+  no longer frees the session's borrowed async view while a native
+  async call admitted on that view may still dereference it. The
+  view is retired first and its pointer freed only after
+  outstanding borrows drain.
+- Concurrent first calls through the native API (`haskoki_async_*`,
+  `haskoki_crypto_*`) no longer risk killing the host process.
+  Threads that lose the RTS-start race wait for the start to
+  complete instead of entering Haskell before `hs_init` finishes,
+  and a `C_Initialize` racing a first native call no longer fails
+  with a spurious `CKR_GENERAL_ERROR`. Fork children still fail
+  safe without waiting.
 - Store lock and guard file descriptors open with `O_CLOEXEC`
   atomically, so a child process started mid-open can no longer inherit
   them and hold the store locked after close.
@@ -175,9 +189,11 @@ This is a bounded release. These items are not claimed.
   `CKM_RSA_PKCS_OAEP` for encryption, as the
   [RSA note](https://github.com/mingulov/haskoki/blob/v0.5.0.0/docs/client-portfolio.md#opensc-journey)
   in the portfolio guide states.
-- **Single RTS capability.** The provider runs one RTS capability and
-  ignores `GHCRTS` (GHC #27272). Hosts must not assume parallel
-  throughput; native work serializes.
+- **Single RTS capability.** When the provider starts the RTS itself,
+  it runs one RTS capability and ignores `GHCRTS` (GHC #27272); a
+  process already running a GHC RTS keeps its own capability count.
+  Hosts must not assume parallel throughput from a provider-started
+  RTS; native work serializes.
 - **API gaps.** Of the 104 entries in the 3.2 table layout, 81 are
   planned with behavior, 21 are unsupported with a stated reason, and 2
   are not applicable (the legacy parallel pair), per

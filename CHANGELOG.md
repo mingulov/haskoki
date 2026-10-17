@@ -295,18 +295,24 @@ record: symbol separation, sanitizer runs, evidence limits) and
   native struct image through planning, checked construction and the
   real backend seal, pinned against an independent vector.
 - A hang in hosts that load the provider with at least 2 RTS
-  capabilities (`GHCRTS=-N2` or higher, or `-N`). When two threads
-  opened the OpenSSL 4 backend at once, they could both evaluate the
-  same lazy capability table, and a GHC runtime bug (GHC #27272, seen
-  on 9.10.3, 9.12.4 and 9.14.1) could leave a string literal's
-  black hole without an owner, blocking every thread that needed it.
-  Capability tables are now fully evaluated before they are published,
-  which covers that backend-open instance only; a second instance
-  through the store commit path is now known too. The provider no
-  longer starts the RTS with more than one capability (see below):
-  when it starts the RTS itself, it pins one capability and
-  ignores `GHCRTS` entirely. A process that already runs a GHC RTS
-  keeps its own capability count.
+  capabilities (`GHCRTS=-N2` or higher, or `-N`), reachable through
+  ordinary concurrent opens. When two threads opened the OpenSSL 4
+  backend at once, they could both evaluate the same lazy capability
+  table, and a GHC runtime bug (GHC #27272, seen on 9.10.3, 9.12.4
+  and 9.14.1) could leave a string literal's black hole without an
+  owner, blocking every thread that needed it. Capability tables are
+  now fully evaluated before they are published, which covers that
+  backend-open instance only; a second instance through the store
+  commit path is now known too, and fixing constants site by site
+  cannot be shown complete, so the provider no longer starts the RTS
+  with more than one capability at all: when it starts the RTS
+  itself, it pins one capability and ignores `GHCRTS` entirely. An
+  unsafe `GHCRTS` option no longer aborts the host during startup
+  either. A process that already runs a GHC RTS keeps its own
+  capability count (later inits are ignored), so that kind of host
+  keeps its #27272 exposure. The PKCS#11 surface is serialized on
+  the C state lock, so one capability costs nothing there; native
+  callers share the single capability unserialized.
   0.4.0.0 is affected (earlier releases not checked); until upgrading,
   run with a single capability.
 - Store lock and guard file descriptors are now opened with
@@ -420,20 +426,6 @@ record: symbol separation, sanitizer runs, evidence limits) and
   is now retired first and its pointer freed only after the entry's
   borrow count drains, through the registry's reclamation queue;
   callers dereference the pointer before releasing the lookup borrow.
-- The provider now pins one RTS capability and ignores `GHCRTS`
-  entirely, when it starts the RTS itself. With two or more
-  capabilities, two host threads first-evaluating the same constant
-  table could orphan a string-literal black hole and hang the whole
-  host process (GHC #27272, seen on 9.10.3, 9.12.4 and 9.14.1),
-  reachable through ordinary concurrent opens; fixing constants site
-  by site cannot be shown complete, so the provider no longer starts
-  the RTS multi-capability at all. An unsafe `GHCRTS` option no
-  longer aborts the host during startup either. A process that
-  already runs a GHC RTS keeps its own capability count (later
-  inits are ignored), so that kind of host keeps its #27272
-  exposure. The PKCS#11 surface is serialized on the C state lock,
-  so one capability costs nothing there; native callers share the
-  single capability unserialized.
 - Concurrent first calls through the native API (`haskoki_async_*`,
   `haskoki_crypto_*`) could kill the host process: threads that lost
   the RTS-start race entered Haskell before `hs_init` finished
