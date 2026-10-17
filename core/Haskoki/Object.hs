@@ -1304,7 +1304,10 @@ planCopyObject model st h tmpl = case resolveHandle model h of
               -- TRUSTED on a certificate source stays refused even
               -- same-value (no SO exception); history attributes
               -- always refuse (token-assigned rows are never
-              -- caller-carried, even same-value); same-value
+              -- caller-carried, even same-value); a sealed
+              -- component named on a sealed source refuses whatever
+              -- the value, before the same-value no-op, so copy
+              -- cannot confirm a guessed value or seed; same-value
               -- overrides are otherwise no-ops; data VALUE merges
               -- on modifiable sources only; exemptions bypass the
               -- modifiable gate; everything else goes through the
@@ -1324,6 +1327,10 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                         -- Unreachable: the shared policy refuses
                         -- history attributes unconditionally.
                         Nothing -> go rest
+                    | t `elem` sealedAttrs
+                    , payloadSealed (effectiveAttrs srcAttrs) =
+                        Just (CKR_ATTRIBUTE_READ_ONLY,
+                          "copy cannot name a sealed component: " ++ show t)
                     | Map.lookup t srcAttrs == Just v = go rest
                     | t == AttrValue, isDataSource
                     , flagOr modifiableDefault AttrModifiable srcAttrs = go rest

@@ -10,7 +10,9 @@
  * cannot decrypt, and no widened copy exists. Exemptions (TOKEN,
  * PRIVATE, DESTROYABLE, COPYABLE-to-false), MODIFIABLE tightening
  * only, TOKEN/DESTROYABLE free on copy, tightening (SENSITIVE up,
- * EXTRACTABLE down), and same-value overrides still work.
+ * EXTRACTABLE down), and same-value overrides still work, except
+ * sealed components: naming the value of a sealed key refuses
+ * read-only whatever the value, so copy cannot confirm a guess.
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module and drives it through the pinned 3.2 headers.
@@ -668,15 +670,20 @@ int main(int argc, char **argv) {
       }
     }
 
-    /* Positive: same-value overrides still work. */
+    /* Sealed same-value: naming the value of a sealed key refuses
+     * read-only whatever the value (the correct guess answers exactly
+     * like the wrong guess at "sensitive AES + VALUE" above), with no
+     * handle and no new object. */
+    {
+      CK_ATTRIBUTE sameVal[] = { { CKA_VALUE, kval, sizeof(kval) } };
+      check_refused(sess, sensAes, sameVal, 1,
+                    "sensitive AES + same VALUE");
+    }
+
+    /* Positive: unsealed same-value overrides still work. */
     {
       CK_OBJECT_HANDLE h2 = 0;
-      CK_ATTRIBUTE sameVal[] = { { CKA_VALUE, kval, sizeof(kval) } };
       CK_ATTRIBUTE sameMod[] = { { CKA_MODULUS, mod, sizeof(mod) - 1 } };
-      rv = f->C_CopyObject(sess, sensAes, sameVal, 1, &h2);
-      CHECK(rv == CKR_OK && h2 != 0, "same VALUE works (rv=0x%lx)",
-            (unsigned long)rv);
-      if (h2 != 0) { track(h2); h2 = 0; }
       rv = f->C_CopyObject(sess, sensRsa, sameMod, 1, &h2);
       CHECK(rv == CKR_OK && h2 != 0, "same MODULUS works (rv=0x%lx)",
             (unsigned long)rv);

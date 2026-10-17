@@ -136,6 +136,8 @@ spec = testGroup "objects and attributes"
   , testCase "copy: MODIFIABLE true over absent flag copies" caseCopyModifiableAbsentTrueWorks
   , testCase "copy: tightening still works" caseCopyTighteningStillWorks
   , testCase "copy: same-value overrides still work" caseCopySameValueStillWorks
+  , testCase "copy: same-value sealed components refused" caseCopySealedSameValueRefused
+  , testCase "copy: sealed guesses answer identically" caseCopySealedGuessIdentical
   , testCase "copy: inconsistent NEVER forced false on tighten" caseCopyInconsistentNeverForcedFalse
   , testCase "key defaults: legacy key value seals" caseKeyEffectiveSeal
   , testCase "key defaults: find matches the effective protection" caseKeyEffectiveFind
@@ -1366,16 +1368,21 @@ caseCopyTighteningStillWorks = do
   (pcC2, _) <- runCommit m3 (copyReq sid he [(AttrExtractable, ValBool False)])
   assertEqual "extractable tightens" CKR_OK (pcCode pcC2)
 
--- | Same-value overrides still copy: VALUE, MODULUS, EC_PARAMS and
--- SEED echoing the stored bytes are no-ops.
+-- | Same-value overrides still copy where nothing is sealed:
+-- MODULUS and EC_PARAMS echoing the stored bytes are no-ops, and so
+-- is CKA_VALUE on an unsealed (non-sensitive, extractable) key.
+-- Sealed components never take this path
+-- ('caseCopySealedSameValueRefused').
 caseCopySameValueStillWorks :: IO ()
 caseCopySameValueStillWorks = do
   (sid, m0) <- openSession seeded
   let v = BS.replicate 16 7
-  (pcV, m1) <- runCommit m0 (createReq sid (secretAes v))
-  hv <- commitHandle pcV
-  (pcC1, _) <- runCommit m1 (copyReq sid hv [(AttrValue, ValBytes v)])
-  assertEqual "same value copies" CKR_OK (pcCode pcC1)
+  (pcO, m1) <- runCommit m0
+    (createReq sid (secretAes v
+      ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)]))
+  ho <- commitHandle pcO
+  (pcC0, _) <- runCommit m1 (copyReq sid ho [(AttrValue, ValBytes v)])
+  assertEqual "same value copies on an open key" CKR_OK (pcCode pcC0)
   (pcR, m2) <- runCommit m1 (createReq sid privateRsaLegacy)
   hr <- commitHandle pcR
   (pcC2, _) <- runCommit m2
@@ -1389,10 +1396,62 @@ caseCopySameValueStillWorks = do
     Just pv -> do
       (pcC3, _) <- runCommit m3 (copyReq sid he [(AttrEcParams, pv)])
       assertEqual "same params copy" CKR_OK (pcCode pcC3)
-  (hP, m4) <- publishBare m3 sid mldsaBare
-  (pcC4, _) <- runCommit m4
-    (copyReq sid hP [(AttrSeed, ValBytes (BS.replicate 32 0x22))])
-  assertEqual "same seed copies" CKR_OK (pcCode pcC4)
+
+-- | A sealed source copied with a same-value sealed component is
+-- refused read-only: naming the value or seed of a sealed key must
+-- not reveal whether the guess was right, so the same-value no-op
+-- never applies to sealed components. No handle, no delta, and the
+-- store is unchanged, under every seal state.
+caseCopySealedSameValueRefused :: IO ()
+caseCopySealedSameValueRefused = do
+  let v = BS.replicate 16 7
+  copyPolicyRefused "aes-sensitive/same-value"
+    (secretAes v ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)])
+    [(AttrValue, ValBytes v)]
+  copyPolicyRefused "aes-unextractable/same-value"
+    (secretAes v ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)])
+    [(AttrValue, ValBytes v)]
+  copyPolicyRefused "aes-legacy/same-value"
+    (secretAes v)
+    [(AttrValue, ValBytes v)]
+  (sid, m0) <- openSession seeded
+  (h, m1) <- publishBare m0 sid mldsaBare
+  let nObjs = Map.size (mObjects m1)
+      nHandles = Map.size (mHandles m1)
+  (rej, m2) <- runRejectFull m1
+    (copyReq sid h [(AttrSeed, ValBytes (BS.replicate 32 0x22))])
+  assertEqual "refused: mldsa/same-seed" CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+  assertEqual "no handle emitted: mldsa/same-seed" [] (rejOutputs rej)
+  assertEqual "empty delta: mldsa/same-seed" (StateDelta []) (rejDelta rej)
+  assertEqual "object count unchanged: mldsa/same-seed"
+    nObjs (Map.size (mObjects m2))
+  assertEqual "handle count unchanged: mldsa/same-seed"
+    nHandles (Map.size (mHandles m2))
+
+-- | Correct and wrong guesses about sealed material get provably
+-- identical answers: the two rejections compare equal as whole
+-- values (code, outputs, delta and reasons), so the copy path
+-- cannot confirm a candidate value or seed.
+caseCopySealedGuessIdentical :: IO ()
+caseCopySealedGuessIdentical = do
+  (sid, m0) <- openSession seeded
+  let v = BS.replicate 16 7
+      wrong = BS.replicate 16 9
+  (pc, m1) <- runCommit m0
+    (createReq sid (secretAes v ++ [(AttrSensitive, ValBool True)]))
+  h <- commitHandle pc
+  (rejHit, _) <- runRejectFull m1 (copyReq sid h [(AttrValue, ValBytes v)])
+  (rejMiss, _) <- runRejectFull m1 (copyReq sid h [(AttrValue, ValBytes wrong)])
+  assertEqual "correct and wrong value guesses answer identically" rejHit rejMiss
+  (hP, m2) <- publishBare m1 sid mldsaBare
+  let seed = BS.replicate 32 0x22
+      seedWrong = BS.replicate 32 0x33
+  (rejSeedHit, _) <- runRejectFull m2
+    (copyReq sid hP [(AttrSeed, ValBytes seed)])
+  (rejSeedMiss, _) <- runRejectFull m2
+    (copyReq sid hP [(AttrSeed, ValBytes seedWrong)])
+  assertEqual "correct and wrong seed guesses answer identically"
+    rejSeedHit rejSeedMiss
 
 -- | The flip-forcing arm fires on an inconsistent stored row: a
 -- source claiming EXTRACTABLE=TRUE with NEVER_EXTRACTABLE=TRUE,
