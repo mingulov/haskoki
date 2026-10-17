@@ -11,11 +11,13 @@ in [journey-aead.md](journey-aead.md) and
 
 Status: the installed portfolio runner
 (`scripts/test-client-journeys.sh` over `tests/journeys/legs.json`)
-qualifies the release bundle and the candidate demo image. Run P
-(`final-r8a/portfolio`, source `a996c59` caller-recorded dirty,
-bundle tarball SHA-256 `d3770f7d…d9b9`) passes 61 of 61 legs;
-run I (`final/image`, source `817fe8c`, image
-`sha256:52ee65d7…`) passes 28 of 28. Per-leg results are in
+qualifies the release bundle and the candidate demo image. Both
+runs below share one source revision (`9a47a48`, clean tree) and
+one module (`lib/libhaskoki.so` SHA-256 `10f2a81b…b6d1`, start
+and end equal in each run). Run P (`final-r8b/portfolio`,
+bundle tarball SHA-256 `3866d832…a124`) passes 61 of 61 legs;
+run I (`final-r8b/image`, image `sha256:738217d9…`) passes 28
+of 28. Per-leg results are in
 [client-journeys.json](release-results/client-journeys.json),
 which the evidence cells below cite as P (portfolio) and I (image).
 The `java-keystore-refuse-mismatched` leg pins jarsigner's
@@ -30,7 +32,7 @@ never the current tree.
 
 Qualification pins these exact versions on Linux amd64, Ubuntu 26.04.
 Any drift re-opens the affected legs. Package is the dpkg version;
-runtime is the observed probe output.
+runtime is the first line of the probe output.
 
 | Client | Package | Package version | Runtime probe | Runtime version | Role |
 | --- | --- | --- | --- | --- | --- |
@@ -83,11 +85,11 @@ path under the checkout. Records pin the tested module bytes
 config bytes, so a verdict always names its bytes.
 
 Time to first verified signature (measured, t0 basis in
-parentheses): portfolio `opensc-sign` at 2.44 s
+parentheses): portfolio `opensc-sign` at 2.04 s
 (bundle-extract: seconds since the bundle extraction finished);
-image `opensc-sign` at 0.78 s (module-phase-start: seconds since
+image `opensc-sign` at 0.72 s (module-phase-start: seconds since
 the module phase started). Client setup seconds (apt install,
-measured around it in the container): portfolio 45.0 s, basis
+measured around it in the container): portfolio 48.0 s, basis
 caller; image null, basis not-measured (no client install; the
 image ships its tools).
 

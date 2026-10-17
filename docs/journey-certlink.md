@@ -127,7 +127,4 @@ self-signed certificate directly on the token (exit 0).
 `java-keystore-generate` pins that receipt
 (`key pair and self-signed certificate`), and
 `java-keystore-sign-generated` signs a jar with the generated
-entry (`jar signed.`). Both pass in P. An earlier revision of
-this section recorded keytool generation as an observed refusal;
-the re-probe against the attribute-complete provider passes, so
-the legs carry the receipt now.
+entry (`jar signed.`). Both pass in P.
