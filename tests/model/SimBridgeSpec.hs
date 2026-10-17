@@ -13,12 +13,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 module SimBridgeSpec (spec) where
 
-import Control.Exception (bracket)
+import Control.Exception (IOException, bracket, try)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.IORef (newIORef, readIORef, modifyIORef')
 import Data.List (isInfixOf, isPrefixOf)
-import System.Directory (getTemporaryDirectory, removeFile)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory (createDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -328,17 +329,38 @@ runTempScenario tag steps =
 -- fixture config.
 runTempScenarioFull
   :: FilePath -> String -> Maybe [Json] -> [Json] -> IO CtlExit
-runTempScenarioFull cfg tag mRules steps =
-  bracket (writeTemp tag body) removeFile $ \path ->
+runTempScenarioFull cfg tag mRules steps = withPrivateDir $ \tmp ->
+  bracket (writeTemp tmp tag body) removeFile $ \path ->
     runCtl ["scenario", "run", "--config", cfg, "--scenario", path]
   where
     body = BC8.unpack
       (renderJson (scenarioWith ("scenario-" ++ tag) mRules steps))
-    writeTemp t content = do
-      base <- getTemporaryDirectory
-      let path = base </> ("haskoki-sim-" ++ t ++ ".json")
+    writeTemp dir t content = do
+      let path = dir </> ("haskoki-sim-" ++ t ++ ".json")
       writeFile path content
       pure path
+
+-- | A fresh private directory under the temp root, removed on exit.
+withPrivateDir :: (FilePath -> IO a) -> IO a
+withPrivateDir = bracket create (\d -> try' (removeDirectoryRecursive d))
+  where
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base </> ("haskoki-sim-" ++ show t ++ "-" ++ show n)
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+    try' :: IO () -> IO ()
+    try' act = do
+      _ <- (try act :: IO (Either IOException ()))
+      pure ()
 
 -- | The configured fault window seeds the runner (a step inside it
 -- faults with no verb present), and a later fault.window verb

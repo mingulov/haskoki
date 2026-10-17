@@ -6,9 +6,10 @@ configurable and reported.
 -}
 module ConfigSpec (spec) where
 
-import Control.Exception (bracket)
+import Control.Exception (IOException, bracket, try)
 import Data.List (intercalate, isInfixOf)
-import System.Directory (getTemporaryDirectory, removeFile)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory (createDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
@@ -241,16 +242,37 @@ caseSimReported = do
 -- | GUARD: a bad sim key is rejected through the CLI end to end,
 -- naming the unknown key.
 caseSimCheckReject :: IO ()
-caseSimCheckReject =
-  bracket (writeBadSim "haskoki-bad-sim.toml") removeFile $ \path -> do
+caseSimCheckReject = withPrivateDir $ \tmp ->
+  bracket (writeBadSim tmp "haskoki-bad-sim.toml") removeFile $ \path -> do
     r <- runCtl ["config", "check", "--config", path]
     assertBool "config check rejects a bad sim key" (ceCode r /= 0)
   where
-    writeBadSim name = do
-      base <- getTemporaryDirectory
-      let path = base </> name
+    writeBadSim dir name = do
+      let path = dir </> name
       writeFile path (unlines ["schema_version = 1", "[sim]", "bogus_key = 1"])
       pure path
+
+-- | A fresh private directory under the temp root, removed on exit.
+withPrivateDir :: (FilePath -> IO a) -> IO a
+withPrivateDir = bracket create (\d -> try' (removeDirectoryRecursive d))
+  where
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base </> ("haskoki-config-" ++ show t ++ "-" ++ show n)
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+    try' :: IO () -> IO ()
+    try' act = do
+      _ <- (try act :: IO (Either IOException ()))
+      pure ()
 
 -- | Spine-only (mirroring the sim-section precedent: value
 -- assertions added later): the 3-token fixture parses
@@ -392,14 +414,13 @@ caseTokensCheckGood = do
 -- | GUARD: a ragged catalog is rejected through the CLI end to
 -- end, naming the ragged arrays.
 caseTokensCheckBad :: IO ()
-caseTokensCheckBad =
-  bracket (writeBadTokens "haskoki-bad-tokens.toml") removeFile $ \path -> do
+caseTokensCheckBad = withPrivateDir $ \tmp ->
+  bracket (writeBadTokens tmp "haskoki-bad-tokens.toml") removeFile $ \path -> do
     r <- runCtl ["config", "check", "--config", path]
     assertBool "config check rejects a ragged catalog" (ceCode r /= 0)
   where
-    writeBadTokens name = do
-      base <- getTemporaryDirectory
-      let path = base </> name
+    writeBadTokens dir name = do
+      let path = dir </> name
       writeFile path (unlines
         [ "schema_version = 1"
         , "[tokens]"

@@ -22,7 +22,7 @@ module SimStressSpec (spec) where
 
 import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar, tryReadMVar)
-import Control.Exception (SomeException, bracket, onException, try)
+import Control.Exception (IOException, SomeException, bracket, onException, try)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
@@ -33,12 +33,12 @@ import Data.Maybe (isJust)
 import GHC.Clock (getMonotonicTime)
 import System.Directory
   ( createDirectory
-  , doesDirectoryExist
   , getTemporaryDirectory
   , removeDirectoryRecursive
   )
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import System.IO.Error (isAlreadyExistsError)
 import System.Timeout (timeout)
 import Text.Read (readMaybe)
 import Test.Tasty (TestTree, testGroup)
@@ -519,7 +519,8 @@ withStressSQLite use =
       storeClose
       use
 
--- | A fresh scratch directory (numeric suffix scan; single-process).
+-- | A fresh scratch directory (numeric suffix scan; the claim is
+-- atomic, so concurrent suite processes cannot collide on a name).
 makeStressTempDir :: String -> IO FilePath
 makeStressTempDir stem = do
   base <- getTemporaryDirectory
@@ -529,10 +530,14 @@ makeStressTempDir stem = do
       | n > 10000 = ioError (userError ("makeStressTempDir: exhausted names for " ++ prefix))
       | otherwise = do
           let dir = base </> (prefix ++ "-" ++ show n)
-          exists <- doesDirectoryExist dir
-          if exists
-            then tryNames base prefix (n + 1)
-            else createDirectory dir >> pure dir
+          -- Decide from the error itself: a concurrent process may
+          -- claim the name between a check and the create.
+          r <- try (createDirectory dir)
+          case r of
+            Right () -> pure dir
+            Left (e :: IOException)
+              | isAlreadyExistsError e -> tryNames base prefix (n + 1)
+              | otherwise -> ioError (userError ("makeStressTempDir: cannot create " ++ dir ++ ": " ++ show e))
 
 -- ---------------------------------------------------------------------------
 -- Sessions

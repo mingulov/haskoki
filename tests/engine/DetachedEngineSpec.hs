@@ -6,7 +6,7 @@ unsaveable outcome, and the SQLite file store survives close\/reopen.
 module DetachedEngineSpec (spec) where
 
 import Control.Concurrent.MVar (MVar)
-import Control.Exception (bracket, finally)
+import Control.Exception (IOException, bracket, catch, finally, try)
 import Control.Monad (forM_, replicateM, when)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -21,6 +21,7 @@ import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, newStablePtr, freeStablePtr)
 import Foreign.Storable (peek, poke, peekByteOff, pokeByteOff)
+import GHC.Clock (getMonotonicTimeNSec)
 import System.Directory
   ( createDirectory
   , createDirectoryIfMissing
@@ -681,14 +682,31 @@ caseNativeUnsaveable = withNative $ \be -> do
   assertEqual "exactly one write" 1 (length got)
   storeClose store
 
+-- | A fresh private directory under the temp root, removed on exit.
+withPrivateDir :: (FilePath -> IO a) -> IO a
+withPrivateDir = bracket create (\d -> removeDirectoryRecursive d `catch` ignoreIO)
+  where
+    ignoreIO :: IOException -> IO ()
+    ignoreIO _ = pure ()
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base ++ "/haskoki-detached-" ++ show t ++ "-" ++ show n
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+
 -- The SQLite file store carries a detached job across close/reopen
 -- in this process (the two-OS-process proof is the C restart test).
 caseSQLiteReopen :: IO ()
-caseSQLiteReopen = do
-  base <- getTemporaryDirectory
-  let dir = base ++ "/sqlite-reopen"
-  exists <- doesDirectoryExist dir
-  if exists then removeDirectoryRecursive dir else pure ()
+caseSQLiteReopen = withPrivateDir $ \tmp -> do
+  let dir = tmp ++ "/sqlite-reopen"
   createDirectory dir
   let path = dir ++ "/jobs.db"
   eA <- openSQLiteStore path

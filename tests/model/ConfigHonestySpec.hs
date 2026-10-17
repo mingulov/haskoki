@@ -13,10 +13,11 @@ this suite mutates @HASKOKI_CONFIG@ process-wide.
 {-# LANGUAGE OverloadedStrings #-}
 module ConfigHonestySpec (spec) where
 
-import Control.Exception (bracket)
+import Control.Exception (IOException, bracket, try)
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (isInfixOf, isPrefixOf, sort, (\\))
-import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
@@ -357,9 +358,9 @@ caseExecutorBad =
 -- | Temp config + temp scenario runners (unique tag per case; the
 -- scenario path mirrors SimBridgeSpec, the config is minimal).
 runTempAsync :: String -> Bool -> Int -> Int -> IO CtlExit
-runTempAsync tag enabled polls completes = withTimeout ("scenario " ++ tag) $
-  bracket (writeTemp (tag ++ ".toml") cfg) removeFile $ \cfgPath ->
-    bracket (writeTemp (tag ++ ".json") scn) removeFile $ \scnPath ->
+runTempAsync tag enabled polls completes = withTimeout ("scenario " ++ tag) $ withPrivateDir $ \tmp ->
+  bracket (writeTemp tmp (tag ++ ".toml") cfg) removeFile $ \cfgPath ->
+    bracket (writeTemp tmp (tag ++ ".json") scn) removeFile $ \scnPath ->
       runCtl ["scenario", "run", "--config", cfgPath, "--scenario", scnPath]
   where
     cfg = unlines
@@ -386,11 +387,32 @@ runTempAsync tag enabled polls completes = withTimeout ("scenario " ++ tag) $
       ]
       ++ replicate completes (step "async.complete" [("session", JStr "s1"), ("function", JStr "C_Sign")])
     step action args = JObj [("action", JStr action), ("arguments", JObj args)]
-    writeTemp name content = do
-      base <- getTemporaryDirectory
-      let path = base </> ("haskoki-" ++ name)
+    writeTemp dir name content = do
+      let path = dir </> ("haskoki-" ++ name)
       writeFile path content
       pure path
+
+-- | A fresh private directory under the temp root, removed on exit.
+withPrivateDir :: (FilePath -> IO a) -> IO a
+withPrivateDir = bracket create (\d -> try' (removeDirectoryRecursive d))
+  where
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base </> ("haskoki-honesty-" ++ show t ++ "-" ++ show n)
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+    try' :: IO () -> IO ()
+    try' act = do
+      _ <- (try act :: IO (Either IOException ()))
+      pure ()
 
 pendingLines :: String -> [String]
 pendingLines out = [ln | ln <- lines out, "CKR_PENDING" `isInfixOf` ln]
@@ -468,9 +490,8 @@ withTraceCfg _tag enabled path =
 
 -- | ENFORCED: enabled=false writes nothing ('fileSink' no-op arm).
 caseTraceDisabled :: IO ()
-caseTraceDisabled = withTimeout "trace disabled" $ do
-  base <- getTemporaryDirectory
-  let path = base </> "haskoki-trace-off.jsonl"
+caseTraceDisabled = withTimeout "trace disabled" $ withPrivateDir $ \tmp -> do
+  let path = tmp </> "haskoki-trace-off.jsonl"
   before <- doesFileExist path
   inst <- buildInstance (withTraceCfg "off" False path)
   _ <- emitTrace (instTracer inst) honestyEvent 0
@@ -481,9 +502,8 @@ caseTraceDisabled = withTimeout "trace disabled" $ do
 
 -- | ENFORCED: path selects the sink file ('fileSink' append arm).
 caseTracePath :: IO ()
-caseTracePath = withTimeout "trace path" $ do
-  base <- getTemporaryDirectory
-  let path = base </> "haskoki-trace-on.jsonl"
+caseTracePath = withTimeout "trace path" $ withPrivateDir $ \tmp -> do
+  let path = tmp </> "haskoki-trace-on.jsonl"
   inst <- buildInstance (withTraceCfg "on" True path)
   _ <- emitTrace (instTracer inst) honestyEvent 0
   rep <- drainTracer (instTracer inst)
@@ -821,32 +841,30 @@ dishonestToml = unlines
 -- | The startup path ('resolveFrom', what every native open calls)
 -- answers Left with the exact honesty error on a dishonest file.
 caseStartupRefusalResolve :: IO ()
-caseStartupRefusalResolve = withTimeout "startup refusal" $
-  bracket (writeTempDishonest "haskoki-dishonest.toml") removeFile $ \path -> do
+caseStartupRefusalResolve = withTimeout "startup refusal" $ withPrivateDir $ \tmp ->
+  bracket (writeTempDishonest tmp "haskoki-dishonest.toml") removeFile $ \path -> do
     eCfg <- resolveFrom (Just path) Nothing
     case eCfg of
       Left (CfgInvalid msg) -> assertEqual "exact error" ctlMsg msg
       other -> assertFailure ("dishonest file must fail resolve, got: " ++ show other)
   where
     ctlMsg = "control.enabled=false is not supported (the control plane is always on): must be true"
-    writeTempDishonest name = do
-      base <- getTemporaryDirectory
-      let path = base </> name
+    writeTempDishonest dir name = do
+      let path = dir </> name
       writeFile path dishonestToml
       pure path
 
 -- | @config check@ rejects a dishonest file loudly (exit /= 0,
 -- naming the knob).
 caseStartupRefusalCheck :: IO ()
-caseStartupRefusalCheck = withTimeout "config check refusal" $
-  bracket (writeTempDishonest "haskoki-dishonest-check.toml") removeFile $ \path -> do
+caseStartupRefusalCheck = withTimeout "config check refusal" $ withPrivateDir $ \tmp ->
+  bracket (writeTempDishonest tmp "haskoki-dishonest-check.toml") removeFile $ \path -> do
     r <- runCtl ["config", "check", "--config", path]
     assertBool "config check rejects dishonesty" (ceCode r /= 0)
     assertBool "names the knob" ("control.enabled" `isInfixOf` (ceOut r ++ ceErr r))
   where
-    writeTempDishonest name = do
-      base <- getTemporaryDirectory
-      let path = base </> name
+    writeTempDishonest dir name = do
+      let path = dir </> name
       writeFile path dishonestToml
       pure path
 
