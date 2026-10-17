@@ -36,6 +36,11 @@
  *   - SO: an SO session creating a private token object refuses with
  *     CKR_USER_NOT_LOGGED_IN (SO administers public objects only);
  *   - matrix: public-RW positive control + refusal cells (DIRECT-ONLY).
+ *   - find-page: a live cursor pages, then its session closes with
+ *     the cursor open: paging and final on the removed session
+ *     refuse with CKR_SESSION_HANDLE_INVALID (the FindObjectsFinal
+ *     precedent) with outputs untouched, and a fresh session
+ *     inherits no cursor (DIRECT-ONLY).
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module and drives it through the pinned 3.2 headers.
@@ -700,6 +705,15 @@ int main(int argc, char **argv) {
       { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-roset", 12 } };
         rv = f->C_SetAttributeValue(pubro, h, set, 1);
         CHECKM(rv == CKR_SESSION_READ_ONLY, "matrix: public RO set on token object refused"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(pubrw, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-pub", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: refused public RO set changes nothing");
       rv = f->C_DestroyObject(pubrw, h);
       CHECKM(rv == CKR_OK, "matrix: public RO refusal keeper destroyed");
       /* 2. USER legs: login, full positive incl. private token, RO cells,
@@ -771,6 +785,15 @@ int main(int argc, char **argv) {
       { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-roset", 12 } };
         rv = f->C_SetAttributeValue(pubro, h, set, 1);
         CHECKM(rv == CKR_SESSION_READ_ONLY, "matrix: user RO set on token object refused"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(usr, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-pub", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: refused user RO set changes nothing");
       rv = f->C_DestroyObject(pubro, h);
       CHECKM(rv == CKR_SESSION_READ_ONLY, "matrix: user RO destroy of token object refused");
       h2 = 0;

@@ -384,8 +384,17 @@ runCell c = do
       (pc, _) <- runCommit m6 req
       assertEqual (cellName c) CKR_OK (pcCode pc)
     Left want -> do
-      (code, _) <- runReject m6 req
+      (code, m') <- runReject m6 req
       assertEqual (cellName c) want code
+      -- A refused set proves nothing by itself: read the label back
+      -- to show the refusal changed nothing (cell 29 is the only
+      -- set-refusal cell).
+      if cellOp c == OpSet
+        then do
+          (pcG, _) <- runCommit m' (getReq sid h [AttrLabel])
+          assertEqual (cellName c ++ ": refused set changes nothing")
+            [encodeValue (ValBytes "cell")] [outBytes o | o <- pcOutputs pcG]
+        else pure ()
 
 -- | Plan and publish an Immediate commit; fail otherwise.
 runCommit :: Model -> Request -> IO (PreparedCommit, Model)
