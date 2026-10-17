@@ -1075,11 +1075,21 @@ caseResourceInventory = do
   doc <- honestyCatalog
   assertBool "resource section present"
     ("## Resource bounds and aggregate costs" `isInfixOf` doc)
-  mapM_ (\dim -> assertBool ("open dimension named: " ++ dim) (dim `isInfixOf` doc))
+  -- Scoped to the section body: the dimension names also occur in
+  -- the settings table, so whole-document matching is vacuous.
+  let section = sectionBody "## Resource bounds and aggregate costs" doc
+  mapM_ (\dim -> assertBool ("open dimension named: " ++ dim) (dim `isInfixOf` section))
     ["limits.transcript_bytes", "limits.aggregate_payload_bytes"
     , "limits.attribute_depth", "R32", "A44"]
-  mapM_ (\ref -> assertBool ("WP13 outcome named: " ++ ref) (ref `isInfixOf` doc))
+  mapM_ (\ref -> assertBool ("WP13 outcome named: " ++ ref) (ref `isInfixOf` section))
     ["buffered-updates", "appendBuffered"]
+
+-- | The body of a @## @ section: the lines after its heading up to
+-- the next @## @ heading or the end of the document.
+sectionBody :: String -> String -> String
+sectionBody heading doc =
+  unlines (takeWhile (not . isSection) (drop 1 (dropWhile (/= heading) (lines doc))))
+  where isSection ln = "## " `isPrefixOf` ln
 
 -- | The identity rows state the durable rule against the landed
 -- storage truth: the serial is the 16-character TokenId, and

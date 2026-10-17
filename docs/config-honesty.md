@@ -197,11 +197,12 @@ recorded in `docs/buffered-updates.md`: bounded chunks were judged a separate
 follow-up, the current representation was retained, and no follow-up has been
 filed.
 
-Coverage is explicitly partial: transcript, aggregate payload and attribute
-depth have no bound anywhere in the tree, because no admission site reads those
-three keys; R32/A44 stay open for exactly those dimensions. The five reserved
-limits keys above are the complete list: three have no bound, two are pinned
-to fixed constants.
+Coverage is explicitly partial: transcript (`limits.transcript_bytes`),
+aggregate payload (`limits.aggregate_payload_bytes`) and attribute depth
+(`limits.attribute_depth`) have no bound anywhere in the tree, because no
+admission site reads those three keys; R32/A44 stay open for exactly those
+dimensions. The five reserved limits keys above are the complete list: three
+have no bound, two are pinned to fixed constants.
 
 ## Serving presence and private scenario scope
 
@@ -224,9 +225,9 @@ argument (see `execStep` in `src/Haskoki/Ctl.hs`):
 |---|---|
 | `fixture.load` | `fixture` must be `minimal-demo`; the runner seats slot 0 |
 | `session.open` | `token` must equal the config slot-0 label (absent means slot 0); `asynchronous` selects the session mode; `read_write` must be `true` (validation only: the runner models read-write sessions) |
-| `session.login` | `role` and `pin` are checked against the fixture PINs; login is token-level, so a second login as the same role answers `CKR_USER_ALREADY_LOGGED_IN` and another role answers `CKR_USER_ANOTHER_ALREADY_LOGGED_IN`; only the normal user satisfies the signing login gate |
-| `sign.init` | `mechanism` (a known inventory name whose behavior descriptor carries a sign route) and `fixture_key` arm the session; the pair is echoed; a mechanism without a sign route (digests, key generation) answers `CKR_MECHANISM_INVALID` |
-| `sign` | `data_base64` (strict base64) sets the echoed byte count; `output_capacity` 0 refuses with `CKR_BUFFER_TOO_SMALL`, any positive capacity is accepted without a size comparison |
+| `session.login` | `role` and `pin` are checked against the fixture PINs; login is token-level, so a second login as the same role answers `CKR_USER_ALREADY_LOGGED_IN` and another role answers `CKR_USER_ANOTHER_ALREADY_LOGGED_IN`; only the normal user satisfies the signing login gate; PIN lockout is not modelled: every wrong PIN answers `CKR_PIN_INCORRECT` and the next right PIN still logs in (native locks the role after 3 failures with `CKR_PIN_LOCKED`) |
+| `sign.init` | `mechanism` (a known inventory name whose behavior descriptor carries a sign route) and `fixture_key` arm the session; the pair is echoed; a mechanism without a sign route (digests, key generation) answers `CKR_MECHANISM_INVALID`; operation state is not modelled: re-arming an armed session answers `CKR_OK` (native: `CKR_OPERATION_ACTIVE`) |
+| `sign` | `data_base64` (strict base64) sets the echoed byte count; `output_capacity` 0 refuses with `CKR_BUFFER_TOO_SMALL`, any positive capacity is accepted without a size comparison; a repeat `sign` after a completed one answers `CKR_OK` (native: `CKR_OPERATION_NOT_INITIALIZED`) |
 | `async.complete` | `function` must be `C_Sign`; each completion counts down the session's pending polls |
 | `token.remove` | `token` resolves like `session.open`; removing the slot-0 token drops its sessions, clears the login, and seats the removal (opens and repeat removals refuse until slot 0 is inserted again or the fixture loads) |
 | `slot-event.wait` | `nonblocking` selects the wait mode (default true) |
@@ -275,7 +276,9 @@ Each executed step prints one line, `step[N] <action> -> <RESULT>
 `role=`, `mechanism=` with `key=`, `bytes=` with `capacity=`); actions
 with nothing to echo print the bare result. Lifecycle, login-gate,
 capacity, mechanism and login refusals also emit their traced call,
-counted in the run's `trace-lines:` footer. Native slot changes and Digest
+counted in the run's `trace-lines:` footer; a repeat `initialize`
+and `CKR_TOKEN_NOT_PRESENT` refusals emit no trace. Native slot changes
+and Digest
 callbacks follow the [runtime contract](operations-notes.md).
 
 ## Example configurations
