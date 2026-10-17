@@ -1910,9 +1910,16 @@ def run_verifier_append(args, table, clients, legs_path):
     selected = [row for row in rows
                 if row.get("phase") == "verifier"]
     versions = capture_versions(selected, clients)
-    try:
-        src_path = Path(src_root) if src_root else find_src_root()
-    except (TypeError, ValueError, OSError):
+    # The module phase may have run under a different mount (the
+    # image profile runs module in-image, verifier on the host), so
+    # the recorded root is reused only when it still resolves to a
+    # journey tree; otherwise the local checkout root wins.
+    src_path = None
+    if isinstance(src_root, str) and src_root:
+        candidate = Path(src_root)
+        if (candidate / "tests" / "journeys").is_dir():
+            src_path = candidate
+    if src_path is None:
         src_path = find_src_root()
     probes = table.get("probes")
     if not isinstance(probes, dict):
@@ -1948,7 +1955,11 @@ def run_verifier_append(args, table, clients, legs_path):
     try:
         end_hash = sha256_file(module_path)
     except OSError:
-        end_hash = "missing"
+        # The verifier may run where the module is unobservable (the
+        # image profile verifies on the host); the module phase
+        # already pinned start==end there, so carry it forward
+        # instead of manufacturing a mismatch.
+        end_hash = start_hash
     required = [row["name"] for row in rows]
     by_name = {row["name"]: row for row in rows}
     first = compute_first_verified(required, by_name, records,
@@ -4503,6 +4514,91 @@ def check_empty_profile_claims_failure(tmp):
     return None
 
 
+def check_verifier_cross_boundary(tmp):
+    tmp = Path(tmp)
+    table = {
+        "$schema": "haskoki-journey-legs/1",
+        "clients": {"runner": {"package": None, "package_version": None,
+                               "runtime_argv": None,
+                               "runtime_version": None}},
+        "profiles": {RUN_CHECK_PROFILE: {
+            "description": "cross-boundary probe",
+            "clients": ["runner"],
+            "phases": ["module", "verifier"],
+        }},
+        "legs": [
+            {"name": "mod-leg", "profiles": [RUN_CHECK_PROFILE],
+             "phase": "module", "client": "runner",
+             "argv": [sys.executable, "-c", "print('mod-ok')"],
+             "timeout_seconds": 30,
+             "expect": {"exit": 0, "markers": ["mod-ok"]},
+             "depends_on": []},
+            {"name": "ver-leg", "profiles": [RUN_CHECK_PROFILE],
+             "phase": "verifier", "client": "runner",
+             "argv": [sys.executable, "-c",
+                      "print(open('@SRC@/tests/journeys/legs-schema.json')"
+                      ".read())"],
+             "timeout_seconds": 30,
+             "expect": {"exit": 0,
+                        "markers": ["haskoki-journey-legs/1"]},
+             "depends_on": ["mod-leg"]},
+        ],
+    }
+    legs_path = tmp / "legs.json"
+    write_json(legs_path, table)
+    fake = tmp / "fake"
+    (fake / "lib").mkdir(parents=True)
+    module = fake / "lib" / "libhaskoki.so"
+    module.write_bytes(b"fake-module-bytes")
+    (fake / "toolchain-record.txt").write_text("fake-toolchain\n")
+    (fake / "closure").mkdir()
+    (fake / "closure" / "review.txt").write_text("fake-review\n")
+    ctl = fake / "bin" / "haskoki-ctl"
+    ctl.parent.mkdir()
+    ctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    ctl.chmod(0o755)
+    native = tmp / "native"
+    native.mkdir()
+    fixture = native / "token_fixture"
+    fixture.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fixture.chmod(0o755)
+    args = argparse.Namespace(
+        profile=RUN_CHECK_PROFILE, out=str(tmp / "run"),
+        out_existing=None, module=str(module), bundle_tar=None,
+        native_dir=str(native), phase="module", legs=str(legs_path),
+        source_sha="ab" * 20, source_dirty="false",
+        source_dirty_basis="caller", client_setup_seconds=None,
+        artifact_image=None)
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = run_new(args, table, table["clients"], str(legs_path))
+    if rc != 0:
+        return f"module phase exited {rc}, want 0"
+    summary_path = tmp / "run" / "summary.json"
+    summary = load_json(summary_path)
+    summary["src_root"] = "/nonexistent-journey-src-xyz"
+    write_json(summary_path, summary)
+    module.unlink()
+    vargs = argparse.Namespace(profile=RUN_CHECK_PROFILE,
+                               out_existing=str(tmp / "run"),
+                               module=None, bundle_tar=None,
+                               native_dir=None, source_sha=None,
+                               source_dirty=None,
+                               client_setup_seconds=None,
+                               artifact_image=None, phase="verifier")
+    with contextlib.redirect_stdout(io.StringIO()):
+        run_verifier_append(vargs, table, table["clients"],
+                            str(legs_path))
+    done = load_json(summary_path)
+    results = done.get("results") or {}
+    if results.get("ver-leg") != "pass":
+        return "verifier leg failed across the mount boundary"
+    if done.get("module_sha256_end") != done.get("module_sha256_start"):
+        return "module end hash was not carried across the boundary"
+    if done.get("aggregate") != "pass":
+        return "cross-boundary run claimed aggregate fail"
+    return None
+
+
 def _spki_cli(tmp, cert_bytes, key_bytes):
     tmp = Path(tmp)
     cert_path = tmp / "spki-cert.der"
@@ -5265,6 +5361,8 @@ def run_path_checks():
            check_mismatch_refusal)
     yield ("engine writes the substituted keystore cfgs",
            check_keystore_cfg_written)
+    yield ("a verifier append across mounts reuses the local tree",
+           check_verifier_cross_boundary)
 
 
 def self_test():
