@@ -133,8 +133,11 @@ spec = testGroup "Sim bridge"
   , testCase "short capacity precedes the fault window" caseCapacityBeforeFault
   , testCase "unarmed sign precedes the capacity check" caseArmedBeforeCapacity
   , testCase "re-initialize clears sessions and restarts names" caseReinitializeResets
+  , testCase "re-initialize clears the login" caseReinitializeClearsLogin
   , testCase "second login as the same role refuses" caseLoginAlready
   , testCase "login as another role refuses" caseLoginAnother
+  , testCase "second login refuses before the PIN is consulted" caseLoginStateBeforePin
+  , testCase "unknown session fails before the login gate" caseUnknownSessionBeforeLoginGate
   , testCase "signing under SO refuses" caseSoSignRefused
   , testCase "sign and completion under SO refuse" caseSoSigningGates
   , testCase "unit capacity signs" caseCapacityOne
@@ -1173,7 +1176,8 @@ caseNotInitialized = do
   assertEqual "expecting OK fails" 1 (ceCode r2)
 
 -- | A repeat initialize answers already-initialized; after finalize
--- a fresh initialize resets the runner.
+-- a fresh initialize resets the runner. Expecting CKR_OK on the
+-- repeat fails.
 caseDoubleInitialize :: IO ()
 caseDoubleInitialize = do
   r <- runTempScenario "twiceinit"
@@ -1186,6 +1190,10 @@ caseDoubleInitialize = do
     , step "initialize" [] (Just "CKR_OK")
     , step "session.open" [] (Just "CKR_OK") ]
   assertEqual ("re-initialize after finalize resets: " ++ ceErr r2) 0 (ceCode r2)
+  r3 <- runTempScenario "twiceinitok"
+    [ step "initialize" [] Nothing
+    , step "initialize" [] (Just "CKR_OK") ]
+  assertEqual "expecting OK fails" 1 (ceCode r3)
 
 -- | Steps after finalize refuse, and so does a repeated finalize.
 casePostFinalize :: IO ()
@@ -1463,10 +1471,33 @@ caseReinitializeResets = do
     ]
   assertEqual ("names restart after reset: " ++ ceErr rRestart) 0 (ceCode rRestart)
 
+-- | Re-initialize clears the login: after a login, finalize and
+-- a fresh initialize, arming refuses with
+-- CKR_USER_NOT_LOGGED_IN and a user login succeeds with CKR_OK.
+caseReinitializeClearsLogin :: IO ()
+caseReinitializeClearsLogin = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "reinitlogin" Nothing
+    [ step "initialize" [] Nothing
+    , step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] (Just "CKR_OK")
+    , step "finalize" [] Nothing
+    , step "initialize" [] (Just "CKR_OK")
+    , step "session.open" [] Nothing
+    , step "sign.init" [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] (Just "CKR_USER_NOT_LOGGED_IN")
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] (Just "CKR_OK")
+    ]
+  assertEqual ("re-initialize clears the login: " ++ ceErr r) 0 (ceCode r)
+
 -- | Login is token-level: a second login as the same role
 -- refuses with CKR_USER_ALREADY_LOGGED_IN, whether on the same
 -- session or another one, and the token login stays visible
--- through the other session.
+-- through the other session. Expecting CKR_OK on the refused
+-- login fails.
 caseLoginAlready :: IO ()
 caseLoginAlready = do
   let login sess role pin expect = step "session.login"
@@ -1492,10 +1523,18 @@ caseLoginAlready = do
     ]
   assertEqual ("cross-session second login refuses: " ++ ceErr rCross)
     0 (ceCode rCross)
+  rOk <- runTempScenarioFull (fixture "maximal-demo.toml") "alreadyok" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , login "s1" "USER" "1234" "CKR_OK"
+    , login "s1" "USER" "1234" "CKR_OK"
+    ]
+  assertEqual "expecting OK fails" 1 (ceCode rOk)
 
 -- | A login as another role refuses with
 -- CKR_USER_ANOTHER_ALREADY_LOGGED_IN in both directions, and the
 -- refused login changes nothing: the first role still arms.
+-- Expecting CKR_OK on the refused login fails.
 caseLoginAnother :: IO ()
 caseLoginAnother = do
   let login role pin expect = step "session.login"
@@ -1516,6 +1555,42 @@ caseLoginAnother = do
                , login "USER" "1234" "CKR_USER_ANOTHER_ALREADY_LOGGED_IN"
                ])
   assertEqual ("USER over SO refuses: " ++ ceErr rUser) 0 (ceCode rUser)
+  rOk <- runTempScenarioFull (fixture "maximal-demo.toml") "anotherok" Nothing
+    (prefix ++ [ login "USER" "1234" "CKR_OK"
+               , login "SO" "5678" "CKR_OK"
+               ])
+  assertEqual "expecting OK fails" 1 (ceCode rOk)
+
+-- | State before credentials: a second login refuses with
+-- CKR_USER_ALREADY_LOGGED_IN even when its PIN is wrong, as in
+-- the native login attempt.
+caseLoginStateBeforePin :: IO ()
+caseLoginStateBeforePin = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "statepin" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "1234")] (Just "CKR_OK")
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "0000")] (Just "CKR_USER_ALREADY_LOGGED_IN")
+    ]
+  assertEqual ("state precedes the PIN: " ++ ceErr r) 0 (ceCode r)
+
+-- | Session resolution precedes the signing login gate: arming an
+-- unknown session while logged out fails the run with the unknown
+-- reference, not the login refusal.
+caseUnknownSessionBeforeLoginGate :: IO ()
+caseUnknownSessionBeforeLoginGate = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml") "unknownfirst" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "sign.init" [("session", JStr "nope")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr "CKM_RSA_PKCS")] Nothing
+    ]
+  assertEqual "unknown session fails the run" 1 (ceCode r)
+  assertBool "reference named"
+    ("unknown session reference: nope" `isInfixOf` ceErr r)
 
 -- | The signing login gate needs the normal user: under an SO
 -- login, arming refuses with CKR_USER_NOT_LOGGED_IN.

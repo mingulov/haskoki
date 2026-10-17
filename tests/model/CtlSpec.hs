@@ -7,7 +7,7 @@ subcommands live in the storage suite (needs file/SQLite deps).
 module CtlSpec (spec) where
 
 import qualified Data.ByteString.Char8 as BC8
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -166,15 +166,17 @@ caseInterfacesEffective = do
   assertBool "configured set marked plus effective native set"
     ("(configured set; effective native: 3.2 3.1 3.0 via C_GetInterface/C_GetInterfaceList, 2.40 via C_GetFunctionList)" `isInfixOf` ceOut r)
 
--- | The final @scenario-ok@ line states the simulator scope: the
--- owned logical simulation, never native serving.
+-- | The final @scenario-ok@ line states the simulator scope and
+-- the step count in full: the owned logical simulation over the
+-- fixture's 12 steps, never native serving.
 caseScenarioScope :: IO ()
 caseScenarioScope = do
   r <- runCtl ["scenario", "run", "--config", fixture "maximal-demo.toml"
               , "--scenario", fixture "scenario.json"]
   assertEqual "exit 0" 0 (ceCode r)
-  assertBool "simulator scope stated"
-    ("scenario-ok (owned logical simulation," `isInfixOf` ceOut r)
+  assertEqual "simulator scope and step count stated"
+    ["scenario-ok (owned logical simulation, 12 steps)"]
+    (filter ("scenario-ok" `isPrefixOf`) (lines (ceOut r)))
 
 caseHelpHonest :: IO ()
 caseHelpHonest = do
