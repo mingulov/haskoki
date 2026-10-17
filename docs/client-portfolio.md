@@ -12,11 +12,11 @@ in [journey-aead.md](journey-aead.md) and
 Status: the installed portfolio runner
 (`scripts/test-client-journeys.sh` over `tests/journeys/legs.json`)
 qualifies the release bundle and the candidate demo image. Both
-runs below share one source revision (`5fccc9f`, clean tree) and
-one module (`lib/libhaskoki.so` SHA-256 `44c4d773…cd33a`, start
+runs below share one source revision (`f22687f`, clean tree) and
+one module (`lib/libhaskoki.so` SHA-256 `22b71f2d…c325e`, start
 and end equal in each run). Run P (`v050-prep/portfolio`,
-bundle tarball SHA-256 `3c215ebf…a873d`) passes 61 of 61 legs;
-run I (`v050-prep/image`, image `sha256:c655352e…`) passes 28
+bundle tarball SHA-256 `013a2df0…f5672a`) passes 61 of 61 legs;
+run I (`v050-prep/image`, image `sha256:5472a767…`) passes 28
 of 28. Per-leg results are in
 [client-journeys.json](release-results/client-journeys.json),
 which the evidence cells below cite as P (portfolio) and I (image).
@@ -85,11 +85,11 @@ path under the checkout. Records pin the tested module bytes
 config bytes, so a verdict always names its bytes.
 
 Time to first verified signature (measured, t0 basis in
-parentheses): portfolio `opensc-sign` at 2.51 s
+parentheses): portfolio `opensc-sign` at 2.29 s
 (bundle-extract: seconds since the bundle extraction finished);
-image `opensc-sign` at 0.73 s (module-phase-start: seconds since
+image `opensc-sign` at 0.98 s (module-phase-start: seconds since
 the module phase started). Client setup seconds (apt install,
-measured around it in the container): portfolio 49.0 s, basis
+measured around it in the container): portfolio 60.0 s, basis
 caller; image null, basis not-measured (no client install; the
 image ships its tools).
 
