@@ -47,8 +47,9 @@ extra-source-files:
   tests/fixtures/*.der
   tests/fixtures/*.txt
   tests/fixtures/stores/*.in
-  tests/fixtures/stores/*/store.sqlite
-  tests/fixtures/stores/*/manifest.txt
+  tests/fixtures/stores/**/store.sqlite
+  tests/fixtures/stores/**/manifest.txt
+  scripts/make-store-fixtures.sh
   tests/ops/fixtures/*.toml
   tests/ops/fixtures/*.json
   tests/ops/fixtures/*.md
