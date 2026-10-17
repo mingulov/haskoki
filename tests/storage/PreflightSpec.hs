@@ -58,6 +58,8 @@ spec :: TestTree
 spec = testGroup "Store preflight"
   [ testGroup "released fixtures"
       [ testCase "sha-256 is the standard digest" caseSha256Vector
+      , testCase "sha-256 of the empty string" caseSha256Empty
+      , testCase "sha-256 of the 448-bit FIPS message" caseSha256Long
       , testCase "v0.3.1.0 fixture matches its manifest" (caseFixtureManifest "v0.3.1.0")
       , testCase "v0.4.0.0 fixture matches its manifest" (caseFixtureManifest "v0.4.0.0")
       , testCase "v0.3.1.0 manifest names the committed generator and template" (caseManifestGenerator "v0.3.1.0")
@@ -180,6 +182,18 @@ caseSha256Vector = do
   r <- sha256Hex "abc"
   assertEqual "FIPS 180-2 vector"
     (Right "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") r
+
+caseSha256Empty :: IO ()
+caseSha256Empty = do
+  r <- sha256Hex ""
+  assertEqual "FIPS 180-4 empty vector"
+    (Right "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") r
+
+caseSha256Long :: IO ()
+caseSha256Long = do
+  r <- sha256Hex "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+  assertEqual "FIPS 180-4 448-bit vector"
+    (Right "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1") r
 
 -- | The committed store is byte-for-byte the one the manifest
 -- describes, and its read-only shape matches the recorded shape.
