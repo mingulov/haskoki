@@ -2057,8 +2057,8 @@ journeyChildren = [child1, child2, child3, child4, child5]
     child1 =
       ( "open,login/user/1234,set-pin/1234/" ++ pinBravo ++ ",logout,login-state,close"
       , [ "open=0"
-        , "login/user/1234=0"
-        , "set-pin/1234/" ++ pinBravo ++ "=0"
+        , "login=0"
+        , "set-pin=0"
         , "logout=0"
         , "login-state=0"
         , "close=0"
@@ -2067,8 +2067,8 @@ journeyChildren = [child1, child2, child3, child4, child5]
     child2 =
       ( "open,set-pin/" ++ pinBravo ++ "/" ++ pinCharlie ++ ",login/user/" ++ pinCharlie ++ ",logout,close"
       , [ "open=0"
-        , "set-pin/" ++ pinBravo ++ "/" ++ pinCharlie ++ "=0"
-        , "login/user/" ++ pinCharlie ++ "=0"
+        , "set-pin=0"
+        , "login=0"
         , "logout=0"
         , "close=0"
         ]
@@ -2076,20 +2076,20 @@ journeyChildren = [child1, child2, child3, child4, child5]
     child3 =
       ( "open,login/user/bad001,login/user/bad002,login/user/bad003,lock-check/" ++ pinCharlie
       , [ "open=0"
-        , "login/user/bad001=" ++ rvText CKR_PIN_INCORRECT
-        , "login/user/bad002=" ++ rvText CKR_PIN_INCORRECT
-        , "login/user/bad003=" ++ rvText CKR_PIN_LOCKED
-        , "lock-check/" ++ pinCharlie ++ "=" ++ rvText CKR_PIN_LOCKED
+        , "login=" ++ rvText CKR_PIN_INCORRECT
+        , "login=" ++ rvText CKR_PIN_INCORRECT
+        , "login=" ++ rvText CKR_PIN_LOCKED
+        , "lock-check=" ++ rvText CKR_PIN_LOCKED
         ]
       )
     child4 =
       ( "open,lock-check/" ++ pinCharlie ++ ",login/so/5678,init-pin/" ++ pinDelta ++ ",logout,login/user/" ++ pinDelta ++ ",logout,close"
       , [ "open=0"
-        , "lock-check/" ++ pinCharlie ++ "=" ++ rvText CKR_PIN_LOCKED
-        , "login/so/5678=0"
-        , "init-pin/" ++ pinDelta ++ "=0"
+        , "lock-check=" ++ rvText CKR_PIN_LOCKED
+        , "login=0"
+        , "init-pin=0"
         , "logout=0"
-        , "login/user/" ++ pinDelta ++ "=0"
+        , "login=0"
         , "logout=0"
         , "close=0"
         ]
@@ -2104,14 +2104,14 @@ journeyChildren = [child1, child2, child3, child4, child5]
     child5 =
       ( "open,login/user/bad005,login/user/bad006,login/user/bad007,login/so/0001,login/so/0002,login/so/0003,close,init-token/haskoki-demo/5678,open,login-state"
       , [ "open=0"
-        , "login/user/bad005=" ++ rvText CKR_PIN_INCORRECT
-        , "login/user/bad006=" ++ rvText CKR_PIN_INCORRECT
-        , "login/user/bad007=" ++ rvText CKR_PIN_LOCKED
-        , "login/so/0001=" ++ rvText CKR_PIN_INCORRECT
-        , "login/so/0002=" ++ rvText CKR_PIN_INCORRECT
-        , "login/so/0003=" ++ rvText CKR_PIN_LOCKED
+        , "login=" ++ rvText CKR_PIN_INCORRECT
+        , "login=" ++ rvText CKR_PIN_INCORRECT
+        , "login=" ++ rvText CKR_PIN_LOCKED
+        , "login=" ++ rvText CKR_PIN_INCORRECT
+        , "login=" ++ rvText CKR_PIN_INCORRECT
+        , "login=" ++ rvText CKR_PIN_LOCKED
         , "close=0"
-        , "init-token/haskoki-demo/5678=0"
+        , "init-token=0"
         , "open=0"
         , "login-state=0"
         ]
@@ -2340,15 +2340,15 @@ caseProvisionStaleRefused =
         scriptA = "open,set-pin/1234/" ++ pinAlpha ++ ",set-pin/" ++ pinAlpha ++ "/" ++ pinBravo ++ ",close"
         expectedA =
           [ "open=0"
-          , "set-pin/1234/" ++ pinAlpha ++ "=0"
-          , "set-pin/" ++ pinAlpha ++ "/" ++ pinBravo ++ "=0"
+          , "set-pin=0"
+          , "set-pin=0"
           , "close=0"
           ]
         scriptB = "open,login/user/" ++ pinAlpha ++ ",login/user/" ++ pinBravo ++ ",close"
         expectedB =
           [ "open=0"
-          , "login/user/" ++ pinAlpha ++ "=" ++ rvText CKR_PIN_INCORRECT
-          , "login/user/" ++ pinBravo ++ "=0"
+          , "login=" ++ rvText CKR_PIN_INCORRECT
+          , "login=0"
           , "close=0"
           ]
     withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()

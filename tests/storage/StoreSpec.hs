@@ -1965,7 +1965,13 @@ runProvisionOp ctx ref token = case splitVerb token of
       Just code -> pure (Right (render code))
   _ -> pure (Left 4)
   where
-    render (CULong n) = token ++ "=" ++ show n
+    -- Result lines carry the verb only: the arguments hold PIN
+    -- bytes, and a failing assertEqual would print them.
+    render (CULong n) = verb ++ "=" ++ show n
+      where
+        verb = case splitVerb token of
+          v : _ -> v
+          [] -> token
     withLive f = readIORef ref >>= maybe (pure (Left 4)) f
 
 -- | Split a provision verb on its @/@ argument separators.
