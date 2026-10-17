@@ -12,7 +12,8 @@ Every command owns its instance or works offline:
   in-memory instance, deterministically (no code execution; a sync
   session never pends; strict load: nonempty rules, unknown step
   fields, mistyped arguments, and misplaced save_as\/expect reject;
-  each step's result is checked centrally against its expectation;
+  each step's result is checked centrally against its expectation,
+  and a step without one accepts only @CKR_OK@ and @CKR_PENDING@;
   value admission, expectable refusals, lifecycle; only the @note@
   field carries inert prose);
 * @store inspect@ reads a SQLite store offline (SELECT-only under
@@ -375,7 +376,7 @@ runSteps (JObj kvs) = case lookup "steps" kvs of
       expect <- case lookup "expect" skvs of
         Nothing -> Just Nothing
         Just (JObj ekvs) -> case act of
-          "slot-event.wait" -> expectClause "event" ekvs
+          "slot-event.wait" -> expectWait ekvs
           _ -> expectClause "return" ekvs
         _ -> Nothing
       if all (\(k, _) -> k `elem` ["action", "arguments", "save_as", "expect", "note"]) skvs
@@ -385,6 +386,12 @@ runSteps (JObj kvs) = case lookup "steps" kvs of
     expectClause "event" [("event", JStr w)] = Just (Just (ExpectEvent w))
     expectClause "return" [("return", JStr w)] = Just (Just (ExpectReturn w))
     expectClause _ _ = Nothing
+    -- | The slot wait admits either clause: 'event' for the observed
+    -- token-state change, 'return' for the lifecycle refusal the
+    -- gate answers before anything waits.
+    expectWait [("event", JStr w)] = Just (Just (ExpectEvent w))
+    expectWait [("return", JStr w)] = Just (Just (ExpectReturn w))
+    expectWait _ = Nothing
 runSteps _ = Nothing
 
 -- | Execute validated steps in file order (deterministic). Each
@@ -786,16 +793,20 @@ signConsumption st = do
 
 -- | The one total expectation check, applied after every step's
 -- explicit result. A mismatch fails the run (the caller prefixes
--- the step index and action). Cross-clause arms are unreachable
--- after validated parsing, which admits only the clause the action
--- produces.
+-- the step index and action). A step without @expect@ accepts only
+-- @CKR_OK@ and @CKR_PENDING@: any other code fails the run, so a
+-- refusal can never pass silently. Cross-clause arms are reachable
+-- only when the clause disagrees with the produced result (an
+-- @expect.event@ on a return, or an @expect.return@ on an event).
 checkStepExpect :: RunStep -> StepResult -> Either String ()
 checkStepExpect st (StepReturn got) = case rsExpect st of
   Just (ExpectReturn want)
     | want == got -> Right ()
     | otherwise -> Left ("expect.return mismatch: want " ++ want ++ ", got " ++ got)
   Just (ExpectEvent _) -> Left "expect.event does not apply to this action"
-  Nothing -> Right ()
+  Nothing
+    | got == "CKR_OK" || got == "CKR_PENDING" -> Right ()
+    | otherwise -> Left ("unexpected " ++ got ++ "; declare expect.return to assert a refusal")
 checkStepExpect st (StepEvent got) = case rsExpect st of
   Just (ExpectEvent want)
     | want == got -> Right ()

@@ -235,13 +235,21 @@ argument (see `execStep` in `src/Haskoki/Ctl.hs`):
 Pending follows the `[async]` knobs: an async session pends while polls
 remain; a sync session never pends. Refusals route three ways, and the
 central checker compares each step's explicit result against its `expect`
-clause:
+clause (a step without one accepts only `CKR_OK` and `CKR_PENDING`):
 
 | Refusal | Route | Examples |
 |---|---|---|
 | scenario bug | hard `Left`: load-time `scenario-rejected`, or run-time `scenario-failed` | load: unknown action/field/argument, unknown mechanism, malformed base64, out-of-range capacity, duplicate session name, nonempty rules; run: unknown session reference, sign without `sign.init`, wait on an empty queue, sim verb without a test-enabled instance |
 | operation outcome | expectable `StepReturn` compared against `expect.return` | `CKR_PIN_INCORRECT`, `CKR_USER_ALREADY_LOGGED_IN`, `CKR_USER_ANOTHER_ALREADY_LOGGED_IN`, `CKR_TOKEN_NOT_PRESENT`, `CKR_BUFFER_TOO_SMALL`, `CKR_USER_NOT_LOGGED_IN`, `CKR_CRYPTOKI_NOT_INITIALIZED`, `CKR_CRYPTOKI_ALREADY_INITIALIZED` |
 | device fault | expectable `CKR_DEVICE_ERROR` | `sign` / `async.complete` inside the live fault window |
+
+A step without `expect` accepts only `CKR_OK` and `CKR_PENDING`: any
+other code fails the run with `scenario-failed: step[N] <action>:
+unexpected <CKR>; declare expect.return to assert a refusal`, so a
+refusal can never pass silently. The slot wait's
+`event:token-state-change` result is its normal product and passes with
+or without an `expect.event` clause; the wait takes `expect.return`
+only for the lifecycle refusal the gate answers before anything waits.
 
 Lifecycle: the instance starts uninitialized; every verb except
 `initialize`, `finalize` and the sim test controls refuses with

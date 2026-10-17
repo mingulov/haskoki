@@ -111,6 +111,7 @@ spec = testGroup "Sim bridge"
   , testCase "wrong initialize expectation fails" caseInitializeWrongExpectationFails
   , testCase "every verb's expectation enforces" caseEveryVerbExpectation
   , testCase "wrong PIN is an expected refusal" caseWrongPinExpected
+  , testCase "refusal without expect fails the run" caseNoExpectRefusalFails
   , testCase "absent token label refuses the open" caseTokenAbsent
   , testCase "absent token label refuses removal" caseTokenRemoveAbsent
   , testCase "zero capacity answers too-small" caseCapacityZero
@@ -122,6 +123,7 @@ spec = testGroup "Sim bridge"
   , testCase "unknown verbs are lifecycle-gated by default" caseUnknownVerbGated
   , testCase "lifecycle exempt list is exactly the ungated verbs" caseLifecycleExemptPinned
   , testCase "every gated verb refuses outside the live window" caseEveryVerbLifecycleGate
+  , testCase "gated slot wait expecting OK fails" caseSlotWaitGateMismatch
   , testCase "login-required expectation mismatch fails" caseLoginRequiredControl
   , testCase "sign and completion refuse without login" caseSigningGatesWithoutLogin
   , testCase "wrong PIN leaves the session logged out" caseWrongPinStaysLoggedOut
@@ -458,9 +460,11 @@ caseSaveAsValidated = do
       [JObj ([("action", JStr "session.open")] ++ extras)]
 
 -- | 'expect' must be an object carrying the clause its action
--- produces ('return' everywhere except slot-event.wait, 'event'
--- only there); malformed and wrong-clause expects reject instead
--- of passing silently.
+-- produces ('return' everywhere; the slot wait also takes 'event'
+-- for its observed token-state change and 'return' for the
+-- lifecycle refusal the gate answers before anything waits);
+-- malformed and wrong-clause expects reject instead of passing
+-- silently.
 caseExpectValidated :: IO ()
 caseExpectValidated = do
   assertRejected "non-object expect" (scenarioWith "c4-expect" Nothing
@@ -471,9 +475,12 @@ caseExpectValidated = do
   assertRejected "event on initialize" (scenarioWith "c4-expect" Nothing
     [JObj [("action", JStr "initialize")
       , ("expect", JObj [("event", JStr "token-state-change")])]])
-  assertRejected "return on slot-event.wait" (scenarioWith "c4-expect" Nothing
+  assertRejected "non-string return on slot-event.wait" (scenarioWith "c4-expect" Nothing
     [JObj [("action", JStr "slot-event.wait")
-      , ("expect", JObj [("return", JStr "CKR_OK")])]])
+      , ("expect", JObj [("return", JNum 1)])]])
+  assertRejected "both clauses on slot-event.wait" (scenarioWith "c4-expect" Nothing
+    [JObj [("action", JStr "slot-event.wait")
+      , ("expect", JObj [("return", JStr "CKR_OK"), ("event", JStr "token-state-change")])]])
   assertRejected "event on sign" (scenarioWith "c4-expect" Nothing
     [JObj [("action", JStr "sign")
       , ("arguments", JObj signArgs), ("expect", JObj [("event", JStr "token-state-change")])]])
@@ -487,9 +494,11 @@ caseExpectValidated = do
       , ("arguments", JObj signArgs), ("expect", JObj [("return", JStr "CKR_OK")])]
     , JObj [("action", JStr "slot-event.wait")
       , ("expect", JObj [("event", JStr "token-state-change")])]
+    , JObj [("action", JStr "slot-event.wait")
+      , ("expect", JObj [("return", JStr "CKR_CRYPTOKI_NOT_INITIALIZED")])]
     ]) of
     Left err -> assertFailure ("well-formed expects must validate: " ++ err)
-    Right sc -> assertEqual "three steps" 3 (length (scSteps sc))
+    Right sc -> assertEqual "four steps" 4 (length (scSteps sc))
   where
     signArgs = [("session", JStr "s1"), ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)]
 
@@ -1023,6 +1032,24 @@ caseWrongPinExpected = do
   r3 <- runTempScenario "goodpin" (prefix ++ [login "1234" "CKR_OK"])
   assertEqual ("right PIN still passes: " ++ ceErr r3) 0 (ceCode r3)
 
+-- | Default-deny: a step without @expect@ accepts only CKR_OK and
+-- CKR_PENDING. A wrong PIN with no @expect@ fails the run (exit 1),
+-- naming the step, the action, the code, and the expect.return
+-- remedy instead of passing silently.
+caseNoExpectRefusalFails :: IO ()
+caseNoExpectRefusalFails = do
+  r <- runTempScenario "noexpectpin"
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "session.open" [] Nothing
+    , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+        , ("pin", JStr "0000")] Nothing
+    ]
+  assertEqual "unexpected refusal fails" 1 (ceCode r)
+  assertBool "step named" ("step[3]" `isInfixOf` ceErr r)
+  assertBool "action named" ("session.login" `isInfixOf` ceErr r)
+  assertBool "remedy named"
+    ("unexpected CKR_PIN_INCORRECT; declare expect.return to assert a refusal" `isInfixOf` ceErr r)
+
 caseTokenAbsent :: IO ()
 caseTokenAbsent = do
   let open tok expect = JObj [("action", JStr "session.open")
@@ -1168,11 +1195,12 @@ caseLifecycleExemptPinned =
     lifecycleExempt
 
 -- | Every gated verb refuses with CKR_CRYPTOKI_NOT_INITIALIZED
--- before initialize and after finalize, one row per verb.
--- slot-event.wait takes no return expectation, so its rows assert
--- on the printed step line instead of an expect clause. The table
--- must cover every known verb the gate covers, so a verb added
--- later cannot slip through untested.
+-- before initialize and after finalize, one row per verb. Every
+-- row carries the refusal as an @expect.return@ clause, including
+-- the slot wait: the gate answers before anything waits, so the
+-- refusal is a return, not an event. The table must cover every
+-- known verb the gate covers, so a verb added later cannot slip
+-- through untested.
 caseEveryVerbLifecycleGate :: IO ()
 caseEveryVerbLifecycleGate = do
   let tableVerbs = map fst gatedRows
@@ -1209,13 +1237,22 @@ caseEveryVerbLifecycleGate = do
       assertEqual ("post-finalize exit 0: " ++ verb ++ ": " ++ ceErr rPost)
         0 (ceCode rPost)
       assertRefused verb (2 :: Int) rPost
-    gatedStep verb args
-      | verb == "slot-event.wait" = step verb args Nothing
-      | otherwise = step verb args (Just "CKR_CRYPTOKI_NOT_INITIALIZED")
+    gatedStep verb args = step verb args (Just "CKR_CRYPTOKI_NOT_INITIALIZED")
     assertRefused verb idx r =
       assertBool ("refusal line: " ++ verb)
         (("step[" ++ show idx ++ "] " ++ verb ++ " -> CKR_CRYPTOKI_NOT_INITIALIZED")
           `isInfixOf` ceOut r)
+
+-- | Mismatch control for the gated slot wait: before initialize the
+-- wait refuses with CKR_CRYPTOKI_NOT_INITIALIZED, so expecting
+-- CKR_OK fails the run.
+caseSlotWaitGateMismatch :: IO ()
+caseSlotWaitGateMismatch = do
+  r <- runTempScenarioFull (fixture "maximal-demo.toml")
+    "gatewaitok" Nothing
+    [step "slot-event.wait" [("nonblocking", JBool True)] (Just "CKR_OK")]
+  assertEqual "expecting OK fails" 1 (ceCode r)
+  assertBool "mismatch named" ("expect.return mismatch" `isInfixOf` ceErr r)
 
 -- | Mismatch control for the unsigned-arming refusal: the
 -- same run that refuses without login fails when it expects

@@ -152,6 +152,9 @@
         "session": "s2",
         "role": "USER",
         "pin": "1234"
+      },
+      "expect": {
+        "return": "CKR_USER_ALREADY_LOGGED_IN"
       }
     },
     {

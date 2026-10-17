@@ -734,7 +734,8 @@ knownVerbs =
 -- value shapes, and required keys). Step extras validate per
 -- action: 'save_as' only on 'session.open' (a non-empty string),
 -- 'expect' carrying the clause its action produces ('return'
--- everywhere except slot-event.wait, 'event' only there). A step
+-- everywhere; the slot wait also takes 'event' for its observed
+-- token-state change). A step
 -- may also carry a 'note' object, validated and dropped like the
 -- top-level one.
 -- Effective session names are unique (positional slots count too,
@@ -863,7 +864,7 @@ validateScenario (JObj kvs) = do
       Just (JObj ekvs) -> do
         checkDup "scenario expect field" ekvs
         case act of
-          "slot-event.wait" -> checkClause "event" ekvs
+          "slot-event.wait" -> checkWaitClause ekvs
           _ -> checkClause "return" ekvs
       Just _ -> Left "scenario step 'expect' must be an object"
     checkClause want ekvs = do
@@ -873,6 +874,19 @@ validateScenario (JObj kvs) = do
         _ -> Left ("scenario step 'expect' needs a string '" ++ want ++ "'")
     checkExpectField want (k, _)
       | k == want = Right ()
+      | otherwise = Left ("scenario step 'expect' field '" ++ k
+          ++ "' is not supported here")
+    -- The slot wait admits exactly one clause: 'event' for the
+    -- observed token-state change, 'return' for the lifecycle
+    -- refusal the gate answers before anything waits.
+    checkWaitClause ekvs = do
+      mapM_ checkWaitField ekvs
+      case ekvs of
+        [("event", JStr _)] -> Right ()
+        [("return", JStr _)] -> Right ()
+        _ -> Left "scenario step 'expect' on 'slot-event.wait' needs a single string 'event' or 'return'"
+    checkWaitField (k, _)
+      | k == "event" || k == "return" = Right ()
       | otherwise = Left ("scenario step 'expect' field '" ++ k
           ++ "' is not supported here")
     -- Effective session names are unique before execution: each
