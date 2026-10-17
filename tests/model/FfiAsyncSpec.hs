@@ -10,17 +10,19 @@ failures stay NULL-identical; the @foreign export@ boundary keeps
 its catch-all so no Haskell exception crosses into C), so the
 mid-open kill aborts the open.
 
-Probe shape (deliberately NOT a kill spray): the victim signals
-@entered@ from inside a seconds-long open (a large memory catalog:
-50k seatings, no files, no environment reads), main fires ONE
-@killThread@ (the victim is provably alive and far from exit, so
-the synchronous throw is always delivered mid-open and always
-returns), then joins on @outcome@. Both joins carry a 10s
-'System.Timeout' backstop ('assertFailure' on expiry) per the
-no-wedge rule. Prior attempts wedged here with a masked-driver
-kill spray: the first kill lands before the victim installs its
-report handler, the victim dies silently, and the join blocks
-forever (64\/64 kills returned,
+Probe shape (deliberately NOT a kill spray): the victim opens
+through injected acquisition steps whose backend step signals
+@entered@ and then parks on a gate, so the victim is blocked
+inside the open when main fires ONE @killThread@. The gate (not
+a timing margin) puts the delivery mid-open: however late the
+kill arrives, the victim cannot have completed the open. Main
+then releases the gate, so a missed kill would surface as a
+completed open instead of a wedge, and joins on @outcome@. Both
+joins carry a 10s 'System.Timeout' backstop ('assertFailure' on
+expiry) per the no-wedge rule. Prior attempts wedged here with a
+masked-driver kill spray: the first kill lands before the victim
+installs its report handler, the victim dies silently, and the
+join blocks forever (64\/64 kills returned,
 @iters=0@, @outcome=Nothing@). The entered-rendezvous makes that
 impossible: no kill precedes handler installation.
 
@@ -143,12 +145,15 @@ import Haskoki.FFI.Async
   )
 import Haskoki.FFI.Standard
   ( SessionOpenPoint (..)
+  , StdAcquisition (..)
   , StdInstance (..)
   , haskokiStdClose
   , haskokiStdCloseSession
   , haskokiStdOpenSession
   , haskokiStdOpenSessionWithNotifyWithKey
   , openStdInstance
+  , openStdInstanceWith
+  , stdAcquisition
   , stdRvOf
   )
 import Haskoki.CallWork (checkedCallWork)
@@ -427,40 +432,37 @@ caseStdNonPoison = do
 -- swallowed and the open completed)
 -- ---------------------------------------------------------------------------
 
--- | A slow-but-successful open: 50k catalog seatings on the memory
--- backend (no files, no environment reads). The seating loop runs
--- ~100ms+, so a kill fired right after @entered@ is delivered
--- mid-open with a 100x+ margin — deterministically, without hooks.
--- The slot bound admits the whole catalog (seating must SUCCEED;
--- a refusal would fail fast and evaporate the slow window).
-bigCatalogCfg :: Config
-bigCatalogCfg = defaultConfig
-  { cfgLimits = (cfgLimits defaultConfig) { limSlots = bigCatalogSeats + 8 }
-  , cfgTokens = (cfgTokens defaultConfig)
-      { tcEntries =
-          [ ("tok-" ++ show i, "0000", "1111") | i <- [1 .. bigCatalogSeats] ]
-      }
-  }
-
-bigCatalogSeats :: Int
-bigCatalogSeats = 50000
-
+-- | A kill delivered while the open is provably in flight: the
+-- victim opens through injected acquisition steps whose backend
+-- step signals @entered@ and then parks on @proceed@, so the
+-- victim is blocked inside the open (past the store acquire, in
+-- the restored backend step) when the single 'killThread' lands.
+-- No timing margin: however late the kill arrives, the victim
+-- cannot have completed the open, so the outcome is always
+-- 'Left'. After the kill the main thread releases @proceed@, so
+-- a missed kill (a real defect) would surface as a completed
+-- open instead of a wedge.
 caseStdAsyncSlow :: IO ()
 caseStdAsyncSlow = do
   entered <- newEmptyMVar
+  proceed <- newEmptyMVar
   outcome <- newEmptyMVar
+  let sa = stdAcquisition
+        { saOpenBackend = putMVar entered () >> takeMVar proceed
+            >> saOpenBackend stdAcquisition
+        }
   victimTid <- forkIO $ do
-    r <- try $ do
-      putMVar entered ()
-      openStdInstance bigCatalogCfg
+    r <- try $ openStdInstanceWith sa defaultConfig
     putMVar outcome (r :: Either SomeException (StablePtr StdInstance))
   mEntered <- timeout 10000000 (takeMVar entered)
   case mEntered of
     Nothing -> assertFailure "wedge detected: victim never entered the open"
     Just () -> pure ()
-  -- Single kill: the victim is alive inside a ~100ms+ open, so this
-  -- is delivered mid-open and returns (no spray, no exit race).
+  -- Single kill: the victim is parked at the backend gate inside
+  -- the open (it cannot proceed until released below), so this is
+  -- delivered mid-open and returns (no spray, no exit race).
   killThread victimTid
+  _ <- tryPutMVar proceed ()
   mOut <- timeout 10000000 (takeMVar outcome)
   case mOut of
     Nothing -> assertFailure "wedge detected: open never reported after kill"
