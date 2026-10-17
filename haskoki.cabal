@@ -68,6 +68,8 @@ extra-source-files:
   tests/journeys/native/*.toml
   tests/journeys/opensc/*.toml
   tests/journeys/opensc/*.txt
+  tests/journeys/provision/*.toml
+  tests/journeys/provision/*.txt
   tests/journeys/sunpkcs11/*.toml
   tests/journeys/sunpkcs11/*.cfg
   scripts/test-client-journeys.sh
