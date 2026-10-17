@@ -88,9 +88,9 @@ flag guards before catalog/presence. CloseAll on a known empty slot succeeds.
 Removed sessions are not resurrected. A FindObjects page on a removed
 session reports `CKR_SESSION_HANDLE_INVALID` before any find-state check:
 `haskokiStdFind` resolves the session first (the FindObjectsFinal
-precedent), then the cursor, so the close retired the cursor with its
-session while a fresh session with no cursor still reports
-`CKR_OPERATION_NOT_INITIALIZED`. Refusals leave the page outputs
+precedent), then the cursor: a fresh session inherits no cursor and
+still reports `CKR_OPERATION_NOT_INITIALIZED`, while the closed
+session's own cursor retires with it. Refusals leave the page outputs
 untouched. See [Standard.hs](../ffi/Haskoki/FFI/Standard.hs) and the
 [reopen consumer](../tests/c/consumer_login_reopen.c).
 

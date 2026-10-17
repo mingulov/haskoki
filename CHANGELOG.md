@@ -238,8 +238,8 @@ record: symbol separation, sanitizer runs, evidence limits) and
   `CKR_SESSION_HANDLE_INVALID`; it used to answer
   `CKR_OPERATION_NOT_INITIALIZED`. The session check now runs before
   the cursor lookup, refusals leave the output buffer and count
-  untouched, and the cursor retires with its session: a fresh session
-  with no cursor still reports `CKR_OPERATION_NOT_INITIALIZED`.
+  untouched; the cursor retires with its session, and a fresh session
+  inherits no cursor, still reporting `CKR_OPERATION_NOT_INITIALIZED`.
 
 ## [0.4.0.0] - Unreleased
 

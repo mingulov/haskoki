@@ -948,7 +948,7 @@ int main(int argc, char **argv) {
       CHECKM(rv == CKR_SESSION_HANDLE_INVALID && clean, "page: removed session refuses, outputs untouched");
       rv = f->C_FindObjectsFinal(sess);
       CHECKM(rv == CKR_SESSION_HANDLE_INVALID, "page: removed final refuses (unchanged)");
-      /* retired cursor: a fresh session has no cursor to page */
+      /* a fresh session inherits no cursor: nothing to page */
       rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &fresh);
       CHECKM(rv == CKR_OK && fresh != 0, "page: fresh session opens");
       for (i = 0; i < 4; i++) found[i] = (CK_OBJECT_HANDLE)0xA5A5A5A5UL;
