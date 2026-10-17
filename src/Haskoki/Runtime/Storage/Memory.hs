@@ -396,8 +396,10 @@ reserveLocked world inj qVar sVar = do
             pure (Left err)
           Right (pid, advanced) -> do
             let old = Map.lookup jobIdCounterKey (wsMeta wst)
-            putMVar (mwState world)
-              (wst { wsMeta = Map.insert jobIdCounterKey advanced (wsMeta wst) })
+                reserved =
+                  wst { wsMeta = Map.insert jobIdCounterKey advanced (wsMeta wst) }
+            evaluate (forceWorldState reserved)
+            putMVar (mwState world) reserved
             ambiguous <- fiFire inj FaultAmbiguousCommit
             (classification, ePid) <-
               if ambiguous
@@ -673,10 +675,11 @@ effectiveDelta applied delta =
       , Just v <- [Map.lookup k (wsMeta applied)]
       ]
 
--- | Force a committed state before it is stored in the world's
--- MVar, so no thread evaluates another thread's shared commit
--- thunk (a space leak, and a concurrent first-evaluation
--- candidate for GHC #27272). Depth, per map: every map spine
+-- | Force a new state, commit or job-id reservation, before it
+-- is stored in the world's MVar, so no thread evaluates another
+-- thread's shared state thunk (a space leak, and a concurrent
+-- first-evaluation candidate for GHC #27272). Depth, per map:
+-- every map spine
 -- fully (the folds match each node); every record to WHNF, which
 -- evaluates each strict field to WHNF; and the lazy string spines
 -- below the records fully — the token label, the auth principal,
@@ -690,8 +693,9 @@ effectiveDelta applied delta =
 -- 'ActiveLogin' cases) and the strict scalar fields are complete
 -- at WHNF, and 'ByteString' has no lazy spine below WHNF, so a
 -- below-WHNF thunk can remain only inside those three 'Just'
--- payloads. Cost: O(state) per commit — the walk re-folds the
--- strings of records earlier commits already forced.
+-- payloads. Cost: O(state) per commit or reservation — the
+-- walk re-folds the strings of records earlier writes already
+-- forced.
 forceWorldState :: WorldState -> ()
 forceWorldState (WorldState toks objs jobs meta creds) =
   Map.foldr (\t r -> tok t `seq` r) () toks
