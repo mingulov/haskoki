@@ -1047,8 +1047,14 @@ caseMigrateAsyncRethrown = withScratch "ctl-migrate" $ \dir -> do
   createDirectory backups
   me <- myThreadId
   fired <- newEmptyMVar
+  proceed <- newEmptyMVar
   _ <- forkIO (takeMVar fired >> throwTo me ThreadKilled)
-  let killing = noMigrateHooks { mhAfterPlan = putMVar fired () }
+  -- The hook parks the migrate after the plan until the killer's
+  -- throw lands: the kill is delivered while the migrate is
+  -- provably in flight (no timing margin), and the parked hook
+  -- cannot complete first, so the outcome is always 'Left'.
+  let killing = noMigrateHooks
+        { mhAfterPlan = putMVar fired () >> takeMVar proceed }
   r <- try (storeMigrateCommandWith killing
     ["--path", store, "--config", cfgPath, "--backup-dir", backups])
     :: IO (Either AsyncException (Int, String, String))
