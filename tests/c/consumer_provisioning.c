@@ -967,6 +967,17 @@ static void phase_race_replace(void) {
   w = (g_replace_rv[0] == CKR_OK) ? g_replace_new[0] : g_replace_new[1];
   l = (g_replace_rv[0] == CKR_OK) ? g_replace_new[1] : g_replace_new[0];
 
+  /* The loser strike is observable before the winner probe: one
+   * strike leaves two attempts, so COUNT_LOW shows while FINAL_TRY
+   * stays clear (the winner login below clears it). */
+  {
+    CK_TOKEN_INFO info;
+    rv = token_info(0, &info);
+    CHECKC(rv == CKR_OK && (info.flags & CKF_USER_PIN_COUNT_LOW) != 0 &&
+           (info.flags & CKF_USER_PIN_FINAL_TRY) == 0,
+           "race: loser strike shows exactly once before the winner probe");
+  }
+
   /* Post-race probes, fixed order: the strike budget peaks
    * at two and never locks. The winner login first resets
    * the loser's strike; the two refusals accrue one strike
@@ -997,6 +1008,16 @@ static void phase_race_replace(void) {
   g_replace_new[0] = "pin-delta-04";
   g_replace_new[1] = "pin-echo-05";
   if (!run_replace_race("chained")) return;
+
+  /* Same after the chained race: one loser strike, read before SO
+   * recovery resets the counters. */
+  {
+    CK_TOKEN_INFO info;
+    rv = token_info(0, &info);
+    CHECKC(rv == CKR_OK && (info.flags & CKF_USER_PIN_COUNT_LOW) != 0 &&
+           (info.flags & CKF_USER_PIN_FINAL_TRY) == 0,
+           "race: chained loser strike shows exactly once");
+  }
 
   /* SO recovery hands slot 0 on with the agreed PIN; the
    * phases after depend on it. */
