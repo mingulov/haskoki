@@ -12,11 +12,11 @@ in [journey-aead.md](journey-aead.md) and
 Status: the installed portfolio runner
 (`scripts/test-client-journeys.sh` over `tests/journeys/legs.json`)
 qualifies the release bundle and the candidate demo image. Both
-runs below share one source revision (`9a47a48`, clean tree) and
-one module (`lib/libhaskoki.so` SHA-256 `10f2a81b…b6d1`, start
-and end equal in each run). Run P (`final-r8b/portfolio`,
-bundle tarball SHA-256 `3866d832…a124`) passes 61 of 61 legs;
-run I (`final-r8b/image`, image `sha256:738217d9…`) passes 28
+runs below share one source revision (`5fccc9f`, clean tree) and
+one module (`lib/libhaskoki.so` SHA-256 `44c4d773…cd33a`, start
+and end equal in each run). Run P (`v050-prep/portfolio`,
+bundle tarball SHA-256 `3c215ebf…a873d`) passes 61 of 61 legs;
+run I (`v050-prep/image`, image `sha256:c655352e…`) passes 28
 of 28. Per-leg results are in
 [client-journeys.json](release-results/client-journeys.json),
 which the evidence cells below cite as P (portfolio) and I (image).
@@ -85,11 +85,11 @@ path under the checkout. Records pin the tested module bytes
 config bytes, so a verdict always names its bytes.
 
 Time to first verified signature (measured, t0 basis in
-parentheses): portfolio `opensc-sign` at 2.04 s
+parentheses): portfolio `opensc-sign` at 2.51 s
 (bundle-extract: seconds since the bundle extraction finished);
-image `opensc-sign` at 0.72 s (module-phase-start: seconds since
+image `opensc-sign` at 0.73 s (module-phase-start: seconds since
 the module phase started). Client setup seconds (apt install,
-measured around it in the container): portfolio 48.0 s, basis
+measured around it in the container): portfolio 49.0 s, basis
 caller; image null, basis not-measured (no client install; the
 image ships its tools).
 
@@ -337,7 +337,7 @@ and `PASS:` trailer from `scripts/test-consumers.sh`.
     "markers": ["Key pair generated", "ID:         0101"]},
   "source": {"sha": "<runner records the source revision>",
     "dirty": false},
-  "artifact": {"kind": "bundle", "haskoki_version": "0.4.0.0",
+  "artifact": {"kind": "bundle", "haskoki_version": "0.5.0.0",
     "bundle_sha256": "<runner records the tarball>",
     "image_id": null,
     "toolchain_record_sha256": "<runner records the record>"},
