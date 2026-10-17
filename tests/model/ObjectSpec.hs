@@ -100,6 +100,7 @@ spec = testGroup "objects and attributes"
   , testCase "copy: unsealing overrides rejected, sealed copies stay sealed" caseCopySealRatchet
   , testCase "copy: absent EXTRACTABLE cannot be copied to true" caseCopyExtractableAbsent
   , testCase "create/copy: history attributes in templates refused" caseCreateRefusesHistory
+  , testCase "copy: history upgrades forged onto imports refused" caseCopyHistoryForgeUpRefused
   , testCase "create: key imports stamp the history rows" caseCreateStampsKeyAttrs
   , testCase "create: stamping covers every key class" caseCreateStampsEveryClass
   , testCase "copy: legacy copies materialize the absent flags" caseCopyMaterializesAbsent
@@ -687,6 +688,32 @@ caseCreateRefusesHistory = do
   (codeC, m3) <- runReject m2 (copyReq sid h [(AttrNeverExtractable, ValBool False)])
   assertEqual "history copy override refused" CKR_ATTRIBUTE_READ_ONLY codeC
   assertEqual "no history copy created" nBeforeCopy (Map.size (mObjects m3))
+
+-- | A copy may not upgrade history toward stronger protection:
+-- LOCAL, NEVER_EXTRACTABLE or KEY_GEN_MECHANISM forged onto an
+-- imported key (false history, unavailable mechanism) refuses with
+-- the set path's code and leaves no handle, no delta and no new
+-- object behind. Each attribute is attempted on its own.
+caseCopyHistoryForgeUpRefused :: IO ()
+caseCopyHistoryForgeUpRefused = do
+  (sid, m0) <- openSession seeded
+  (pc, m1) <- runCommit m0 (createReq sid (secretAes (BS.replicate 16 7)))
+  h <- commitHandle pc
+  let nObjs = Map.size (mObjects m1)
+      nHandles = Map.size (mHandles m1)
+      forges =
+        [ ("local", (AttrLocal, ValBool True))
+        , ("never-extractable", (AttrNeverExtractable, ValBool True))
+        , ("key-gen-mechanism", (AttrKeyGenMechanism, ValULong 0x1080))
+        ]
+  mapM_ (\(tag, attr) -> do
+    (rej, m2) <- runRejectFull m1 (copyReq sid h [attr])
+    assertEqual ("refused: " ++ tag) CKR_ATTRIBUTE_READ_ONLY (rejCode rej)
+    assertEqual ("no handle emitted: " ++ tag) [] (rejOutputs rej)
+    assertEqual ("empty delta: " ++ tag) (StateDelta []) (rejDelta rej)
+    assertEqual ("object count unchanged: " ++ tag) nObjs (Map.size (mObjects m2))
+    assertEqual ("handle count unchanged: " ++ tag) nHandles (Map.size (mHandles m2))
+    ) forges
 
 -- | Copying a legacy key materializes the absent protection flags:
 -- the copy stores the source-effective values for all six key

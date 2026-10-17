@@ -574,15 +574,32 @@ int main(int argc, char **argv) {
     rv = f->C_CopyObject(sess, k, up, 1, &cpy);
     CHECK(rv == CKR_OK && cpy != 0, "copy to EXTRACTABLE=false ok");
     /* A history attribute in a copy override is refused: caller
-     * templates may not forge history. */
+     * templates may not forge history. Each of the four rows is
+     * attempted toward stronger protection on its own. */
     {
-      CK_ATTRIBUTE histUp[] = {
-          {CKA_ALWAYS_SENSITIVE, &bTrue, sizeof(bTrue)},
+      CK_ULONG forgeKgm = CKM_AES_KEY_GEN;
+      struct {
+        CK_ATTRIBUTE_TYPE type;
+        void *val;
+        CK_ULONG len;
+        const char *name;
+      } forges[] = {
+          {CKA_ALWAYS_SENSITIVE, &bTrue, sizeof(bTrue), "ALWAYS_SENSITIVE"},
+          {CKA_NEVER_EXTRACTABLE, &bTrue, sizeof(bTrue), "NEVER_EXTRACTABLE"},
+          {CKA_LOCAL, &bTrue, sizeof(bTrue), "LOCAL"},
+          {CKA_KEY_GEN_MECHANISM, &forgeKgm, sizeof(forgeKgm), "KEY_GEN_MECHANISM"},
       };
-      CK_OBJECT_HANDLE hHist = 0;
-      rv = f->C_CopyObject(sess, k, histUp, 1, &hHist);
-      CHECK(rv == CKR_ATTRIBUTE_READ_ONLY && hHist == 0,
-            "copy history-override refused (rv=0x%lx)", (unsigned long)rv);
+      size_t fi;
+      for (fi = 0; fi < sizeof(forges) / sizeof(forges[0]); fi++) {
+        CK_ATTRIBUTE histUp[] = {
+            {forges[fi].type, forges[fi].val, forges[fi].len},
+        };
+        CK_OBJECT_HANDLE hHist = 0;
+        rv = f->C_CopyObject(sess, k, histUp, 1, &hHist);
+        CHECK(rv == CKR_ATTRIBUTE_READ_ONLY && hHist == 0,
+              "copy %s-upgrade refused (rv=0x%lx)", forges[fi].name,
+              (unsigned long)rv);
+      }
     }
     /* The tightened copy reports its derived protection: the
      * inherited sensitive-true, the tightened extractable-false,
