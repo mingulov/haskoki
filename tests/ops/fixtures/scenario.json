@@ -1,8 +1,11 @@
 {
   "schema_version": 1,
-  "status": "design-example-not-executed",
   "name": "pending-sign-and-token-removal",
-  "notice": "The owned-instance runner interprets these actions; a separate CLI does not control another loaded process.",
+  "note": {
+    "status": "design-example-not-executed",
+    "notice": "The owned-instance runner interprets these actions; a separate CLI does not control another loaded process.",
+    "assumes": "fresh owned store"
+  },
   "rules": [],
   "steps": [
     {
@@ -11,14 +14,13 @@
     {
       "action": "fixture.load",
       "arguments": {
-        "fixture": "minimal-demo",
-        "only_if_new_store": true
+        "fixture": "minimal-demo"
       }
     },
     {
       "action": "session.open",
       "arguments": {
-        "token": "demo-token",
+        "token": "haskoki-demo",
         "read_write": true,
         "asynchronous": true
       },
@@ -84,7 +86,7 @@
     {
       "action": "token.remove",
       "arguments": {
-        "token": "demo-token"
+        "token": "haskoki-demo"
       }
     },
     {

@@ -137,10 +137,15 @@ spec = testGroup "Config honesty"
     , testCase "key table: extra key is caught (negative control)" caseKeyTableExtra
     , testCase "every reserved key is on a reserved-*/template-bounds line" caseReservedOnLines
     , testCase "reserved disclosure: dropped line is caught (negative control)" caseReservedLineMissing
+    , testCase "reserved disclosure: dropped limits lines are caught (negative control)" caseReservedLimitsLineMissing
+    , testCase "every key carries an effective record" caseEffectiveComplete
+    , testCase "every reserved key is disclosed in capabilities" caseReservedDisclosedComplete
+    , testCase "resource inventory names the open dimensions" caseResourceInventory
     , testCase "catalog names every reserved knob" caseAuditReserved
     , testCase "catalog names every never-knob" caseAuditNeverKnobs
     , testCase "catalog names every refusal rule" caseAuditRefusals
     , testCase "catalog carries the dogfood matrix" caseAuditDogfood
+    , testCase "token identity rows state the durable rule" caseIdentityRows
     ]
   ]
 
@@ -368,11 +373,16 @@ runTempAsync tag enabled polls completes = withTimeout ("scenario " ++ tag) $
       [ step "initialize" []
       , step "fixture.load" []
       , step "session.open"
-          [ ("token", JStr "demo-token"), ("read_write", JBool True)
+          [ ("token", JStr "haskoki-demo"), ("read_write", JBool True)
           , ("asynchronous", JBool True)
           ]
-      , step "sign.init" [("session", JStr "s1")]
-      , step "sign" [("session", JStr "s1")]
+      , step "session.login" [("session", JStr "s1")
+          , ("role", JStr "USER"), ("pin", JStr "1234")]
+      , step "sign.init" [("session", JStr "s1")
+          , ("fixture_key", JStr "demo-signing-key")
+          , ("mechanism", JStr "CKM_RSA_PKCS")]
+      , step "sign" [("session", JStr "s1")
+          , ("data_base64", JStr "eA=="), ("output_capacity", JNum 256)]
       ]
       ++ replicate completes (step "async.complete" [("session", JStr "s1"), ("function", JStr "C_Sign")])
     step action args = JObj [("action", JStr action), ("arguments", JObj args)]
@@ -997,3 +1007,97 @@ caseReservedLineMissing = withTimeout "capabilities run" $ do
   let without = unlines (filter (not . ("reserved-async" `isPrefixOf`)) (lines (ceOut r)))
   assertEqual "capabilities without the reserved-async line"
     ["async.persist_detached"] (undisclosedReserved without)
+
+-- ---------------------------------------------------------------------------
+-- Effective inventory: every catalog key carries a non-empty Effective
+-- record, every reserved key is named by a capabilities disclosure line,
+-- and the resource section names the open dimensions.
+-- ---------------------------------------------------------------------------
+
+-- | Effective cells of the "Accepted settings" table: @| `key` | CLASS | ... | Effective |@.
+docEffectiveCells :: String -> [(String, String)]
+docEffectiveCells doc = concatMap row (lines section)
+  where
+    afterHead = drop 1 (dropWhile (not . ("## Accepted settings" `isPrefixOf`)) (lines doc))
+    section = unlines (takeWhile (not . ("## " `isPrefixOf`)) afterHead)
+    row ln = case splitCells ln of
+      (kc : cc : _ : _ : eff : _)
+        | ('`' : k) <- kc, not (null k), last k == '`'
+        , cc `elem` ["E", "R", "E/R", "D"] -> [(init k, eff)]
+      _ -> []
+    splitCells ln = case ln of
+      ('|' : rest) -> map trimSp (splitBar rest)
+      _ -> []
+    splitBar str = case break (== '|') str of
+      (c, []) -> [c]
+      (c, _ : more) -> c : splitBar more
+    trimSp = reverse . dropWhile (== ' ') . reverse . dropWhile (== ' ')
+
+caseEffectiveComplete :: IO ()
+caseEffectiveComplete = do
+  doc <- honestyCatalog
+  let cells = docEffectiveCells doc
+      catKeys = sort [dotted k | (k, _) <- configKeyCatalog]
+  assertEqual "every key carries a non-empty effective record" []
+    ([k | k <- catKeys, k `notElem` map fst cells]
+     ++ [k | (k, v) <- cells, null v])
+
+caseReservedDisclosedComplete :: IO ()
+caseReservedDisclosedComplete = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "real-crypto.toml"]
+  assertEqual "exit 0" 0 (ceCode r)
+  assertEqual "every reserved key named by a disclosure line" []
+    (undisclosedReserved (ceOut r))
+
+-- | Negative control for the limits leaves: dropping the
+-- @reserved-limits@ line must surface the three unbounded leaves,
+-- and dropping both limits disclosure lines must surface all five,
+-- so the disclosure check cannot pass on a report that lost them.
+caseReservedLimitsLineMissing :: IO ()
+caseReservedLimitsLineMissing = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "real-crypto.toml"]
+  let out = ceOut r
+      without tags = unlines
+        [ ln | ln <- lines out
+             , not (any (`isPrefixOf` ln) tags) ]
+  assertEqual "capabilities without the reserved-limits line"
+    (sort ["limits.transcript_bytes", "limits.aggregate_payload_bytes"
+          , "limits.attribute_depth"])
+    (sort (undisclosedReserved (without ["reserved-limits"])))
+  assertEqual "capabilities without both limits disclosure lines"
+    (sort ["limits.buffer_bytes", "limits.transcript_bytes"
+          , "limits.aggregate_payload_bytes", "limits.attribute_entries"
+          , "limits.attribute_depth"])
+    (sort (undisclosedReserved (without ["reserved-limits", "template-bounds"])))
+
+caseResourceInventory :: IO ()
+caseResourceInventory = do
+  doc <- honestyCatalog
+  assertBool "resource section present"
+    ("## Resource bounds and aggregate costs" `isInfixOf` doc)
+  -- Scoped to the section body: the dimension names also occur in
+  -- the settings table, so whole-document matching is vacuous.
+  let section = sectionBody "## Resource bounds and aggregate costs" doc
+  mapM_ (\dim -> assertBool ("open dimension named: " ++ dim) (dim `isInfixOf` section))
+    ["limits.transcript_bytes", "limits.aggregate_payload_bytes"
+    , "limits.attribute_depth", "R32", "A44"]
+  mapM_ (\ref -> assertBool ("WP13 outcome named: " ++ ref) (ref `isInfixOf` section))
+    ["buffered-updates", "appendBuffered"]
+
+-- | The body of a @## @ section: the lines after its heading up to
+-- the next @## @ heading or the end of the document.
+sectionBody :: String -> String -> String
+sectionBody heading doc =
+  unlines (takeWhile (not . isSection) (drop 1 (dropWhile (/= heading) (lines doc))))
+  where isSection ln = "## " `isPrefixOf` ln
+
+-- | The identity rows state the durable rule against the landed
+-- storage truth: the serial is the 16-character TokenId, and
+-- config PINs only seed fresh stores.
+caseIdentityRows :: IO ()
+caseIdentityRows = do
+  doc <- honestyCatalog
+  assertBool "token_ids row states the durable serial rule"
+    ("serial is the 16-character TokenId" `isInfixOf` doc)
+  assertBool "PIN authority states durable-first"
+    ("durable credentials win" `isInfixOf` doc)

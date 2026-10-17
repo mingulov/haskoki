@@ -144,13 +144,17 @@ examples:
 "$HASKOKI_BUNDLE/bin/haskoki-ctl" scenario run \
   --config tests/ops/fixtures/maximal-demo.toml \
   --scenario tests/ops/fixtures/scenario.json
-# scenario-ok
+# scenario-ok (owned logical simulation, 12 steps)
 
 "$HASKOKI_BUNDLE/bin/haskoki-ctl" scenario run \
   --config tests/ops/fixtures/sim-demo.toml \
   --scenario tests/ops/fixtures/sim-scenario.json
-# scenario-ok
+# scenario-ok (owned logical simulation, 23 steps)
 ```
+
+`scenario-ok` reports the owned logical simulation only: the simulator
+boundary is the [configuration reference](config-honesty.md#serving-presence-and-private-scenario-scope),
+and a passing scenario is not a statement about native serving.
 
 Simulation can add logical delay ticks, token-script actions, and fault
 windows. These are deterministic test controls, not real-time guarantees.

@@ -45,6 +45,9 @@ module Haskoki.Runtime.Control
   , ScenarioStep (..)
   , validateScenario
   , maxScenarioActions
+  , base64DecodedLength
+  , knownMechanism
+  , knownVerbs
   ) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
@@ -61,6 +64,7 @@ import qualified Data.ByteString.Internal as BSI
 import Data.ByteString (ByteString)
 import Data.Char (isDigit, isSpace)
 import Data.List (intercalate)
+import qualified Data.Text as T
 import Data.Word (Word64)
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -70,6 +74,7 @@ import Data.Word (Word8)
 
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Outcome (ModelFault (..))
+import Haskoki.Registry.Generated (generatedIdByName)
 import Haskoki.Runtime.Async (AsyncTable, advanceTicks)
 import Haskoki.Runtime.Config (Config (..), ControlCfg (..), SimCfg (..))
 import Haskoki.Runtime.Events
@@ -719,13 +724,20 @@ knownVerbs =
   ]
 
 -- | Validate a scenario object: bounded step count, known verbs,
--- per-action arguments, well-formed extras. Rules must be absent or
+-- per-action arguments, well-formed extras. The top level carries
+-- exactly 'name', 'rules', 'steps', an optional 'schema_version'
+-- (which must be 1 when present), and an optional 'note' object;
+-- every other top-level field rejects. 'note' is validated and
+-- dropped (documentary by construction). Rules must be absent or
 -- empty: the runner never executes them, so carrying any would
 -- silently mislead. Arguments validate per action (known keys,
 -- value shapes, and required keys). Step extras validate per
 -- action: 'save_as' only on 'session.open' (a non-empty string),
 -- 'expect' carrying the clause its action produces ('return'
--- everywhere except slot-event.wait, 'event' only there).
+-- everywhere; the slot wait also takes 'event' for its observed
+-- token-state change). A step
+-- may also carry a 'note' object, validated and dropped like the
+-- top-level one.
 -- Effective session names are unique (positional slots count too,
 -- and the live @"s1"@ alias occupies its name). Duplicate keys
 -- reject at every level: lookup takes the first, so a second entry
@@ -733,6 +745,7 @@ knownVerbs =
 validateScenario :: Json -> Either String Scenario
 validateScenario (JObj kvs) = do
   checkDup "scenario field" kvs
+  mapM_ checkTopField kvs
   name <- case lookup "name" kvs of
     Just (JStr n) | not (null n) -> Right n
     _ -> Left "scenario needs a non-empty string 'name'"
@@ -778,9 +791,21 @@ validateScenario (JObj kvs) = do
         go seen ((k, _) : rest)
           | k `elem` seen = Just k
           | otherwise = go (k : seen) rest
-    checkField (k, _)
+    checkField (k, v)
       | k `elem` ["action", "arguments", "save_as", "expect"] = Right ()
+      | k == "note" = case v of
+          JObj _ -> Right ()
+          _ -> Left "scenario 'note' must be an object"
       | otherwise = Left ("unknown scenario step field: " ++ k)
+    checkTopField (k, v)
+      | k `elem` ["name", "rules", "steps"] = Right ()
+      | k == "note" = case v of
+          JObj _ -> Right ()
+          _ -> Left "scenario 'note' must be an object"
+      | k == "schema_version" = case v of
+          JNum 1 -> Right ()
+          _ -> Left "scenario 'schema_version' must be 1"
+      | otherwise = Left ("unknown scenario field: " ++ k)
     checkArgs act pairs = do
       checkDup "scenario argument" pairs
       mapM_ (checkArg act) pairs
@@ -806,6 +831,23 @@ validateScenario (JObj kvs) = do
         JNum n | n >= lo && n <= hi -> Right ()
         _ -> Left ("scenario argument '" ++ k ++ "' for action '" ++ act
           ++ "' must be an integer in " ++ show lo ++ ".." ++ show hi)
+      Just ArgTrue -> case v of
+        JBool True -> Right ()
+        _ -> Left ("scenario argument '" ++ k ++ "' for action '" ++ act
+          ++ "' must be true (the simulator models read-write sessions only)")
+      Just ArgBase64 -> case v of
+        JStr s | Just _ <- base64DecodedLength s -> Right ()
+        _ -> Left ("scenario argument '" ++ k ++ "' for action '" ++ act
+          ++ "' must be strict base64")
+      Just ArgMechanism -> case v of
+        JStr m | knownMechanism m -> Right ()
+        JStr m -> Left ("unknown mechanism '" ++ m ++ "' for action '" ++ act ++ "'")
+        _ -> typeErr "a string"
+      Just (ArgLiteral alts) -> case v of
+        JStr s | s `elem` alts -> Right ()
+        JStr s -> Left ("unsupported " ++ k ++ " '" ++ s
+          ++ "' (supported: " ++ intercalate ", " alts ++ ") for action '" ++ act ++ "'")
+        _ -> typeErr "a string"
       where
         typeErr want = Left ("scenario argument '" ++ k ++ "' for action '"
           ++ act ++ "' must be " ++ want)
@@ -822,7 +864,7 @@ validateScenario (JObj kvs) = do
       Just (JObj ekvs) -> do
         checkDup "scenario expect field" ekvs
         case act of
-          "slot-event.wait" -> checkClause "event" ekvs
+          "slot-event.wait" -> checkWaitClause ekvs
           _ -> checkClause "return" ekvs
       Just _ -> Left "scenario step 'expect' must be an object"
     checkClause want ekvs = do
@@ -832,6 +874,19 @@ validateScenario (JObj kvs) = do
         _ -> Left ("scenario step 'expect' needs a string '" ++ want ++ "'")
     checkExpectField want (k, _)
       | k == want = Right ()
+      | otherwise = Left ("scenario step 'expect' field '" ++ k
+          ++ "' is not supported here")
+    -- The slot wait admits exactly one clause: 'event' for the
+    -- observed token-state change, 'return' for the lifecycle
+    -- refusal the gate answers before anything waits.
+    checkWaitClause ekvs = do
+      mapM_ checkWaitField ekvs
+      case ekvs of
+        [("event", JStr _)] -> Right ()
+        [("return", JStr _)] -> Right ()
+        _ -> Left "scenario step 'expect' on 'slot-event.wait' needs a single string 'event' or 'return'"
+    checkWaitField (k, _)
+      | k == "event" || k == "return" = Right ()
       | otherwise = Left ("scenario step 'expect' field '" ++ k
           ++ "' is not supported here")
     -- Effective session names are unique before execution: each
@@ -866,27 +921,32 @@ data ArgType
   | ArgBool
   | ArgInt
   | ArgIntRange !Integer !Integer
+  | ArgTrue
+  | ArgBase64
+  | ArgMechanism
+  | ArgLiteral ![String]
   deriving (Eq, Show)
 
--- | Per-action argument surface: the keys the runner reads plus the
--- documentary keys the shipped fixtures carry (token names, fixture
--- labels, capacities). Anything else is a typo the runner would
--- silently ignore, so it rejects. An empty session reference can
--- never resolve ('save_as' is never empty), so it rejects too.
+-- | Per-action execution schema: every admitted key is validated and
+-- either consumed by the runner or admitted as a value needing no
+-- execution branch (a single supported literal); anything else is a
+-- typo the runner would silently ignore, so it rejects. An empty
+-- session reference can never resolve ('save_as' is never empty),
+-- so it rejects too.
 argSpec :: String -> [(String, ArgType)]
 argSpec "fixture.load" =
-  [("fixture", ArgString), ("only_if_new_store", ArgBool)]
+  [("fixture", ArgLiteral ["minimal-demo"])]
 argSpec "session.open" =
-  [("token", ArgString), ("read_write", ArgBool), ("asynchronous", ArgBool)]
+  [("token", ArgNonEmptyString), ("read_write", ArgTrue), ("asynchronous", ArgBool)]
 argSpec "session.login" =
-  [("session", ArgNonEmptyString), ("role", ArgString), ("pin", ArgString)]
+  [("session", ArgNonEmptyString), ("role", ArgLiteral ["USER", "SO"]), ("pin", ArgString)]
 argSpec "sign.init" =
-  [("session", ArgNonEmptyString), ("fixture_key", ArgString), ("mechanism", ArgString)]
+  [("session", ArgNonEmptyString), ("fixture_key", ArgLiteral ["demo-signing-key"]), ("mechanism", ArgMechanism)]
 argSpec "sign" =
-  [("session", ArgNonEmptyString), ("data_base64", ArgString), ("output_capacity", ArgInt)]
+  [("session", ArgNonEmptyString), ("data_base64", ArgBase64), ("output_capacity", ArgIntRange 0 16777216)]
 argSpec "async.complete" =
-  [("session", ArgNonEmptyString), ("function", ArgString)]
-argSpec "token.remove" = [("token", ArgString)]
+  [("session", ArgNonEmptyString), ("function", ArgLiteral ["C_Sign"])]
+argSpec "token.remove" = [("token", ArgNonEmptyString)]
 argSpec "slot-event.wait" = [("nonblocking", ArgBool)]
 argSpec "token.insert" = [("slot", ArgIntRange 0 0xFFFFFFFF)]
 argSpec "async.delay" =
@@ -898,9 +958,59 @@ argSpec _ = []
 -- | Arguments without a runner default: absence would fail during
 -- execution, so validation requires them beforehand. Every other
 -- key is optional ('session' defaults to the @"s1"@ slot,
--- 'asynchronous'\/'nonblocking' to runner defaults).
+-- 'asynchronous'\/'nonblocking'\/'token'\/'fixture' to runner defaults).
 requiredArgs :: String -> [String]
+requiredArgs "session.login" = ["role", "pin"]
+requiredArgs "sign.init" = ["mechanism", "fixture_key"]
+requiredArgs "sign" = ["data_base64", "output_capacity"]
+requiredArgs "async.complete" = ["function"]
 requiredArgs "token.insert" = ["slot"]
 requiredArgs "async.delay" = ["polls"]
 requiredArgs "fault.window" = ["start", "ticks"]
 requiredArgs _ = []
+
+-- | Strict base64 decoded length: empty decodes to 0; otherwise the
+-- input length must be a multiple of 4, the body must use the
+-- canonical alphabet only, at most two @=@ may terminate the input,
+-- and the unused trailing bits of the final quantum must be zero
+-- (non-canonical encodings such as @eB==@ are malformed). Anything
+-- else (including data after the pad) is malformed.
+base64DecodedLength :: String -> Maybe Int
+base64DecodedLength s
+  | null s = Just 0
+  | length s `mod` 4 /= 0 = Nothing
+  | '=' `elem` core = Nothing
+  | not (all isB64 core) = Nothing
+  | length pad > 2 = Nothing
+  | not (all (== '=') pad) = Nothing
+  | not canonicalTail = Nothing
+  | otherwise = Just ((length s `div` 4) * 3 - length pad)
+  where
+    (core, pad) = span (/= '=') s
+    isB64 c = ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')
+      || ('0' <= c && c <= '9') || c == '+' || c == '/'
+    sextet c
+      | 'A' <= c && c <= 'Z' = fromEnum c - fromEnum 'A'
+      | 'a' <= c && c <= 'z' = fromEnum c - fromEnum 'a' + 26
+      | '0' <= c && c <= '9' = fromEnum c - fromEnum '0' + 52
+      | c == '+' = 62
+      | otherwise = 63
+    -- One pad: the last sextet carries 4 data bits, so its low 2
+    -- bits must be zero; two pads: it carries 2 data bits, so its
+    -- low 4 bits must be zero. An empty core with pads is
+    -- unreachable (length and pad guards), and rejects.
+    canonicalTail = case length pad of
+      0 -> True
+      1 -> case core of
+        [] -> False
+        _ -> sextet (last core) `mod` 4 == 0
+      _ -> case core of
+        [] -> False
+        _ -> sextet (last core) `mod` 16 == 0
+
+-- | A mechanism name is known when the generated inventory resolves
+-- it (canonical or alias).
+knownMechanism :: String -> Bool
+knownMechanism m = case generatedIdByName (T.pack m) of
+  Just _ -> True
+  Nothing -> False

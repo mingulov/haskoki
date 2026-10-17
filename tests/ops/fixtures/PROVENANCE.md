@@ -27,3 +27,18 @@ device-error window.
 PINs are public test fixtures. Use disposable keys and paths. Configuration
 behavior, including reserved settings, is described in the
 [configuration reference](../../../docs/config-honesty.md).
+
+`scenario.json`: the top-level `status`/`notice` markers moved under a
+documentary `note` object; validation drops them.
+`sim-scenario.json`: the top-level `status`/`notice` markers moved under a
+documentary `note` object; validation drops them.
+`scenario.json`: the retired `only_if_new_store` argument dropped from
+`fixture.load`; the fresh-store assumption recorded in the top-level note.
+`sim-scenario.json`: the retired `only_if_new_store` argument dropped from
+`fixture.load`; the fresh-store assumption recorded in the top-level note.
+`scenario.json`: the `token` arguments now name the served slot-0 label
+(`session.open` and `token.remove`); other labels refuse at execution.
+`sim-scenario.json`: the `token` arguments now name the served slot-0 label
+(`session.open` and `token.remove`); other labels refuse at execution.
+`sim-scenario.json`: the mid-file `finalize` moved after the `s2` block
+(steps after finalize refuse); step order otherwise unchanged.

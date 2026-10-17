@@ -12,7 +12,10 @@ Every command owns its instance or works offline:
   in-memory instance, deterministically (no code execution; a sync
   session never pends; strict load: nonempty rules, unknown step
   fields, mistyped arguments, and misplaced save_as\/expect reject;
-  each step's result is checked centrally against its expectation);
+  each step's result is checked centrally against its expectation,
+  and a step without one accepts only @CKR_OK@ and @CKR_PENDING@;
+  value admission, expectable refusals, lifecycle; only the @note@
+  field carries inert prose);
 * @store inspect@ reads a SQLite store offline (SELECT-only under
   @query_only@; never takes the ownership lock);
 * @store check@ plans an open of a store read-only and reports what
@@ -31,6 +34,8 @@ the help text says so.
 module Haskoki.Ctl
   ( CtlExit (..)
   , ctlHelp
+  , isLifecycleGated
+  , lifecycleExempt
   , runCtl
   ) where
 
@@ -39,6 +44,7 @@ import qualified Data.ByteString.Char8 as BC8
 import Data.List (intercalate, sort)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import Data.Maybe (fromMaybe, isNothing)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import System.IO.Error (tryIOError)
@@ -52,6 +58,7 @@ import Haskoki.Runtime.Storage.SQLite (resolveStorePath, resolveStorePathTracked
 import Haskoki.Runtime.Control
   ( Json (..)
   , Scenario (..)
+  , base64DecodedLength
   , parseJson
   , validateScenario
   )
@@ -68,8 +75,9 @@ import Haskoki.Runtime.Events
   , tryWaitSlotEvent
   , waitSlotEvent
   )
-import Haskoki.Registry (MechanismId (..), behaviorIds, curatedRegistry)
-import Haskoki.Registry.Generated (generatedInventory)
+import Haskoki.Registry (MechanismId (..), Operation (..), behaviorIds, behaviorRoutes, curatedRegistry)
+import Haskoki.Registry.Generated (generatedIdByName, generatedInventory)
+import Haskoki.Session (ActiveLogin (..))
 import Haskoki.Runtime.Trace
   ( DrainReport (..)
   , TraceEvent (..)
@@ -218,6 +226,7 @@ capabilitiesReport cfg = unlines $
   , reservedAsyncLine
   , reservedLimitsLine
   , "interfaces: " ++ unwords (cfgInterfaces cfg)
+      ++ " (configured set; effective native: 3.2 3.1 3.0 via C_GetInterface/C_GetInterfaceList, 2.40 via C_GetFunctionList)"
   , "active-catalog: " ++ unwords active
   , "gap-set: " ++ unwords gaps
   ] ++ map (\(k, v) -> "limit." ++ k ++ ": " ++ show v) (reportLimits cfg)
@@ -293,12 +302,12 @@ data RunStep = RunStep
   , rsExpect :: !(Maybe StepExpect)
   } deriving (Eq, Show)
 
--- | Logical session in the owned instance.
+-- | Logical session in the owned instance. 'lsArmed' carries the
+-- arming pair @(mechanism, fixture key)@ once @sign.init@ runs.
 data LogicalSession = LogicalSession
   { lsId :: !SessionId
   , lsAsync :: !Bool
-  , lsLoggedIn :: !Bool
-  , lsSignArmed :: !Bool
+  , lsArmed :: !(Maybe (String, String))
   , lsPendingLeft :: !Int
   , lsSignCalls :: !Int
   } deriving (Eq, Show)
@@ -310,14 +319,26 @@ data LogicalSession = LogicalSession
 -- sim is enabled; the @fault.window@ verb replaces it). 'rnOrder'
 -- records session names in opening order, so the @"s1"@ alias
 -- resolves to the first-opened session rather than the first by
--- name.
+-- name. 'rnInitialized' with 'rnFinalized' tracks the instance
+-- lifecycle ('lifecycleRefusal' refuses non-live use).
+-- 'rnLogin' is the token-level login (one role for the whole
+-- instance, as in the native token auth): signing needs the
+-- normal user, and a second login refuses. 'rnSlotZeroRemoved'
+-- tracks the slot-0 removal the @token.remove@ verb seats: while
+-- removed, opens and repeat removals refuse, and only
+-- @token.insert@ of slot 0 or @fixture.load@ seats the token again
+-- (initialize leaves the flag alone: the registry keeps its
+-- presence across re-initialize too).
 data Runner = Runner
   { rnTracer :: !Tracer
   , rnSessions :: !(Map String LogicalSession)
   , rnNextSession :: !Int
+  , rnInitialized :: !Bool
   , rnFinalized :: !Bool
+  , rnLogin :: !(Maybe ActiveLogin)
   , rnFault :: !(Maybe (Int, Int))
   , rnOrder :: ![String]
+  , rnSlotZeroRemoved :: !Bool
   }
 
 -- | Run a scenario file against an owned instance.
@@ -339,8 +360,9 @@ runScenario cfgPath scPath = do
               Just steps -> execScenario cfg sc steps
 
 -- | Parse the raw steps into validated runner values (actions,
--- arguments, and per-action extras). Total: malformed input refuses
--- instead of degrading to defaults (unreachable after
+-- arguments, and per-action extras). A step 'note' is admitted and
+-- dropped (validation owns its shape). Total: malformed input
+-- refuses instead of degrading to defaults (unreachable after
 -- 'validateScenario', which rejects first with detail).
 runSteps :: Json -> Maybe [RunStep]
 runSteps (JObj kvs) = case lookup "steps" kvs of
@@ -360,16 +382,22 @@ runSteps (JObj kvs) = case lookup "steps" kvs of
       expect <- case lookup "expect" skvs of
         Nothing -> Just Nothing
         Just (JObj ekvs) -> case act of
-          "slot-event.wait" -> expectClause "event" ekvs
+          "slot-event.wait" -> expectWait ekvs
           _ -> expectClause "return" ekvs
         _ -> Nothing
-      if all (\(k, _) -> k `elem` ["action", "arguments", "save_as", "expect"]) skvs
+      if all (\(k, _) -> k `elem` ["action", "arguments", "save_as", "expect", "note"]) skvs
         then Just (RunStep act args save expect)
         else Nothing
     toStep _ = Nothing
     expectClause "event" [("event", JStr w)] = Just (Just (ExpectEvent w))
     expectClause "return" [("return", JStr w)] = Just (Just (ExpectReturn w))
     expectClause _ _ = Nothing
+    -- | The slot wait admits either clause: 'event' for the observed
+    -- token-state change, 'return' for the lifecycle refusal the
+    -- gate answers before anything waits.
+    expectWait [("event", JStr w)] = Just (Just (ExpectEvent w))
+    expectWait [("return", JStr w)] = Just (Just (ExpectReturn w))
+    expectWait _ = Nothing
 runSteps _ = Nothing
 
 -- | Execute validated steps in file order (deterministic). Each
@@ -384,7 +412,7 @@ execScenario cfg sc steps = do
   reg <- newTokenRegistry eq at
   tr <- newTracer (max 8 (tcQueueLimit (cfgTrace cfg))) (\_ -> pure (Right ())) False
   applyTokenScript reg (simScript cfg)
-  let rn0 = Runner tr Map.empty 1 False (seedFault cfg) []
+  let rn0 = Runner tr Map.empty 1 False False Nothing (seedFault cfg) [] False
   eOut <- go rn0 reg tr (zip [0 :: Int ..] steps) []
   case eOut of
     Left err -> pure (CtlExit 1 "" ("scenario-failed: " ++ err ++ "\n"))
@@ -395,7 +423,7 @@ execScenario cfg sc steps = do
               , "steps-executed: " ++ show (length lines_)
               ] ++ scriptLine ++ lines_ ++
             [ "trace-lines: " ++ show (drWritten rep + drFailed rep)
-            , "scenario-ok"
+            , "scenario-ok (owned logical simulation, " ++ show (length lines_) ++ " steps)"
             ]
       pure (CtlExit 0 out "")
   where
@@ -407,10 +435,12 @@ execScenario cfg sc steps = do
       eLine <- execStep cfg reg tr rn i st
       case eLine of
         Left err -> pure (Left ("step[" ++ show i ++ "] " ++ rsAction st ++ ": " ++ err))
-        Right (rn', res) -> case checkStepExpect st res of
+        Right (rn', res, detail) -> case checkStepExpect st res of
           Left err -> pure (Left ("step[" ++ show i ++ "] " ++ rsAction st ++ ": " ++ err))
           Right () -> go rn' reg tr rest
-            (("step[" ++ show i ++ "] " ++ rsAction st ++ " -> " ++ resultNote res) : acc)
+            (("step[" ++ show i ++ "] " ++ rsAction st ++ " -> " ++ resultNote res ++ detailSuffix detail) : acc)
+    detailSuffix "" = ""
+    detailSuffix d = " " ++ d
 
 -- | The effective token script (empty unless sim is enabled).
 simScript :: Config -> [(String, Int)]
@@ -440,114 +470,262 @@ inFault rn i = case rnFault rn of
   Just (s, t) -> s <= i && i < s + t
   Nothing -> False
 
+-- | The lifecycle refusal for a step on a non-live instance: every
+-- verb except @initialize@, @finalize@ and the sim test controls
+-- refuses with @CKR_CRYPTOKI_NOT_INITIALIZED@ before anything else
+-- when the runner is not initialized or already finalized.
+lifecycleRefusal :: Runner -> Maybe StepResult
+lifecycleRefusal rn
+  | rnInitialized rn && not (rnFinalized rn) = Nothing
+  | otherwise = Just (StepReturn "CKR_CRYPTOKI_NOT_INITIALIZED")
+
+-- | Verbs the lifecycle gate skips: the lifecycle verbs
+-- themselves plus the sim test controls (which run on any
+-- instance state, subject to their own test-enabled gate).
+-- Everything else is gated by default, so a verb added later is
+-- covered without touching this list.
+lifecycleExempt :: [String]
+lifecycleExempt =
+  [ "initialize", "finalize"
+  , "token.insert", "async.delay", "fault.window"
+  ]
+
+-- | Whether a verb refuses with 'lifecycleRefusal' when the
+-- instance is not live. Default-deny over 'lifecycleExempt': any
+-- verb outside the exempt list is gated.
+isLifecycleGated :: String -> Bool
+isLifecycleGated act = act `notElem` lifecycleExempt
+
+-- | The traced call for a lifecycle refusal on a verb: each gated
+-- verb reports the call it would have run. Unknown verbs cannot
+-- arrive (validated), so the fallback names the verb itself.
+-- Names are the scenario runner's traced calls, not an exact PKCS#11 mapping.
+refusalFunction :: String -> String
+refusalFunction verb = case verb of
+  "fixture.load" -> "C_InitToken"
+  "session.open" -> "C_OpenSession"
+  "session.login" -> "C_Login"
+  "sign.init" -> "C_SignInit"
+  "sign" -> "C_Sign"
+  "async.complete" -> "C_Sign"
+  "token.remove" -> "C_WaitForSlotEvent"
+  "slot-event.wait" -> "C_WaitForSlotEvent"
+  _ -> verb
+
 -- | Fixture credentials (test-only, from the design §6 fixture set).
 fixtureUserPin, fixtureSoPin :: String
 fixtureUserPin = "1234"
 fixtureSoPin = "5678"
 
+-- | The slot-0 token label of the config: the first @[tokens]@
+-- catalog label, or the home-token default when the section is
+-- absent (the slot-0 stability anchor keeps both spellings equal).
+slotZeroLabel :: Config -> String
+slotZeroLabel cfg = case tcEntries (cfgTokens cfg) of
+  ((label, _, _) : _) -> label
+  [] -> "haskoki-demo"
+
+-- | Whether a mechanism name can arm the demo signing key: it
+-- resolves in the generated inventory (canonical or alias, as in
+-- validation) and its behavior descriptor carries a sign route.
+-- Anything else (digests, key generation, unknown names) refuses
+-- at arming time instead of signing with @CKR_OK@.
+signCapable :: String -> Bool
+signCapable mech = case generatedIdByName (T.pack mech) of
+  Just w -> (MechanismId w, OpSign) `elem` behaviorRoutes curatedRegistry
+  Nothing -> False
+
 -- | Execute one step (@i@ is the step index for fault-window
 -- checks), producing an explicit result for centralized
--- expectation checking. Unknown verbs cannot arrive (validated),
--- so the fallback is an internal error, never code execution.
--- @session.open@ honors @save_as@ (a duplicate name refuses
--- without mutation). Program errors (unknown session, unarmed
--- sign) precede device faults: an in-window step reports
--- @CKR_DEVICE_ERROR@ instead of running, without consuming any
--- pending poll.
-execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult))
-execStep cfg reg tr rn i st = case rsAction st of
+-- expectation checking plus a detail string echoing the consumed
+-- values (@""@ when the action has nothing to echo). Unknown verbs
+-- cannot arrive (validated), so the fallback is an internal error,
+-- never code execution. @session.open@ honors @save_as@ (a
+-- duplicate name refuses without mutation). Gate order per action:
+-- lifecycle (except @initialize@, @finalize@ and the sim test
+-- controls) -> session resolution -> login (signing ops) ->
+-- armed -> capacity -> fault -> pending. Program errors
+-- (unknown session, unarmed sign) precede device faults: an
+-- in-window step reports @CKR_DEVICE_ERROR@ instead of running,
+-- without consuming any pending poll.
+execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult, String))
+execStep cfg reg tr rn i st
+  | isLifecycleGated (rsAction st) = case lifecycleRefusal rn of
+      Just refusal -> do
+        emit tr (refusalFunction (rsAction st)) 0x190 (rsAction st)
+        pure (Right (rn, refusal, ""))
+      Nothing -> execVerb cfg reg tr rn i st
+  | otherwise = execVerb cfg reg tr rn i st
+
+-- | Run one step past the lifecycle gate: session resolution,
+-- login (signing ops), arming, capacity, fault, pending. The
+-- expectable refusals below emit their traced call, counted in
+-- the run's trace-lines footer.
+execVerb :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO (Either String (Runner, StepResult, String))
+execVerb cfg reg tr rn i st = case rsAction st of
   "initialize" -> do
-    emit tr "C_Initialize" 0 "initialized"
-    pure (Right (rn, StepReturn "CKR_OK"))
+    if rnInitialized rn && not (rnFinalized rn)
+      then pure (Right (rn, StepReturn "CKR_CRYPTOKI_ALREADY_INITIALIZED", ""))
+      else do
+        emit tr "C_Initialize" 0 "initialized"
+        let rn' = rn { rnInitialized = True, rnFinalized = False
+                     , rnSessions = Map.empty, rnNextSession = 1
+                     , rnLogin = Nothing
+                     , rnOrder = [], rnFault = seedFault cfg }
+        pure (Right (rn', StepReturn "CKR_OK", ""))
   "fixture.load" -> do
     _ <- insertToken reg (SlotId 0)
     emit tr "C_InitToken" 0 "fixture-loaded"
-    pure (Right (rn, StepReturn "CKR_OK"))
+    pure (Right (rn { rnSlotZeroRemoved = False }, StepReturn "CKR_OK", ""))
   "session.open" -> do
-    let name = case rsSaveAs st of
-          Just saved -> saved
-          Nothing -> saveName (rnNextSession rn)
-        isAsync = case lookup "asynchronous" (rsArgs st) of
-          Just (JBool b) -> b
-          _ -> False
-        sid = SessionId (rnNextSession rn)
-    -- The effective namespace covers literal names plus the live
-    -- "s1" alias (named sessions exist, no literal s1): binding
-    -- that alias refuses, as validation already enforced.
-    let aliasLive = not (Map.null (rnSessions rn)) && Map.notMember "s1" (rnSessions rn)
-    if Map.member name (rnSessions rn) || (name == "s1" && aliasLive)
-      then pure (Left ("duplicate session name: " ++ name))
+    let tok = fromMaybe (slotZeroLabel cfg) $ case lookup "token" (rsArgs st) of
+          Just (JStr t) -> Just t
+          _ -> Nothing
+    -- A foreign label and a removed slot-0 token both refuse the
+    -- same way (no trace: token-not-present is untraced, as the
+    -- reference documents).
+    if tok /= slotZeroLabel cfg || rnSlotZeroRemoved rn
+      then pure (Right (rn, StepReturn "CKR_TOKEN_NOT_PRESENT", "token=" ++ tok))
       else do
-        registerSessionSlot reg sid (SlotId 0)
-        emit tr "C_OpenSession" 0 ("session=" ++ name)
-        let ls = LogicalSession sid isAsync False False 0 0
-            rn' = rn { rnSessions = Map.insert name ls (rnSessions rn)
-                     , rnNextSession = rnNextSession rn + 1
-                     , rnOrder = rnOrder rn ++ [name] }
-        pure (Right (rn', StepReturn "CKR_OK"))
+        let name = case rsSaveAs st of
+              Just saved -> saved
+              Nothing -> saveName (rnNextSession rn)
+            isAsync = case lookup "asynchronous" (rsArgs st) of
+              Just (JBool b) -> b
+              _ -> False
+            sid = SessionId (rnNextSession rn)
+        -- The effective namespace covers literal names plus the live
+        -- "s1" alias (named sessions exist, no literal s1): binding
+        -- that alias refuses, as validation already enforced.
+        let aliasLive = not (Map.null (rnSessions rn)) && Map.notMember "s1" (rnSessions rn)
+        if Map.member name (rnSessions rn) || (name == "s1" && aliasLive)
+          then pure (Left ("duplicate session name: " ++ name))
+          else do
+            registerSessionSlot reg sid (SlotId 0)
+            emit tr "C_OpenSession" 0 ("session=" ++ name)
+            let ls = LogicalSession sid isAsync Nothing 0 0
+                rn' = rn { rnSessions = Map.insert name ls (rnSessions rn)
+                         , rnNextSession = rnNextSession rn + 1
+                         , rnOrder = rnOrder rn ++ [name] }
+            pure (Right (rn', StepReturn "CKR_OK", "token=" ++ tok))
   "session.login" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
-      Right (name, ls) -> do
+      Right (name, _) -> do
         let pin = case lookup "pin" (rsArgs st) of Just (JStr p) -> p; _ -> ""
             role = case lookup "role" (rsArgs st) of Just (JStr r) -> r; _ -> ""
             okPin = (role == "USER" && pin == fixtureUserPin)
                  || (role == "SO" && pin == fixtureSoPin)
-        emit tr "C_Login" (if okPin then 0 else 0xA0) ("session=" ++ name)
-        if okPin
-          then pure (Right (rn { rnSessions = Map.insert name (ls { lsLoggedIn = True }) (rnSessions rn) }, StepReturn "CKR_OK"))
-          else pure (Left "login pin incorrect")
+            wantSame = (role == "USER" && rnLogin rn == Just AuthUser)
+                 || (role == "SO" && rnLogin rn == Just AuthSO)
+            wantOther = (role == "USER" && rnLogin rn == Just AuthSO)
+                 || (role == "SO" && rnLogin rn == Just AuthUser)
+        -- State before credentials: an already-logged-in token
+        -- refuses without consulting the PIN, as in the native
+        -- login attempt.
+        if wantSame
+          then do
+            emit tr "C_Login" 0x100 ("session=" ++ name)
+            pure (Right (rn, StepReturn "CKR_USER_ALREADY_LOGGED_IN", "role=" ++ role))
+          else if wantOther
+            then do
+              emit tr "C_Login" 0x104 ("session=" ++ name)
+              pure (Right (rn, StepReturn "CKR_USER_ANOTHER_ALREADY_LOGGED_IN", "role=" ++ role))
+            else do
+              emit tr "C_Login" (if okPin then 0 else 0xA0) ("session=" ++ name)
+              if okPin
+                then pure (Right (rn { rnLogin = Just (if role == "SO" then AuthSO else AuthUser) }, StepReturn "CKR_OK", "role=" ++ role))
+                else pure (Right (rn, StepReturn "CKR_PIN_INCORRECT", "role=" ++ role))
   "sign.init" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
-      Right (name, ls) -> do
-        emit tr "C_SignInit" 0 ("session=" ++ name)
-        pure (Right (rn { rnSessions = Map.insert name (ls { lsSignArmed = True }) (rnSessions rn) }, StepReturn "CKR_OK"))
+      Right (name, ls)
+        | rnLogin rn /= Just AuthUser -> do
+            emit tr "C_SignInit" 0x101 ("session=" ++ name)
+            pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
+        | otherwise -> case (lookup "mechanism" (rsArgs st), lookup "fixture_key" (rsArgs st)) of
+            (Just (JStr mech), Just (JStr key))
+              | not (signCapable mech) -> do
+                  emit tr "C_SignInit" 0x70 ("session=" ++ name)
+                  pure (Right (rn, StepReturn "CKR_MECHANISM_INVALID", "mechanism=" ++ mech))
+              | otherwise -> do
+                  emit tr "C_SignInit" 0 ("session=" ++ name)
+                  let ls' = ls { lsArmed = Just (mech, key) }
+                      detail = "mechanism=" ++ mech ++ " key=" ++ key
+                  pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK", detail))
+            _ -> pure (Left "sign.init needs string 'mechanism' and 'fixture_key'")
   "sign" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
-      Right (name, ls) -> do
-        if not (lsSignArmed ls)
-          then pure (Left "sign without sign.init")
-          else if inFault rn i
-            then do
-              emit tr "C_Sign" 0x30 ("session=" ++ name)
-              pure (Right (rn, StepReturn "CKR_DEVICE_ERROR"))
-            else do
-              -- pending_polls applies ONLY to async-eligible ops in
-              -- async sessions: a sync session never pends, no matter
-              -- what the scenario file carries.
-              let polls = acPendingPolls (cfgAsync cfg)
-                  wantPending = lsAsync ls && acEnabled (cfgAsync cfg) && polls > 0
-                  calls' = lsSignCalls ls + 1
-              emit tr "C_Sign" (if wantPending then 0x204 else 0) ("session=" ++ name)
-              if wantPending
-                then do
-                  let ls' = ls { lsSignCalls = calls', lsPendingLeft = polls }
-                  pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_PENDING"))
-                else pure (Right (rn { rnSessions = Map.insert name (ls { lsSignCalls = calls' }) (rnSessions rn) }, StepReturn "CKR_OK"))
+      Right (name, ls)
+        | rnLogin rn /= Just AuthUser -> do
+            emit tr "C_Sign" 0x101 ("session=" ++ name)
+            pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
+        | isNothing (lsArmed ls) -> pure (Left "sign without sign.init")
+        | otherwise -> case signConsumption st of
+            Left err -> pure (Left err)
+            Right (len, cap)
+              -- Model simplification: zero refuses, while any
+              -- positive capacity is accepted without comparing
+              -- it against the payload length.
+              | cap == 0 -> do
+                  emit tr "C_Sign" 0x150 ("session=" ++ name)
+                  pure (Right (rn, StepReturn "CKR_BUFFER_TOO_SMALL", "bytes=" ++ show len ++ " capacity=0"))
+              | inFault rn i -> do
+                  emit tr "C_Sign" 0x30 ("session=" ++ name)
+                  pure (Right (rn, StepReturn "CKR_DEVICE_ERROR", ""))
+              | otherwise -> do
+                  -- pending_polls applies ONLY to async-eligible ops in
+                  -- async sessions: a sync session never pends, no matter
+                  -- what the scenario file carries.
+                  let polls = acPendingPolls (cfgAsync cfg)
+                      wantPending = lsAsync ls && acEnabled (cfgAsync cfg) && polls > 0
+                      calls' = lsSignCalls ls + 1
+                      detail = "bytes=" ++ show len ++ " capacity=" ++ show cap
+                  emit tr "C_Sign" (if wantPending then 0x204 else 0) ("session=" ++ name)
+                  if wantPending
+                    then do
+                      let ls' = ls { lsSignCalls = calls', lsPendingLeft = polls }
+                      pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_PENDING", detail))
+                    else pure (Right (rn { rnSessions = Map.insert name (ls { lsSignCalls = calls' }) (rnSessions rn) }, StepReturn "CKR_OK", detail))
   "async.complete" -> do
     case sessionOf rn st of
       Left err -> pure (Left err)
-      Right (name, ls) -> do
-        if inFault rn i
-          then do
-            emit tr "C_Sign" 0x30 ("session=" ++ name)
-            pure (Right (rn, StepReturn "CKR_DEVICE_ERROR"))
-          else do
-            let left_ = lsPendingLeft ls
-            -- polls = pending completes before the final OK.
-            if left_ > 0
+      Right (name, ls)
+        | rnLogin rn /= Just AuthUser -> do
+            emit tr "C_Sign" 0x101 ("session=" ++ name)
+            pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
+        | otherwise -> do
+            if inFault rn i
               then do
-                emit tr "C_Sign" 0x204 ("session=" ++ name)
-                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = left_ - 1 }) (rnSessions rn) }, StepReturn "CKR_PENDING"))
+                emit tr "C_Sign" 0x30 ("session=" ++ name)
+                pure (Right (rn, StepReturn "CKR_DEVICE_ERROR", ""))
               else do
-                emit tr "C_Sign" 0 ("session=" ++ name)
-                pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = 0 }) (rnSessions rn) }, StepReturn "CKR_OK"))
+                let left_ = lsPendingLeft ls
+                -- polls = pending completes before the final OK.
+                if left_ > 0
+                  then do
+                    emit tr "C_Sign" 0x204 ("session=" ++ name)
+                    pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = left_ - 1 }) (rnSessions rn) }, StepReturn "CKR_PENDING", ""))
+                  else do
+                    emit tr "C_Sign" 0 ("session=" ++ name)
+                    pure (Right (rn { rnSessions = Map.insert name (ls { lsPendingLeft = 0 }) (rnSessions rn) }, StepReturn "CKR_OK", ""))
   "token.remove" -> do
-    _ <- removeToken reg (SlotId 0)
-    emit tr "C_WaitForSlotEvent" 0 "token-removed"
-    pure (Right (rn, StepReturn "CKR_OK"))
+    let tok = fromMaybe (slotZeroLabel cfg) $ case lookup "token" (rsArgs st) of
+          Just (JStr t) -> Just t
+          _ -> Nothing
+    -- A foreign label and an already-removed token both refuse
+    -- (no trace: token-not-present is untraced, as the reference
+    -- documents). A live removal drops the token's sessions and
+    -- clears the login; every runner session lives on slot 0.
+    if tok /= slotZeroLabel cfg || rnSlotZeroRemoved rn
+      then pure (Right (rn, StepReturn "CKR_TOKEN_NOT_PRESENT", "token=" ++ tok))
+      else do
+        _ <- removeToken reg (SlotId 0)
+        emit tr "C_WaitForSlotEvent" 0 "token-removed"
+        let rn' = rn { rnSessions = Map.empty, rnOrder = []
+                     , rnLogin = Nothing, rnSlotZeroRemoved = True }
+        pure (Right (rn', StepReturn "CKR_OK", "token=" ++ tok))
   "slot-event.wait" -> do
     let nonblocking = case lookup "nonblocking" (rsArgs st) of
           Just (JBool b) -> b
@@ -556,12 +734,16 @@ execStep cfg reg tr rn i st = case rsAction st of
     case w of
       WaitEvent _ -> do
         emit tr "C_WaitForSlotEvent" 0 "event"
-        pure (Right (rn, StepEvent "token-state-change"))
+        pure (Right (rn, StepEvent "token-state-change", ""))
       WaitNoEvent -> pure (Left "expected a slot event, queue empty")
       WaitFinalized -> pure (Left "instance finalized while waiting")
-  "finalize" -> do
-    emit tr "C_Finalize" 0 "finalized"
-    pure (Right (rn { rnFinalized = True }, StepReturn "CKR_OK"))
+  "finalize" -> case lifecycleRefusal rn of
+    Just refusal -> do
+      emit tr "C_Finalize" 0x190 "finalize"
+      pure (Right (rn, refusal, ""))
+    Nothing -> do
+      emit tr "C_Finalize" 0 "finalized"
+      pure (Right (rn { rnFinalized = True }, StepReturn "CKR_OK", ""))
   -- Sim verbs: test-gated like scenario.load (the gate refuses
   -- without mutation when the instance is not test-enabled).
   "token.insert" -> withSimGate $ do
@@ -570,7 +752,10 @@ execStep cfg reg tr rn i st = case rsAction st of
         | n >= 0 && n <= 0xFFFFFFFF -> do
             _ <- insertToken reg (SlotId (fromInteger n))
             emit tr "C_WaitForSlotEvent" 0 "token-inserted"
-            pure (Right (rn, StepReturn "CKR_OK"))
+            -- Inserting slot 0 seats the token again after a
+            -- @token.remove@; other slots only feed the event queue.
+            let rn' = if n == 0 then rn { rnSlotZeroRemoved = False } else rn
+            pure (Right (rn', StepReturn "CKR_OK", ""))
       _ -> pure (Left "token.insert needs an integer 'slot' in 0..2^32-1")
   "async.delay" -> withSimGate $ do
     case sessionOf rn st of
@@ -580,19 +765,21 @@ execStep cfg reg tr rn i st = case rsAction st of
           | p >= 0 && p <= 1000000 -> do
               emit tr "C_Sign" 0x204 ("session=" ++ name)
               let ls' = ls { lsPendingLeft = lsPendingLeft ls + fromInteger p }
-              pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK"))
+              pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK", ""))
         _ -> pure (Left "async.delay needs integer 'polls' in 0..1000000")
   "fault.window" -> withSimGate $ do
     case (lookup "start" (rsArgs st), lookup "ticks" (rsArgs st)) of
       (Just (JNum s), Just (JNum t))
         | s >= 0 && t >= 0 && s <= 1000000 && t <= 1000000 -> do
             emit tr "C_Sign" 0 "fault-window"
-            pure (Right (rn { rnFault = Just (fromInteger s, fromInteger t) }, StepReturn "CKR_OK"))
+            pure (Right (rn { rnFault = Just (fromInteger s, fromInteger t) }, StepReturn "CKR_OK", ""))
       _ -> pure (Left "fault.window needs integer 'start'/'ticks' in 0..1000000")
   other -> pure (Left ("unknown action (rejected, never executed): " ++ other))
   where
     -- | Refuse sim verbs without mutation unless test-enabled (the
-    -- scenario.load gating discipline).
+    -- scenario.load gating discipline). These verbs also skip the
+    -- lifecycle gate: they are test controls that run on any
+    -- instance state.
     withSimGate action
       | ccTestEnabled (cfgControl cfg) = action
       | otherwise = pure (Left "test_instance_required (sim verbs need a test-enabled instance)")
@@ -619,18 +806,39 @@ sessionOf rn st =
 saveName :: Int -> String
 saveName n = "s" ++ show n
 
+-- | The consumed sign inputs: decoded payload length and output
+-- capacity. A 'Left' is unreachable after 'validateScenario',
+-- which requires both keys with strict base64 and the admitted
+-- range.
+signConsumption :: RunStep -> Either String (Int, Integer)
+signConsumption st = do
+  payload <- case lookup "data_base64" (rsArgs st) of
+    Just (JStr s) -> Right s
+    _ -> Left "sign needs a string 'data_base64'"
+  len <- case base64DecodedLength payload of
+    Just n -> Right n
+    Nothing -> Left "sign 'data_base64' must be strict base64"
+  cap <- case lookup "output_capacity" (rsArgs st) of
+    Just (JNum n) -> Right n
+    _ -> Left "sign needs an integer 'output_capacity'"
+  pure (len, cap)
+
 -- | The one total expectation check, applied after every step's
 -- explicit result. A mismatch fails the run (the caller prefixes
--- the step index and action). Cross-clause arms are unreachable
--- after validated parsing, which admits only the clause the action
--- produces.
+-- the step index and action). A step without @expect@ accepts only
+-- @CKR_OK@ and @CKR_PENDING@: any other code fails the run, so a
+-- refusal can never pass silently. Cross-clause arms are reachable
+-- only when the clause disagrees with the produced result (an
+-- @expect.event@ on a return, or an @expect.return@ on an event).
 checkStepExpect :: RunStep -> StepResult -> Either String ()
 checkStepExpect st (StepReturn got) = case rsExpect st of
   Just (ExpectReturn want)
     | want == got -> Right ()
     | otherwise -> Left ("expect.return mismatch: want " ++ want ++ ", got " ++ got)
   Just (ExpectEvent _) -> Left "expect.event does not apply to this action"
-  Nothing -> Right ()
+  Nothing
+    | got == "CKR_OK" || got == "CKR_PENDING" -> Right ()
+    | otherwise -> Left ("unexpected " ++ got ++ "; declare expect.return to assert a refusal")
 checkStepExpect st (StepEvent got) = case rsExpect st of
   Just (ExpectEvent want)
     | want == got -> Right ()
