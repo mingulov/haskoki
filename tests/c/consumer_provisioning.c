@@ -21,8 +21,14 @@
  *   - restart persistence: changed PINs survive Finalize +
  *     Initialize; a relabel needs the catalog updated to match
  *     (the operator flow: rewrite config, restart, serve on)
- *   - linearization: barrier-start login-vs-SetPIN load stays
- *     clean (every call answers, sessions conserve, one PIN wins)
+ *   - linearization: rendezvous-start load stays clean. The
+ *     same-value leg races login-vs-SetPIN(A->A): every call
+ *     answers, sessions conserve, and the stale leg pins the
+ *     strike counter. The replace legs race two distinct
+ *     transitions (A->B vs A->C, then winner->D/E): exactly one
+ *     racer wins, the loser is refused on the superseded old
+ *     credential, and the serving credential advances with no
+ *     torn state (in-process probes only; no restart here).
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module and drives it through the pinned 3.2
@@ -641,13 +647,12 @@ static void phase_restart(void) {
   CHECKC(rv == CKR_OK, "restart: sibling session closes");
 }
 
-/* ---------- phase: concurrent login-vs-PIN-change ---------- */
+/* ---------- phase: idempotent same-value race ---------- */
 
 #define RACE_WORKERS 4
 #define RACE_ITERS 25
 #define STALE_ITERS 10
 
-static pthread_barrier_t g_race_start;
 static int g_race_bad = 0;
 static int g_race_login_ok = 0;
 static int g_race_login_dup = 0;
@@ -658,6 +663,13 @@ static void race_note_bad(void) {
   __sync_fetch_and_add(&g_race_bad, 1);
 }
 
+/* Fail-aware rendezvous shared by every race leg (defined
+ * with the replace race below; the legs run sequentially,
+ * so one set of state serves all). */
+static void rendezvous_reset(int parties);
+static void rendezvous_fail(void);
+static int rendezvous_wait(void);
+
 static void *stale_worker(void *arg);
 
 static void *race_worker(void *arg) {
@@ -665,15 +677,14 @@ static void *race_worker(void *arg) {
   int iter;
   CK_RV rv;
   CK_SESSION_HANDLE sess = 0;
-  int brc;
   (void)id;
   rv = open_rw(0, &sess);
   if (rv != CKR_OK || sess == 0) {
     race_note_bad();
+    rendezvous_fail();
     return NULL;
   }
-  brc = pthread_barrier_wait(&g_race_start);
-  if (brc != 0 && brc != PTHREAD_BARRIER_SERIAL_THREAD) {
+  if (rendezvous_wait() != 0) {
     race_note_bad();
     g_api->C_CloseSession(sess);
     return NULL;
@@ -684,7 +695,8 @@ static void *race_worker(void *arg) {
    * logged in, so every same-value change below must answer OK
    * no matter how the gate orders the interleavings — and
    * nobody logs out mid-race. */
-  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "race-pin!", 9);
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                      strlen("pin-alpha-01"));
   if (rv == CKR_OK) {
     __sync_fetch_and_add(&g_race_login_ok, 1);
   } else if (rv == CKR_USER_ALREADY_LOGGED_IN) {
@@ -693,8 +705,10 @@ static void *race_worker(void *arg) {
     race_note_bad();
   }
   for (iter = 0; iter < RACE_ITERS; iter++) {
-    rv = g_api->C_SetPIN(sess, (CK_UTF8CHAR_PTR) "race-pin!", 9,
-                         (CK_UTF8CHAR_PTR) "race-pin!", 9);
+    rv = g_api->C_SetPIN(sess, (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                         strlen("pin-alpha-01"),
+                         (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                         strlen("pin-alpha-01"));
     if (rv != CKR_OK) race_note_bad();
   }
   rv = g_api->C_CloseSession(sess);
@@ -702,7 +716,7 @@ static void *race_worker(void *arg) {
   return NULL;
 }
 
-static void phase_race(void) {
+static void phase_race_idempotent(void) {
   CK_RV rv;
   CK_SESSION_HANDLE sess = 0;
   pthread_t workers[RACE_WORKERS];
@@ -716,7 +730,8 @@ static void phase_race(void) {
   rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "scoped-pin", 10);
   CHECKC(rv == CKR_OK, "race: staging login");
   rv = g_api->C_SetPIN(sess, (CK_UTF8CHAR_PTR) "scoped-pin", 10,
-                       (CK_UTF8CHAR_PTR) "race-pin!", 9);
+                       (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                       strlen("pin-alpha-01"));
   CHECKC(rv == CKR_OK, "race: staging PIN set");
   rv = g_api->C_Logout(sess);
   CHECKC(rv == CKR_OK, "race: staging logout");
@@ -726,19 +741,16 @@ static void phase_race(void) {
   g_race_bad = 0;
   g_race_login_ok = 0;
   g_race_login_dup = 0;
-  if (pthread_barrier_init(&g_race_start, NULL, RACE_WORKERS) != 0) {
-    CHECKC(0, "race: barrier init");
-    return;
-  }
+  rendezvous_reset(RACE_WORKERS);
   for (i = 0; i < RACE_WORKERS; i++) {
     if (pthread_create(&workers[i], NULL, race_worker, (void *)i) != 0) {
       CHECKC(0, "race: worker spawn");
+      rendezvous_fail();
       break;
     }
     created++;
   }
   for (i = 0; i < created; i++) pthread_join(workers[i], NULL);
-  pthread_barrier_destroy(&g_race_start);
   CHECKC(created == RACE_WORKERS && g_race_bad == 0 &&
          g_race_login_ok == 1 && g_race_login_dup == RACE_WORKERS - 1,
          "race: one login grants, rest observe, every SetPIN/close answers OK");
@@ -751,20 +763,17 @@ static void phase_race(void) {
    * the linearization. */
   g_stale_incorrect = 0;
   g_stale_locked = 0;
-  if (pthread_barrier_init(&g_race_start, NULL, RACE_WORKERS) != 0) {
-    CHECKC(0, "race: stale barrier init");
-    return;
-  }
+  rendezvous_reset(RACE_WORKERS);
   created = 0;
   for (i = 0; i < RACE_WORKERS; i++) {
     if (pthread_create(&workers[i], NULL, stale_worker, (void *)i) != 0) {
       CHECKC(0, "race: stale worker spawn");
+      rendezvous_fail();
       break;
     }
     created++;
   }
   for (i = 0; i < created; i++) pthread_join(workers[i], NULL);
-  pthread_barrier_destroy(&g_race_start);
   CHECKC(created == RACE_WORKERS && g_race_bad == 0 &&
          g_stale_incorrect == 2 &&
          g_stale_locked == RACE_WORKERS * STALE_ITERS - 2,
@@ -776,19 +785,21 @@ static void phase_race(void) {
   if (rv != CKR_OK) return;
   rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
   CHECKC(rv == CKR_OK, "race: SO login after stale lockout");
-  rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "race-done!", 10);
+  rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                        strlen("pin-alpha-01"));
   CHECKC(rv == CKR_OK, "race: SO recovery resets the PIN");
   rv = g_api->C_Logout(sess);
   CHECKC(rv == CKR_OK, "race: SO logout");
 
-  /* The token serves on afterwards: sessions conserved, one
-   * PIN wins, counters settled. */
-  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "race-done!", 10);
-  CHECKC(rv == CKR_OK, "race: PIN serves after the race");
+  /* The token serves on A afterwards: sessions conserved,
+   * counters settled, ready for the replace race. */
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "pin-alpha-01",
+                      strlen("pin-alpha-01"));
+  CHECKC(rv == CKR_OK, "race: PIN serves after the idempotent race");
   rv = g_api->C_Logout(sess);
-  CHECKC(rv == CKR_OK, "race: logout after the race");
+  CHECKC(rv == CKR_OK, "race: logout after the idempotent race");
   rv = g_api->C_CloseSession(sess);
-  CHECKC(rv == CKR_OK, "race: session closes after the race");
+  CHECKC(rv == CKR_OK, "race: session closes after the idempotent race");
 }
 
 static void *stale_worker(void *arg) {
@@ -796,15 +807,14 @@ static void *stale_worker(void *arg) {
   int iter;
   CK_RV rv;
   CK_SESSION_HANDLE sess = 0;
-  int brc;
   (void)id;
   rv = open_rw(0, &sess);
   if (rv != CKR_OK || sess == 0) {
     race_note_bad();
+    rendezvous_fail();
     return NULL;
   }
-  brc = pthread_barrier_wait(&g_race_start);
-  if (brc != 0 && brc != PTHREAD_BARRIER_SERIAL_THREAD) {
+  if (rendezvous_wait() != 0) {
     race_note_bad();
     g_api->C_CloseSession(sess);
     return NULL;
@@ -822,6 +832,213 @@ static void *stale_worker(void *arg) {
   rv = g_api->C_CloseSession(sess);
   if (rv != CKR_OK) race_note_bad();
   return NULL;
+}
+
+/* ---------- phase: distinct-value replace races ---------- */
+
+#define REPLACE_WORKERS 2
+
+/* Fail-aware N-party rendezvous shared by every race leg: a
+ * plain pthread barrier cannot abort, so a worker that fails
+ * its open (or a pthread_create failure with a partial crew)
+ * would leave the peers waiting forever and the join hanging.
+ * Here a worker failure broadcasts and every waiter fails
+ * cleanly. The legs run sequentially and reset the party
+ * count per leg, so one set of state serves all. */
+static pthread_mutex_t g_rv_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_rv_cond = PTHREAD_COND_INITIALIZER;
+static int g_rv_arrived = 0;
+static int g_rv_failed = 0;
+static int g_rv_generation = 0;
+static int g_rv_parties = 0;
+static CK_RV g_replace_rv[REPLACE_WORKERS];
+static const char *g_replace_old = "pin-alpha-01";
+static const char *g_replace_new[REPLACE_WORKERS] = { "pin-bravo-02",
+                                                      "pin-charlie-03" };
+
+static void rendezvous_reset(int parties) {
+  pthread_mutex_lock(&g_rv_mutex);
+  g_rv_arrived = 0;
+  g_rv_failed = 0;
+  g_rv_generation++;
+  g_rv_parties = parties;
+  pthread_mutex_unlock(&g_rv_mutex);
+}
+
+static void rendezvous_fail(void) {
+  pthread_mutex_lock(&g_rv_mutex);
+  g_rv_failed = 1;
+  pthread_cond_broadcast(&g_rv_cond);
+  pthread_mutex_unlock(&g_rv_mutex);
+}
+
+static int rendezvous_wait(void) {
+  int gen;
+  int rc = 0;
+  pthread_mutex_lock(&g_rv_mutex);
+  if (g_rv_failed) {
+    pthread_mutex_unlock(&g_rv_mutex);
+    return -1;
+  }
+  gen = g_rv_generation;
+  g_rv_arrived++;
+  if (g_rv_arrived == g_rv_parties) {
+    g_rv_arrived = 0;
+    g_rv_generation++;
+    pthread_cond_broadcast(&g_rv_cond);
+    pthread_mutex_unlock(&g_rv_mutex);
+    return 0;
+  }
+  while (gen == g_rv_generation && !g_rv_failed)
+    pthread_cond_wait(&g_rv_cond, &g_rv_mutex);
+  if (g_rv_failed) rc = -1;
+  pthread_mutex_unlock(&g_rv_mutex);
+  return rc;
+}
+
+static void *replace_worker(void *arg) {
+  long id = (long)arg;           /* 0 -> B, 1 -> C */
+  CK_SESSION_HANDLE sess = 0;
+  /* public RW session; NO login: the old PIN authenticates */
+  if (open_rw(0, &sess) != CKR_OK) {
+    race_note_bad();
+    rendezvous_fail();
+    return NULL;
+  }
+  if (rendezvous_wait() != 0) {
+    race_note_bad();
+    g_api->C_CloseSession(sess);
+    return NULL;
+  }
+  g_replace_rv[id] = g_api->C_SetPIN(sess, (CK_UTF8CHAR_PTR)g_replace_old,
+    strlen(g_replace_old), (CK_UTF8CHAR_PTR)g_replace_new[id],
+    strlen(g_replace_new[id]));
+  if (g_api->C_CloseSession(sess) != CKR_OK) race_note_bad();
+  return NULL;
+}
+
+/* Run one replace race over the current old/new pair: exactly
+ * one racer wins (CKR_OK), the other is refused with
+ * CKR_PIN_INCORRECT on the superseded old credential, in
+ * either order. Returns nonzero when both racers spawned,
+ * even if the rendezvous aborted (the CHECKC below records
+ * the abort, and the caller stops the phase on a zero). */
+static int run_replace_race(const char *tag) {
+  pthread_t workers[REPLACE_WORKERS];
+  long i;
+  int created = 0;
+  int ok = 0;
+  int refused = 0;
+
+  g_race_bad = 0;
+  for (i = 0; i < REPLACE_WORKERS; i++) g_replace_rv[i] = CKR_GENERAL_ERROR;
+  rendezvous_reset(REPLACE_WORKERS);
+  for (i = 0; i < REPLACE_WORKERS; i++) {
+    if (pthread_create(&workers[i], NULL, replace_worker, (void *)i) != 0) {
+      CHECKC(0, "race: replace worker spawn");
+      rendezvous_fail();
+      break;
+    }
+    created++;
+  }
+  for (i = 0; i < created; i++) pthread_join(workers[i], NULL);
+  for (i = 0; i < created; i++) {
+    if (g_replace_rv[i] == CKR_OK) {
+      ok++;
+    } else if (g_replace_rv[i] == CKR_PIN_INCORRECT) {
+      refused++;
+    }
+  }
+  CHECKC(created == REPLACE_WORKERS && g_race_bad == 0 && ok == 1 && refused == 1,
+         "race: %s: one winner, one old-credential refusal", tag);
+  return created == REPLACE_WORKERS;
+}
+
+static void phase_race_replace(void) {
+  CK_RV rv;
+  CK_SESSION_HANDLE sess = 0;
+  const char *w;
+  const char *l;
+
+  /* Leg one: two distinct transitions off A behind one
+   * barrier. Exactly one wins; the loser finds the old
+   * credential superseded and is refused. */
+  if (!run_replace_race("replace")) return;
+  w = (g_replace_rv[0] == CKR_OK) ? g_replace_new[0] : g_replace_new[1];
+  l = (g_replace_rv[0] == CKR_OK) ? g_replace_new[1] : g_replace_new[0];
+
+  /* The loser strike is observable before the winner probe: one
+   * strike leaves two attempts, so COUNT_LOW shows while FINAL_TRY
+   * stays clear (the winner login below clears it). */
+  {
+    CK_TOKEN_INFO info;
+    rv = token_info(0, &info);
+    CHECKC(rv == CKR_OK && (info.flags & CKF_USER_PIN_COUNT_LOW) != 0 &&
+           (info.flags & CKF_USER_PIN_FINAL_TRY) == 0,
+           "race: loser strike shows exactly once before the winner probe");
+  }
+
+  /* Post-race probes, fixed order: the strike budget peaks
+   * at two and never locks. The winner login first resets
+   * the loser's strike; the two refusals accrue one strike
+   * each; the closing winner login resets again. */
+  rv = open_rw(0, &sess);
+  CHECKC(rv == CKR_OK && sess != 0, "race: probe session opens");
+  if (rv != CKR_OK) return;
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR)w, strlen(w));
+  CHECKC(rv == CKR_OK, "race: winner serves after the replace race");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "race: logout after the winner probe");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR)"pin-alpha-01",
+                      strlen("pin-alpha-01"));
+  CHECKC(rv == CKR_PIN_INCORRECT, "race: superseded PIN refuses");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR)l, strlen(l));
+  CHECKC(rv == CKR_PIN_INCORRECT, "race: loser value refuses");
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR)w, strlen(w));
+  CHECKC(rv == CKR_OK, "race: winner serves again after the refusals");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "race: logout after the replace probes");
+  rv = g_api->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "race: probe session closes");
+
+  /* Leg two: the chained race off the winner composes the
+   * ordering (element-wise: whole-array assignment is
+   * illegal C). */
+  g_replace_old = w;
+  g_replace_new[0] = "pin-delta-04";
+  g_replace_new[1] = "pin-echo-05";
+  if (!run_replace_race("chained")) return;
+
+  /* Same after the chained race: one loser strike, read before SO
+   * recovery resets the counters. */
+  {
+    CK_TOKEN_INFO info;
+    rv = token_info(0, &info);
+    CHECKC(rv == CKR_OK && (info.flags & CKF_USER_PIN_COUNT_LOW) != 0 &&
+           (info.flags & CKF_USER_PIN_FINAL_TRY) == 0,
+           "race: chained loser strike shows exactly once");
+  }
+
+  /* SO recovery hands slot 0 on with the agreed PIN; the
+   * phases after depend on it. */
+  rv = open_rw(0, &sess);
+  CHECKC(rv == CKR_OK && sess != 0, "race: handoff recovery session opens");
+  if (rv != CKR_OK) return;
+  rv = g_api->C_Login(sess, CKU_SO, (CK_UTF8CHAR_PTR) "5678", 4);
+  CHECKC(rv == CKR_OK, "race: SO login before the handoff");
+  rv = g_api->C_InitPIN(sess, (CK_UTF8CHAR_PTR) "race-done!", 10);
+  CHECKC(rv == CKR_OK, "race: SO recovery resets the PIN");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "race: SO logout");
+
+  /* The token serves on afterwards: sessions conserved, one
+   * PIN wins, counters settled. */
+  rv = g_api->C_Login(sess, CKU_USER, (CK_UTF8CHAR_PTR) "race-done!", 10);
+  CHECKC(rv == CKR_OK, "race: PIN serves after the race");
+  rv = g_api->C_Logout(sess);
+  CHECKC(rv == CKR_OK, "race: logout after the race");
+  rv = g_api->C_CloseSession(sess);
+  CHECKC(rv == CKR_OK, "race: session closes after the race");
 }
 
 /* ---------- phase: relabel + catalog update + restart ---------- */
@@ -955,7 +1172,8 @@ static void run_scenario(void) {
   phase_lockout_recovery();
   phase_reset_scoping();
   phase_restart();
-  phase_race();
+  phase_race_idempotent();
+  phase_race_replace();
   phase_relabel();
   phase_pin_rewrite();
 }

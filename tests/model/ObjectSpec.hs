@@ -136,6 +136,12 @@ spec = testGroup "objects and attributes"
   , testCase "storage defaults: explicit values win" caseStorageDefaultsExplicitWins
   , testCase "storage defaults: non-storage classes stay unavailable" caseStorageDefaultsNonStorage
   , testCase "storage defaults: failure precedence unchanged" caseStorageDefaultsPrecedence
+  , testGroup "role matrix"
+    [ testCase "create/copy/set/destroy across role, mode, visibility, lifetime" caseRoleMatrix
+    , testCase "public read/write sessions mutate ordinary public token objects" casePublicRwPositive
+    , testCase "trusted objects admit only the security officer" caseTrustedSoOnly
+    , testCase "find visibility follows login state" caseVisibilityFindCounts
+    ]
   ]
 
 -- | A sensitive, unextractable object read for a readable label, its
@@ -313,6 +319,82 @@ closeReq sid = mkRequest F_CloseSession (Just sid)
 
 loginAs :: Model -> SessionId -> IO Model
 loginAs model sid = snd <$> runCommit model (loginReq sid)
+
+loginAsSo :: Model -> SessionId -> IO Model
+loginAsSo model sid = snd <$> runCommit model (soLoginReq sid)
+
+isToken :: Bool -> (AttributeType, AttributeValue)
+isToken b = (AttrToken, ValBool b)
+
+isPrivate :: Bool -> (AttributeType, AttributeValue)
+isPrivate b = (AttrPrivate, ValBool b)
+
+data MatrixRole = MPublic | MUser | MSO deriving (Eq, Show)
+data CellOp = OpCreate | OpCopy | OpSet | OpDestroy deriving (Eq, Show)
+
+data Cell = Cell
+  { cellName :: String
+  , cellRole :: MatrixRole
+  , cellRO :: Bool
+  , cellPriv :: Bool
+  , cellTok :: Bool
+  , cellOp :: CellOp
+  , cellWant :: Either ReturnCode ()
+  }
+
+loginFor :: MatrixRole -> Model -> SessionId -> IO Model
+loginFor MPublic m _ = pure m
+loginFor MSO m sid = loginAsSo m sid
+-- Unreachable: runCell short-circuits MUser to `pure m5` (it reuses the setup
+-- login); a second login would deny and a logout would kill private handles.
+loginFor MUser _ _ = error "loginFor MUser unreachable"
+
+-- One table cell. Order matters: setup logs in as user and creates the
+-- target. User-role cells REUSE that login (a second login would deny, and
+-- a logout would kill private handles); public/SO cells log out first so
+-- the test login is the only one (token login is token-global).
+runCell :: Cell -> IO ()
+runCell c = do
+  (sid, m1) <- openSessionMode slot0 (cellRO c) seeded
+  (setup, m2) <- openSessionMode slot0 False m1
+  m3 <- loginAs m2 setup
+  let tmpl = [classData, label "cell", isToken (cellTok c), isPrivate (cellPriv c)]
+      srcTmpl = [classData, label "src", isToken False, isPrivate False]
+  (h, m4) <- case cellOp c of
+    OpCreate -> pure (ExternalHandle 0, m3)
+    OpCopy -> do
+      (pc, m') <- runCommit m3 (createReq setup srcTmpl)
+      h' <- commitHandle pc
+      pure (h', m')
+    _ -> do
+      (pc, m') <- runCommit m3 (createReq setup tmpl)
+      h' <- commitHandle pc
+      pure (h', m')
+  m5 <- if cellRole c == MUser then pure m4 else snd <$> runCommit m4 (logoutReq setup)
+  m6 <- case cellRole c of
+    MUser -> pure m5
+    r -> loginFor r m5 sid
+  let req = case cellOp c of
+        OpCreate -> createReq sid tmpl
+        OpCopy -> copyReq sid h [label "copy", isToken (cellTok c), isPrivate (cellPriv c)]
+        OpSet -> setReq sid h [label "set"]
+        OpDestroy -> destroyReq sid h
+  case cellWant c of
+    Right () -> do
+      (pc, _) <- runCommit m6 req
+      assertEqual (cellName c) CKR_OK (pcCode pc)
+    Left want -> do
+      (code, m') <- runReject m6 req
+      assertEqual (cellName c) want code
+      -- A refused set proves nothing by itself: read the label back
+      -- to show the refusal changed nothing (cell 29 is the only
+      -- set-refusal cell).
+      if cellOp c == OpSet
+        then do
+          (pcG, _) <- runCommit m' (getReq sid h [AttrLabel])
+          assertEqual (cellName c ++ ": refused set changes nothing")
+            [encodeValue (ValBytes "cell")] [outBytes o | o <- pcOutputs pcG]
+        else pure ()
 
 -- | Plan and publish an Immediate commit; fail otherwise.
 runCommit :: Model -> Request -> IO (PreparedCommit, Model)
@@ -2093,3 +2175,192 @@ caseStorageDefaultsPrecedence = do
   assertEqual "unavailable still fails" CKR_ATTRIBUTE_TYPE_INVALID (rejCode rej2)
   assertEqual "default still delivered" [encodeValue (ValBool False)]
     [outBytes o | o <- rejOutputs rej2]
+
+-- ---------------------------------------------------------------------------
+-- Role matrix: role x session mode x visibility x lifetime for
+-- create/copy/set/destroy, with the exact refusal codes.
+-- ---------------------------------------------------------------------------
+--
+-- Expected codes (each table cell runs on a fresh model; the setup
+-- session creates the target, then the test login — if any — is the
+-- only one, since token login is token-global):
+--
+--   create: public mints public only (private answers
+--     CKR_USER_NOT_LOGGED_IN); the user mints everything; SO
+--     administers public objects only (private answers
+--     CKR_USER_NOT_LOGGED_IN, like public); token targets on a
+--     read-only session answer CKR_SESSION_READ_ONLY; the role
+--     check precedes the mode check, so public-RO private shapes
+--     answer CKR_USER_NOT_LOGGED_IN. Public read/write sessions
+--     mutating ordinary public token objects is the retained
+--     baseline (OASIS PKCS#11 3.2 sections 5.7.1-5.7.3, usage
+--     guide 2.6.3-2.6.4): no universal login check exists, and
+--     the positive control below pins create/copy/set/destroy
+--     all committing there.
+--   copy/set/destroy: sampled — one cell per (role, mode,
+--     visibility, lifetime) refusal class — since copy/set/destroy
+--     share the create admission gates plus visibility.
+--   trusted: only SO mints or marks TRUSTED=true; admission
+--     outranks the trusted check (public-RO set of TRUSTED=true
+--     on a public token target answers CKR_SESSION_READ_ONLY).
+--   find: public and SO find-all see exactly the public handle;
+--     logout kills private bindings, so a remembered private
+--     handle answers CKR_OBJECT_HANDLE_INVALID afterwards.
+--   login exclusion: SO login while any read-only session is
+--     open answers CKR_SESSION_READ_ONLY_EXISTS.
+--
+-- Read-only-token has no cell: the token-level write-protect flag
+-- is unoffered (it exists only in the vendored headers), so there
+-- is no provider behavior to pin — recorded here, never as a pass.
+
+roleCells :: [Cell]
+roleCells =
+  [ Cell "01 public/RW create pub+sess" MPublic False False False OpCreate (Right ())
+  , Cell "02 public/RW create pub+tok" MPublic False False True OpCreate (Right ())
+  , Cell "03 public/RW create priv+sess" MPublic False True False OpCreate (Left CKR_USER_NOT_LOGGED_IN)
+  , Cell "04 public/RW create priv+tok" MPublic False True True OpCreate (Left CKR_USER_NOT_LOGGED_IN)
+  , Cell "05 public/RO create pub+sess" MPublic True False False OpCreate (Right ())
+  , Cell "06 public/RO create pub+tok" MPublic True False True OpCreate (Left CKR_SESSION_READ_ONLY)
+  , Cell "07 public/RO create priv+sess" MPublic True True False OpCreate (Left CKR_USER_NOT_LOGGED_IN)
+  , Cell "08 public/RO create priv+tok" MPublic True True True OpCreate (Left CKR_USER_NOT_LOGGED_IN)
+  , Cell "09 user/RW create pub+sess" MUser False False False OpCreate (Right ())
+  , Cell "10 user/RW create pub+tok" MUser False False True OpCreate (Right ())
+  , Cell "11 user/RW create priv+sess" MUser False True False OpCreate (Right ())
+  , Cell "12 user/RW create priv+tok" MUser False True True OpCreate (Right ())
+  , Cell "13 user/RO create pub+sess" MUser True False False OpCreate (Right ())
+  , Cell "14 user/RO create pub+tok" MUser True False True OpCreate (Left CKR_SESSION_READ_ONLY)
+  , Cell "15 user/RO create priv+sess" MUser True True False OpCreate (Right ())
+  , Cell "16 user/RO create priv+tok" MUser True True True OpCreate (Left CKR_SESSION_READ_ONLY)
+  , Cell "17 SO/RW create pub+sess" MSO False False False OpCreate (Right ())
+  , Cell "18 SO/RW create pub+tok" MSO False False True OpCreate (Right ())
+  , Cell "19 SO/RW create priv+sess" MSO False True False OpCreate (Left CKR_USER_NOT_LOGGED_IN)
+  , Cell "20 SO/RW create priv+tok" MSO False True True OpCreate (Left CKR_USER_NOT_LOGGED_IN)
+  , Cell "22 public/RW copy to pub+tok" MPublic False False True OpCopy (Right ())
+  , Cell "23 user/RW copy to pub+tok" MUser False False True OpCopy (Right ())
+  , Cell "24 SO/RW copy to pub+tok" MSO False False True OpCopy (Right ())
+  , Cell "25 public/RO copy to pub+tok" MPublic True False True OpCopy (Left CKR_SESSION_READ_ONLY)
+  , Cell "26 public/RW copy to priv+sess" MPublic False True False OpCopy (Left CKR_USER_NOT_LOGGED_IN)
+  , Cell "27 user/RW copy to priv+sess" MUser False True False OpCopy (Right ())
+  , Cell "28 public/RW set on pub+tok" MPublic False False True OpSet (Right ())
+  , Cell "29 public/RO set on pub+tok" MPublic True False True OpSet (Left CKR_SESSION_READ_ONLY)
+  , Cell "30 user/RW set on pub+tok" MUser False False True OpSet (Right ())
+  , Cell "31 user/RW set on priv+sess" MUser False True False OpSet (Right ())
+  , Cell "34 public/RW destroy pub+tok" MPublic False False True OpDestroy (Right ())
+  , Cell "35 public/RO destroy pub+tok" MPublic True False True OpDestroy (Left CKR_SESSION_READ_ONLY)
+  , Cell "36 user/RW destroy pub+sess" MUser False False False OpDestroy (Right ())
+  , Cell "37 user/RO destroy pub+sess" MUser True False False OpDestroy (Right ())
+  , Cell "43 SO/RW set on pub+tok" MSO False False True OpSet (Right ())
+  , Cell "44 SO/RW destroy pub+tok" MSO False False True OpDestroy (Right ())
+  ]
+
+caseRoleMatrix :: IO ()
+caseRoleMatrix = do
+  mapM_ runCell roleCells
+  -- Cell 21: SO login is refused while any read-only session is
+  -- open (the caseSoRoConflict precedent).
+  (_ro, m1) <- openSessionMode slot0 True seeded
+  (rw, m2) <- openSessionMode slot0 False m1
+  (code, _) <- runReject m2 (soLoginReq rw)
+  assertEqual "cell 21 SO login refused while RO open" CKR_SESSION_READ_ONLY_EXISTS code
+
+-- | The permitted-public-RW-mutation positive control: cells 2/22/28/34
+-- on ONE public read/write session, with a label readback after each
+-- mutation (the readback after destroy is the refusal itself: the
+-- handle no longer resolves).
+casePublicRwPositive :: IO ()
+casePublicRwPositive = do
+  (sid, m0) <- openSessionMode slot0 False seeded
+  (pcC, m1) <- runCommit m0
+    (createReq sid [classData, label "pub-tok", isToken True, isPrivate False])
+  assertEqual "public RW create pub+tok" CKR_OK (pcCode pcC)
+  hTok <- commitHandle pcC
+  (pcG1, _) <- runCommit m1 (getReq sid hTok [AttrLabel])
+  assertEqual "create label reads back"
+    [encodeValue (ValBytes "pub-tok")] [outBytes o | o <- pcOutputs pcG1]
+  (pcS, m2) <- runCommit m1
+    (createReq sid [classData, label "src", isToken False, isPrivate False])
+  hSrc <- commitHandle pcS
+  (pcCp, m3) <- runCommit m2
+    (copyReq sid hSrc [label "copy-tok", isToken True, isPrivate False])
+  assertEqual "public RW copy to pub+tok" CKR_OK (pcCode pcCp)
+  hCopy <- commitHandle pcCp
+  (pcG2, _) <- runCommit m3 (getReq sid hCopy [AttrLabel])
+  assertEqual "copy label reads back"
+    [encodeValue (ValBytes "copy-tok")] [outBytes o | o <- pcOutputs pcG2]
+  (pcSet, m4) <- runCommit m3 (setReq sid hTok [label "set-tok"])
+  assertEqual "public RW set on pub+tok" CKR_OK (pcCode pcSet)
+  (pcG3, _) <- runCommit m4 (getReq sid hTok [AttrLabel])
+  assertEqual "set label reads back"
+    [encodeValue (ValBytes "set-tok")] [outBytes o | o <- pcOutputs pcG3]
+  (pcD, m5) <- runCommit m4 (destroyReq sid hTok)
+  assertEqual "public RW destroy pub+tok" CKR_OK (pcCode pcD)
+  (codeG, _) <- runReject m5 (getReq sid hTok [AttrLabel])
+  assertEqual "destroyed handle reads back invalid" CKR_OBJECT_HANDLE_INVALID codeG
+
+-- | Trusted objects admit only the security officer: user create/set
+-- of TRUSTED=true refuse, SO create/set commit, and admission
+-- outranks the trusted check (a public read-only set of
+-- TRUSTED=true on a public token target reports the mode). The
+-- cells use a secret-key class, where TRUSTED is defined (it is
+-- not defined for data objects).
+caseTrustedSoOnly :: IO ()
+caseTrustedSoOnly = do
+  let secretClass = (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
+      secretType = (AttrKeyType, ValULong (mustKeyTypeId "CKK_GENERIC_SECRET"))
+      secretBytes = (AttrValue, ValBytes "0123456789abcdef0123456789abcdef")
+  (sid, m0) <- openSessionMode slot0 False seeded
+  mU <- loginAs m0 sid
+  (codeC, m1) <- runReject mU
+    (createReq sid [secretClass, secretType, secretBytes, label "t-user", isToken True, isPrivate False, (AttrTrusted, ValBool True)])
+  assertEqual "user create TRUSTED refused" CKR_ATTRIBUTE_READ_ONLY codeC
+  mP1 <- snd <$> runCommit m1 (logoutReq sid)
+  mSO <- loginAsSo mP1 sid
+  (pcT, m2) <- runCommit mSO
+    (createReq sid [secretClass, secretType, secretBytes, label "t-so", isToken True, isPrivate False, (AttrTrusted, ValBool True)])
+  assertEqual "SO create TRUSTED commits" CKR_OK (pcCode pcT)
+  hT <- commitHandle pcT
+  ostT <- mustResolve m2 hT
+  assertEqual "SO trusted stored"
+    (Just (ValBool True)) (Map.lookup AttrTrusted (osAttrs ostT))
+  (pcP, m3) <- runCommit m2
+    (createReq sid [secretClass, secretType, secretBytes, label "plain", isToken True, isPrivate False])
+  hP <- commitHandle pcP
+  mP2 <- snd <$> runCommit m3 (logoutReq sid)
+  mU2 <- loginAs mP2 sid
+  (codeS, m4) <- runReject mU2 (setReq sid hP [(AttrTrusted, ValBool True)])
+  assertEqual "user set TRUSTED refused" CKR_ATTRIBUTE_READ_ONLY codeS
+  mP3 <- snd <$> runCommit m4 (logoutReq sid)
+  mSO2 <- loginAsSo mP3 sid
+  (pcS, m5) <- runCommit mSO2 (setReq sid hP [(AttrTrusted, ValBool True)])
+  assertEqual "SO set TRUSTED commits" CKR_OK (pcCode pcS)
+  mP4 <- snd <$> runCommit m5 (logoutReq sid)
+  (ro, m6) <- openSessionMode slot0 True mP4
+  (codeP, _) <- runReject m6 (setReq ro hP [(AttrTrusted, ValBool True)])
+  assertEqual "RO set TRUSTED reports mode first" CKR_SESSION_READ_ONLY codeP
+
+-- | Find visibility follows the login state: with one public and one
+-- private token object present, public and SO find-all return
+-- exactly the public handle; after logout the remembered private
+-- handle refuses — logout kills private bindings, so stale and
+-- invisible agree on CKR_OBJECT_HANDLE_INVALID.
+caseVisibilityFindCounts :: IO ()
+caseVisibilityFindCounts = do
+  (sid, m0) <- openSessionMode slot0 False seeded
+  mU <- loginAs m0 sid
+  (pcU, m1) <- runCommit mU
+    (createReq sid [classData, label "vis-pub", isToken True, isPrivate False])
+  hu <- commitHandle pcU
+  (pcK, m2) <- runCommit m1
+    (createReq sid [classData, label "vis-priv", isToken True, isPrivate True])
+  hk <- commitHandle pcK
+  mP <- snd <$> runCommit m2 (logoutReq sid)
+  (pcF1, _) <- runCommit mP (findReq sid [])
+  foundP <- findHandles pcF1
+  assertEqual "public find sees public only" [hu] foundP
+  mSO <- loginAsSo mP sid
+  (pcF2, _) <- runCommit mSO (findReq sid [])
+  foundSO <- findHandles pcF2
+  assertEqual "SO find sees public only" [hu] foundSO
+  mP2 <- snd <$> runCommit mSO (logoutReq sid)
+  (codeD, _) <- runReject mP2 (destroyReq sid hk)
+  assertEqual "remembered private handle invalid after logout" CKR_OBJECT_HANDLE_INVALID codeD

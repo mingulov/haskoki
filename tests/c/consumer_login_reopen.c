@@ -5,8 +5,9 @@
  * Phase A (shared, parity-compared): single-slot discovery, token-label
  * pin, R/W session open, then the honest error legs — a private token
  * write on a public session refuses with CKR_USER_NOT_LOGGED_IN
- * (admitPrivate: only the normal user creates private objects; the
- * unenforced public-object login rule is out of scope by design),
+ * (admitPrivate: only the normal user creates private objects;
+ * permitted public-RW mutation of public token objects is pinned
+ * by the Phase B matrix below, per the retained standard baseline),
  * a wrong user PIN refuses with CKR_PIN_INCORRECT — followed by a
  * clean user login/logout pair. Every Phase-A line is static text
  * over backend-independent values, so it compares byte-identical
@@ -33,7 +34,13 @@
  *     with byte-equal labels and values (durable), then destroy and
  *     re-verify zero;
  *   - SO: an SO session creating a private token object refuses with
- *     CKR_USER_NOT_LOGGED_IN (SO administers public objects only).
+ *     CKR_USER_NOT_LOGGED_IN (SO administers public objects only);
+ *   - matrix: public-RW positive control + refusal cells (DIRECT-ONLY).
+ *   - find-page: a live cursor pages, then its session closes with
+ *     the cursor open: paging and final on the removed session
+ *     refuse with CKR_SESSION_HANDLE_INVALID (the FindObjectsFinal
+ *     precedent) with outputs untouched, and a fresh session
+ *     inherits no cursor (DIRECT-ONLY).
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
  * libhaskoki shared module and drives it through the pinned 3.2 headers.
@@ -278,6 +285,8 @@ int main(int argc, char **argv) {
     printf("invent: proxy skips the memory reopen journey\n");
     printf("invent: proxy skips the sqlite reopen journey\n");
     printf("invent: proxy skips the SO private-write leg\n");
+    printf("invent: proxy skips the role-matrix legs\n");
+    printf("invent: proxy skips the removed-session page legs\n");
   } else {
     /* ---- Phase B/memory: write, close, reopen, honest reset ---- */
     CK_SESSION_HANDLE sess = 0;
@@ -560,6 +569,435 @@ int main(int argc, char **argv) {
       CHECKM(rv == CKR_OK, "sqlite: final close ok");
       rv = f->C_Finalize(NULL_PTR);
       CHECKM(rv == CKR_OK, "sqlite: final finalize ok");
+    }
+
+    /* ---- Phase B/matrix: public-RW positive control + refusal cells ----
+     * Fresh memory interval. Order is load-bearing: token login is
+     * token-global, cross-role login denies, and SO login is refused
+     * while any read-only session is open. So public legs run logged
+     * out, user legs run between login/logout (RO-shape checks use
+     * pubro while usr holds the user login), pubro closes before the
+     * SO legs, and visibility runs logged out again. */
+    {
+      CK_SESSION_HANDLE pubrw = 0, pubro = 0, usr = 0, so = 0;
+      CK_OBJECT_CLASS klass = CKO_DATA;
+      CK_OBJECT_CLASS secklass = CKO_SECRET_KEY;
+      CK_KEY_TYPE generic = CKK_GENERIC_SECRET;
+      CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+      CK_OBJECT_HANDLE h = 0, h2 = 0;
+      CK_BYTE label[64], value[64];
+      CK_ATTRIBUTE get[] = { { CKA_LABEL, label, sizeof(label) },
+                             { CKA_VALUE, value, sizeof(value) } };
+      CK_ATTRIBUTE pubtok[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &yes, sizeof(yes) },
+        { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "matrix-pub", 10 },
+        { CKA_VALUE, "matrix-bytes", 12 },
+      };
+      CK_ATTRIBUTE privtok[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &yes, sizeof(yes) },
+        { CKA_PRIVATE, &yes, sizeof(yes) },
+        { CKA_LABEL, "matrix-priv", 11 },
+        { CKA_VALUE, "secret-bytes", 12 },
+      };
+      CK_ATTRIBUTE pubsess[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &no, sizeof(no) },
+        { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "matrix-psess", 12 },
+        { CKA_VALUE, "sess-bytes", 10 },
+      };
+      CK_ATTRIBUTE privsess[] = {
+        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &no, sizeof(no) },
+        { CKA_PRIVATE, &yes, sizeof(yes) },
+        { CKA_LABEL, "matrix-vsess", 12 },
+        { CKA_VALUE, "vess-secret", 11 },
+      };
+      /* TRUSTED cells use a secret-key class, where TRUSTED is
+       * defined (it is not defined for data objects). */
+      CK_ATTRIBUTE trustedtok[] = {
+        { CKA_CLASS, &secklass, sizeof(secklass) },
+        { CKA_KEY_TYPE, &generic, sizeof(generic) },
+        { CKA_TOKEN, &yes, sizeof(yes) },
+        { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "matrix-trust", 12 },
+        { CKA_VALUE, "trust-secret-bytes", 18 },
+        { CKA_TRUSTED, &yes, sizeof(yes) },
+      };
+      CK_ATTRIBUTE secretok[] = {
+        { CKA_CLASS, &secklass, sizeof(secklass) },
+        { CKA_KEY_TYPE, &generic, sizeof(generic) },
+        { CKA_TOKEN, &yes, sizeof(yes) },
+        { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "matrix-plain", 12 },
+        { CKA_VALUE, "plain-secret-bytes", 18 },
+      };
+      nslots = 8;
+      use_config(g_mem_cfg);
+      rv = f->C_Initialize(NULL_PTR);
+      CHECKM(rv == CKR_OK, "matrix: Initialize ok");
+      rv = f->C_GetSlotList(CK_TRUE, slots, &nslots);
+      CHECKM(rv == CKR_OK && nslots == 1, "matrix: single slot");
+      rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &pubrw);
+      CHECKM(rv == CKR_OK && pubrw != 0, "matrix: public RW opens");
+      rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION, NULL_PTR, NULL_PTR, &pubro);
+      CHECKM(rv == CKR_OK && pubro != 0, "matrix: public RO opens");
+      rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &usr);
+      CHECKM(rv == CKR_OK && usr != 0, "matrix: user RW opens");
+      rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &so);
+      CHECKM(rv == CKR_OK && so != 0, "matrix: SO RW opens");
+      /* 1. PUBLIC legs while logged out: the positive control + public refusals */
+      h = 0;
+      rv = f->C_CreateObject(pubrw, pubtok, 5, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: public RW creates public token object");
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(pubrw, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-pub", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: public readback matches");
+      { CK_ATTRIBUTE over[] = { { CKA_LABEL, "matrix-copy", 11 } };
+        h2 = 0;
+        rv = f->C_CopyObject(pubrw, h, over, 1, &h2);
+        CHECKM(rv == CKR_OK && h2 != 0 && h2 != h, "matrix: public RW copies public token object"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(pubrw, h2, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 11 &&
+                 memcmp(label, "matrix-copy", 11) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: public copy readback matches");
+      { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-set", 10 } };
+        rv = f->C_SetAttributeValue(pubrw, h, set, 1);
+        CHECKM(rv == CKR_OK, "matrix: public RW sets label on public token object"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(pubrw, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-set", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: public set readback matches");
+      rv = f->C_DestroyObject(pubrw, h);
+      CHECKM(rv == CKR_OK, "matrix: public RW destroys public token object");
+      rv = f->C_DestroyObject(pubrw, h2);
+      CHECKM(rv == CKR_OK, "matrix: public RW destroys the copy");
+      h = 0;
+      rv = f->C_CreateObject(pubrw, privtok, 5, &h);
+      CHECKM(rv == CKR_USER_NOT_LOGGED_IN && h == 0, "matrix: public RW private create refused");
+      h = 0;
+      rv = f->C_CreateObject(pubro, pubtok, 5, &h);
+      CHECKM(rv == CKR_SESSION_READ_ONLY && h == 0, "matrix: public RO token create refused");
+      /* A keeper for the public-RO set refusal: pubro observes the same
+       * logged-out token state, so the set refuses read-only. */
+      h = 0;
+      rv = f->C_CreateObject(pubrw, pubtok, 5, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: public RO refusal keeper written");
+      { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-roset", 12 } };
+        rv = f->C_SetAttributeValue(pubro, h, set, 1);
+        CHECKM(rv == CKR_SESSION_READ_ONLY, "matrix: public RO set on token object refused"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(pubrw, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-pub", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: refused public RO set changes nothing");
+      rv = f->C_DestroyObject(pubrw, h);
+      CHECKM(rv == CKR_OK, "matrix: public RO refusal keeper destroyed");
+      /* 2. USER legs: login, full positive incl. private token, RO cells,
+       * user-TRUSTED refusals, logout. */
+      rv = f->C_Login(usr, CKU_USER, (CK_UTF8CHAR_PTR)"1234", 4);
+      CHECKM(rv == CKR_OK, "matrix: user login");
+      h = 0;
+      rv = f->C_CreateObject(usr, privtok, 5, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: user RW creates private token object");
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(usr, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 11 &&
+                 memcmp(label, "matrix-priv", 11) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "secret-bytes", 12) == 0,
+             "matrix: user private readback matches");
+      { CK_ATTRIBUTE over[] = { { CKA_LABEL, "matrix-pcopy", 12 } };
+        h2 = 0;
+        rv = f->C_CopyObject(usr, h, over, 1, &h2);
+        CHECKM(rv == CKR_OK && h2 != 0 && h2 != h, "matrix: user RW copies private token object"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(usr, h2, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 12 &&
+                 memcmp(label, "matrix-pcopy", 12) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "secret-bytes", 12) == 0,
+             "matrix: user copy readback matches");
+      { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-pset", 11 } };
+        rv = f->C_SetAttributeValue(usr, h, set, 1);
+        CHECKM(rv == CKR_OK, "matrix: user RW sets label on private token object"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(usr, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 11 &&
+                 memcmp(label, "matrix-pset", 11) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "secret-bytes", 12) == 0,
+             "matrix: user set readback matches");
+      rv = f->C_DestroyObject(usr, h);
+      CHECKM(rv == CKR_OK, "matrix: user RW destroys private token object");
+      rv = f->C_DestroyObject(usr, h2);
+      CHECKM(rv == CKR_OK, "matrix: user RW destroys the private copy");
+      /* User RO cells: pubro observes the token-global user login. */
+      h = 0;
+      rv = f->C_CreateObject(pubro, pubtok, 5, &h);
+      CHECKM(rv == CKR_SESSION_READ_ONLY && h == 0, "matrix: user RO token create refused");
+      h = 0;
+      rv = f->C_CreateObject(pubro, privtok, 5, &h);
+      CHECKM(rv == CKR_SESSION_READ_ONLY && h == 0, "matrix: user RO private token create refused");
+      h = 0;
+      rv = f->C_CreateObject(pubro, pubsess, 5, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: user RO creates public session object");
+      h2 = 0;
+      rv = f->C_CreateObject(pubro, privsess, 5, &h2);
+      CHECKM(rv == CKR_OK && h2 != 0 && h2 != h, "matrix: user RO creates private session object");
+      rv = f->C_DestroyObject(pubro, h);
+      CHECKM(rv == CKR_OK, "matrix: user RO destroys public session object");
+      rv = f->C_DestroyObject(pubro, h2);
+      CHECKM(rv == CKR_OK, "matrix: user RO destroys private session object");
+      /* A public token keeper for the RO set/destroy and TRUSTED legs. */
+      h = 0;
+      rv = f->C_CreateObject(usr, pubtok, 5, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: user RW creates keeper public token object");
+      { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-roset", 12 } };
+        rv = f->C_SetAttributeValue(pubro, h, set, 1);
+        CHECKM(rv == CKR_SESSION_READ_ONLY, "matrix: user RO set on token object refused"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(usr, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-pub", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: refused user RO set changes nothing");
+      rv = f->C_DestroyObject(pubro, h);
+      CHECKM(rv == CKR_SESSION_READ_ONLY, "matrix: user RO destroy of token object refused");
+      h2 = 0;
+      rv = f->C_CreateObject(usr, trustedtok, 7, &h2);
+      CHECKM(rv == CKR_ATTRIBUTE_READ_ONLY && h2 == 0, "matrix: user TRUSTED create refused");
+      { CK_ATTRIBUTE set[] = { { CKA_TRUSTED, &yes, sizeof(yes) } };
+        rv = f->C_SetAttributeValue(usr, h, set, 1);
+        CHECKM(rv == CKR_ATTRIBUTE_READ_ONLY, "matrix: user TRUSTED set refused"); }
+      rv = f->C_DestroyObject(usr, h);
+      CHECKM(rv == CKR_OK, "matrix: user RW destroys the keeper");
+      rv = f->C_Logout(usr);
+      CHECKM(rv == CKR_OK, "matrix: user logout");
+      /* pubro MUST close before SO login (else READ_ONLY_EXISTS); it stays closed:
+       * an RO session cannot be reopened under SO login. All remaining RO-shape
+       * checks are done; visibility runs logged out below. */
+      rv = f->C_CloseSession(pubro);
+      CHECKM(rv == CKR_OK, "matrix: public RO closes before SO");
+      pubro = 0;
+      /* 3. SO legs: login, public positives, private refusal, trusted split,
+       * logout. */
+      rv = f->C_Login(so, CKU_SO, (CK_UTF8CHAR_PTR)"5678", 4);
+      CHECKM(rv == CKR_OK, "matrix: SO login");
+      h = 0;
+      rv = f->C_CreateObject(so, privtok, 5, &h);
+      CHECKM(rv == CKR_USER_NOT_LOGGED_IN && h == 0, "matrix: SO private create refused");
+      h = 0;
+      rv = f->C_CreateObject(so, pubtok, 5, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: SO creates public token object");
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(so, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-pub", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: SO readback matches");
+      { CK_ATTRIBUTE over[] = { { CKA_LABEL, "matrix-copy", 11 } };
+        h2 = 0;
+        rv = f->C_CopyObject(so, h, over, 1, &h2);
+        CHECKM(rv == CKR_OK && h2 != 0 && h2 != h, "matrix: SO copies public token object"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(so, h2, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 11 &&
+                 memcmp(label, "matrix-copy", 11) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: SO copy readback matches");
+      { CK_ATTRIBUTE set[] = { { CKA_LABEL, "matrix-set", 10 } };
+        rv = f->C_SetAttributeValue(so, h, set, 1);
+        CHECKM(rv == CKR_OK, "matrix: SO sets label on public token object"); }
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(so, h, get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-set", 10) == 0 &&
+                 get[1].ulValueLen == 12 &&
+                 memcmp(value, "matrix-bytes", 12) == 0,
+             "matrix: SO set readback matches");
+      rv = f->C_DestroyObject(so, h);
+      CHECKM(rv == CKR_OK, "matrix: SO destroys public token object");
+      rv = f->C_DestroyObject(so, h2);
+      CHECKM(rv == CKR_OK, "matrix: SO destroys the copy");
+      h = 0;
+      rv = f->C_CreateObject(so, trustedtok, 7, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: SO creates TRUSTED object");
+      h2 = 0;
+      rv = f->C_CreateObject(so, secretok, 6, &h2);
+      CHECKM(rv == CKR_OK && h2 != 0 && h2 != h, "matrix: SO creates plain target");
+      { CK_ATTRIBUTE set[] = { { CKA_TRUSTED, &yes, sizeof(yes) } };
+        rv = f->C_SetAttributeValue(so, h2, set, 1);
+        CHECKM(rv == CKR_OK, "matrix: SO sets TRUSTED on plain target"); }
+      rv = f->C_DestroyObject(so, h);
+      CHECKM(rv == CKR_OK, "matrix: SO destroys TRUSTED object");
+      rv = f->C_DestroyObject(so, h2);
+      CHECKM(rv == CKR_OK, "matrix: SO destroys the plain target");
+      rv = f->C_Logout(so);
+      CHECKM(rv == CKR_OK, "matrix: SO logout");
+      /* 4. visibility, logged out again: find-all over one public + one
+       * private token object yields exactly the public handle (the
+       * trailing found slot stays a zero canary); the remembered
+       * private handle refuses. */
+      rv = f->C_Login(usr, CKU_USER, (CK_UTF8CHAR_PTR)"1234", 4);
+      CHECKM(rv == CKR_OK, "matrix: visibility setup login");
+      h = 0;
+      rv = f->C_CreateObject(usr, pubtok, 5, &h);
+      CHECKM(rv == CKR_OK && h != 0, "matrix: visibility public object written");
+      h2 = 0;
+      rv = f->C_CreateObject(usr, privtok, 5, &h2);
+      CHECKM(rv == CKR_OK && h2 != 0 && h2 != h, "matrix: visibility private object written");
+      rv = f->C_Logout(usr);
+      CHECKM(rv == CKR_OK, "matrix: visibility logout");
+      memset(found, 0, sizeof(found));
+      nfound = 4;
+      rv = f->C_FindObjectsInit(pubrw, NULL_PTR, 0);
+      CHECKM(rv == CKR_OK, "matrix: visibility find init ok");
+      nfound = 4;
+      rv = f->C_FindObjects(pubrw, found, 4, &nfound);
+      CHECKM(rv == CKR_OK && nfound == 1 && found[1] == 0,
+             "matrix: visibility find yields the public handle only");
+      rv = f->C_FindObjectsFinal(pubrw);
+      CHECKM(rv == CKR_OK, "matrix: visibility find final ok");
+      memset(label, 0xa5, sizeof(label)); memset(value, 0xa5, sizeof(value));
+      get[0].ulValueLen = sizeof(label);
+      get[1].ulValueLen = sizeof(value);
+      rv = f->C_GetAttributeValue(pubrw, found[0], get, 2);
+      CHECKM(rv == CKR_OK && get[0].ulValueLen == 10 &&
+                 memcmp(label, "matrix-pub", 10) == 0,
+             "matrix: visibility found handle is the public object");
+      rv = f->C_DestroyObject(pubrw, h2);
+      CHECKM(rv == CKR_OBJECT_HANDLE_INVALID, "matrix: remembered private handle refused");
+      rv = f->C_Login(usr, CKU_USER, (CK_UTF8CHAR_PTR)"1234", 4);
+      CHECKM(rv == CKR_OK, "matrix: visibility cleanup login");
+      memset(found, 0, sizeof(found));
+      nfound = 4;
+      rv = f->C_FindObjectsInit(usr, NULL_PTR, 0);
+      CHECKM(rv == CKR_OK, "matrix: cleanup find init ok");
+      nfound = 4;
+      rv = f->C_FindObjects(usr, found, 4, &nfound);
+      CHECKM(rv == CKR_OK && nfound == 2, "matrix: cleanup find yields both objects");
+      rv = f->C_FindObjectsFinal(usr);
+      CHECKM(rv == CKR_OK, "matrix: cleanup find final ok");
+      rv = f->C_DestroyObject(usr, found[0]);
+      CHECKM(rv == CKR_OK, "matrix: cleanup destroys first object");
+      rv = f->C_DestroyObject(usr, found[1]);
+      CHECKM(rv == CKR_OK, "matrix: cleanup destroys second object");
+      rv = f->C_Logout(usr);
+      CHECKM(rv == CKR_OK, "matrix: visibility cleanup logout");
+      rv = f->C_CloseSession(pubrw);
+      CHECKM(rv == CKR_OK, "matrix: public RW closes");
+      rv = f->C_CloseSession(usr);
+      CHECKM(rv == CKR_OK, "matrix: user session closes");
+      rv = f->C_CloseSession(so);
+      CHECKM(rv == CKR_OK, "matrix: SO session closes");
+      rv = f->C_Finalize(NULL_PTR);
+      CHECKM(rv == CKR_OK, "matrix: Finalize ok");
+    }
+
+    /* ---- Phase B/find-page: removed-session page refuses first ---- */
+    {
+      CK_SESSION_HANDLE sess = 0, fresh = 0;
+      CK_OBJECT_CLASS klass = CKO_DATA;
+      CK_BBOOL no = CK_FALSE;
+      CK_OBJECT_HANDLE h1 = 0, h2 = 0;
+      CK_OBJECT_HANDLE found[4];
+      CK_ULONG count = 0;
+      int i, clean;
+      CK_ATTRIBUTE t1[] = { { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &no, sizeof(no) }, { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "page-one", 8 } };
+      CK_ATTRIBUTE t2[] = { { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_TOKEN, &no, sizeof(no) }, { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "page-two", 8 } };
+      CK_OBJECT_HANDLE warm[4] = { 0, 0, 0, 0 };
+      CK_ULONG nwarm = 0;
+      nslots = 8;
+      use_config(g_mem_cfg);
+      rv = f->C_Initialize(NULL_PTR);
+      CHECKM(rv == CKR_OK, "page: Initialize ok");
+      rv = f->C_GetSlotList(CK_TRUE, slots, &nslots);
+      CHECKM(rv == CKR_OK && nslots == 1, "page: single slot");
+      rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &sess);
+      CHECKM(rv == CKR_OK && sess != 0, "page: session opens");
+      h1 = 0; h2 = 0;
+      rv = f->C_CreateObject(sess, t1, 4, &h1);
+      CHECKM(rv == CKR_OK && h1 != 0, "page: first object created");
+      rv = f->C_CreateObject(sess, t2, 4, &h2);
+      CHECKM(rv == CKR_OK && h2 != 0, "page: second object created");
+      rv = f->C_FindObjectsInit(sess, NULL_PTR, 0);
+      CHECKM(rv == CKR_OK, "page: cursor opens");
+      rv = f->C_FindObjects(sess, warm, 4, &nwarm);
+      CHECKM(rv == CKR_OK && nwarm == 2, "page: warm page holds both handles");
+      rv = f->C_FindObjectsFinal(sess);
+      CHECKM(rv == CKR_OK, "page: warm cursor closes");
+      rv = f->C_FindObjectsInit(sess, NULL_PTR, 0);
+      CHECKM(rv == CKR_OK, "page: cursor reopens");
+      rv = f->C_CloseSession(sess);
+      CHECKM(rv == CKR_OK, "page: session closes with a live cursor");
+      for (i = 0; i < 4; i++) found[i] = (CK_OBJECT_HANDLE)0xA5A5A5A5UL;
+      count = (CK_ULONG)0xA5A5A5A5UL;
+      rv = f->C_FindObjects(sess, found, 4, &count);
+      clean = 1;
+      for (i = 0; i < 4; i++) clean = clean && (found[i] == (CK_OBJECT_HANDLE)0xA5A5A5A5UL);
+      clean = clean && (count == (CK_ULONG)0xA5A5A5A5UL);
+      CHECKM(rv == CKR_SESSION_HANDLE_INVALID && clean, "page: removed session refuses, outputs untouched");
+      rv = f->C_FindObjectsFinal(sess);
+      CHECKM(rv == CKR_SESSION_HANDLE_INVALID, "page: removed final refuses (unchanged)");
+      /* a fresh session inherits no cursor: nothing to page */
+      rv = f->C_OpenSession(slots[0], CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &fresh);
+      CHECKM(rv == CKR_OK && fresh != 0, "page: fresh session opens");
+      for (i = 0; i < 4; i++) found[i] = (CK_OBJECT_HANDLE)0xA5A5A5A5UL;
+      count = (CK_ULONG)0xA5A5A5A5UL;
+      rv = f->C_FindObjects(fresh, found, 4, &count);
+      clean = 1;
+      for (i = 0; i < 4; i++) clean = clean && (found[i] == (CK_OBJECT_HANDLE)0xA5A5A5A5UL);
+      clean = clean && (count == (CK_ULONG)0xA5A5A5A5UL);
+      CHECKM(rv == CKR_OPERATION_NOT_INITIALIZED && clean, "page: fresh session has no cursor, outputs untouched");
+      rv = f->C_CloseSession(fresh);
+      CHECKM(rv == CKR_OK, "page: fresh session closes");
+      rv = f->C_Finalize(NULL_PTR);
+      CHECKM(rv == CKR_OK, "page: Finalize ok");
     }
   }
 

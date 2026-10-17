@@ -3104,8 +3104,7 @@ haskokiStdFind ctx (CULong h) (CULong maxCount) pHandles pCount =
       else
         if pHandles == nullPtr && maxCount /= 0
           then pure ckrArgsBad
-          else do
-            let sid = SessionId (fromIntegral h)
+          else withStdSession inst (CULong h) $ \sid -> do
             mHandles <- atomicModifyIORef' (siFind inst) $ \m ->
               case Map.lookup sid m of
                 Nothing -> (m, Nothing)

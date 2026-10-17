@@ -30,6 +30,7 @@ module StoreSpec
   , seedStore
   , demoJobPending
   , demoJobResult
+  , freshObject
   ) where
 
 import Control.Concurrent (forkFinally, forkIO, killThread, threadDelay)
@@ -39,7 +40,7 @@ import Control.Monad (replicateM_, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (isAlphaNum, isSpace)
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf, sort)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map.Strict as Map
@@ -137,10 +138,14 @@ import Haskoki.FFI.Standard
   , StdStoreError (..)
   , buildObjectProjection
   , haskokiStdClose
+  , haskokiStdCloseSession
   , haskokiStdGetSessionInfo
+  , haskokiStdInitPin
+  , haskokiStdInitToken
   , haskokiStdLogin
   , haskokiStdLogout
   , haskokiStdOpenSession
+  , haskokiStdSetPin
   , openStdInstance
   , openStdStoreWith
   )
@@ -152,6 +157,7 @@ import Haskoki.Runtime.Config
   , ConfigError (..)
   , StorageCfg (..)
   , StorageKind (..)
+  , TokensCfg (..)
   , defaultConfig
   , parseConfig
   )
@@ -1737,14 +1743,20 @@ maskedProcRefuses =
 -- environment-only): the child opens a full serving instance
 -- over the path instead of the raw store and runs the
 -- @HASKOKI_AUTH_SCRIPT@ login ops (see 'authProbeMain').
+--
+-- Provision mode (@HASKOKI_HOLDER_MODE=provision@, likewise
+-- environment-only): the child opens a full serving instance
+-- with the two-token catalog and runs the
+-- @HASKOKI_PROVISION_SCRIPT@ verbs (see 'provisionMain').
 holderMain :: FilePath -> FilePath -> FilePath -> IO ()
 holderMain path doneFile readyFile = do
   mode <- lookupEnv "HASKOKI_HOLDER_MODE"
   case mode of
-    -- The auth probe opens a full serving instance, never the
-    -- raw store: it must not become a bare store owner first
+    -- Serving modes open a full serving instance, never the
+    -- raw store: they must not become a bare store owner first
     -- (the instance open would then refuse as a second writer).
     Just "auth-probe" -> authProbeMain path
+    Just "provision" -> provisionMain path
     _ -> holderStoreMain path doneFile readyFile mode
 
 -- | The store-owner holder: open the raw store, optionally run
@@ -1862,6 +1874,137 @@ splitScript = go
     go s = case break (== ',') s of
       (op, []) -> [op]
       (op, _ : rest) -> op : go rest
+
+-- | The two-token config the provision child opens with (exact
+-- entries duplicated here: the holder cannot import backwards
+-- from the journey suite).
+provisionCfg :: FilePath -> Config
+provisionCfg path = defaultConfig
+  { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True
+  , cfgTokens = TokensCfg [("haskoki-demo", "5678", "1234"), ("haskoki-ops", "6789", "2345")]
+  }
+
+-- | Provision holder (@HASKOKI_HOLDER_MODE=provision@): the
+-- fresh-process leg of the provision/change/lock/recover/reset
+-- journey. Opens a full serving instance over the database path
+-- with 'provisionCfg', runs the comma-separated
+-- @HASKOKI_PROVISION_SCRIPT@ verbs against one read/write session
+-- on slot 0 held in an 'IORef' (created by @open@, dropped by
+-- @close@), writes one @verb=decimal@ line per verb to
+-- @HASKOKI_PROVISION_RESULT@, closes, and exits. Refused ops are
+-- data (their return code is recorded); only broken plumbing
+-- exits nonzero: 2 null instance, 3 @open@ failure, 4 unknown
+-- verb, op without a live handle, double @open@, or a failed
+-- @login-state@ query, 5 missing environment. @init-token@ is
+-- slot-scoped and needs no live handle; it is the only such
+-- verb. Result lines carry codes only; nothing is printed.
+provisionMain :: FilePath -> IO ()
+provisionMain path = do
+  mScript <- lookupEnv "HASKOKI_PROVISION_SCRIPT"
+  mResult <- lookupEnv "HASKOKI_PROVISION_RESULT"
+  case (mScript, mResult) of
+    (Just script, Just result) -> do
+      ctx <- openStdInstance (provisionCfg path)
+      if castStablePtrToPtr ctx == nullPtr
+        then exitImmediately (ExitFailure 2)
+        else do
+          sessionRef <- newIORef Nothing
+          mRendered <- runProvisionScript ctx sessionRef (splitScript script)
+          case mRendered of
+            Left code -> exitImmediately (ExitFailure code)
+            Right rendered -> do
+              writeFile result (unlines rendered)
+              haskokiStdClose ctx
+              exitImmediately ExitSuccess
+    _ -> exitImmediately (ExitFailure 5)
+
+-- | Run the verbs in order, short-circuiting on the first
+-- plumbing failure (a refused op is data and continues; a
+-- 'Left' code stops the script with no further lines).
+runProvisionScript :: StablePtr StdInstance -> IORef (Maybe CULong) -> [String] -> IO (Either Int [String])
+runProvisionScript _ _ [] = pure (Right [])
+runProvisionScript ctx ref (op : ops) = do
+  mLine <- runProvisionOp ctx ref op
+  case mLine of
+    Left code -> pure (Left code)
+    Right line -> fmap (fmap (line :)) (runProvisionScript ctx ref ops)
+
+-- | Run one provision verb ('Left' exit code on a plumbing
+-- failure, 'Right' @verb=decimal@ line otherwise).
+runProvisionOp :: StablePtr StdInstance -> IORef (Maybe CULong) -> String -> IO (Either Int String)
+runProvisionOp ctx ref token = case splitVerb token of
+  ["open"] -> do
+    mLive <- readIORef ref
+    case mLive of
+      Just _ -> pure (Left 4)
+      Nothing ->
+        alloca $ \(phSession :: Ptr CULong) -> do
+          poke phSession (CULong 0)
+          rv <- haskokiStdOpenSession ctx (CULong 0) (CULong 0) phSession
+          if rv /= CULong 0
+            then pure (Left 3)
+            else do
+              h <- peek phSession
+              writeIORef ref (Just h)
+              pure (Right (render rv))
+  ["close"] -> withLive $ \h -> do
+    rv <- haskokiStdCloseSession ctx h
+    writeIORef ref Nothing
+    pure (Right (render rv))
+  ["login", "user", pin] -> withLive $ \h -> Right . render <$> probeLogin ctx h 1 pin
+  ["login", "so", pin] -> withLive $ \h -> Right . render <$> probeLogin ctx h 0 pin
+  ["logout"] -> withLive $ \h -> Right . render <$> haskokiStdLogout ctx h
+  ["init-token", label, soPin] -> Right . render <$> provisionInitToken ctx (CULong 0) soPin label
+  ["init-pin", newPin] -> withLive $ \h -> Right . render <$> provisionInitPin ctx h newPin
+  ["set-pin", oldPin, newPin] -> withLive $ \h -> Right . render <$> provisionSetPin ctx h oldPin newPin
+  ["lock-check", pin] -> withLive $ \h -> Right . render <$> probeLogin ctx h 1 pin
+  ["login-state"] -> withLive $ \h -> do
+    mCode <- probeLoginCode ctx h
+    case mCode of
+      Nothing -> pure (Left 4)
+      Just code -> pure (Right (render code))
+  _ -> pure (Left 4)
+  where
+    -- Result lines carry the verb only: the arguments hold PIN
+    -- bytes, and a failing assertEqual would print them.
+    render (CULong n) = verb ++ "=" ++ show n
+      where
+        verb = case splitVerb token of
+          v : _ -> v
+          [] -> token
+    withLive f = readIORef ref >>= maybe (pure (Left 4)) f
+
+-- | Split a provision verb on its @/@ argument separators.
+splitVerb :: String -> [String]
+splitVerb = go
+  where
+    go [] = []
+    go s = case break (== '/') s of
+      (part, []) -> [part]
+      (part, _ : rest) -> part : go rest
+
+-- | Call InitPIN on a session with a plain-string PIN.
+provisionInitPin :: StablePtr StdInstance -> CULong -> String -> IO CULong
+provisionInitPin ctx h pinStr =
+  BS.useAsCStringLen (BC8.pack pinStr) $ \(cstr, len) ->
+    haskokiStdInitPin ctx h (castPtr cstr) (fromIntegral len)
+
+-- | Call SetPIN on a session with plain-string old/new PINs.
+provisionSetPin :: StablePtr StdInstance -> CULong -> String -> String -> IO CULong
+provisionSetPin ctx h oldStr newStr =
+  BS.useAsCStringLen (BC8.pack oldStr) $ \(cOld, lenOld) ->
+    BS.useAsCStringLen (BC8.pack newStr) $ \(cNew, lenNew) ->
+      haskokiStdSetPin ctx h (castPtr cOld) (fromIntegral lenOld)
+        (castPtr cNew) (fromIntegral lenNew)
+
+-- | Call InitToken on a slot with a plain-string SO PIN and label
+-- (the label pads to the fixed 32 C bytes here, as the C caller
+-- would).
+provisionInitToken :: StablePtr StdInstance -> CULong -> String -> String -> IO CULong
+provisionInitToken ctx slot pinStr labelStr =
+  BS.useAsCStringLen (BC8.pack pinStr) $ \(cPin, lenPin) ->
+    BS.useAsCStringLen (BC8.pack (take 32 (labelStr ++ repeat ' '))) $ \(cLabel, _) ->
+      haskokiStdInitToken ctx slot (castPtr cPin) (fromIntegral lenPin) (castPtr cLabel)
 
 -- | Poll for the done file (10ms steps, bounded so a stuck parent
 -- cannot wedge the suite past the tasty timeout).

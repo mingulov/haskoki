@@ -383,8 +383,12 @@ admitToken rules seatedCount
 -- runner decides over the pending work ('admitPending') before
 -- any effect runs. Reads,
 -- pure crypto, wrap (no object created), session lifecycle, and
--- random generation are ungated (no object mutation). The
--- unenforced public-object login rule is a separate follow-up.
+-- random generation are ungated (no object mutation). Public
+-- token objects stay mutable from public read/write sessions: the
+-- selected standard baseline (OASIS PKCS#11 3.2 sections 5.7.1-5.7.3
+-- and usage guide 2.6.3-2.6.4) restricts only private
+-- creation/destruction to the normal user and token changes to
+-- read/write sessions, so no universal login check belongs here.
 admitWritable :: Bool -> Bool -> Either AdmitDeny ()
 admitWritable readOnly isToken
   | readOnly && isToken = Left AdmitReadOnly

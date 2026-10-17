@@ -94,6 +94,7 @@ import Haskoki.FFI.Standard
   , haskokiStdDigestFinal
   , haskokiStdDigestInit
   , haskokiStdDigestUpdate
+  , haskokiStdFindInit
   , haskokiStdGetSessionInfoWithAsync
   , haskokiStdOpenSession
   , haskokiStdOpenSessionWithAsync
@@ -219,6 +220,7 @@ spec envLock = testGroup "Async engine"
   , testCase "caseAsyncCleanupSurface" (counted "m3-async-engine" "caseasynccleanupsurface" (caseAsyncCleanupSurface envLock))
   , testCase "FFI close-one keeps other context live" (counted "m3-async-engine" "ffi-close-one-keeps-other-context-live" (caseFfiCloseOneKeepsOther envLock))
   , testCase "FFI simultaneous join: exactly one wins" (counted "m3-async-engine" "ffi-simultaneous-join-exactly-one-wins" (caseFfiJoinRace envLock))
+  , testCase "close retires the session find cursor" (counted "m3-async-engine" "close-retires-the-session-find-cursor" (caseCloseRetiresFindCursor envLock))
   ]
 
 hex :: String -> ByteString
@@ -1891,3 +1893,24 @@ caseFfiJoinRace envLock =
     haskokiAsyncClose pA
     haskokiAsyncClose pB
     haskokiAsyncStoreClose pBox
+
+-- | CloseSession retires the session's find cursor: after FindInit
+-- the session id keys siFind, and after close it no longer does.
+-- A fresh session id could never collide anyway (ids only
+-- increase), so only this map lookup proves the retirement — the
+-- consumer's fresh-session leg merely shows a new id starts
+-- cursorless.
+caseCloseRetiresFindCursor :: MVar () -> IO ()
+caseCloseRetiresFindCursor envLock = do
+  cfg <- stdAsyncConfig envLock "close-retires-cursor" False
+  withStdAsync cfg $ \ctx inst -> do
+    h <- openStdAsyncSession ctx 0 False
+    let sid = stdSessionId h
+    BS.useAsCStringLen (BS.replicate 8 0) $ \(frame, n) ->
+      haskokiStdFindInit ctx h (castPtr frame) (fromIntegral n)
+        >>= assertEqual "find cursor opens" rvOK
+    before <- readIORef (siFind inst)
+    assertBool "cursor present before close" (Map.member sid before)
+    haskokiStdCloseSession ctx h >>= assertEqual "close ok" rvOK
+    after <- readIORef (siFind inst)
+    assertEqual "close retires the cursor" Nothing (Map.lookup sid after)
