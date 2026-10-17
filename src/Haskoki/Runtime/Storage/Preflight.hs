@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 {- | Offline store preflight and explicit migration (AC-05). Read-only
 diagnosis, the owned migration and their redacted renderings. Not
 re-exported from "Haskoki"; the serving open does not import this module.
@@ -39,7 +40,11 @@ import Data.ByteString (ByteString)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf)
 import Data.Word (Word8)
 import Foreign.C.Error (Errno (..), eNOTSUP, eOPNOTSUPP, ePERM, eXDEV)
-import Foreign.Ptr (castPtr)
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types (CInt (..), CSize (..), CUChar (..))
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Storable (peek)
 import GHC.IO.Exception (ioe_errno)
 import System.IO.Error (isAlreadyExistsError, tryIOError)
 import System.Posix.Directory (closeDirStream, openDirStream, readDirStream)
@@ -52,8 +57,6 @@ import System.Posix.Time (epochTime)
 import System.Posix.Types (Fd)
 import System.Posix.Unistd (fileSynchronise)
 
-import Haskoki.Engine.Backend (CryptoBackend (..), DigestAlg (D_SHA256), EngineResult (..))
-import Haskoki.Engine.OpenSSL4 (OpenSSL4)
 import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, tokenSerial)
 import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..))
 import Haskoki.Runtime.Storage
@@ -66,21 +69,43 @@ import Haskoki.Runtime.Storage.SQLite
   , withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
+-- | One-shot digest from the pinned libcrypto (see @openssl/evp.h@):
+-- @EVP_Q_digest(NULL, "SHA256", NULL, data, datalen, md, &mdlen)@.
+-- The default library context needs no setup: the first fetch
+-- initialises it and the default provider lives in libcrypto itself.
+-- A safe call, like every crypto entry in the engine's raw bindings.
+foreign import ccall safe "openssl/evp.h EVP_Q_digest"
+  c_EVP_Q_digest :: Ptr () -> CString -> CString -> Ptr CUChar -> CSize
+                 -> Ptr CUChar -> Ptr CSize -> IO CInt
+
 -- | SHA-256 of a byte string as 64 lowercase hex digits, computed by
--- the OpenSSL4 engine (never a synthetic stand-in). Any engine
+-- a direct one-shot call into the pinned libcrypto (never a
+-- synthetic stand-in, never through the engine: this module must not
+-- pull the engine's test-hooked shim object into haskoki-ctl). Any
 -- failure is a 'Left' the caller treats as a refusal.
 sha256Hex :: ByteString -> IO (Either String String)
-sha256Hex bytes = do
-  opened <- openBackend "provider=default" :: IO (EngineResult (BackendEnv OpenSSL4))
-  case opened of
-    EngineFail err -> pure (Left ("SHA-256 engine unavailable: " ++ show err))
-    EngineOk be -> do
-      r <- digestOneShot be D_SHA256 bytes `finally` closeBackend be
-      pure $ case r of
-        EngineOk d | BS.length d == 32 -> Right (concatMap hexByte (BS.unpack d))
-        EngineOk d -> Left ("SHA-256 returned " ++ show (BS.length d) ++ " bytes")
-        EngineFail err -> Left ("SHA-256 failed: " ++ show err)
+sha256Hex bytes =
+  withInputBytes bytes $ \(p, len) ->
+    allocaBytes 64 $ \md -> alloca $ \mdLen -> do
+      rc <- withCString "SHA256" $ \name ->
+        c_EVP_Q_digest nullPtr name nullPtr p len md mdLen
+      if rc /= 1
+        then pure (Left "SHA-256 failed: libcrypto refused the digest")
+        else do
+          n <- peek mdLen
+          if n /= 32
+            then pure (Left ("SHA-256 returned " ++ show n ++ " bytes"))
+            else do
+              d <- BS.packCStringLen (castPtr md, 32)
+              pure (Right (concatMap hexByte (BS.unpack d)))
   where
+    -- The output buffer holds EVP_MAX_MD_SIZE (64) bytes; SHA-256
+    -- writes 32. The input of an empty string is a throwaway
+    -- non-NULL pointer with length 0.
+    withInputBytes :: ByteString -> ((Ptr CUChar, CSize) -> IO a) -> IO a
+    withInputBytes bs action
+      | BS.null bs = allocaBytes 1 $ \p -> action (p, 0)
+      | otherwise = BS.useAsCStringLen bs (\(p, n) -> action (castPtr p, fromIntegral n))
     hexByte :: Word8 -> String
     hexByte w = [digit (w `shiftR` 4), digit (w .&. 15)]
     digit n = "0123456789abcdef" !! fromIntegral n
