@@ -20,7 +20,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Foreign.Ptr (plusPtr)
-import System.Mem (performGC)
+import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak, mkWeak)
 
 import OwnershipCounters (assertZero, counted)
@@ -2435,10 +2435,12 @@ submitCanceledBig table size fill = do
 -- | Committed eviction reclaims without a later table read:
 -- cancel two independently-oversized jobs, then idle — no poll,
 -- complete, stats, or byte census, since any table read would
--- force a lazy prune and conceal the violation — collect, and
--- prove the evicted elder's payload is gone while the single
--- oversized-job exception keeps the newest. The oracle is object
--- reachability ('Weak' + 'performGC'), never a table read.
+-- force a lazy prune and conceal the violation — await the
+-- evicted elder's collection, and prove its payload is gone
+-- while the single oversized-job exception keeps the newest.
+-- The oracle is object reachability (a 'Weak' awaited over
+-- explicit major GCs with a stated round bound), never a table
+-- read.
 caseCommitReclaimsWithoutRead :: IO ()
 caseCommitReclaimsWithoutRead = do
   (table, _) <- mkTable
@@ -2446,17 +2448,17 @@ caseCommitReclaimsWithoutRead = do
   wOld <- submitCanceledBig table size 0x41
   _ <- submitCanceledBig table size 0x42
   -- Oracle first: NO atJobs read may precede it — any read
-  -- would force a lazy prune and conceal the violation. Collect
-  -- twice with allocation churn between: the churn recycles
-  -- dead frames from the submit phase that might otherwise hold
-  -- a transient GC root to the evicted payload, so the oracle
-  -- observes only table reachability.
-  performGC
+  -- would force a lazy prune and conceal the violation. Await
+  -- the clear with a BOUNDED wait (at most 'maxOracleRounds'
+  -- major GCs, churning between rounds to recycle dead
+  -- submit-phase frames): transient GC lag clears within a
+  -- round or two, while a table that retained the payload —
+  -- the violation — never clears, so the oracle observes only
+  -- table reachability without masking a leak.
   churnDeadRoots
-  performGC
-  mOld <- deRefWeak wOld
+  mOld <- awaitCleared wOld maxOracleRounds
   -- Liveness pin (post-observation): the jobs map must be used
-  -- after the GC, else the whole table is dead at 'performGC'
+  -- after the GC, else the whole table is dead at the oracle
   -- and both payloads collect vacuously. IO ordering guarantees
   -- this read — and any forcing it performs — happens strictly
   -- after the oracle above, so it cannot conceal anything.
@@ -2491,6 +2493,31 @@ churnDeadRoots = deep (0 :: Int) >> pure ()
           m <- deep (n + 1)
           let bs = BS.replicate 64 (fromIntegral (m + n))
           pure (m + BS.length bs)
+
+-- | Rounds of (major GC + read) the eviction oracle waits for
+-- the evicted payload's weak pointer to clear. Transient roots —
+-- dead submit-phase frames the churn recycles, and parallel-GC
+-- weak-processing lag — clear within a round or two; a table
+-- that retained the payload (the violation this case guards)
+-- never clears, so the bound keeps the oracle exact instead of
+-- masking a leak.
+maxOracleRounds :: Int
+maxOracleRounds = 8
+
+-- | Bounded wait for a weak pointer to clear: an explicit major
+-- GC, then a read, stopping at the first cleared read; between
+-- rounds the churn recycles dead frames that may hold a
+-- transient root. A genuinely retained key survives every round
+-- and is reported, never absorbed.
+awaitCleared :: Weak () -> Int -> IO (Maybe ())
+awaitCleared w n = do
+  performMajorGC
+  m <- deRefWeak w
+  case m of
+    Nothing -> pure Nothing
+    Just ()
+      | n <= 1 -> pure m
+      | otherwise -> churnDeadRoots >> awaitCleared w (n - 1)
 
 -- ---------------------------------------------------------------------------
 -- Fix round 2 / finding 3: eviction must not fabricate observations
