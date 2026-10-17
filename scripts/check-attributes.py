@@ -3,7 +3,8 @@
 
 Checks:
   * schema: top-level keys, per-block entry keys, value_type and
-    applies_to vocabularies, template_rules shape;
+    applies_to vocabularies (each applies_to entry names a known
+    class), template_rules shape;
   * header identity: every entry's numeric_id is byte-exact against
     the SELECTED headers and the name sets match (via hdr_parse);
   * template_rules reference known CKA/CKO/CKK names only, required
@@ -66,6 +67,10 @@ def main():
         return "0x%08x" % value
 
     known_cka, known_cko, known_ckk = set(), set(), set()
+    # (tag, applies_to) pairs collected while the attributes block
+    # runs ahead of the classes block; membership is checked after
+    # the loop, once known_cko is complete.
+    applies_seen = []
     for block, rx, want_keys, known in (
             ("attributes", RX_CKA, ATTR_KEYS, known_cka),
             ("classes", RX_CKO, OTHER_KEYS, known_cko),
@@ -113,6 +118,12 @@ def main():
                       or (isinstance(applies, list)
                           and all(RX_CKO.match(a or "") for a in applies)),
                       f"{tag}: bad applies_to {applies!r}")
+                if isinstance(applies, list):
+                    applies_seen.append((tag, applies))
+
+    for tag, applies in applies_seen:
+        for a in applies:
+            check(a in known_cko, f"{tag}: unknown applies_to class {a!r}")
 
     rules = data.get("template_rules")
     check(isinstance(rules, list), "template_rules must be a list")
