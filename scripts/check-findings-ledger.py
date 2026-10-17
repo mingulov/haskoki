@@ -499,7 +499,7 @@ def self_test():
 
     expect("retired-dropped", validate(with_ret(ret[1:]), src))
     r2 = copy.deepcopy(ret)
-    r2[0]["receipt"] = "pending: WP12 Task 7"
+    r2[0]["receipt"] = "pending: a later release"
     expect("retired-pending-receipt", validate(with_ret(r2), src))
     r2 = copy.deepcopy(ret)
     r2[0]["retired_by"] = []

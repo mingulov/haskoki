@@ -1081,7 +1081,7 @@ caseResourceInventory = do
   mapM_ (\dim -> assertBool ("open dimension named: " ++ dim) (dim `isInfixOf` section))
     ["limits.transcript_bytes", "limits.aggregate_payload_bytes"
     , "limits.attribute_depth", "R32", "A44"]
-  mapM_ (\ref -> assertBool ("WP13 outcome named: " ++ ref) (ref `isInfixOf` section))
+  mapM_ (\ref -> assertBool ("measurement outcome named: " ++ ref) (ref `isInfixOf` section))
     ["buffered-updates", "appendBuffered"]
 
 -- | The body of a @## @ section: the lines after its heading up to

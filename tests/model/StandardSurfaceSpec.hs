@@ -166,7 +166,7 @@ caseAsyncFunctionNames = do
   assertEqual "first NUL ends the name" (Right JobDigest) result
   where
     -- Allocate exactly the supplied bytes, including only the first NUL
-    -- for the valid names above. Protected-page checks belong to Task 6.
+    -- for the valid names above. Protected-page checks belong to a later slice.
     decodeBytes :: ByteString -> IO (Either ReturnCode JobFunction)
     decodeBytes bytes = allocaBytes (BS.length bytes) $ \ptr -> do
       pokeArray ptr (BS.unpack bytes)

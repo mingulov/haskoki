@@ -15,8 +15,9 @@
 # untouched.
 #
 # Not a test-*.sh driver: it needs the downloaded, verified release
-# bundles (ws/plans/2026-10-15-v050-wp05.md, Task 2), which the
-# release-evidence runner does not provision. WP14 decides promotion.
+# bundles (ws/plans/2026-10-15-v050-wp05.md, released-binary fixtures),
+# which the release-evidence runner does not provision. The release
+# gate decides promotion.
 #
 # Usage (from haskoki/): scripts/qualify-store-upgrade.sh BUNDLES_DIR [EVIDENCE_DIR]
 #   HASKOKI_CTL     new haskoki-ctl   (default: cabal list-bin haskoki-ctl)

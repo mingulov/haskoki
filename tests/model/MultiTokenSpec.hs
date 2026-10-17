@@ -592,7 +592,7 @@ caseTokenIdsUnique = do
   assertEqual "slot 0 keeps home id" homeTokenId (tokenIdForSlot (SlotId 0))
 
 -- | Memory instances read the serial from the pinned identity
--- catalog too (WP04 ruling 1): the fixture with
+-- catalog too (identity-derived serial ruling): the fixture with
 -- @token_ids = ["1", "26", "3"]@ reports TokenId 26 on slot 1 as
 -- @000000000000001a@ (a positional reading gives
 -- @0000000000000002@), and the other slots follow their pins.

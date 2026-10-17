@@ -175,7 +175,7 @@ class DriverControls(unittest.TestCase):
         self.no_build()
 
     # ---- must fail after listing/running, never vacuously pass ----
-    # ---- ownership counters (Task 4) ----
+    # ---- ownership counters ----
     def test_counter_line_missing_fails(self):
         p = self.run_driver(HASKOKI_OWN_CASE="m2-lifetime-gate")
         self.assertNotEqual(p.returncode, 0, p.stdout)
