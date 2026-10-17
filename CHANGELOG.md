@@ -88,6 +88,11 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
 - Identity refusal messages no longer say 'in this phase'; they name the
   absence of a relabel or slot-move command.
 - The test-only `storeResetToken` keeps the token's credential row.
+- `C_FindObjects` on a removed session answers
+  `CKR_SESSION_HANDLE_INVALID`; it used to answer
+  `CKR_OPERATION_NOT_INITIALIZED`. The session check now runs before
+  the cursor lookup, and refusals leave the output buffer and count
+  untouched.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and
@@ -104,16 +109,20 @@ record: symbol separation, sanitizer runs, evidence limits) and
 - Token provisioning now runs end to end across fresh processes:
   initialize, set PIN, change PIN, failure lockout, SO recovery and
   reset, over two tokens with sibling objects and jobs, with the
-  durable credential bytes compared after each run.
+  durable credential bytes compared after every run except the
+  lockout leg, which checks lock state instead.
 - An installed-tool provisioning journey is registered as nine journey
   rows: `pkcs11-tool` InitToken, SO-authorized InitPIN, user change-PIN,
   EC keygen, public-key export, sign, an independent `openssl` verify,
   new-PIN listing and old-PIN refusal, each in its own process with
-  pinned argv, exits and markers.
-- The role and operation matrix now covers create, copy, set and destroy
-  across the user/SO, read-only/read-write, session/token and
-  public/private splits, while the permitted public read-write
-  mutations stay pinned by a positive control.
+  pinned argv and exits, markers where the tool prints them: the
+  export leg checks its output file instead, and the sign leg relies
+  on the independent `openssl` verifier.
+- The role and operation matrix now covers create across the
+  public/user/SO, read-only/read-write, session/token and
+  public/private splits, with sampled copy, set and destroy cells,
+  while the permitted public read-write mutations stay pinned by a
+  positive control.
 
 ### Changed
 
