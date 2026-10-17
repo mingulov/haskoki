@@ -205,6 +205,8 @@ cmdKdf funs = do
       , attrULong ckaKeyType ckkGenericSecret
       , attrBool ckaToken False
       , attrBool ckaDerive True
+      , attrBool ckaSensitive False
+      , attrBool ckaExtractable True
       , attrULong ckaValueLen 32
       ]
     derived <- deriveKey sess ckmSha256KeyDerivation BS.empty base
