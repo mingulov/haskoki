@@ -1766,8 +1766,8 @@ loadSlhdsaHalves tag = do
           Nothing -> assertFailure ("SLH-DSA fixture set unknown: " ++ tag) >> undefined
     _ -> assertFailure ("SLH-DSA fixture halves disagree: " ++ tag) >> undefined
 
-slhdsaPrivTmpl :: Word64 -> ByteString -> ByteString -> [(AttributeType, AttributeValue)]
-slhdsaPrivTmpl ckp oid raw =
+slhdsaPrivTmpl :: Word64 -> ByteString -> [(AttributeType, AttributeValue)]
+slhdsaPrivTmpl ckp raw =
   [ (AttrClass, ValULong ckoPrivateKey)
   , (AttrKeyType, ValULong ckkSlhDsa)
   , (AttrToken, ValBool False)
@@ -1781,9 +1781,9 @@ slhdsaPrivTmpl ckp oid raw =
 -- the first n bytes of the 4n secret, mirroring generation.
 caseSlhdsaSeedSeals :: IO ()
 caseSlhdsaSeedSeals = do
-  (ckp, oid, raw) <- loadSlhdsaHalves "sha2-128f"
+  (ckp, _, raw) <- loadSlhdsaHalves "sha2-128f"
   let seed = BS.take (BS.length raw `div` 4) raw
-      base = slhdsaPrivTmpl (fromIntegral ckp) oid raw ++ [(AttrSeed, ValBytes seed)]
+      base = slhdsaPrivTmpl (fromIntegral ckp) raw ++ [(AttrSeed, ValBytes seed)]
   assertEqual "slh seed width" 16 (BS.length seed)
   seedSealedLeg "slhdsa/sensitive"
     (base ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]) seed
