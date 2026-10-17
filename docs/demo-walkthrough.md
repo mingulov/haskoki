@@ -149,7 +149,7 @@ examples:
 "$HASKOKI_BUNDLE/bin/haskoki-ctl" scenario run \
   --config tests/ops/fixtures/sim-demo.toml \
   --scenario tests/ops/fixtures/sim-scenario.json
-# scenario-ok (owned logical simulation, 22 steps)
+# scenario-ok (owned logical simulation, 23 steps)
 ```
 
 `scenario-ok` reports the owned logical simulation only: the simulator

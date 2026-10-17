@@ -323,7 +323,12 @@ data LogicalSession = LogicalSession
 -- lifecycle ('lifecycleRefusal' refuses non-live use).
 -- 'rnLogin' is the token-level login (one role for the whole
 -- instance, as in the native token auth): signing needs the
--- normal user, and a second login refuses.
+-- normal user, and a second login refuses. 'rnSlotZeroRemoved'
+-- tracks the slot-0 removal the @token.remove@ verb seats: while
+-- removed, opens and repeat removals refuse, and only
+-- @token.insert@ of slot 0 or @fixture.load@ seats the token again
+-- (initialize leaves the flag alone: the registry keeps its
+-- presence across re-initialize too).
 data Runner = Runner
   { rnTracer :: !Tracer
   , rnSessions :: !(Map String LogicalSession)
@@ -333,6 +338,7 @@ data Runner = Runner
   , rnLogin :: !(Maybe ActiveLogin)
   , rnFault :: !(Maybe (Int, Int))
   , rnOrder :: ![String]
+  , rnSlotZeroRemoved :: !Bool
   }
 
 -- | Run a scenario file against an owned instance.
@@ -406,7 +412,7 @@ execScenario cfg sc steps = do
   reg <- newTokenRegistry eq at
   tr <- newTracer (max 8 (tcQueueLimit (cfgTrace cfg))) (\_ -> pure (Right ())) False
   applyTokenScript reg (simScript cfg)
-  let rn0 = Runner tr Map.empty 1 False False Nothing (seedFault cfg) []
+  let rn0 = Runner tr Map.empty 1 False False Nothing (seedFault cfg) [] False
   eOut <- go rn0 reg tr (zip [0 :: Int ..] steps) []
   case eOut of
     Left err -> pure (CtlExit 1 "" ("scenario-failed: " ++ err ++ "\n"))
@@ -560,12 +566,15 @@ execVerb cfg reg tr rn i st = case rsAction st of
   "fixture.load" -> do
     _ <- insertToken reg (SlotId 0)
     emit tr "C_InitToken" 0 "fixture-loaded"
-    pure (Right (rn, StepReturn "CKR_OK", ""))
+    pure (Right (rn { rnSlotZeroRemoved = False }, StepReturn "CKR_OK", ""))
   "session.open" -> do
     let tok = fromMaybe (slotZeroLabel cfg) $ case lookup "token" (rsArgs st) of
           Just (JStr t) -> Just t
           _ -> Nothing
-    if tok /= slotZeroLabel cfg
+    -- A foreign label and a removed slot-0 token both refuse the
+    -- same way (no trace: token-not-present is untraced, as the
+    -- reference documents).
+    if tok /= slotZeroLabel cfg || rnSlotZeroRemoved rn
       then pure (Right (rn, StepReturn "CKR_TOKEN_NOT_PRESENT", "token=" ++ tok))
       else do
         let name = case rsSaveAs st of
@@ -691,12 +700,18 @@ execVerb cfg reg tr rn i st = case rsAction st of
     let tok = fromMaybe (slotZeroLabel cfg) $ case lookup "token" (rsArgs st) of
           Just (JStr t) -> Just t
           _ -> Nothing
-    if tok /= slotZeroLabel cfg
+    -- A foreign label and an already-removed token both refuse
+    -- (no trace: token-not-present is untraced, as the reference
+    -- documents). A live removal drops the token's sessions and
+    -- clears the login; every runner session lives on slot 0.
+    if tok /= slotZeroLabel cfg || rnSlotZeroRemoved rn
       then pure (Right (rn, StepReturn "CKR_TOKEN_NOT_PRESENT", "token=" ++ tok))
       else do
         _ <- removeToken reg (SlotId 0)
         emit tr "C_WaitForSlotEvent" 0 "token-removed"
-        pure (Right (rn, StepReturn "CKR_OK", "token=" ++ tok))
+        let rn' = rn { rnSessions = Map.empty, rnOrder = []
+                     , rnLogin = Nothing, rnSlotZeroRemoved = True }
+        pure (Right (rn', StepReturn "CKR_OK", "token=" ++ tok))
   "slot-event.wait" -> do
     let nonblocking = case lookup "nonblocking" (rsArgs st) of
           Just (JBool b) -> b
@@ -723,7 +738,10 @@ execVerb cfg reg tr rn i st = case rsAction st of
         | n >= 0 && n <= 0xFFFFFFFF -> do
             _ <- insertToken reg (SlotId (fromInteger n))
             emit tr "C_WaitForSlotEvent" 0 "token-inserted"
-            pure (Right (rn, StepReturn "CKR_OK", ""))
+            -- Inserting slot 0 seats the token again after a
+            -- @token.remove@; other slots only feed the event queue.
+            let rn' = if n == 0 then rn { rnSlotZeroRemoved = False } else rn
+            pure (Right (rn', StepReturn "CKR_OK", ""))
       _ -> pure (Left "token.insert needs an integer 'slot' in 0..2^32-1")
   "async.delay" -> withSimGate $ do
     case sessionOf rn st of

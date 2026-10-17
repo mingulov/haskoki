@@ -114,6 +114,8 @@ spec = testGroup "Sim bridge"
   , testCase "refusal without expect fails the run" caseNoExpectRefusalFails
   , testCase "absent token label refuses the open" caseTokenAbsent
   , testCase "absent token label refuses removal" caseTokenRemoveAbsent
+  , testCase "open and repeat removal refuse while removed" caseTokenRemovalRefuses
+  , testCase "removal drops sessions and clears the login" caseTokenRemovalDropsSessions
   , testCase "zero capacity answers too-small" caseCapacityZero
   , testCase "steps before initialize refuse" caseNotInitialized
   , testCase "repeated initialize answers already-initialized" caseDoubleInitialize
@@ -281,6 +283,9 @@ caseSimScenario = do
   assertEqual "deterministic rerun 3" (ceOut r1) (ceOut r3)
   assertBool "token script ran" ("sim-script: insert 1,remove 1" `isInfixOf` ceOut r1)
   assertBool "fault observed" ("CKR_DEVICE_ERROR" `isInfixOf` ceOut r1)
+  assertEqual "sim reports its scope and step count"
+    ["scenario-ok (owned logical simulation, 23 steps)"]
+    (filter ("scenario-ok" `isPrefixOf`) (lines (ceOut r1)))
 
 -- | Sim verbs refuse on a non-test-enabled instance.
 caseVerbsGated :: IO ()
@@ -1076,6 +1081,60 @@ caseTokenRemoveAbsent = do
   assertEqual ("absent remove target refuses: " ++ ceErr r) 0 (ceCode r)
   r2 <- runTempScenario "noremoveok" (prefix ++ [remove "missing" "CKR_OK"])
   assertEqual "expecting OK fails" 1 (ceCode r2)
+
+-- | Removing the slot-0 token seats the removal: while removed,
+-- an open and a repeat removal answer CKR_TOKEN_NOT_PRESENT, and
+-- expecting CKR_OK on the refused open fails.
+caseTokenRemovalRefuses :: IO ()
+caseTokenRemovalRefuses = do
+  let cfg = fixture "maximal-demo.toml"
+      prefix = [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+               , step "token.remove" [("token", JStr "haskoki-demo")] (Just "CKR_OK") ]
+  rOpen <- runTempScenarioFull cfg "removedopen" Nothing
+    (prefix ++ [step "session.open" [("token", JStr "haskoki-demo")] (Just "CKR_TOKEN_NOT_PRESENT")])
+  assertEqual ("open on a removed token refuses: " ++ ceErr rOpen) 0 (ceCode rOpen)
+  assertBool "detail echoes the label"
+    ("token=haskoki-demo" `isInfixOf` ceOut rOpen)
+  rAgain <- runTempScenarioFull cfg "removedagain" Nothing
+    (prefix ++ [step "token.remove" [("token", JStr "haskoki-demo")] (Just "CKR_TOKEN_NOT_PRESENT")])
+  assertEqual ("repeat removal refuses: " ++ ceErr rAgain) 0 (ceCode rAgain)
+  rOk <- runTempScenarioFull cfg "removedok" Nothing
+    (prefix ++ [step "session.open" [("token", JStr "haskoki-demo")] (Just "CKR_OK")])
+  assertEqual "expecting OK fails" 1 (ceCode rOk)
+
+-- | Removal drops the token's sessions and clears the login:
+-- re-inserting slot 0 seats the token again, the old session name
+-- is unknown, and a fresh login succeeds. Loading the fixture
+-- seats a removed token again too.
+caseTokenRemovalDropsSessions :: IO ()
+caseTokenRemovalDropsSessions = do
+  let cfg = fixture "sim-demo.toml"
+      loginArgs s = [("session", JStr s), ("role", JStr "USER"), ("pin", JStr "1234")]
+      prefix =
+        [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+        , stepSaveAs "session.open" [] "zeta"
+        , step "session.login" (loginArgs "zeta") (Just "CKR_OK")
+        , step "token.remove" [("token", JStr "haskoki-demo")] (Just "CKR_OK")
+        , step "token.insert" [("slot", JNum 0)] (Just "CKR_OK")
+        , stepSaveAs "session.open" [] "alpha"
+        ]
+  rLogin <- runTempScenarioFull cfg "removedrelogin" Nothing
+    (prefix ++ [step "session.login" (loginArgs "alpha") (Just "CKR_OK")])
+  assertEqual ("fresh login after removal succeeds: " ++ ceErr rLogin)
+    0 (ceCode rLogin)
+  rGone <- runTempScenarioFull cfg "removedgone" Nothing
+    (prefix ++ [step "session.login" (loginArgs "zeta") Nothing])
+  assertEqual "old session unknown after removal" 1 (ceCode rGone)
+  assertBool "reference named"
+    ("unknown session reference: zeta" `isInfixOf` ceErr rGone)
+  rFixture <- runTempScenarioFull cfg "removedfixture" Nothing
+    [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+    , step "token.remove" [("token", JStr "haskoki-demo")] (Just "CKR_OK")
+    , step "fixture.load" [] Nothing
+    , step "session.open" [] (Just "CKR_OK")
+    ]
+  assertEqual ("fixture load seats the token again: " ++ ceErr rFixture)
+    0 (ceCode rFixture)
 
 caseCapacityZero :: IO ()
 caseCapacityZero = do

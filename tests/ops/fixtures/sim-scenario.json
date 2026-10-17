@@ -139,6 +139,12 @@
       }
     },
     {
+      "action": "token.insert",
+      "arguments": {
+        "slot": 0
+      }
+    },
+    {
       "action": "session.open",
       "arguments": {
         "token": "haskoki-demo",
@@ -154,7 +160,7 @@
         "pin": "1234"
       },
       "expect": {
-        "return": "CKR_USER_ALREADY_LOGGED_IN"
+        "return": "CKR_OK"
       }
     },
     {

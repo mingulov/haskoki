@@ -228,7 +228,7 @@ argument (see `execStep` in `src/Haskoki/Ctl.hs`):
 | `sign.init` | `mechanism` (a known inventory name) and `fixture_key` arm the session; the pair is echoed |
 | `sign` | `data_base64` (strict base64) sets the echoed byte count; `output_capacity` 0 refuses with `CKR_BUFFER_TOO_SMALL`, any positive capacity is accepted without a size comparison |
 | `async.complete` | `function` must be `C_Sign`; each completion counts down the session's pending polls |
-| `token.remove` | `token` resolves like `session.open` |
+| `token.remove` | `token` resolves like `session.open`; removing the slot-0 token drops its sessions, clears the login, and seats the removal (opens and repeat removals refuse until slot 0 is inserted again or the fixture loads) |
 | `slot-event.wait` | `nonblocking` selects the wait mode (default true) |
 | `initialize` / `finalize` | lifecycle verbs (below); the sim verbs (`token.insert`, `async.delay`, `fault.window`) are test controls needing a test-enabled instance |
 
@@ -261,7 +261,10 @@ runner (fresh sessions and login, config fault seed kept) and answers
 `CKR_CRYPTOKI_NOT_INITIALIZED`. `sign.init`, `sign` and
 `async.complete` additionally require a user-logged-in token
 (`CKR_USER_NOT_LOGGED_IN`; an SO login does not satisfy the signing
-gate).
+gate). Removing the slot-0 token drops its sessions and clears the
+login; while removed, opens and repeat removals answer
+`CKR_TOKEN_NOT_PRESENT`, until `token.insert` of slot 0 or
+`fixture.load` seats the token again.
 
 Inert prose lives only under `note`: a scenario object and any step may
 carry a `note`, which must be a JSON object; validation checks the shape
