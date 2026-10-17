@@ -734,7 +734,7 @@ jobs:
           # Image profile: build the candidate demo image from the
           # staged bundle above (same bytes as the portfolio run),
           # run the module phase inside it (image user, no network),
-          # then the verifier phase on the runner host.
+          # then the verifier phase in the pinned client container.
           IMG_TAG="haskoki-demo:$VER-candidate"
           HASKOKI_DEMO_IMAGE="$IMG_TAG" HASKOKI_DEMO_USE_STAGED=1 \
             HASKOKI_DEMO_TEST_OUT="$JOURNEYS_DIR/image-out" \
@@ -759,9 +759,20 @@ jobs:
               sudo chown -R "$(id -u):$(id -g)" "$JOURNEYS_DIR/image-run"
             fi
             if [ "$MODULE_RC" -eq 0 ]; then
-              sh scripts/test-client-journeys.sh --profile image --phase verifier \
-                --out-existing "$JOURNEYS_DIR/image-run" 2>&1 \
+              # The verifier pins its client packages, so it runs in the
+              # same pinned client container as the portfolio, never on
+              # the runner host's own OpenSSL.
+              docker run --rm --network host \
+                -v "$PWD:/src:ro" -v "$JOURNEYS_DIR:$JOURNEYS_DIR" -w /src ubuntu:26.04 sh -ec '
+                set -eu
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends \
+                  openssl=3.5.5-1ubuntu3.7 python3 >/dev/null
+                sh scripts/test-client-journeys.sh --profile image --phase verifier \
+                  --out-existing '"$JOURNEYS_DIR/image-run"'' 2>&1 \
                 | tee -a "$JOURNEYS_DIR/journeys-image.log" || JOURNEYS_RC=$?
+              sudo chown -R "$(id -u):$(id -g)" "$JOURNEYS_DIR/image-run"
             else
               JOURNEYS_RC=$MODULE_RC
             fi
