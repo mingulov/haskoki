@@ -441,7 +441,12 @@ data CtxEntry
 -- same way. A live entry always names a live pointer; a tombstone
 -- always refuses without dereferencing; an absent key (never
 -- registered: a foreign value, or a hook-only park) refuses the
--- same way, before any dereference. A hook runs after its pointer's
+-- same way, before any dereference. A caller that uses a context
+-- pointer after its close completed, and lands on a pointer value
+-- the allocator has reused for a new live owner, is admitted to
+-- the new owner (documented ABA: memory-safe, since the new owner's
+-- close drains admitted borrowers, but the application used a
+-- closed handle). A hook runs after its pointer's
 -- null check and before its registry lookup — the exact interval
 -- a racing close can complete in — so a barrier test parks a
 -- caller there deterministically. Scoped per pointer (never
