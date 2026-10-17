@@ -1442,8 +1442,9 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
       Just refusal -> Just refusal
       Nothing -> firstRefusal cur rest
 
--- | Plan a one-shot find: matches carry equality over the effective
--- attributes ('effectiveAttrs': stored values, plus the common
+-- | Plan a one-shot find: matches carry equality over the read-back
+-- view ('projectPublicValue' then 'effectiveAttrs': the same
+-- representation 'planGetAttributes' returns, plus the common
 -- storage defaults a storage object reports) in ascending object-id
 -- order, restricted to objects visible to the calling session. An
 -- empty template matches every
@@ -1480,7 +1481,7 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
     matchAll :: Map AttributeType AttributeValue -> ObjectState -> Bool
     matchAll q ost = all hit (Map.toList q)
       where
-        view = effectiveAttrs (osAttrs ost)
+        view = effectiveAttrs (projectPublicValue (osAttrs ost))
         hit (t, _)
           | t `elem` sealedAttrs, payloadSealed view = False
         hit (t, v) = Map.lookup t view == Just v
@@ -1517,8 +1518,9 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
 -- DSA/DH object whose value parses as an SPKI reads @y@ instead
 -- of the DER. Anything else (private halves, secrets, opaque
 -- synthetic values, unparseable DER) passes through untouched.
--- The projection runs before 'getAttributes'; the seal never
--- applies to these public objects, so @y@ always reads.
+-- The projection runs before 'getAttributes' and before find
+-- matching; the seal never applies to these public objects, so
+-- @y@ always reads and always matches.
 projectPublicValue :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 projectPublicValue attrs = case (classOf, keyTypeOf, Map.lookup AttrValue attrs) of
   (Just c, Just k, Just (ValBytes der))

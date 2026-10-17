@@ -60,6 +60,7 @@ spec = testGroup "key import"
   , testCase "partial DH import is incomplete" casePartialDh
   , testCase "PKCS#3 subprime refuses inconsistent" caseBadDhSubprime
   , testCase "public DH/DSA reads project the value" casePublicValueReads
+  , testCase "public DH/DSA find matches the read-back value" casePublicValueFind
   , testCase "imported DH key agrees through the real backend" caseDhExecutes
   , testCase "EdDSA assembly matches openssl goldens" caseEddsaDerGoldens
   , testCase "EdDSA DER readers parse openssl goldens" caseEddsaDerReaders
@@ -720,6 +721,51 @@ casePublicValueReads = do
     (dhPrivTmpl ++ [(AttrExtractable, ValBool True)])
   vPriv <- readValue m3 hPriv
   assertEqual "DH priv reads DER" (Just (ValBytes dhP8Gold)) vPriv
+
+casePublicValueFind :: IO ()
+casePublicValueFind = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, hDh, _) <- doCreate m0 st dhPubTmpl
+  (m2, hDsa, _) <- doCreate m1 st dsaPubTmpl
+  (m3, hQ, _) <- doCreate m2 st dhX942PubTmpl
+  (m4, hRsa, _) <- doCreate m3 st rsaPubTmpl
+  let readValue h = case planGetAttributes m4 st h [AttrValue] of
+        Immediate c -> case pcOutputs c of
+          [o] -> pure (decodeValue AttrValue (outBytes o))
+          _ -> assertFailure "read outputs arity" >> undefined
+        Reject rej -> assertFailure ("read rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "read must not execute" >> undefined
+      findValue kty v = doFind m4 st
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong kty)
+        , (AttrValue, v)
+        ]
+  vDh <- readValue hDh
+  assertEqual "DH pub reads y" (Just (ValBytes dhY)) vDh
+  hitsDh <- findValue ckkDh (ValBytes dhY)
+  assertEqual "DH pub find by read-back y" [hDh] hitsDh
+  derDh <- findValue ckkDh (ValBytes dhSpkiGold)
+  assertEqual "DH pub find by stored DER misses" [] derDh
+  vDsa <- readValue hDsa
+  assertEqual "DSA pub reads y" (Just (ValBytes dsaY)) vDsa
+  hitsDsa <- findValue ckkDsa (ValBytes dsaY)
+  assertEqual "DSA pub find by read-back y" [hDsa] hitsDsa
+  derDsa <- findValue ckkDsa (ValBytes dsaSpkiGold)
+  assertEqual "DSA pub find by stored DER misses" [] derDsa
+  vQ <- readValue hQ
+  assertEqual "X9.42 pub reads y" (Just (ValBytes dhQY)) vQ
+  hitsQ <- findValue ckkX9_42Dh (ValBytes dhQY)
+  assertEqual "X9.42 pub find by read-back y" [hQ] hitsQ
+  derQ <- findValue ckkX9_42Dh (ValBytes dhQSpkiGold)
+  assertEqual "X9.42 pub find by stored DER misses" [] derQ
+  -- Positive control: a verbatim stored component still finds.
+  hitsRsa <- doFind m4 st
+    [ (AttrClass, ValULong ckoPublicKey)
+    , (AttrKeyType, ValULong ckkRsa)
+    , (AttrModulus, ValBytes rsaN)
+    ]
+  assertEqual "RSA pub find by modulus" [hRsa] hitsRsa
 
 caseDhExecutes :: IO ()
 caseDhExecutes = withRealEnv $ \env -> do

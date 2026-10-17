@@ -395,6 +395,11 @@ record: symbol separation, sanitizer runs, evidence limits) and
   different curve than the public half is refused with
   `CKR_TEMPLATE_INCONSISTENT` before generation; equal values are
   accepted.
+- `C_FindObjects` with a `CKA_VALUE` template now matches DSA and DH
+  public keys (including X9.42) by the value `C_GetAttributeValue`
+  returns (the public `y`), instead of the stored SPKI bytes. A
+  search with a read-back value used to miss; a search with the raw
+  stored bytes no longer hits. Stored bytes are unchanged.
 
 ## [0.4.0.0] - Unreleased
 
