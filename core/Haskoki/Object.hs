@@ -46,6 +46,7 @@ module Haskoki.Object
   , planSetAttributes
   , planFindObjects
   , planGetAttributes
+  , readView
   ) where
 
 import Data.Bits (countLeadingZeros)
@@ -76,10 +77,10 @@ import Haskoki.Attribute
 import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
 import Haskoki.Der
-  (curveCoordLen, curveOidOfParams, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
+  (curveCoordLen, curveNameOfOid, curveOidOfParams, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
    ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
-   edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
-   montgomeryOidOfParams, montgomeryPrivateDer, montgomeryPublicDer,
+   edwardsNameOfOid, edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
+   montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPrivateDer, montgomeryPublicDer,
    montgomeryWidthOfParams, unwrapMontgomeryPoint,
    mldsaPrivateDer, mldsaPublicDer, mldsaWidthsOfOid,
    slhdsaOidOfCkp, slhdsaPrivateDer, slhdsaPublicDer,
@@ -1220,12 +1221,14 @@ copyExempt t = t `elem`
 -- untouched. Every override is validated through the shared
 -- 'setAttributePolicy' against the source (same code as the set
 -- path: 'CKR_ATTRIBUTE_READ_ONLY'); a no-op same-value override
--- still copies. Copy exemptions: TOKEN, PRIVATE, MODIFIABLE,
--- DESTROYABLE and COPYABLE may be set even on a non-modifiable
--- source (TOKEN and DESTROYABLE freely in both directions;
--- MODIFIABLE tightens only; COPYABLE to false only; PRIVATE
--- true->false on a sealed object refuses); data-object CKA_VALUE
--- overrides merge on modifiable sources only.
+-- still copies. A same-value override repeating the read-back value
+-- (the 'readView' representation) is a no-op and is dropped before
+-- the merge, so the stored bytes are preserved. Copy exemptions:
+-- TOKEN, PRIVATE, MODIFIABLE, DESTROYABLE and COPYABLE may be set
+-- even on a non-modifiable source (TOKEN and DESTROYABLE freely in
+-- both directions; MODIFIABLE tightens only; COPYABLE to false
+-- only; PRIVATE true->false on a sealed object refuses);
+-- data-object CKA_VALUE overrides merge on modifiable sources only.
 -- TRUSTED=true overrides need the SO login, and a merged
 -- TRUSTED=true without the SO refuses (no silent inheritance).
 -- Stored key copies materialize absent protection from the
@@ -1247,15 +1250,15 @@ planCopyObject model st h tmpl = case resolveHandle model h of
     | otherwise -> case checkDuplicates tmpl of
         Left t -> templateReject CKR_TEMPLATE_INCONSISTENT
           ("contradictory attribute: " ++ show t)
-        Right over -> case wrongShape (Map.toList over) of
+        Right overRaw -> case wrongShape (Map.toList overRaw) of
           Just t -> templateReject CKR_TEMPLATE_INCONSISTENT
             ("wrong shape for attribute: " ++ show t)
           Nothing
-            | Map.lookup AttrTrusted over == Just (ValBool True)
+            | Map.lookup AttrTrusted overRaw == Just (ValBool True)
             , ssLogin st /= LoginSO ->
                 templateReject CKR_ATTRIBUTE_READ_ONLY
                   "only the security officer may copy to TRUSTED=true"
-            | Just (code, msg) <- copyRefusal (osAttrs src) over ->
+            | Just (code, msg) <- copyRefusal (osAttrs src) overRaw ->
                 templateReject code msg
             | mergedTrusted, ssLogin st /= LoginSO ->
                 templateReject CKR_ATTRIBUTE_READ_ONLY
@@ -1293,8 +1296,13 @@ planCopyObject model st h tmpl = case resolveHandle model h of
               else templateReject CKR_TEMPLATE_INCOMPLETE
                 "merged template is missing the class"
             where
+              srcAttrs0 = osAttrs src
+              srcView = readView srcAttrs0
+              isNoop t v = Map.lookup t srcAttrs0 == Just v
+                || (t `elem` [AttrValue, AttrEcParams] && Map.lookup t srcView == Just v)
+              over = Map.filterWithKey (\t v -> not (isNoop t v)) overRaw
               mergedTrusted =
-                Map.lookup AttrTrusted (Map.union over (osAttrs src))
+                Map.lookup AttrTrusted (Map.union over srcAttrs0)
                   == Just (ValBool True)
               isCertSource =
                 Map.lookup AttrClass (osAttrs src) == Just (ValULong ckoCertificate)
@@ -1308,14 +1316,19 @@ planCopyObject model st h tmpl = case resolveHandle model h of
               -- component named on a sealed source refuses whatever
               -- the value, before the same-value no-op, so copy
               -- cannot confirm a guessed value or seed; same-value
-              -- overrides are otherwise no-ops; data VALUE merges
-              -- on modifiable sources only; exemptions bypass the
+              -- overrides are otherwise no-ops, comparing
+              -- CKA_VALUE and CKA_EC_PARAMS against the read view
+              -- as well as the stored bytes; data VALUE merges on
+              -- modifiable sources only; exemptions bypass the
               -- modifiable gate; everything else goes through the
               -- shared policy with copy wording.
               copyRefusal srcAttrs overM = go ordered
                 where
                   ordered = sortOn (\(t, _) -> (copyPriority t, fromEnum t))
                     (Map.toList overM)
+                  srcViewLocal = readView srcAttrs
+                  isNoopLocal t v = Map.lookup t srcAttrs == Just v
+                    || (t `elem` [AttrValue, AttrEcParams] && Map.lookup t srcViewLocal == Just v)
                   go [] = Nothing
                   go ((t, v) : rest)
                     | isCertSource, t == AttrTrusted =
@@ -1331,7 +1344,7 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                     , payloadSealed (effectiveAttrs srcAttrs) =
                         Just (CKR_ATTRIBUTE_READ_ONLY,
                           "copy cannot name a sealed component: " ++ show t)
-                    | Map.lookup t srcAttrs == Just v = go rest
+                    | isNoopLocal t v = go rest
                     | t == AttrValue, isDataSource
                     , flagOr modifiableDefault AttrModifiable srcAttrs = go rest
                     | copyExempt t = case exemptRefusal t v of
@@ -1442,11 +1455,11 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
       Just refusal -> Just refusal
       Nothing -> firstRefusal cur rest
 
--- | Plan a one-shot find: matches carry equality over the effective
--- attributes ('effectiveAttrs': stored values, plus the common
--- storage defaults a storage object reports) in ascending object-id
--- order, restricted to objects visible to the calling session. An
--- empty template matches every
+-- | Plan a one-shot find: matches carry equality over the read-back
+-- view ('readView': the same representation 'planGetAttributes'
+-- returns, plus the common storage defaults a storage object
+-- reports) in ascending object-id order, restricted to objects
+-- visible to the calling session. An empty template matches every
 -- visible object; a contradictory template is rejected, never
 -- silently emptied. Matches without a current binding gain fresh
 -- ones in the same combined delta (discovery mints bindings; it
@@ -1454,7 +1467,10 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
 -- template naming the value or any private component only matches
 -- unsealed objects, so find cannot serve as a guess-oracle against
 -- sealed material (sealed objects stay discoverable by their other
--- attributes).
+-- attributes). The read-back @y@ is minimal (no leading zeros), so
+-- a find with a creation-time @y@ that had leading zero bytes still
+-- misses. The view projections run only when the template names an
+-- attribute they change.
 planFindObjects
   :: Model -> SessionState -> [(AttributeType, AttributeValue)] -> PlanResult
 planFindObjects model st tmpl = case checkDuplicates tmpl of
@@ -1480,10 +1496,19 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
     matchAll :: Map AttributeType AttributeValue -> ObjectState -> Bool
     matchAll q ost = all hit (Map.toList q)
       where
-        view = effectiveAttrs (osAttrs ost)
+        view = viewForFind q (osAttrs ost)
         hit (t, _)
           | t `elem` sealedAttrs, payloadSealed view = False
         hit (t, v) = Map.lookup t view == Just v
+    viewForFind :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+    viewForFind q attrs = effectiveAttrs (norm (proj attrs))
+      where
+        proj
+          | Map.member AttrValue q = projectPublicValue
+          | otherwise = id
+        norm
+          | Map.member AttrEcParams q = normalizeEcParams
+          | otherwise = id
     currentHandle :: ObjectId -> ObjectState -> Maybe ExternalHandle
     currentHandle oid ost = listToMaybe
       [ h
@@ -1504,21 +1529,15 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
            , NativeOutput (RegionHandle "object") (encodeHandle h) : outs
            )
 
--- | Plan an attribute read: the handle must resolve and be
--- visible to the calling session, then one mixed outcome. Every
--- readable value is delivered; withheld entries are recorded per
--- attribute. A fully readable read commits; any sensitive or
--- unavailable entry makes the whole outcome a rejection that STILL
--- carries the readable values (error plus required effects in one
--- outcome).
 -- | Public-component projection for reads: 'AttrValue' stores
 -- the SPKI DER (the engine's material shape), but PKCS#11 reads
 -- the DSA/DH public value @y@ through @CKA_VALUE@ — so a public
 -- DSA/DH object whose value parses as an SPKI reads @y@ instead
 -- of the DER. Anything else (private halves, secrets, opaque
 -- synthetic values, unparseable DER) passes through untouched.
--- The projection runs before 'getAttributes'; the seal never
--- applies to these public objects, so @y@ always reads.
+-- The projection runs as part of 'readView' before 'getAttributes'
+-- and before find matching; the seal never applies to these public
+-- objects, so @y@ always reads and always matches.
 projectPublicValue :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 projectPublicValue attrs = case (classOf, keyTypeOf, Map.lookup AttrValue attrs) of
   (Just c, Just k, Just (ValBytes der))
@@ -1537,6 +1556,42 @@ projectPublicValue attrs = case (classOf, keyTypeOf, Map.lookup AttrValue attrs)
       Just (ValULong k) -> Just k
       _ -> Nothing
 
+-- | Curve-name normalization for reads: 'AttrEcParams' stores either
+-- the engine curve name (generated and C-ABI-created keys) or the
+-- raw SPKI parameter OID (pub-from-priv derivations), but the FFI
+-- template decoder maps the OID to the name before matching — so a
+-- stored OID reads as its name instead. Anything else (stored
+-- names, foreign OIDs, non-bytes shapes) passes through untouched.
+-- The normalization runs as part of 'readView'; stored bytes are
+-- unchanged, and the C ABI still emits the OID DER via
+-- 'ecParamsToWire'.
+normalizeEcParams :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+normalizeEcParams attrs = case Map.lookup AttrEcParams attrs of
+  Just (ValBytes bs) -> case oidToName bs of
+    Just name -> Map.insert AttrEcParams (ValBytes name) attrs
+    Nothing -> attrs
+  _ -> attrs
+  where
+    oidToName bs = case curveNameOfOid bs of
+      Just name -> Just name
+      Nothing -> case edwardsNameOfOid bs of
+        Just name -> Just name
+        Nothing -> montgomeryNameOfOid bs
+
+-- | The single shared read/find view: the public-value projection,
+-- then the curve-name normalization, then the common storage
+-- defaults. Both 'planGetAttributes' and 'planFindObjects' match
+-- over this representation, so a value a read returns always finds.
+readView :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+readView = effectiveAttrs . normalizeEcParams . projectPublicValue
+
+-- | Plan an attribute read: the handle must resolve and be
+-- visible to the calling session, then one mixed outcome. Every
+-- readable value is delivered; withheld entries are recorded per
+-- attribute. A fully readable read commits; any sensitive or
+-- unavailable entry makes the whole outcome a rejection that STILL
+-- carries the readable values (error plus required effects in one
+-- outcome).
 planGetAttributes
   :: Model -> SessionState -> ExternalHandle -> [AttributeType] -> PlanResult
 planGetAttributes model st h wanted = case resolveHandle model h of
@@ -1546,7 +1601,7 @@ planGetAttributes model st h wanted = case resolveHandle model h of
         invalidHandle "object not visible to session"
     | otherwise ->
     let PartialReads code results =
-          getAttributes (effectiveAttrs (projectPublicValue (osAttrs ost))) wanted
+          getAttributes (readView (osAttrs ost)) wanted
         outs =
           [ NativeOutput (RegionBytes (show t) IntentNull) (encodeValue v)
           | (t, ResOk v) <- results

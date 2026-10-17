@@ -91,6 +91,8 @@ TODO_IDS = [
     "todo:reserved-config-knobs", "todo:auth-wrap-functions",
     # target gaps found after the v0.5 provider fixes
     "todo:xor-derive-des-parity", "todo:wrap-unwrap-kem-key-handle-code",
+    # release-gate review notes ruled without a code change
+    "todo:join-terminal-heal-order",
 ]
 
 
@@ -499,7 +501,7 @@ def self_test():
 
     expect("retired-dropped", validate(with_ret(ret[1:]), src))
     r2 = copy.deepcopy(ret)
-    r2[0]["receipt"] = "pending: WP12 Task 7"
+    r2[0]["receipt"] = "pending: a later release"
     expect("retired-pending-receipt", validate(with_ret(r2), src))
     r2 = copy.deepcopy(ret)
     r2[0]["retired_by"] = []

@@ -103,7 +103,7 @@ import qualified Database.SQLite3 as S
 import Database.SQLite3.Direct (getAutoCommit)
 import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
-import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
+import System.IO.Error (ioeGetErrorString, isAlreadyExistsError, isDoesNotExistError, tryIOError)
 import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, readSymbolicLink, removeLink, setFdSize, setFileMode)
 import System.IO (hClose)
 import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWrite, openFd)
@@ -458,7 +458,20 @@ takeOwnership dbPath lockPath procRoot attempts
         guardFlags { creat = Just 0o600, exclusive = True })
       case eFd of
         Right fd -> claimFresh dbPath lockPath procRoot attempts fd pid
-        Left _ -> inspectLock dbPath lockPath procRoot pid attempts
+        Left e
+          | isAlreadyExistsError e ->
+              inspectLock dbPath lockPath procRoot pid attempts
+          | otherwise -> do
+              -- The create itself failed (read-only directory or
+              -- mount, no space, ...): unless a rival won the race
+              -- and the lock exists now (diagnose the lock), say
+              -- exactly that — never a live owner.
+              eSt <- tryIOError (getSymbolicLinkStatus lockPath)
+              case eSt of
+                Right _ -> inspectLock dbPath lockPath procRoot pid attempts
+                Left _ -> pure (Left (StoreIO
+                  ("store lock cannot be created: " ++ lockPath
+                    ++ " (" ++ ioeGetErrorString e ++ ")")))
 
 -- | Claim a freshly created lock file: take the kernel lock before
 -- writing our pid, and keep the fd open. A lost race retries

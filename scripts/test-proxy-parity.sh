@@ -82,7 +82,7 @@
 #   flows through the real normalize+diff path); the script MUST
 #   fail and report the divergent call plus both outputs.
 #
-# 2026-10-15 (#17, v0.5 WP11): consumer_policy_metadata is no longer
+# 2026-10-15 (#17, v0.5 proxy review): consumer_policy_metadata is no longer
 # DIRECT_ONLY. Group P (after group R) runs it proxied: each policy
 # scenario gets its own daemon started on the config the consumer prints
 # via --print-config (the driver holds no TOML for it), the direct and
@@ -799,7 +799,7 @@ archive_logs() {
   done
 }
 
-# Opt-in re-probe (HASKOKI_PARITY_REPROBE=1, WP11): an excluded proxied
+# Opt-in re-probe (HASKOKI_PARITY_REPROBE=1, proxy review): an excluded proxied
 # leg is queued instead of skipped, and flush_reprobes runs the queue on a
 # fresh daemon (same backend config) after the group's gate daemon has
 # stopped, so a re-probe never shares state with a gated leg (observed:

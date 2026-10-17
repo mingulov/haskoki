@@ -2091,9 +2091,14 @@ caseCheckNeverOwns = withScratch "ro" $ \dir -> do
       assertBool "check read the store" ("verdict: migration-required" `isInfixOf` ceOut c)
       m <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
       assertEqual "migrate cannot take ownership here" 1 (ceCode m)
-      -- Pinned to the observed tag: a sidecar the owner probe
-      -- cannot create reads as a live owner.
-      assertBool "migrate names the live owner" ("store-live:" `isPrefixOf` ceErr m)
+      -- A sidecar the owner probe cannot create names the
+      -- unwritable lock, never a live owner.
+      assertBool "migrate names the unwritable lock"
+        ("store-lock-unwritable:" `isPrefixOf` ceErr m)
+      assertBool "migrate names the lock path"
+        ((store ++ ".lock") `isInfixOf` ceErr m)
+      assertBool "no live owner claimed"
+        (not ("live owner" `isInfixOf` ceErr m || "in use" `isInfixOf` ceErr m))
   noLock <- not <$> doesFileExist (store ++ ".lock")
   assertBool "no lock created" noLock
   listDirectory backups >>= assertEqual "no backup" []

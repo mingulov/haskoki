@@ -280,6 +280,11 @@ renderStoreRefusal e = case e of
     ++ "); a newer haskoki wrote it, or it is not a haskoki store")
   StoreCorrupt m -> ("store-corrupt", m)
   StoreFull m -> ("store-full", m)
+  -- A sidecar the owner probe cannot create (see 'takeOwnership':
+  -- read-only directory or mount, no space) names the lock, never
+  -- a live owner. Same prefix-match shape as the store-missing tag.
+  StoreIO m | "store lock cannot be created: " `isPrefixOf` m ->
+    ("store-lock-unwritable", m)
   StoreIO m -> ("store-unreadable", m)
   other -> ("store-unreadable", show other)
 

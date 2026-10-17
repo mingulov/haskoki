@@ -84,6 +84,7 @@ module Haskoki.Der
   , unwrapMontgomeryPoint
   , curveOidOfParams
   , curveCoordLen
+  , curveNameOfOid
   , curveTable
   , edwardsTable
   , edwardsOidOfParams
@@ -297,6 +298,15 @@ curveOidOfParams bs = case find hit curveTable of
 curveCoordLen :: ByteString -> Maybe Int
 curveCoordLen oid = case find hit curveTable of
   Just (_, _, w) -> Just w
+  Nothing -> Nothing
+  where
+    hit (_, o, _) = oid == o
+
+-- | The engine curve name for a DER OID ('Nothing' for foreign
+-- OIDs). The Weierstrass counterpart of 'edwardsNameOfOid'.
+curveNameOfOid :: ByteString -> Maybe ByteString
+curveNameOfOid oid = case find hit curveTable of
+  Just (name, _, _) -> Just name
   Nothing -> Nothing
   where
     hit (_, o, _) = oid == o

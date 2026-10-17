@@ -192,7 +192,7 @@ existing token accepts (see [operations notes](operations-notes.md)).
 | control response budget | 65536 bytes | `responseBudget` constant (`Control.hs`) | native |
 | control request size | `control.max_request_bytes` | `dispatchControl` (`Control.hs`) refuses oversize | native |
 
-The WP13 measurement of `appendBuffered` over nine payload/chunk cells is
+The buffered-updates measurement of `appendBuffered` over nine payload/chunk cells is
 recorded in `docs/buffered-updates.md`: bounded chunks were judged a separate
 follow-up, the current representation was retained, and no follow-up has been
 filed.

@@ -448,7 +448,7 @@ if ! diff -u "$OUT/exp-shared.txt" "$RUN_DIR/shared-findings.txt"; then
 fi
 echo "compare: stable-core diff + exact shared set match"
 
-# Shared-set negative controls (WP12 ruling 6): the exact-shared check
+# Shared-set negative controls (shared-set comparison ruling): the exact-shared check
 # above must reject an extra and a missing shared line. Each control
 # runs the same predicate on a mutated copy and must fail.
 shared_exact() { diff -q "$1" "$2" >/dev/null 2>&1; }

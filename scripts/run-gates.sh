@@ -69,6 +69,7 @@ python3 scripts/check-findings-ledger.py
 python3 scripts/check-findings-ledger.py --self-test
 python3 scripts/check-loader-norm.py
 python3 scripts/check-history-codes.py
+python3 scripts/check-history-codes.py --self-test
 python3 scripts/check-sealed-callwork.py
 python3 scripts/check-sealed-callwork.py --self-test
 python3 scripts/check-ossl4-laziness.py
@@ -86,7 +87,7 @@ python3 scripts/check-actions-pinned.py --self-test
 python3 scripts/test-release-evidence.py
 # Release nm gate: the hook check refuses a hooked tree and fails closed.
 python3 scripts/test-release-nm-gate.py
-# WP03: ownership-matrix driver controls (fake binaries, no build).
+# Ownership-matrix driver controls (fake binaries, no build).
 python3 scripts/test-ownership-matrix-controls.py
 # Client journeys: leg-table aggregate controls (build-free).
 python3 -I tests/journeys/journeys.py --self-test

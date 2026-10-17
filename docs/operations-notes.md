@@ -435,6 +435,7 @@ writes its own config for the copy (see `caseConfigSelects` in
 | 130 | interrupted by SIGINT; one stderr line (`migrate-interrupted` or `check-interrupted`), store state unknown |
 
 Tags: `store-migration-required`, `store-identity-refused`, `store-live`,
+`store-lock-unwritable`,
 `store-journal-present`, `store-journal-cold`, `store-foreign-sidecar`,
 `store-unsupported-version`,
 `store-corrupt`, `store-full`, `store-missing`, `store-unreadable`,
@@ -462,6 +463,12 @@ lock (`probeOwner` in `src/Haskoki/Runtime/Storage/SQLite.hs`), so a store
 whose kernel lock is held but whose sidecar is absent reports `offline`
 under `inspect` and `store-live` under `check` (see `casePlanLiveOwner`
 in `tests/storage/PreflightSpec.hs`).
+
+When `store migrate` cannot create the `<store>.lock` sidecar at all
+(a read-only directory or mount, no space), it reports
+`store-lock-unwritable` and names the lock path with the system
+error — never `store-live`, since no owner holds the store
+(`caseCheckNeverOwns` in `tests/storage/PreflightSpec.hs`).
 
 `store reset --confirm-demo-reset` removes an offline store and its
 `<store>.lock` sidecar, refusing a live store; the next open through

@@ -149,9 +149,10 @@ by `opensc-refuse-init-token-store-owned` above plus
 refuses at initialization with `CKR_GENERAL_ERROR`, while the
 same-instance busy case answers `CKR_SESSION_EXISTS`.
 
-RSA note: the token does not offer `CKM_RSA_PKCS` for
-`C_Encrypt` (OAEP is; v1.5 stays sign/wrap); the RSA legs above use
-OAEP with SHA-256 throughout.
+RSA note: the token deliberately does not offer `CKM_RSA_PKCS` for
+`C_Encrypt` or `C_Decrypt` (v1.5 stays sign/verify and wrap/unwrap);
+use `CKM_RSA_PKCS_OAEP` for encryption. The RSA legs above use OAEP
+with SHA-256 throughout.
 
 Attribute warnings are known and stay explicit: OpenSC may report
 `CKR_ATTRIBUTE_TYPE_INVALID` while inspecting `DERIVE`,

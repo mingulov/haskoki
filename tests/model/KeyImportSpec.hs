@@ -11,6 +11,7 @@ assembly, not self-agreement.
 {-# LANGUAGE OverloadedStrings #-}
 module KeyImportSpec (spec) where
 
+import Data.Bits (complement)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
@@ -33,7 +34,7 @@ import Haskoki.FFI.Standard (ecParamsFromWire, ecParamsToWire)
 import Haskoki.Model
   (Model, ObjectState (..), SessionState, addToken, emptyModel,
    lookupSession)
-import Haskoki.Object (decodeHandle, planCreateObject, planFindObjects, planGetAttributes, resolveHandle)
+import Haskoki.Object (decodeHandle, planCopyObject, planCreateObject, planFindObjects, planGetAttributes, resolveHandle)
 import Haskoki.Operation.KeyManagement
   (ckoPrivateKey, ckoPublicKey, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkEcMontgomery, ckkMlDsa, ckkMlKem, ckkRsa, ckkSlhDsa, ckkX9_42Dh)
 import Haskoki.Outcome
@@ -60,6 +61,9 @@ spec = testGroup "key import"
   , testCase "partial DH import is incomplete" casePartialDh
   , testCase "PKCS#3 subprime refuses inconsistent" caseBadDhSubprime
   , testCase "public DH/DSA reads project the value" casePublicValueReads
+  , testCase "public DH/DSA find matches the read-back value" casePublicValueFind
+  , testCase "public DH/DSA copy accepts the read-back value" casePublicValueCopy
+  , testCase "read and find agree over the fixture objects" caseReadFindAgreement
   , testCase "imported DH key agrees through the real backend" caseDhExecutes
   , testCase "EdDSA assembly matches openssl goldens" caseEddsaDerGoldens
   , testCase "EdDSA DER readers parse openssl goldens" caseEddsaDerReaders
@@ -178,6 +182,19 @@ doFind m st tmpl = case planFindObjects m st tmpl of
   Immediate c -> mapM handleOf (pcOutputs c)
   Reject rej -> assertFailure ("find must commit, got: " ++ show (rejCode rej)) >> undefined
   Execute _ _ -> assertFailure "find must not execute" >> undefined
+
+-- | Copy one object, publish it, and return the copy handle.
+doCopy :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)]
+  -> IO (Model, ExternalHandle)
+doCopy m st h tmpl = case planCopyObject m st h tmpl of
+  Immediate c -> do
+    m' <- expectRight (publishDelta m (pcDelta c))
+    h2 <- case pcOutputs c of
+      [o] -> handleOf o
+      _ -> assertFailure "copy outputs arity" >> undefined
+    pure (m', h2)
+  Reject rej -> assertFailure ("copy must succeed, got: " ++ show (rejCode rej)) >> undefined
+  Execute _ _ -> assertFailure "copy must not execute" >> undefined
 
 -- | One sealed-seed leg: import the seeded private template with the
 -- given protection flags, then the seed read refuses sensitive with
@@ -720,6 +737,115 @@ casePublicValueReads = do
     (dhPrivTmpl ++ [(AttrExtractable, ValBool True)])
   vPriv <- readValue m3 hPriv
   assertEqual "DH priv reads DER" (Just (ValBytes dhP8Gold)) vPriv
+
+casePublicValueFind :: IO ()
+casePublicValueFind = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, hDh, attrsDh) <- doCreate m0 st dhPubTmpl
+  (m2, hDsa, attrsDsa) <- doCreate m1 st dsaPubTmpl
+  (m3, hQ, attrsQ) <- doCreate m2 st dhX942PubTmpl
+  (m4, hRsa, _) <- doCreate m3 st rsaPubTmpl
+  assertEqual "DH stored stays SPKI" (Just (ValBytes dhSpkiGold))
+    (Map.lookup AttrValue attrsDh)
+  assertEqual "DSA stored stays SPKI" (Just (ValBytes dsaSpkiGold))
+    (Map.lookup AttrValue attrsDsa)
+  assertEqual "X9.42 stored stays SPKI" (Just (ValBytes dhQSpkiGold))
+    (Map.lookup AttrValue attrsQ)
+  let readValue h = case planGetAttributes m4 st h [AttrValue] of
+        Immediate c -> case pcOutputs c of
+          [o] -> pure (decodeValue AttrValue (outBytes o))
+          _ -> assertFailure "read outputs arity" >> undefined
+        Reject rej -> assertFailure ("read rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "read must not execute" >> undefined
+      findValue kty v = doFind m4 st
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong kty)
+        , (AttrValue, v)
+        ]
+  vDh <- readValue hDh
+  assertEqual "DH pub reads y" (Just (ValBytes dhY)) vDh
+  hitsDh <- findValue ckkDh (ValBytes dhY)
+  assertEqual "DH pub find by read-back y" [hDh] hitsDh
+  derDh <- findValue ckkDh (ValBytes dhSpkiGold)
+  assertEqual "DH pub find by stored DER misses" [] derDh
+  vDsa <- readValue hDsa
+  assertEqual "DSA pub reads y" (Just (ValBytes dsaY)) vDsa
+  hitsDsa <- findValue ckkDsa (ValBytes dsaY)
+  assertEqual "DSA pub find by read-back y" [hDsa] hitsDsa
+  derDsa <- findValue ckkDsa (ValBytes dsaSpkiGold)
+  assertEqual "DSA pub find by stored DER misses" [] derDsa
+  vQ <- readValue hQ
+  assertEqual "X9.42 pub reads y" (Just (ValBytes dhQY)) vQ
+  hitsQ <- findValue ckkX9_42Dh (ValBytes dhQY)
+  assertEqual "X9.42 pub find by read-back y" [hQ] hitsQ
+  derQ <- findValue ckkX9_42Dh (ValBytes dhQSpkiGold)
+  assertEqual "X9.42 pub find by stored DER misses" [] derQ
+  -- Positive control: a verbatim stored component still finds.
+  hitsRsa <- doFind m4 st
+    [ (AttrClass, ValULong ckoPublicKey)
+    , (AttrKeyType, ValULong ckkRsa)
+    , (AttrModulus, ValBytes rsaN)
+    ]
+  assertEqual "RSA pub find by modulus" [hRsa] hitsRsa
+
+casePublicValueCopy :: IO ()
+casePublicValueCopy = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, hDh, srcDh) <- doCreate m0 st dhPubTmpl
+  srcDerDh <- storedValue srcDh
+  assertEqual "DH source stored is SPKI" dhSpkiGold srcDerDh
+  (m2, hDhCopy) <- doCopy m1 st hDh [(AttrValue, ValBytes dhY)]
+  Just dstDh <- pure (resolveHandle m2 hDhCopy)
+  dstDerDh <- storedValue (osAttrs dstDh)
+  assertEqual "DH copy keeps the DER" srcDerDh dstDerDh
+  expectReject CKR_ATTRIBUTE_READ_ONLY
+    (planCopyObject m2 st hDh [(AttrValue, ValBytes wrongDhY)])
+  (m3, hDsa, srcDsa) <- doCreate m2 st dsaPubTmpl
+  srcDerDsa <- storedValue srcDsa
+  assertEqual "DSA source stored is SPKI" dsaSpkiGold srcDerDsa
+  (m4, hDsaCopy) <- doCopy m3 st hDsa [(AttrValue, ValBytes dsaY)]
+  Just dstDsa <- pure (resolveHandle m4 hDsaCopy)
+  dstDerDsa <- storedValue (osAttrs dstDsa)
+  assertEqual "DSA copy keeps the DER" srcDerDsa dstDerDsa
+  expectReject CKR_ATTRIBUTE_READ_ONLY
+    (planCopyObject m4 st hDsa [(AttrValue, ValBytes wrongDsaY)])
+  where
+    wrongDhY = BS.map complement dhY
+    wrongDsaY = BS.map complement dsaY
+
+caseReadFindAgreement :: IO ()
+caseReadFindAgreement = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, hDh, _) <- doCreate m0 st dhPubTmpl
+  (m2, hDsa, _) <- doCreate m1 st dsaPubTmpl
+  (m3, hQ, _) <- doCreate m2 st dhX942PubTmpl
+  (m4, hRsa, _) <- doCreate m3 st rsaPubTmpl
+  (m5, hEc, _) <- doCreate m4 st ecPubTmpl
+  let readOne h t = case planGetAttributes m5 st h [t] of
+        Immediate c -> case pcOutputs c of
+          [o] -> pure (decodeValue t (outBytes o))
+          _ -> assertFailure "read outputs arity" >> undefined
+        Reject rej -> assertFailure ("read rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "read must not execute" >> undefined
+      check h kty t label = do
+        mv <- readOne h t
+        case mv of
+          Nothing -> assertFailure ("unreadable: " ++ label) >> undefined
+          Just v -> do
+            hits <- doFind m5 st
+              [ (AttrClass, ValULong ckoPublicKey)
+              , (AttrKeyType, ValULong kty)
+              , (t, v)
+              ]
+            assertEqual ("find agrees with read: " ++ label) [h] hits
+  check hDh ckkDh AttrValue "dh-value"
+  check hDsa ckkDsa AttrValue "dsa-value"
+  check hQ ckkX9_42Dh AttrValue "x942-value"
+  check hRsa ckkRsa AttrModulus "rsa-modulus"
+  check hEc ckkEc AttrEcParams "ec-params"
 
 caseDhExecutes :: IO ()
 caseDhExecutes = withRealEnv $ \env -> do

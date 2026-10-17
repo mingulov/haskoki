@@ -73,7 +73,8 @@ import Haskoki.Model
   , emptyModel
   , lookupSession
   )
-import Haskoki.Object (planCopyObject, planGetAttributes, resolveHandle)
+import Haskoki.FFI.Standard (decodeNativeValue, ecParamsToWire, nativeFromCanonical)
+import Haskoki.Object (planCopyObject, planFindObjects, planGetAttributes, resolveHandle)
 import Haskoki.Operation.Cipher (pkcs7Pad, pkcs7Unpad)
 import Haskoki.Operation
   ( CipherSpec (..)
@@ -416,6 +417,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "pub-from-priv RSA ignores CKA_DERIVE, maps attrs" casePubPrivRsa
   , testCase "pub-from-priv EC serves embedded, refuses scalar-only" casePubPrivEc
   , testCase "pub-from-priv EC stamps point and params from SPKI" casePubPrivEcSpkiStamp
+  , testCase "pub-from-priv EC finds by read-back params through the FFI codec" casePubPrivEcFindByReadback
   , testCase "pub-from-priv refusals: scope, class, params, templates" casePubPrivRefusals
   , testCase "HKDF info codec round-trips mode/salt/context" caseHkdfInfoCodec
   , testCase "Decaps recovers the secret as one handle" caseKemDecaps
@@ -4791,6 +4793,59 @@ casePubPrivEcSpkiStamp = do
             (Map.lookup AttrEcParams (osAttrs ost))
     other -> assertFailure ("pubpriv plan is not an effect: " ++ show other)
 
+casePubPrivEcFindByReadback :: IO ()
+casePubPrivEcFindByReadback = do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let oid = hex "06082a8648ce3d030107"
+      point = BS.pack (0x04 : [1 .. 64])
+      spki = ecPublicDer oid point
+      privT =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+      tmpl =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+      blob = encodeDeriveParams BS.empty [tmpl]
+  (m1, privH) <- plantKey m0 st privT pubPrivSec1P256
+  case planDerive defaultRules m1 st pubPrivMech privH blob of
+    KeyEffect pw _fx -> do
+      c <- finishCommit m1 st pw (GotBytes spki) 1
+      h <- handleOf (pcOutputs c !! 0)
+      m2 <- expectRight (publishDelta m1 (pcDelta c))
+      Just ost <- pure (resolveHandle m2 h)
+      assertEqual "stored params stay OID"
+        (Just (ValBytes oid)) (Map.lookup AttrEcParams (osAttrs ost))
+      canon <- case planGetAttributes m2 st h [AttrEcParams] of
+        Immediate pc -> case pcOutputs pc of
+          [o] -> pure (outBytes o)
+          _ -> assertFailure "params read outputs arity" >> undefined
+        Reject rej -> assertFailure ("params read rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "params read must not execute" >> undefined
+      wire <- case nativeFromCanonical AttrEcParams canon of
+        Just w -> pure w
+        Nothing -> assertFailure "params wire undecodable" >> undefined
+      assertEqual "wire stays the OID" oid wire
+      assertEqual "wire mapping emits the OID" oid (ecParamsToWire "P-256")
+      tmplVal <- case decodeNativeValue AttrEcParams wire of
+        Just v -> pure v
+        Nothing -> assertFailure "params template undecodable" >> undefined
+      assertEqual "template decodes to the curve name" (ValBytes "P-256") tmplVal
+      hits <- case planFindObjects m2 st
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrEcParams, tmplVal)
+        ] of
+        Immediate fc -> mapM handleOf (pcOutputs fc)
+        Reject rej -> assertFailure ("find rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "find must not execute" >> undefined
+      assertEqual "find by read-back params hits" [h] hits
+    other -> assertFailure ("pubpriv plan is not an effect: " ++ show other)
+
 casePubPrivRefusals :: IO ()
 casePubPrivRefusals = withSynth $ \_answer -> do
   m0 <- seedModel >>= loginUser
@@ -5555,6 +5610,23 @@ caseRealDsaKeygen = withRealEnv $ \env -> do
       case vres of
         EngineOk () -> pure ()
         EngineFail err -> assertFailure ("real verify failed: " ++ show err)
+      yRead <- case planGetAttributes m2 st pubH [AttrValue] of
+        Immediate c -> case pcOutputs c of
+          [o] -> case decodeValue AttrValue (outBytes o) of
+            Just (ValBytes y) -> pure y
+            _ -> assertFailure "generated DSA value undecodable" >> undefined
+          _ -> assertFailure "generated DSA read arity" >> undefined
+        Reject rej -> assertFailure ("generated DSA read rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "generated DSA read must not execute" >> undefined
+      hits <- case planFindObjects m2 st
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkDsa)
+        , (AttrValue, ValBytes yRead)
+        ] of
+        Immediate fc -> mapM handleOf (pcOutputs fc)
+        Reject rej -> assertFailure ("generated DSA find rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "generated DSA find must not execute" >> undefined
+      assertEqual "generated DSA find by read-back" [pubH] hits
     _ -> assertFailure "real DSA halves lack material"
 
 caseRealDhKeygen :: IO ()
@@ -5615,6 +5687,26 @@ caseRealDhKeygen = withRealEnv $ \env -> do
       -- probability ~1/256, and an exact-256 assertion flakes.
       assertBool "secret nonempty" (not (BS.null sAB))
       assertBool "secret within prime width" (BS.length sAB <= 256)
+      let checkGenerated pubH label = do
+            yRead <- case planGetAttributes m2 st pubH [AttrValue] of
+              Immediate c -> case pcOutputs c of
+                [o] -> case decodeValue AttrValue (outBytes o) of
+                  Just (ValBytes y) -> pure y
+                  _ -> assertFailure ("generated DH value undecodable: " ++ label) >> undefined
+                _ -> assertFailure ("generated DH read arity: " ++ label) >> undefined
+              Reject rej -> assertFailure ("generated DH read rejected: " ++ label ++ ": " ++ show (rejCode rej)) >> undefined
+              Execute _ _ -> assertFailure ("generated DH read must not execute: " ++ label) >> undefined
+            hits <- case planFindObjects m2 st
+              [ (AttrClass, ValULong ckoPublicKey)
+              , (AttrKeyType, ValULong ckkDh)
+              , (AttrValue, ValBytes yRead)
+              ] of
+              Immediate fc -> mapM handleOf (pcOutputs fc)
+              Reject rej -> assertFailure ("generated DH find rejected: " ++ label ++ ": " ++ show (rejCode rej)) >> undefined
+              Execute _ _ -> assertFailure ("generated DH find must not execute: " ++ label) >> undefined
+            assertEqual ("generated DH find by read-back: " ++ label) [pubH] hits
+      checkGenerated pubHA "A"
+      checkGenerated pubHB "B"
     _ -> assertFailure "real DH halves lack material"
 
 caseRealEcKeygen384 :: IO ()

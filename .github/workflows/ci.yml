@@ -200,6 +200,7 @@ jobs:
               check-qualification-wiring check-findings-ledger; do
             python3 scripts/$g.py
           done
+          python3 scripts/check-history-codes.py --self-test
           python3 scripts/check-sealed-callwork.py --self-test
           python3 scripts/check-ossl4-laziness.py --self-test
           # Final-review M-1: the pin gate defaults to ci.yml — cover

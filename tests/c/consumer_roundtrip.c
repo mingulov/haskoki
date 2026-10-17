@@ -4786,6 +4786,32 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_OK && qget[0].ulValueLen == sizeof(pp256oid) &&
                  memcmp(qpar, pp256oid, sizeof(pp256oid)) == 0,
              "pubpriv EC params copy from base");
+      {
+        CK_ATTRIBUTE qfind[] = {
+          { CKA_CLASS, &qpubcls, sizeof(qpubcls) },
+          { CKA_KEY_TYPE, &qkt, sizeof(qkt) },
+          { CKA_EC_PARAMS, (CK_VOID_PTR) pp256oid, sizeof(pp256oid) },
+        };
+        CK_OBJECT_HANDLE qfound[16];
+        CK_ULONG qnfound = 16;
+        CK_ULONG qi = 0;
+        int qsawOrig = 0, qsawDerived = 0;
+        rv = f->C_FindObjectsInit(wsess, qfind, 3);
+        CHECKC(rv == CKR_OK, "pubpriv EC find init");
+        rv = f->C_FindObjects(wsess, qfound, 16, &qnfound);
+        CHECKC(rv == CKR_OK, "pubpriv EC find");
+        for (qi = 0; qi < qnfound; qi++) {
+          if (qfound[qi] == qPub) {
+            qsawOrig = 1;
+          }
+          if (qfound[qi] == qDerived) {
+            qsawDerived = 1;
+          }
+        }
+        CHECKC(qsawOrig && qsawDerived, "pubpriv EC find hits both");
+        rv = f->C_FindObjectsFinal(wsess);
+        CHECKC(rv == CKR_OK, "pubpriv EC find final");
+      }
     }
     /* HKDF derive: the PRF names a SHA-2 hash (SHA-1 through
      * SHA-512/224), expand-only and extract-and-expand served

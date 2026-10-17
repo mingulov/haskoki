@@ -1439,7 +1439,7 @@ caseAsyncReadyJoinCapacity envLock = do
           assertEqual "jcMarkError recorded" (Just markError) (jcMarkError jc)
           assertEqual "delivery survives failed mark" (CompleteDelivered (CompBytes sha256Abc)) (jcOutcome jc)
           assertEqual "one in-memory payload write" 1 . length =<< readIORef writes
-          putStrLn ("Task 3 fault evidence: jcMarkError=" ++ show (jcMarkError jc) ++ "; no crash-safety claim")
+          putStrLn ("mark-error fault evidence: jcMarkError=" ++ show (jcMarkError jc) ++ "; no crash-safety claim")
         readIORef errors >>= assertEqual "failed mark attempted once" 1
         deliveredCount (siAsyncTable inst) >>= assertEqual "one in-memory delivery" 1
         inspectAttachment dc (fromIntegral pid) >>= assertEqual "memory terminal despite mark failure" (Just (AvTerminal JobDelivered))

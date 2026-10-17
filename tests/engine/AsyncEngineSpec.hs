@@ -1035,7 +1035,7 @@ caseSinkShapes = do
     assertCanaryBuf "value canary" pV 4
 
 -- ---------------------------------------------------------------------------
--- Standard's borrowed views and Digest-only admission (routing Task 2).
+-- Standard's borrowed views and Digest-only admission (the routing slice).
 -- These cases catch private-context ownership, per-session tables, accidental
 -- synchronous starts, and orphaned allocations on registry publication failure.
 -- Configuration fixtures and SQLite files stay inside this task's evidence.
@@ -1120,7 +1120,7 @@ initStdDigest ctx h =
   haskokiStdDigestInit ctx h 0x250 nullPtr 0 >>= assertEqual "SHA-256 init" rvOK
 
 -- Exercise the existing worker directly; the public Complete adapter belongs
--- to Task 3. No test dereferences a private job token, even after completion.
+-- to a later slice. No test dereferences a private job token, even after completion.
 completeStdBorrowed :: StdInstance -> CULong -> Ptr Word8 -> Int -> IO ()
 completeStdBorrowed inst h pOut width = do
   (view, c) <- stdAsyncView inst h
@@ -1495,7 +1495,7 @@ caseAsyncAdmissionWidths envLock = do
     tableStats (siAsyncTable inst) >>= assertEqual "allocated job canceled before unwind" (0, 1, 1)
     assertStdEmpty inst
 
--- Task 3 public transactions. All ordering is logical; no scheduler sleeps.
+-- Public completion transactions. All ordering is logical; no scheduler sleeps.
 withAsyncName :: ByteString -> (Ptr Word8 -> IO a) -> IO a
 withAsyncName name action = BS.useAsCString name (action . castPtr)
 
