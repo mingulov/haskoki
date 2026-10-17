@@ -80,14 +80,17 @@ import Haskoki.Model
   , lookupSession
   )
 import Haskoki.Attribute.Generated (mustClassId, mustKeyTypeId)
-import Haskoki.Object (decodeHandle, effectiveAttrs, planCreateObject)
+import Haskoki.Object (decodeHandle, effectiveAttrs, planCreateObject, planFindObjects, planGetAttributes)
+import Haskoki.Operation.KeyManagement (KeyDeny (..), KeyPlan (..), aesKwMech, planWrapKey)
 import Haskoki.Outcome
   ( DeltaOp (..)
   , NativeOutput (..)
   , PlanResult (..)
   , PreparedCommit (..)
+  , Rejection (..)
   , StateDelta (..)
   )
+import Haskoki.Request (OutputIntent (..))
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
@@ -879,7 +882,9 @@ testBytePreservation o = do
 -- nothing. Hand-built records bypass the planner so the stored bytes
 -- are exactly the legacy shapes (the encoder is untouched by this
 -- lane, so these bytes are byte-identical to what the old base wrote
--- for the same shapes).
+-- for the same shapes). The reloaded flag-less PQC and RSA rows are
+-- then seated into a model exactly as stored and exercised through
+-- read, find and wrap, which must all treat them as sealed.
 testLegacyReloadVerbatim :: Opener -> IO ()
 testLegacyReloadVerbatim o = do
   e1 <- openCurrent o
@@ -899,6 +904,7 @@ testLegacyReloadVerbatim o = do
       kAes = mustKeyTypeId "CKK_AES"
       kGeneric = mustKeyTypeId "CKK_GENERIC_SECRET"
       kRsa = mustKeyTypeId "CKK_RSA"
+      kMldsa = mustKeyTypeId "CKK_ML_DSA"
       keyBase c k lab val =
         [ (AttrClass, ValULong c)
         , (AttrKeyType, ValULong k)
@@ -946,6 +952,31 @@ testLegacyReloadVerbatim o = do
                , (AttrLocal, ValBool False), (AttrKeyGenMechanism, ValULong maxBound)],
             eff False False False False False maxBound)
         , ("private-legacy", keyBase cPrivate kRsa "private-legacy" (BS.replicate 32 10),
+            eff False False False False False maxBound)
+        , ("mldsa-legacy",
+            [ (AttrClass, ValULong cPrivate)
+            , (AttrKeyType, ValULong kMldsa)
+            , (AttrToken, ValBool True)
+            , (AttrLabel, ValBytes "mldsa-legacy")
+            , (AttrValue, ValBytes (BS.replicate 64 0x11))
+            , (AttrSeed, ValBytes (BS.replicate 32 0x22))
+            , (AttrParameterSet, ValULong 44)
+            ],
+            eff False False False False False maxBound)
+        , ("rsa-legacy",
+            [ (AttrClass, ValULong cPrivate)
+            , (AttrKeyType, ValULong kRsa)
+            , (AttrToken, ValBool True)
+            , (AttrLabel, ValBytes "rsa-legacy")
+            , (AttrModulus, ValBytes "legacy-modulus")
+            , (AttrPublicExponent, ValBytes "legacy-pubexp")
+            , (AttrPrivateExponent, ValBytes "legacy-privexp")
+            , (AttrPrime1, ValBytes "legacy-prime1")
+            , (AttrPrime2, ValBytes "legacy-prime2")
+            , (AttrExponent1, ValBytes "legacy-exp1")
+            , (AttrExponent2, ValBytes "legacy-exp2")
+            , (AttrCoefficient, ValBytes "legacy-coeff")
+            ],
             eff False False False False False maxBound)
         , ("public-legacy", keyBase cPublic kRsa "public-legacy" (BS.replicate 32 11),
             [ (AttrSensitive, Just (ValBool False)), (AttrExtractable, Just (ValBool True))
@@ -1001,6 +1032,7 @@ testLegacyReloadVerbatim o = do
       docsAfter <- expectInspect s2
       assertEqual "read-only reopen writes nothing"
         (map show docsBefore) (map show docsAfter)
+      enforceReloadedAbsentProtections slot objs2
     _ -> assertFailure ("expected one token, got: " ++ show (length loaded))
   storeClose s2
   where
@@ -1009,13 +1041,92 @@ testLegacyReloadVerbatim o = do
           label = case Map.lookup AttrLabel orig of
             Just (ValBytes b) -> b
             _ -> error ("case without label: " ++ tag)
-          found = [o | o <- objs2, Map.lookup AttrLabel (orAttrs o) == Just (ValBytes label)]
+          found = [rec | rec <- objs2, Map.lookup AttrLabel (orAttrs rec) == Just (ValBytes label)]
       case found of
-        [o] -> do
-          assertEqual (tag ++ ": stored map untouched") orig (orAttrs o)
-          let eff = effectiveAttrs (orAttrs o)
+        [rec] -> do
+          assertEqual (tag ++ ": stored map untouched") orig (orAttrs rec)
+          let eff = effectiveAttrs (orAttrs rec)
           mapM_ (\(t, want) -> assertEqual (tag ++ ": effective " ++ show t) want (Map.lookup t eff)) effExpect
         _ -> assertFailure (tag ++ ": expected one object, got " ++ show (length found))
+
+-- | Enforcement over reloaded flag-less rows: the reloaded records
+-- seat into a fresh model exactly as stored (a raw reseat, never
+-- through creation, which would stamp them), and the PQC seed plus
+-- the RSA private components must then refuse reads with no output
+-- bytes, match no find, and refuse wrap as unextractable. Positive
+-- controls (a public-component read, a label find) show the
+-- session observes the objects, so the refusals are enforcement
+-- rather than an empty model.
+enforceReloadedAbsentProtections :: SlotId -> [ObjectRecord] -> IO ()
+enforceReloadedAbsentProtections slot objs2 = do
+  mNew <- expectRight "reseat+open" (publishDelta (addToken emptyModel slot)
+    (StateDelta [DeltaOpenSession (SessionId 1) slot False]))
+  let wrapOid = ObjectId (1 + maximum (0 : [unObjectId (orId o) | o <- objs2]))
+      wrapAttrs = Map.fromList
+        [ (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
+        , (AttrKeyType, ValULong (mustKeyTypeId "CKK_AES"))
+        , (AttrToken, ValBool True)
+        , (AttrLabel, ValBytes "kw-wrap")
+        , (AttrValue, ValBytes (BS.replicate 16 0xA5))
+        , (AttrValueLen, ValULong 16)
+        , (AttrSensitive, ValBool False)
+        , (AttrExtractable, ValBool True)
+        , (AttrWrap, ValBool True)
+        ]
+      oids = map orId objs2 ++ [wrapOid]
+      creates =
+        [ DeltaCreateObjectFull (orId o) (orAttrs o) Nothing slot | o <- objs2 ]
+        ++ [DeltaCreateObjectFull wrapOid wrapAttrs Nothing slot]
+      hNew = [ExternalHandle n | n <- [mNextHandle mNew ..]]
+      binds = zipWith DeltaBindHandle hNew oids
+  mBound <- expectRight "rebind" (publishDelta mNew (StateDelta (creates ++ binds)))
+  st <- expectJust "session 1" (lookupSession mBound (SessionId 1))
+  let rowOf lab =
+        case [o | o <- objs2
+              , Map.lookup AttrLabel (orAttrs o) == Just (ValBytes lab)] of
+          [o] -> pure (orId o, orAttrs o)
+          _ -> assertFailure ("missing reloaded row: " ++ show lab)
+      handleOf oid =
+        case [h | (h, b) <- Map.toList (mHandles mBound), hbObject b == oid] of
+          [h] -> pure h
+          hs -> assertFailure
+            ("expected one handle, got " ++ show (length hs))
+  (mldsaOid, mldsaAttrs) <- rowOf "mldsa-legacy"
+  (rsaOid, rsaAttrs) <- rowOf "rsa-legacy"
+  hMldsa <- handleOf mldsaOid
+  hRsa <- handleOf rsaOid
+  hWrap <- handleOf wrapOid
+  let expectSealed tag h wants = case planGetAttributes mBound st h wants of
+        Reject rej -> do
+          assertEqual (tag ++ " code") CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
+          assertEqual (tag ++ " emits no bytes") [] (rejOutputs rej)
+        _ -> assertFailure (tag ++ ": sealed read was served")
+  expectSealed "mldsa seed" hMldsa [AttrSeed]
+  expectSealed "mldsa value" hMldsa [AttrValue]
+  expectSealed "rsa private exponent" hRsa [AttrPrivateExponent]
+  seedVal <- expectJust "seed stored" (Map.lookup AttrSeed mldsaAttrs)
+  expVal <- expectJust "private exponent stored"
+    (Map.lookup AttrPrivateExponent rsaAttrs)
+  valVal <- expectJust "mldsa value stored" (Map.lookup AttrValue mldsaAttrs)
+  let expectNoMatch tag tmpl = case planFindObjects mBound st tmpl of
+        Immediate pc -> assertEqual (tag ++ " matches nothing") [] (pcOutputs pc)
+        _ -> assertFailure (tag ++ ": find refused")
+  expectNoMatch "seed oracle" [(AttrSeed, seedVal)]
+  expectNoMatch "value oracle" [(AttrValue, valVal)]
+  expectNoMatch "private-exponent oracle" [(AttrPrivateExponent, expVal)]
+  let expectUnextractable tag hT =
+        case planWrapKey mBound st aesKwMech BS.empty hWrap hT IntentNull of
+          KeyDenied deny ->
+            assertEqual (tag ++ " code") CKR_KEY_UNEXTRACTABLE (kdCode deny)
+          _ -> assertFailure (tag ++ ": wrap planned over a flag-less key")
+  expectUnextractable "mldsa wrap" hMldsa
+  expectUnextractable "rsa wrap" hRsa
+  case planGetAttributes mBound st hRsa [AttrModulus] of
+    Immediate pc -> assertEqual "modulus reads" 1 (length (pcOutputs pc))
+    _ -> assertFailure "modulus read refused"
+  case planFindObjects mBound st [(AttrLabel, ValBytes "mldsa-legacy")] of
+    Immediate pc -> assertEqual "label finds the key" 1 (length (pcOutputs pc))
+    _ -> assertFailure "label find refused"
 
 -- | Acceptance 2 (empty init): a fresh identity opens and loads
 -- empty (SQLite initializes its schema transactionally).
