@@ -225,7 +225,7 @@ argument (see `execStep` in `src/Haskoki/Ctl.hs`):
 | `fixture.load` | `fixture` must be `minimal-demo`; the runner seats slot 0 |
 | `session.open` | `token` must equal the config slot-0 label (absent means slot 0); `asynchronous` selects the session mode; `read_write` must be `true` (validation only: the runner models read-write sessions) |
 | `session.login` | `role` and `pin` are checked against the fixture PINs; login is token-level, so a second login as the same role answers `CKR_USER_ALREADY_LOGGED_IN` and another role answers `CKR_USER_ANOTHER_ALREADY_LOGGED_IN`; only the normal user satisfies the signing login gate |
-| `sign.init` | `mechanism` (a known inventory name) and `fixture_key` arm the session; the pair is echoed |
+| `sign.init` | `mechanism` (a known inventory name whose behavior descriptor carries a sign route) and `fixture_key` arm the session; the pair is echoed; a mechanism without a sign route (digests, key generation) answers `CKR_MECHANISM_INVALID` |
 | `sign` | `data_base64` (strict base64) sets the echoed byte count; `output_capacity` 0 refuses with `CKR_BUFFER_TOO_SMALL`, any positive capacity is accepted without a size comparison |
 | `async.complete` | `function` must be `C_Sign`; each completion counts down the session's pending polls |
 | `token.remove` | `token` resolves like `session.open`; removing the slot-0 token drops its sessions, clears the login, and seats the removal (opens and repeat removals refuse until slot 0 is inserted again or the fixture loads) |
@@ -240,7 +240,7 @@ clause (a step without one accepts only `CKR_OK` and `CKR_PENDING`):
 | Refusal | Route | Examples |
 |---|---|---|
 | scenario bug | hard `Left`: load-time `scenario-rejected`, or run-time `scenario-failed` | load: unknown action/field/argument, unknown mechanism, malformed base64, out-of-range capacity, duplicate session name, nonempty rules; run: unknown session reference, sign without `sign.init`, wait on an empty queue, sim verb without a test-enabled instance |
-| operation outcome | expectable `StepReturn` compared against `expect.return` | `CKR_PIN_INCORRECT`, `CKR_USER_ALREADY_LOGGED_IN`, `CKR_USER_ANOTHER_ALREADY_LOGGED_IN`, `CKR_TOKEN_NOT_PRESENT`, `CKR_BUFFER_TOO_SMALL`, `CKR_USER_NOT_LOGGED_IN`, `CKR_CRYPTOKI_NOT_INITIALIZED`, `CKR_CRYPTOKI_ALREADY_INITIALIZED` |
+| operation outcome | expectable `StepReturn` compared against `expect.return` | `CKR_PIN_INCORRECT`, `CKR_USER_ALREADY_LOGGED_IN`, `CKR_USER_ANOTHER_ALREADY_LOGGED_IN`, `CKR_TOKEN_NOT_PRESENT`, `CKR_BUFFER_TOO_SMALL`, `CKR_USER_NOT_LOGGED_IN`, `CKR_CRYPTOKI_NOT_INITIALIZED`, `CKR_CRYPTOKI_ALREADY_INITIALIZED`, `CKR_MECHANISM_INVALID` |
 | device fault | expectable `CKR_DEVICE_ERROR` | `sign` / `async.complete` inside the live fault window |
 
 A step without `expect` accepts only `CKR_OK` and `CKR_PENDING`: any
@@ -274,8 +274,8 @@ Each executed step prints one line, `step[N] <action> -> <RESULT>
 <detail>`, where `<detail>` echoes the consumed values (`token=`,
 `role=`, `mechanism=` with `key=`, `bytes=` with `capacity=`); actions
 with nothing to echo print the bare result. Lifecycle, login-gate,
-capacity and login refusals also emit their traced call, counted in
-the run's `trace-lines:` footer. Native slot changes and Digest
+capacity, mechanism and login refusals also emit their traced call,
+counted in the run's `trace-lines:` footer. Native slot changes and Digest
 callbacks follow the [runtime contract](operations-notes.md).
 
 ## Example configurations

@@ -122,6 +122,7 @@ spec = testGroup "Sim bridge"
   , testCase "post-finalize use refuses" casePostFinalize
   , testCase "signing without login refuses" caseLoginRequired
   , testCase "armed mechanism and key echo in step lines" caseArmedEcho
+  , testCase "demo key refuses mechanisms without a sign route" caseSignMechanismRestricted
   , testCase "unknown verbs are lifecycle-gated by default" caseUnknownVerbGated
   , testCase "lifecycle exempt list is exactly the ungated verbs" caseLifecycleExemptPinned
   , testCase "every gated verb refuses outside the live window" caseEveryVerbLifecycleGate
@@ -1225,6 +1226,35 @@ caseArmedEcho = do
   assertEqual ("arming run passes: " ++ ceErr r) 0 (ceCode r)
   assertBool "armed pair echoed"
     ("mechanism=CKM_RSA_PKCS key=demo-signing-key" `isInfixOf` ceOut r)
+
+-- | The demo signing key signs only with sign-capable mechanisms:
+-- a digest or key-generation mechanism answers
+-- CKR_MECHANISM_INVALID at arming time, and expecting CKR_OK there
+-- fails.
+caseSignMechanismRestricted :: IO ()
+caseSignMechanismRestricted = do
+  let cfg = fixture "maximal-demo.toml"
+      prefix = [ step "initialize" [] Nothing, step "fixture.load" [] Nothing
+               , step "session.open" [] Nothing
+               , step "session.login" [("session", JStr "s1"), ("role", JStr "USER")
+                   , ("pin", JStr "1234")] Nothing ]
+      arming mech expect = step "sign.init" [("session", JStr "s1")
+        , ("fixture_key", JStr "demo-signing-key")
+        , ("mechanism", JStr mech)] (Just expect)
+  rSign <- runTempScenarioFull cfg "mechsign" Nothing
+    (prefix ++ [arming "CKM_RSA_PKCS" "CKR_OK"])
+  assertEqual ("sign-capable mechanism arms: " ++ ceErr rSign) 0 (ceCode rSign)
+  rDigest <- runTempScenarioFull cfg "mechdigest" Nothing
+    (prefix ++ [arming "CKM_SHA256" "CKR_MECHANISM_INVALID"])
+  assertEqual ("digest mechanism refuses: " ++ ceErr rDigest) 0 (ceCode rDigest)
+  assertBool "mechanism echoed"
+    ("mechanism=CKM_SHA256" `isInfixOf` ceOut rDigest)
+  rGen <- runTempScenarioFull cfg "mechgen" Nothing
+    (prefix ++ [arming "CKM_AES_KEY_GEN" "CKR_MECHANISM_INVALID"])
+  assertEqual ("keygen mechanism refuses: " ++ ceErr rGen) 0 (ceCode rGen)
+  rOk <- runTempScenarioFull cfg "mechok" Nothing
+    (prefix ++ [arming "CKM_SHA256" "CKR_OK"])
+  assertEqual "expecting OK fails" 1 (ceCode rOk)
 
 -- | Default-deny: a verb the gate has never seen refuses outside
 -- the live window instead of slipping through. The runner rejects

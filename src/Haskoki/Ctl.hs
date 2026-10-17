@@ -75,8 +75,8 @@ import Haskoki.Runtime.Events
   , tryWaitSlotEvent
   , waitSlotEvent
   )
-import Haskoki.Registry (MechanismId (..), behaviorIds, curatedRegistry)
-import Haskoki.Registry.Generated (generatedInventory)
+import Haskoki.Registry (MechanismId (..), Operation (..), behaviorIds, behaviorRoutes, curatedRegistry)
+import Haskoki.Registry.Generated (generatedIdByName, generatedInventory)
 import Haskoki.Session (ActiveLogin (..))
 import Haskoki.Runtime.Trace
   ( DrainReport (..)
@@ -525,6 +525,16 @@ slotZeroLabel cfg = case tcEntries (cfgTokens cfg) of
   ((label, _, _) : _) -> label
   [] -> "haskoki-demo"
 
+-- | Whether a mechanism name can arm the demo signing key: it
+-- resolves in the generated inventory (canonical or alias, as in
+-- validation) and its behavior descriptor carries a sign route.
+-- Anything else (digests, key generation, unknown names) refuses
+-- at arming time instead of signing with @CKR_OK@.
+signCapable :: String -> Bool
+signCapable mech = case generatedIdByName (T.pack mech) of
+  Just w -> (MechanismId w, OpSign) `elem` behaviorRoutes curatedRegistry
+  Nothing -> False
+
 -- | Execute one step (@i@ is the step index for fault-window
 -- checks), producing an explicit result for centralized
 -- expectation checking plus a detail string echoing the consumed
@@ -634,11 +644,15 @@ execVerb cfg reg tr rn i st = case rsAction st of
             emit tr "C_SignInit" 0x101 ("session=" ++ name)
             pure (Right (rn, StepReturn "CKR_USER_NOT_LOGGED_IN", ""))
         | otherwise -> case (lookup "mechanism" (rsArgs st), lookup "fixture_key" (rsArgs st)) of
-            (Just (JStr mech), Just (JStr key)) -> do
-              emit tr "C_SignInit" 0 ("session=" ++ name)
-              let ls' = ls { lsArmed = Just (mech, key) }
-                  detail = "mechanism=" ++ mech ++ " key=" ++ key
-              pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK", detail))
+            (Just (JStr mech), Just (JStr key))
+              | not (signCapable mech) -> do
+                  emit tr "C_SignInit" 0x70 ("session=" ++ name)
+                  pure (Right (rn, StepReturn "CKR_MECHANISM_INVALID", "mechanism=" ++ mech))
+              | otherwise -> do
+                  emit tr "C_SignInit" 0 ("session=" ++ name)
+                  let ls' = ls { lsArmed = Just (mech, key) }
+                      detail = "mechanism=" ++ mech ++ " key=" ++ key
+                  pure (Right (rn { rnSessions = Map.insert name ls' (rnSessions rn) }, StepReturn "CKR_OK", detail))
             _ -> pure (Left "sign.init needs string 'mechanism' and 'fixture_key'")
   "sign" -> do
     case sessionOf rn st of
