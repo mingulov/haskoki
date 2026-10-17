@@ -38,9 +38,11 @@ import StoreFixtures (fifoWriterMain, walChildMain, withScratch)
 -- the test bodies, both store backends and tasty's scheduler found
 -- no blocking point, and any instrumentation made the hang
 -- disappear, which fits a first-evaluation race below the Haskell
--- code. The shipped library pins one RTS capability and ignores
--- @GHCRTS@, so it never runs multi-capability; only this test
--- binary (started by tasty at @-N@) is exposed. The 'warmupCommitPath'
+-- code. When it starts the RTS itself, the shipped library pins
+-- one RTS capability and ignores @GHCRTS@, so it never runs
+-- multi-capability; only this test binary (started by tasty at
+-- @-N@) is exposed, plus a host that already runs a GHC RTS,
+-- which keeps its own capability count. The 'warmupCommitPath'
 -- call below pre-forces the commit-path constants single-threaded
 -- before any test forks, as a mitigation for that upstream bug.
 -- Revisit if a smaller reproduction appears.

@@ -82,11 +82,12 @@ static char **g_rts_argv_ptr = g_rts_argv;
  * does not burn a CPU; it uses no mutex or condition variable,
  * keeping the first-call path free of lock lifecycle and failure
  * modes of its own. The wait ends when the winner finishes its
- * single hs_init_ghc (milliseconds, measured) — except when the
- * winner itself cannot run: a higher-priority SCHED_FIFO/RR loser
- * sharing the winner's CPU (sched_yield never yields to a lower
- * priority), a signal handler on the winner thread that re-enters
- * this call, or a cancellation of the winner thread inside init.
+ * single hs_init_ghc (milliseconds, measured). A higher-priority
+ * real-time loser on the winner's CPU only delays the start: its
+ * sleeps leave the run queue, so the winner still runs. The wait
+ * fails to end only when the winner itself cannot run: a signal
+ * handler on the winner thread that re-enters this call, or a
+ * cancellation of the winner thread inside init.
  *
  * Fork children fail safe (-1) without waiting: the PID check runs
  * before the wait, so a child forked at any point refuses. Before the

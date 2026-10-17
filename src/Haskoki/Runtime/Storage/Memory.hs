@@ -679,11 +679,11 @@ effectiveDelta applied delta =
 -- is stored in the world's MVar, so no thread evaluates another
 -- thread's shared state thunk (a space leak, and a concurrent
 -- first-evaluation candidate for GHC #27272). Depth, per map:
--- every map spine
--- fully (the folds match each node); every record to WHNF, which
--- evaluates each strict field to WHNF; and the lazy string spines
--- below the records fully — the token label, the auth principal,
--- the material encoding, the job function name, the pending
+-- every map spine fully (the folds match each node); every
+-- record to WHNF, which evaluates each strict field to WHNF; and
+-- the lazy string spines below the records fully — the token
+-- label, the auth principal, the material encoding, the job
+-- function name, the pending
 -- recipe name, and every meta key and value. The remaining cells
 -- stop at WHNF: the auth login (always 'Nothing': the commit
 -- boundary scrubs it), the attribute-map keys and values, the SO
