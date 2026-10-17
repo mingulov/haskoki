@@ -1020,7 +1020,10 @@ openStdStore = openStdStoreWith openSQLiteStore
 -- only reads an existing store, and every refusal (an old schema
 -- first, as @StdStoreSQLite (StoreNeedsMigration n 3)@, then
 -- identity, then missing credentials) returns before it, so a
--- refused open leaves the database bytes unchanged.
+-- refused open leaves the database bytes unchanged — absent a hot
+-- journal, which SQLite itself rolls back on open before any
+-- refusal is decided (a non-empty @-wal@\/@-shm@ is refused before
+-- any SQLite connection opens, so nothing is checkpointed).
 openStdStoreWith
   :: (FilePath -> IO (Either StoreError Store))
   -> Env

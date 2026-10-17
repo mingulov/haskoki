@@ -283,7 +283,6 @@ foreign-library haskoki
     Haskoki.Runtime.Catalog
     Haskoki.Runtime.Storage
     Haskoki.Runtime.Storage.Memory
-    Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Trace
   c-sources:

@@ -61,9 +61,14 @@ module Haskoki.Runtime.Storage.SQLite
   , livenessFromProbes
   , PidLiveness (..)
   , ProcProbe (..)
+  , pidIsDead
   , FileIdentity (..)
   , StoreSnapshot (..)
+  , resolveStorePath
+  , resolveStorePathTracked
+  , requireRegularStore
   , readStoreSnapshot
+  , readStoreSnapshotAllowCold
   , OwnerState (..)
   , probeOwner
   , guardFlags
@@ -71,7 +76,7 @@ module Haskoki.Runtime.Storage.SQLite
   , OwnedStoreFile
   , ownedPath
   , withOwnedStoreFile
-  , clearColdJournal
+  , clearColdJournalOwned
   , SQLiteMigration (..)
   , MigrationHooks (..)
   , noMigrationHooks
@@ -88,7 +93,7 @@ import Data.ByteString (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import qualified Data.ByteString.Char8 as BC8
-import Data.List (nub, sort)
+import Data.List (intercalate, nub, sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
@@ -99,9 +104,10 @@ import Database.SQLite3.Direct (getAutoCommit)
 import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
-import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, removeLink, setFdSize, setFileMode)
+import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, readSymbolicLink, removeLink, setFdSize, setFileMode)
 import System.IO (hClose)
 import System.Posix.IO (OpenFileFlags (..), OpenMode (..), closeFd, defaultFileFlags, fdToHandle, fdWrite, openFd)
+import System.Posix.IO.ByteString (fdRead)
 import System.Posix.Process (getParentProcessID, getProcessID)
 import System.Posix.Types (Fd, ProcessID)
 import System.Posix.Unistd (fileSynchronise)
@@ -262,11 +268,38 @@ openSQLiteStoreWith path limits inj = openSQLiteStoreWithHooks path limits inj n
 
 -- | 'openSQLiteStoreWith' plus test-only connection hooks
 -- ('SQLiteTestHooks'); the storage suites use it to stimulate
--- real statement failures on the store's own connection.
+-- real statement failures on the store's own connection. The path
+-- is resolved once up front: every sidecar and every open below
+-- derives from the real file. A store path whose own final component
+-- is a dangling symlink refuses: no store is created at that link's
+-- target. A missing store under a symlinked parent directory is
+-- created at the resolved path, as before.
 openSQLiteStoreWithHooks
   :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
   -> IO (Either StoreError Store)
-openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
+openSQLiteStoreWithHooks path0 limits inj hooks = do
+  (path, sawLink) <- resolveStorePathTracked path0
+  if not sawLink
+    then openSQLiteStoreResolved path limits inj hooks
+    else do
+      -- A final-component link that resolves to a missing target
+      -- is dangling (a moved store, an unmounted volume): refuse
+      -- before taking ownership, so neither the target nor its lock
+      -- is created.
+      -- Only a proven-missing target refuses; anything else takes
+      -- the normal path and fails closed downstream.
+      eSt <- lstatOpt path
+      case eSt of
+        Right Nothing -> pure (Left (StoreIO
+          ("dangling symlink " ++ path0 ++ " (target " ++ path
+            ++ " is missing); refusing to create a store at a link target")))
+        _ -> openSQLiteStoreResolved path limits inj hooks
+
+-- | 'openSQLiteStoreWithHooks' on an already-resolved path.
+openSQLiteStoreResolved
+  :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
+  -> IO (Either StoreError Store)
+openSQLiteStoreResolved path limits inj hooks = mask $ \restore -> do
   procRoot <- procRootFromEnv
   let lockPath = path ++ ".lock"
   eOwn <- takeOwnership path lockPath procRoot 3
@@ -288,37 +321,49 @@ openSQLiteStoreWithHooks path limits inj hooks = mask $ \restore -> do
     -- cleanup is still retained across the construction below, so
     -- every acquisition prefix owns cleanup for every resource.
     dbPart restore lockPath lockFd dbFd created = do
-      eDb <- openAndInit restore dbFd path created
-      case eDb of
-        Left err -> do
+      -- A non-empty -wal or -shm sibling refuses before any SQLite
+      -- connection opens: the journal-mode switch below would
+      -- otherwise checkpoint foreign frames into the store.
+      -- Ownership and the database guard are already held, and both
+      -- are released on this path, exactly as on an init failure.
+      refused <- foreignSidecar path
+      case refused of
+        Just p -> do
           closeQuietFd dbFd
           releaseQuiet lockFd lockPath
-          pure (Left err)
-        Right db ->
-          (do lock <- newMVar ()
-              closed <- newMVar HandleOpen
-              qVar <- newMVar []
-              openTxn <- newIORef Nothing
-              sVar <- newIORef zeroStats
-              claims <- newClaimAuthority
-              let conn = SQLiteConn
-                    { sqDb = db
-                    , sqLock = lock
-                    , sqClosed = closed
-                    , sqPath = path
-                    , sqLockPath = lockPath
-                    , sqLockFd = lockFd
-                    , sqDbFd = dbFd
-                    , sqInjector = inj
-                    , sqQuarantine = qVar
-                    , sqOpenTxn = openTxn
-                    , sqStats = sVar
-                    , sqLimits = limits
-                    , sqHooks = hooks
-                    , sqClaims = claims
-                    }
-              pure (Right (mkStore conn)))
-            `onException` closeQuiet db
+          pure (Left (StoreForeignSidecar p))
+        Nothing -> do
+          eDb <- openAndInit restore dbFd path created
+          case eDb of
+            Left err -> do
+              closeQuietFd dbFd
+              releaseQuiet lockFd lockPath
+              pure (Left err)
+            Right db ->
+              (do lock <- newMVar ()
+                  closed <- newMVar HandleOpen
+                  qVar <- newMVar []
+                  openTxn <- newIORef Nothing
+                  sVar <- newIORef zeroStats
+                  claims <- newClaimAuthority
+                  let conn = SQLiteConn
+                        { sqDb = db
+                        , sqLock = lock
+                        , sqClosed = closed
+                        , sqPath = path
+                        , sqLockPath = lockPath
+                        , sqLockFd = lockFd
+                        , sqDbFd = dbFd
+                        , sqInjector = inj
+                        , sqQuarantine = qVar
+                        , sqOpenTxn = openTxn
+                        , sqStats = sVar
+                        , sqLimits = limits
+                        , sqHooks = hooks
+                        , sqClaims = claims
+                        }
+                  pure (Right (mkStore conn)))
+                `onException` closeQuiet db
 
 -- | The @\/proc@ root for owner-liveness checks: @HASKOKI_PROC_ROOT@
 -- overrides (tests mask liveness deterministically); empty or unset
@@ -343,7 +388,7 @@ procRootFromEnv = do
 -- our close, so the next open is wrongly refused as a second
 -- writer.
 guardFlags :: OpenFileFlags
-guardFlags = defaultFileFlags { cloexec = True }
+guardFlags = defaultFileFlags { cloexec = True, nonBlock = True, nofollow = True }
 
 -- | All bytes of a file, read through a 'guardFlags' descriptor. A GHC
 -- 'Handle' open ('readFile', 'BS.readFile') does not set O_CLOEXEC, so
@@ -351,6 +396,44 @@ guardFlags = defaultFileFlags { cloexec = True }
 readFileCloexec :: FilePath -> IO ByteString
 readFileCloexec p = bracket open hClose BS.hGetContents
   where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
+
+-- | A lock sidecar's pid line through a 'guardFlags' descriptor: a
+-- single raw 64-byte read (lock files only ever hold @pid\n@, so a
+-- bounded read cannot be swamped), and the pid line must be complete
+-- (a missing newline fails closed instead of parsing a truncated
+-- pid). Raw 'fdRead', not a 'Handle': on a swapped-in FIFO the
+-- O_NONBLOCK read surfaces end-of-file or an error at once instead
+-- of waiting. Callers lstat first and only call this on regular
+-- files.
+readLockBytes :: FilePath -> IO ByteString
+readLockBytes p = bracket (openFd p ReadOnly guardFlags) closeFd $ \fd -> do
+  bs <- fdRead fd 64
+  if BS.elem 10 bs then pure bs else ioError (userError ("lock file has no pid line: " ++ p))
+
+-- | lstat without following the final component and without opening:
+-- missing files report 'Nothing' (callers keep their create/absent
+-- paths); present files report their status for a regular-file
+-- check. Other I\/O failures report 'Left'. A FIFO can never hang
+-- this call.
+lstatOpt :: FilePath -> IO (Either String (Maybe FileStatus))
+lstatOpt path = do
+  e <- tryIOError (getSymbolicLinkStatus path)
+  pure $ case e of
+    Left err
+      | isDoesNotExistError err -> Right Nothing
+      | otherwise -> Left (show err)
+    Right st -> Right (Just st)
+
+-- | Refuse anything but a regular file or a missing path (missing
+-- paths keep their downstream report): lstat only, never opened, so
+-- a FIFO cannot hang the caller.
+requireRegularStore :: FilePath -> IO (Either StoreError ())
+requireRegularStore path = do
+  e <- lstatOpt path
+  pure $ case e of
+    Right (Just st) | not (isRegularFile st) ->
+      Left (StoreIO ("not a regular file: " ++ path))
+    _ -> Right ()
 
 -- | Take single-writer ownership via an O_EXCL sidecar lock carrying
 -- our pid. An existing lock owned by a live pid fails explicitly;
@@ -401,10 +484,17 @@ claimFresh dbPath lockPath procRoot attempts fd pid = do
 -- compare as text, avoiding any orphan 'Read' instances.
 inspectLock :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
 inspectLock dbPath lockPath procRoot pid attempts = do
-  eContent <- tryIOError (BC8.unpack <$> readFileCloexec lockPath)
-  case eContent of
-    Left _ -> pure (Left (StoreSecondWriter ("store is locked and the owner is unreadable: " ++ lockPath)))
-    Right content -> case reads content of
+  eSt <- tryIOError (getSymbolicLinkStatus lockPath)
+  case eSt of
+    Right st | not (isRegularFile st) ->
+      pure (Left (StoreSecondWriter ("store lock is not a regular file: " ++ lockPath)))
+    _ -> do
+      eContent <- tryIOError (BC8.unpack <$> readLockBytes lockPath)
+      case eContent of
+        Left _ -> pure (Left (StoreSecondWriter ("store is locked and the owner is unreadable: " ++ lockPath)))
+        Right content -> inspectContent content
+  where
+    inspectContent content = case reads content of
       [(ownerN, _) :: (Int, String)] | show ownerN == show pid ->
         pure (Left (StoreSecondWriter ("store is already open in this process: " ++ dbPath)))
       [(ownerN, _) :: (Int, String)] -> do
@@ -499,6 +589,16 @@ pidLiveness procRoot ownerPid = do
         _ -> pure PidUnknown
     _ -> pure PidUnknown
 
+-- | True exactly when a pid is provably dead ('PidDead' through the
+-- same @\/proc@ policy as owner liveness, honouring
+-- @HASKOKI_PROC_ROOT@). Anything unknowable is alive (fail closed:
+-- the caller must not act on it).
+pidIsDead :: Int -> IO Bool
+pidIsDead pid = do
+  procRoot <- procRootFromEnv
+  live <- pidLiveness procRoot pid
+  pure (live == PidDead)
+
 -- | Take over an apparently-stale lock: the kernel lock confirms
 -- staleness (a live-but-hidden owner still holds it, and we refuse),
 -- and an fstat-vs-path revalidation closes the unlink race (a lock
@@ -518,23 +618,29 @@ confirmTakeover dbPath lockPath procRoot pid attempts = do
     -- this fd, so a cancellation during the retry cannot
     -- double-close it after the number is recycled.
     Right fd -> do
-      locked <- tryFlock fd `onException` closeQuietFd fd
-      if not locked
-        then do
+      eSt <- tryIOError (getFdStatus fd) `onException` closeQuietFd fd
+      case eSt of
+        Right st | not (isRegularFile st) -> do
           closeQuietFd fd
-          pure (Left (StoreSecondWriter ("store lock is held by a live owner (kernel lock held on "
-            ++ lockPath ++ "); refusing second writer: " ++ dbPath)))
-        else do
-          same <- sameFile fd lockPath `onException` closeQuietFd fd
-          if not same
+          pure (Left (StoreSecondWriter ("store lock is not a regular file: " ++ lockPath)))
+        _ -> do
+          locked <- tryFlock fd `onException` closeQuietFd fd
+          if not locked
             then do
               closeQuietFd fd
-              takeOwnership dbPath lockPath procRoot (attempts - 1)
+              pure (Left (StoreSecondWriter ("store lock is held by a live owner (kernel lock held on "
+                ++ lockPath ++ "); refusing second writer: " ++ dbPath)))
             else do
-              _ <- (do
-                _ <- tryIOError (setFdSize fd 0)
-                tryIOError (fdWrite fd (show pid ++ "\n"))) `onException` closeQuietFd fd
-              pure (Right fd)
+              same <- sameFile fd lockPath `onException` closeQuietFd fd
+              if not same
+                then do
+                  closeQuietFd fd
+                  takeOwnership dbPath lockPath procRoot (attempts - 1)
+                else do
+                  _ <- (do
+                    _ <- tryIOError (setFdSize fd 0)
+                    tryIOError (fdWrite fd (show pid ++ "\n"))) `onException` closeQuietFd fd
+                  pure (Right fd)
 
 -- | True when the open fd and the path name the same file (the
 -- unlink race: a closer may have removed the path after we opened
@@ -586,23 +692,28 @@ ensureDbGuard dbPath = mask_ (go (3 :: Int))
     go n
       | n <= 0 = pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
       | otherwise = do
-          eFd <- tryIOError (openFd dbPath ReadOnly guardFlags)
-          case eFd of
-            Right fd -> do
-              eGuard <- takeDbGuard dbPath fd
-              pure (fmap (, False) eGuard)
-            Left e
-              | isDoesNotExistError e -> do
-                  eCr <- tryIOError (openFd dbPath WriteOnly
-                    guardFlags { creat = Just 0o600, exclusive = True })
-                  case eCr of
-                    Right fd -> do
-                      eGuard <- takeDbGuard dbPath fd
-                      pure (fmap (, True) eGuard)
-                    Left e2
-                      | isAlreadyExistsError e2 -> go (n - 1)
-                      | otherwise -> pure (Left (StoreIO ("store database cannot be created: " ++ dbPath)))
-              | otherwise -> pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
+          eSt <- lstatOpt dbPath
+          case eSt of
+            Right (Just st) | not (isRegularFile st) ->
+              pure (Left (StoreIO ("not a regular file: " ++ dbPath)))
+            _ -> do
+              eFd <- tryIOError (openFd dbPath ReadOnly guardFlags)
+              case eFd of
+                Right fd -> do
+                  eGuard <- takeDbGuard dbPath fd
+                  pure (fmap (, False) eGuard)
+                Left e
+                  | isDoesNotExistError e -> do
+                      eCr <- tryIOError (openFd dbPath WriteOnly
+                        guardFlags { creat = Just 0o600, exclusive = True })
+                      case eCr of
+                        Right fd -> do
+                          eGuard <- takeDbGuard dbPath fd
+                          pure (fmap (, True) eGuard)
+                        Left e2
+                          | isAlreadyExistsError e2 -> go (n - 1)
+                          | otherwise -> pure (Left (StoreIO ("store database cannot be created: " ++ dbPath)))
+                  | otherwise -> pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
 
 -- | @flock(2)@ constants (Linux ABI; this backend is Linux-only, as
 -- is the @\/proc@ liveness check above).
@@ -2215,13 +2326,16 @@ journalMagic = BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]
 -- first 8 bytes: hot carries the journal magic, cold is all zero,
 -- anything else -- including a short file or an unreadable one -- is
 -- unknown and fails closed. An empty journal reads as absent, as
--- SQLite ignores it.
+-- SQLite ignores it. Only a regular file is ever opened: a symlink,
+-- FIFO or device is unknown, so classification never hangs and never
+-- follows a link.
 classifyJournal :: FilePath -> IO JournalClass
 classifyJournal path = do
   e <- tryIOError (getSymbolicLinkStatus journal)
   case e of
     Left _ -> pure JournalAbsent
     Right st
+      | not (isRegularFile st) -> pure JournalUnknown
       | fileSize st <= 0 -> pure JournalAbsent
       | otherwise -> do
           eHead <- tryIOError (readFirst8 journal)
@@ -2240,8 +2354,8 @@ readFirst8 p = bracket open hClose (`BS.hGet` 8)
 
 -- | A sibling the rollback-journal store never writes itself: a
 -- non-empty @-wal@ or @-shm@ file can only come from foreign tooling
--- and refuses the snapshot like a hot journal. Zero-byte files are
--- ignored, as zero-byte journals are.
+-- and refuses distinctly. Zero-byte files are ignored, as
+-- zero-byte journals are.
 foreignSidecar :: FilePath -> IO (Maybe FilePath)
 foreignSidecar path = do
   w <- nonEmpty (path ++ "-wal")
@@ -2257,36 +2371,166 @@ foreignSidecar path = do
         Right st | fileSize st > 0 -> Just p
         _ -> Nothing)
 
--- | A journal or foreign sibling that refuses the snapshot: a hot or
--- unknown journal, a cold journal (refused distinctly), else a
--- non-empty @-wal@ or @-shm@ file.
+-- | A journal or foreign sibling that refuses the snapshot: a
+-- non-empty @-wal@ or @-shm@ file first (a cold journal must never
+-- bypass it), else a hot or unknown journal, else a cold journal
+-- (refused distinctly).
 journalBlocked :: FilePath -> IO (Maybe StoreError)
 journalBlocked path = do
-  cls <- classifyJournal path
-  case cls of
-    JournalHot -> pure (Just (StoreJournalPresent journal))
-    JournalUnknown -> pure (Just (StoreJournalPresent journal))
-    JournalCold -> pure (Just (StoreJournalCold journal))
-    JournalAbsent -> maybe Nothing (Just . StoreJournalPresent) <$> foreignSidecar path
+  side <- foreignSidecar path
+  case side of
+    Just p -> pure (Just (StoreForeignSidecar p))
+    Nothing -> do
+      cls <- classifyJournal path
+      pure (case cls of
+        JournalHot -> Just (StoreJournalPresent journal)
+        JournalUnknown -> Just (StoreJournalPresent journal)
+        JournalCold -> Just (StoreJournalCold journal)
+        JournalAbsent -> Nothing)
   where
     journal = path ++ "-journal"
+
+-- | Like 'journalBlocked' but a cold journal does not block: used
+-- only to plan a migration's verdict before deciding whether the
+-- cold journal may be cleared. Hot, unknown and foreign siblings
+-- still refuse.
+journalBlockedAllowCold :: FilePath -> IO (Maybe StoreError)
+journalBlockedAllowCold path = do
+  side <- foreignSidecar path
+  case side of
+    Just p -> pure (Just (StoreForeignSidecar p))
+    Nothing -> do
+      cls <- classifyJournal path
+      pure (case cls of
+        JournalHot -> Just (StoreJournalPresent journal)
+        JournalUnknown -> Just (StoreJournalPresent journal)
+        _ -> Nothing)
+  where
+    journal = path ++ "-journal"
+
+-- | Any @-wal@ or @-shm@ sibling, even zero-byte: a read-write
+-- SQLite connection would act on it (switching journal modes,
+-- checkpointing frames, creating and deleting the peer file), so
+-- the cold-journal clear refuses before opening whenever either
+-- exists, whatever its size or kind.
+anySidecarExists :: FilePath -> IO (Maybe FilePath)
+anySidecarExists path = do
+  w <- exists (path ++ "-wal")
+  s <- exists (path ++ "-shm")
+  pure (case (w, s) of
+    (Just p, _) -> Just p
+    (_, Just p) -> Just p
+    _ -> Nothing)
+  where
+    exists p = do
+      e <- tryIOError (getSymbolicLinkStatus p)
+      pure (case e of
+        Right _ -> Just p
+        _ -> Nothing)
+
+-- | Resolve a store path once, following every symlink component (a
+-- full realpath over 'readSymbolicLink'): SQLite acts on the real
+-- file's sidecars, so the guards must derive @-journal@, @-wal@,
+-- @-shm@ and @.lock@ from the resolved path, and every open must
+-- use it. Symlinked store paths stay legitimate (they resolve;
+-- they are never refused for being links). Missing components are
+-- kept lexically (the caller reports them); a symlink loop falls
+-- back to the input unchanged (the downstream open then fails
+-- closed). No @filepath@ dependency: the splitting is local.
+resolveStorePath :: FilePath -> IO FilePath
+resolveStorePath p = fst <$> resolveStorePathTracked p
+
+-- | Like 'resolveStorePath', also reporting whether the store
+-- path's own final component was a symlink. The serving open
+-- refuses to create a store when the final component is a link and
+-- the resolved target is missing (a dangling link means a moved
+-- store or an unmounted volume, never a fresh one). A link in an
+-- ancestor directory with no store yet is a fresh store, created at
+-- the resolved path. A chain's later hops also occur with no
+-- components remaining, so they still count as the final link.
+resolveStorePathTracked :: FilePath -> IO (FilePath, Bool)
+resolveStorePathTracked p
+  | null p = pure (p, False)
+  | otherwise = follow (splitPath p) [] absolute0 False 0
+  where
+    absolute0 = case p of ('/' : _) -> True; _ -> False
+    -- Absoluteness rides in the fold state: an absolute link target
+    -- resets the walk to the filesystem root, so the flag must turn
+    -- 'True' at the jump. Computing it once from the input drops the
+    -- leading slash when a relative path goes through an absolute
+    -- symlink (and misdirects the later link probes at the mangled
+    -- relative spelling).
+    follow :: [String] -> [String] -> Bool -> Bool -> Int -> IO (FilePath, Bool)
+    follow [] stack absolute saw _ = pure (joinPath absolute stack, saw)
+    follow (c : cs) stack absolute saw n
+      | c == ".." = follow cs (popForDotDot absolute stack) absolute saw n
+      | otherwise = do
+          eLink <- tryIOError (readSymbolicLink (joinPath absolute (stack ++ [c])))
+          case eLink of
+            Left _ -> follow cs (stack ++ [c]) absolute saw n
+            Right link
+              | n >= 40 -> pure (p, saw)
+              | otherwise ->
+                  -- Only a link at the store's own final component
+                  -- counts: no components remain after it (a chain's
+                  -- later hops re-enter here the same way). A link
+                  -- in an ancestor directory leaves the flag down,
+                  -- so a missing store there is created, not
+                  -- refused as dangling.
+                  let target = splitPath link
+                      sawFinal = saw || null cs
+                  in case link of
+                       ('/' : _) -> follow (target ++ cs) [] True sawFinal (n + 1)
+                       _ -> follow (target ++ cs) stack absolute sawFinal (n + 1)
+    popForDotDot :: Bool -> [String] -> [String]
+    popForDotDot absolute [] = if absolute then [] else [".."]
+    popForDotDot absolute stack
+      | absolute = init stack
+      | last stack == ".." = stack ++ [".."]
+      | otherwise = init stack
+    splitPath :: FilePath -> [String]
+    splitPath = filter (\c -> c /= "" && c /= ".") . splitOn '/'
+      where
+        splitOn _ [] = [""]
+        splitOn d (x : xs)
+          | x == d = "" : splitOn d xs
+          | otherwise = case splitOn d xs of
+              (y : ys) -> (x : y) : ys
+              [] -> [[x]]
+    joinPath :: Bool -> [String] -> FilePath
+    joinPath True [] = "/"
+    joinPath True cs = "/" ++ intercalate "/" cs
+    joinPath False [] = "."
+    joinPath False cs = intercalate "/" cs
 
 -- | Read a store WITHOUT writing it: no ownership, no sidecar, a
 -- read-only connection (never creates the file, never recovers a
 -- journal, never migrates). Decodes every record the serving open
 -- decodes, so a corrupt file fails here too; keeps only ids and
--- counts. Refuses a hot or unknown journal, a cold journal
--- (distinctly), a foreign -wal/-shm sibling, and a file that changed
+-- counts. Refuses a foreign -wal/-shm sibling, a hot or unknown
+-- journal, a cold journal (distinctly), and a file that changed
 -- while read.
 readStoreSnapshot :: FilePath -> IO (Either StoreError StoreSnapshot)
-readStoreSnapshot path = do
+readStoreSnapshot = readStoreSnapshotWith journalBlocked
+
+-- | Like 'readStoreSnapshot' but a cold journal does not refuse:
+-- used only to plan a migration's verdict before deciding whether
+-- the cold journal may be cleared. The read-only connection treats
+-- a cold journal as not hot (committed state), never recovers it
+-- and never writes.
+readStoreSnapshotAllowCold :: FilePath -> IO (Either StoreError StoreSnapshot)
+readStoreSnapshotAllowCold = readStoreSnapshotWith journalBlockedAllowCold
+
+readStoreSnapshotWith
+  :: (FilePath -> IO (Maybe StoreError)) -> FilePath -> IO (Either StoreError StoreSnapshot)
+readStoreSnapshotWith blockedBy path = do
   eSt0 <- tryIOError (getFileStatus path)
   case eSt0 of
     Left _ -> pure (Left (StoreIO ("no store file at " ++ path)))
     Right st0
       | not (isRegularFile st0) -> pure (Left (StoreIO (path ++ ": not a regular file")))
       | otherwise -> do
-          blocked <- journalBlocked path
+          blocked <- blockedBy path
           case blocked of
             Just err -> pure (Left err)
             Nothing -> do
@@ -2296,7 +2540,7 @@ readStoreSnapshot path = do
                 Right db -> do
                   r <- snapshotDb db `finally` closeQuiet db
                   eSt1 <- tryIOError (getFileStatus path)
-                  blocked1 <- journalBlocked path
+                  blocked1 <- blockedBy path
                   pure $ case (r, eSt1, blocked1) of
                     (Left err, _, _) -> Left err
                     (_, Left _, _) -> Left (StoreIO (path ++ ": vanished while read"))
@@ -2343,8 +2587,9 @@ probeOwner path = do
   sidecar <- case eLock of
     Left e | isDoesNotExistError e -> pure (Right Nothing)
            | otherwise -> pure (Left "the lock file cannot be examined")
+    Right st | not (isRegularFile st) -> pure (Left "the lock file is not a regular file")
     Right _ -> do
-      eContent <- tryIOError (readFileCloexec lockPath)
+      eContent <- tryIOError (readLockBytes lockPath)
       case eContent of
         Left _ -> pure (Left "the lock file is unreadable")
         Right content -> case reads (BC8.unpack content) of
@@ -2379,14 +2624,20 @@ probeOwner path = do
 -- interruptible under the mask).
 kernelLockHeld :: FilePath -> IO (Either String Bool)
 kernelLockHeld path = mask_ $ do
-  eFd <- tryIOError (openFd path ReadOnly guardFlags)
-  case eFd of
-    Left e
-      | isDoesNotExistError e -> pure (Right False)
-      | otherwise -> pure (Left "the database cannot be opened to probe its lock")
-    Right fd -> do
-      held <- attempt fd 0 `finally` closeQuietFd fd
-      pure (Right held)
+  eSt <- lstatOpt path
+  case eSt of
+    Right Nothing -> pure (Right False)
+    Right (Just st) | not (isRegularFile st) -> pure (Left "the database is not a regular file")
+    Left _ -> pure (Left "the database cannot be opened to probe its lock")
+    Right _ -> do
+      eFd <- tryIOError (openFd path ReadOnly guardFlags)
+      case eFd of
+        Left e
+          | isDoesNotExistError e -> pure (Right False)
+          | otherwise -> pure (Left "the database cannot be opened to probe its lock")
+        Right fd -> do
+          held <- attempt fd 0 `finally` closeQuietFd fd
+          pure (Right held)
   where
     attempt :: Fd -> Int -> IO Bool
     attempt fd n = do
@@ -2431,52 +2682,56 @@ noMigrationHooks = MigrationHooks (\_ -> pure ()) (\_ -> pure ())
 -- only file created, and it is removed on release.
 withOwnedStoreFile :: FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
 withOwnedStoreFile path act = mask $ \restore -> do
-  exists <- fileExist path
-  if not exists then pure (Left (StoreIO ("no store file at " ++ path))) else do
-    procRoot <- procRootFromEnv
-    let lockPath = path ++ ".lock"
-    eOwn <- takeOwnership path lockPath procRoot 3
-    case eOwn of
-      Left err -> pure (Left err)
-      Right lockFd -> do
-        eFd <- tryIOError (openFd path ReadOnly guardFlags)
-          `onException` releaseQuiet lockFd lockPath
-        case eFd of
-          Left e
-            | isDoesNotExistError e -> releaseQuiet lockFd lockPath
-                >> pure (Left (StoreIO ("store vanished while taking ownership: " ++ path)))
-            | otherwise -> releaseQuiet lockFd lockPath
-                >> pure (Left (StoreIO ("store database cannot be opened: " ++ path)))
-          Right fd0 -> do
-            eGuard <- takeDbGuard path fd0 `onException` releaseQuiet lockFd lockPath
-            case eGuard of
-              Left err -> releaseQuiet lockFd lockPath >> pure (Left err)
-              Right dbFd -> do
-                let release = closeQuietFd dbFd >> releaseQuiet lockFd lockPath
-                r <- restore (act (OwnedStoreFile path dbFd)) `onException` release
-                release
-                pure (Right r)
+  eSt <- lstatOpt path
+  case eSt of
+    Right Nothing -> pure (Left (StoreIO ("no store file at " ++ path)))
+    Right (Just st) | not (isRegularFile st) ->
+      pure (Left (StoreIO ("not a regular file: " ++ path)))
+    Left e -> pure (Left (StoreIO ("store database cannot be examined: " ++ path ++ ": " ++ e)))
+    Right _ -> do
+      procRoot <- procRootFromEnv
+      let lockPath = path ++ ".lock"
+      eOwn <- takeOwnership path lockPath procRoot 3
+      case eOwn of
+        Left err -> pure (Left err)
+        Right lockFd -> do
+          eFd <- tryIOError (openFd path ReadOnly guardFlags)
+            `onException` releaseQuiet lockFd lockPath
+          case eFd of
+            Left e
+              | isDoesNotExistError e -> releaseQuiet lockFd lockPath
+                  >> pure (Left (StoreIO ("store vanished while taking ownership: " ++ path)))
+              | otherwise -> releaseQuiet lockFd lockPath
+                  >> pure (Left (StoreIO ("store database cannot be opened: " ++ path)))
+            Right fd0 -> do
+              eGuard <- takeDbGuard path fd0 `onException` releaseQuiet lockFd lockPath
+              case eGuard of
+                Left err -> releaseQuiet lockFd lockPath >> pure (Left err)
+                Right dbFd -> do
+                  let release = closeQuietFd dbFd >> releaseQuiet lockFd lockPath
+                  r <- restore (act (OwnedStoreFile path dbFd)) `onException` release
+                  release
+                  pure (Right r)
 
--- | Remove a cold rollback journal, only when every guard holds: the
--- owner probe passes, this call holds single-writer ownership (the
--- sidecar plus the database kernel guard), a plain connection takes a
--- SQLite RESERVED lock (@BEGIN IMMEDIATE@ fails while any other
--- connection writes), and the re-read journal is still cold. Removing
--- it cannot change what SQLite reads: the zeroed magic already makes
--- SQLite treat the journal as not hot. Anything else refuses, fail
--- closed: a live owner reports live, a busy database or a changed
--- journal reports the cold journal again.
-clearColdJournal :: FilePath -> IO (Either StoreError ())
-clearColdJournal path = do
-  owner <- probeOwner path
-  case owner of
-    OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
-    _ -> do
-      owned <- withOwnedStoreFile path clearOwned
-      pure (either Left id owned)
-  where
-    journal = path ++ "-journal"
-    clearOwned _owned = do
+-- | Remove a cold rollback journal inside the caller's ownership
+-- window (the sidecar plus the database kernel guard are already
+-- held), only when every guard holds: no @-wal@ or @-shm@ sibling
+-- exists (even zero-byte: the read-write connection below would act
+-- on it), a plain connection takes a SQLite RESERVED lock
+-- (@BEGIN IMMEDIATE@ fails while any other connection writes), and
+-- the re-read journal is still cold. Removing it cannot change what
+-- SQLite reads: the zeroed magic already makes SQLite treat the
+-- journal as not hot. @onClear@ fires once the journal is gone. A
+-- journal that vanished between the plan and the clear counts as
+-- already cleared (fires, succeeds). Anything else refuses, fail
+-- closed, with the journal still in place -- except a sync or
+-- commit failure after the unlink, which already fired.
+clearColdJournalOwned :: IO () -> FilePath -> IO (Either StoreError ())
+clearColdJournalOwned onClear path = do
+  side <- anySidecarExists path
+  case side of
+    Just p -> pure (Left (StoreForeignSidecar p))
+    Nothing -> do
       eDb <- trySQLite (S.open (T.pack path))
       case eDb of
         Left err -> pure (Left err)
@@ -2484,6 +2739,8 @@ clearColdJournal path = do
           r <- clearWith db `onException` (rollbackQuiet db >> closeQuiet db)
           closeQuiet db
           pure r
+  where
+    journal = path ++ "-journal"
     clearWith db = do
       eBegin <- tryBegin db
       case eBegin of
@@ -2497,19 +2754,29 @@ clearColdJournal path = do
             JournalCold -> do
               eRm <- tryIOError (removeLink journal)
               case eRm of
-                Left e -> do
-                  rollbackQuiet db
-                  pure (Left (StoreIO ("cannot remove the cold journal " ++ journal ++ ": " ++ show e)))
+                Left e
+                  | isDoesNotExistError e -> do
+                      onClear
+                      rollbackQuiet db
+                      pure (Right ())
+                  | otherwise -> do
+                      rollbackQuiet db
+                      pure (Left (StoreIO ("cannot remove the cold journal " ++ journal ++ ": " ++ show e)))
                 Right () -> do
+                  onClear
                   eSync <- tryIOError (syncParentDir journal)
                   eCommit <- trySQLite (S.exec db "COMMIT")
                   pure (case (eCommit, eSync) of
                     (Left err, _) -> Left err
                     (Right (), Left e) -> Left (StoreIO ("cannot sync the store directory: " ++ show e))
                     (Right (), Right ()) -> Right ())
+            JournalAbsent -> do
+              onClear
+              rollbackQuiet db
+              pure (Right ())
             _ -> do
               rollbackQuiet db
-              pure (Left (StoreJournalCold journal))
+              pure (Left (StoreJournalPresent journal))
     tryBegin :: S.Database -> IO (Either S.SQLError ())
     tryBegin db = try (S.exec db "BEGIN IMMEDIATE")
 

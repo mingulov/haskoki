@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 {- | Offline store preflight and explicit migration (AC-05). Read-only
 diagnosis, the owned migration and their redacted renderings. Not
 re-exported from "Haskoki"; the serving open does not import this module.
@@ -13,6 +14,7 @@ module Haskoki.Runtime.Storage.Preflight
   , planStoreOpen
   , planVerdict
   , checkStoreOpen
+  , checkStoreOpenAllowCold
   , renderPlan
   , renderStoreRefusal
   , MigrateHooks (..)
@@ -25,20 +27,27 @@ module Haskoki.Runtime.Storage.Preflight
   , backupCandidates
   , renderReceipt
   , renderMigrateError
+  , renderMigrateErrorAfterClear
   ) where
 
 import Control.Exception (IOException, bracket, finally, fromException, mask, throwIO, try)
+import Control.Monad (forM_)
 import Data.Bifunctor (first)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
-import Data.List (intercalate)
+import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf)
 import Data.Word (Word8)
 import Foreign.C.Error (Errno (..), eNOTSUP, eOPNOTSUPP, ePERM, eXDEV)
-import Foreign.Ptr (castPtr)
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types (CInt (..), CSize (..), CUChar (..))
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Storable (peek)
 import GHC.IO.Exception (ioe_errno)
 import System.IO.Error (isAlreadyExistsError, tryIOError)
+import System.Posix.Directory (closeDirStream, openDirStream, readDirStream)
 import System.Posix.Files
   ( createLink, deviceID, fileAccess, fileID, getFileStatus, getSymbolicLinkStatus, isDirectory
   , isSymbolicLink, removeLink )
@@ -48,8 +57,6 @@ import System.Posix.Time (epochTime)
 import System.Posix.Types (Fd)
 import System.Posix.Unistd (fileSynchronise)
 
-import Haskoki.Engine.Backend (CryptoBackend (..), DigestAlg (D_SHA256), EngineResult (..))
-import Haskoki.Engine.OpenSSL4 (OpenSSL4)
 import Haskoki.Runtime.Catalog (catalogCredential, desiredTokens, tokenSerial)
 import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..))
 import Haskoki.Runtime.Storage
@@ -57,25 +64,48 @@ import Haskoki.Runtime.Storage
   , reconcileIdentities, renderIdentityRefusal, tokensWithoutCredentials )
 import Haskoki.Runtime.Storage.SQLite
   ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
-  , clearColdJournal, guardFlags, migrateOwned, noMigrationHooks, probeOwner, readFileCloexec
-  , readStoreSnapshot, sqliteSchemaVersion, withOwnedStoreFile )
+  , clearColdJournalOwned, guardFlags, migrateOwned, noMigrationHooks, pidIsDead, probeOwner, readFileCloexec
+  , readStoreSnapshot, readStoreSnapshotAllowCold, requireRegularStore, resolveStorePath, sqliteSchemaVersion
+  , withOwnedStoreFile )
 import Haskoki.Types (TokenId)
 
+-- | One-shot digest from the pinned libcrypto (see @openssl/evp.h@):
+-- @EVP_Q_digest(NULL, "SHA256", NULL, data, datalen, md, &mdlen)@.
+-- The default library context needs no setup: the first fetch
+-- initialises it and the default provider lives in libcrypto itself.
+-- A safe call, like every crypto entry in the engine's raw bindings.
+foreign import ccall safe "openssl/evp.h EVP_Q_digest"
+  c_EVP_Q_digest :: Ptr () -> CString -> CString -> Ptr CUChar -> CSize
+                 -> Ptr CUChar -> Ptr CSize -> IO CInt
+
 -- | SHA-256 of a byte string as 64 lowercase hex digits, computed by
--- the OpenSSL4 engine (never a synthetic stand-in). Any engine
+-- a direct one-shot call into the pinned libcrypto (never a
+-- synthetic stand-in, never through the engine: this module must not
+-- pull the engine's test-hooked shim object into haskoki-ctl). Any
 -- failure is a 'Left' the caller treats as a refusal.
 sha256Hex :: ByteString -> IO (Either String String)
-sha256Hex bytes = do
-  opened <- openBackend "provider=default" :: IO (EngineResult (BackendEnv OpenSSL4))
-  case opened of
-    EngineFail err -> pure (Left ("SHA-256 engine unavailable: " ++ show err))
-    EngineOk be -> do
-      r <- digestOneShot be D_SHA256 bytes `finally` closeBackend be
-      pure $ case r of
-        EngineOk d | BS.length d == 32 -> Right (concatMap hexByte (BS.unpack d))
-        EngineOk d -> Left ("SHA-256 returned " ++ show (BS.length d) ++ " bytes")
-        EngineFail err -> Left ("SHA-256 failed: " ++ show err)
+sha256Hex bytes =
+  withInputBytes bytes $ \(p, len) ->
+    allocaBytes 64 $ \md -> alloca $ \mdLen -> do
+      rc <- withCString "SHA256" $ \name ->
+        c_EVP_Q_digest nullPtr name nullPtr p len md mdLen
+      if rc /= 1
+        then pure (Left "SHA-256 failed: libcrypto refused the digest")
+        else do
+          n <- peek mdLen
+          if n /= 32
+            then pure (Left ("SHA-256 returned " ++ show n ++ " bytes"))
+            else do
+              d <- BS.packCStringLen (castPtr md, 32)
+              pure (Right (concatMap hexByte (BS.unpack d)))
   where
+    -- The output buffer holds EVP_MAX_MD_SIZE (64) bytes; SHA-256
+    -- writes 32. The input of an empty string is a throwaway
+    -- non-NULL pointer with length 0.
+    withInputBytes :: ByteString -> ((Ptr CUChar, CSize) -> IO a) -> IO a
+    withInputBytes bs action
+      | BS.null bs = allocaBytes 1 $ \p -> action (p, 0)
+      | otherwise = BS.useAsCStringLen bs (\(p, n) -> action (castPtr p, fromIntegral n))
     hexByte :: Word8 -> String
     hexByte w = [digit (w `shiftR` 4), digit (w .&. 15)]
     digit n = "0123456789abcdef" !! fromIntegral n
@@ -164,13 +194,36 @@ planVerdict p = case sopIdentity p of
 
 -- | Diagnose a store for this config WITHOUT writing it: refuses a
 -- live owner, then reads a read-only snapshot and plans. The result
--- names ids, versions and reasons only.
+-- names ids, versions and reasons only. The path is resolved once
+-- up front: every sidecar and every open below derives from the
+-- real file.
 checkStoreOpen :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
-checkStoreOpen path cfg = do
-  owner <- probeOwner path
-  case owner of
-    OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
-    _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshot path
+checkStoreOpen path0 cfg = do
+  path <- resolveStorePath path0
+  eReg <- requireRegularStore path
+  case eReg of
+    Left err -> pure (Left err)
+    Right () -> do
+      owner <- probeOwner path
+      case owner of
+        OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
+        _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshot path
+
+-- | Like 'checkStoreOpen' but a cold journal does not refuse: used
+-- by the migration to learn its verdict before deciding whether the
+-- cold journal may be cleared, and by @store check@ to accept a
+-- current store whose only blocker is the cold journal.
+checkStoreOpenAllowCold :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
+checkStoreOpenAllowCold path0 cfg = do
+  path <- resolveStorePath path0
+  eReg <- requireRegularStore path
+  case eReg of
+    Left err -> pure (Left err)
+    Right () -> do
+      owner <- probeOwner path
+      case owner of
+        OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
+        _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshotAllowCold path
 
 renderPlan :: StoreOpenPlan -> String
 renderPlan p = unlines
@@ -209,11 +262,17 @@ renderStoreRefusal e = case e of
     ++ "; do not delete it. Start the serving haskoki once (its open rolls the write back),"
     ++ " or restore a backup with the store and journal moved aside together;"
     ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
-  StoreJournalCold j -> ("store-journal-cold", "an interrupted migration left a cold journal " ++ j
+  StoreJournalCold j -> ("store-journal-cold", "an interrupted write left a cold journal " ++ j
     ++ " (SQLite treats it as not hot: the database already reads as committed state);"
     ++ " run haskoki-ctl store migrate to clear it under exclusive locks,"
     ++ " or restore a backup with the store and journal moved aside together;"
     ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
+  StoreForeignSidecar p -> ("store-foreign-sidecar",
+    "haskoki never writes a WAL, so " ++ p ++ " can only come from foreign tooling;"
+    ++ " do not start the service. Move " ++ wal ++ " and " ++ shm
+    ++ " aside (keep both files) and run store check again;"
+    ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
+    where (wal, shm) = walShmPair p
   StoreNeedsMigration f t -> ("store-migration-required", "schema " ++ show f
     ++ " needs haskoki-ctl store migrate to reach schema " ++ show t)
   StoreSchemaVersion want found -> ("store-unsupported-version", "store schema " ++ found
@@ -224,6 +283,14 @@ renderStoreRefusal e = case e of
   StoreIO m -> ("store-unreadable", m)
   other -> ("store-unreadable", show other)
 
+-- | The @(-wal, -shm)@ pair for a foreign sidecar path: whichever of
+-- the two was found, the remedy moves both aside.
+walShmPair :: FilePath -> (FilePath, FilePath)
+walShmPair p
+  | "-wal" `isSuffixOf` p = (p, take (length p - 4) p ++ "-shm")
+  | "-shm" `isSuffixOf` p = (take (length p - 4) p ++ "-wal", p)
+  | otherwise = (p, p)  -- unreachable: finders only return the two suffixes
+
 -- ---------------------------------------------------------------------------
 -- Explicit migration
 -- ---------------------------------------------------------------------------
@@ -232,8 +299,16 @@ renderStoreRefusal e = case e of
 data MigrateHooks = MigrateHooks
   { mhAfterPlan :: IO ()
     -- ^ after the unowned plan, before taking ownership
+  , mhOnColdClear :: IO ()
+    -- ^ once the cold journal is gone (cleared now or already
+    -- vanished), so every outcome after a clear reports it
   , mhAfterBackup :: IO ()
     -- ^ after the verified backup, before the transaction
+  , mhOnBackupVerified :: FilePath -> Int -> String -> IO ()
+    -- ^ with the backup path, byte count and SHA-256 hex the moment
+    -- verification passes, before the transaction begins: the
+    -- pre-BEGIN record, so a backup outlives a killed run with its
+    -- digest already reported
   , mhClock :: IO Integer
     -- ^ epoch seconds (default: 'epochTime'), read twice: once for the
     -- backup name and 'mrEpoch', once at completion for 'mrCompleted'
@@ -252,7 +327,9 @@ data MigrateHooks = MigrateHooks
 noMigrateHooks :: MigrateHooks
 noMigrateHooks = MigrateHooks
   { mhAfterPlan = pure ()
+  , mhOnColdClear = pure ()
   , mhAfterBackup = pure ()
+  , mhOnBackupVerified = \_ _ _ -> pure ()
   , mhClock = truncate . toRational <$> epochTime
   , mhDigest = sha256Hex
   , mhAfterCreate = \_ -> pure ()
@@ -300,40 +377,65 @@ m >>? k = m >>= either (pure . Left) k
 infixl 1 >>?
 
 -- | The explicit migration (AC-05). Refusals before ownership write
--- nothing: config selection, backup-dir safety, a live owner or hot
--- journal (via the read-only check), identity drift. A cold journal
--- is cleared once under exclusive locks and the plan is taken afresh.
--- Under ownership: a fresh snapshot must equal the planned one, then
--- a new verified backup, then ONE transaction, then a read-back
--- check, then a non-overwriting receipt.
+-- nothing: config selection, backup-dir safety, a live owner, a hot
+-- or unknown journal, a foreign -wal/-shm sibling (via the
+-- read-only check), identity drift, or a current store. A cold
+-- journal is cleared only after the plan says the migration
+-- proceeds: the verdict is taken first through a read-only snapshot
+-- that tolerates the cold journal, and any other outcome leaves the
+-- journal untouched. Under the single ownership window: a fresh
+-- snapshot must equal the planned one, then the cold journal is
+-- cleared (if any; a vanished one counts as cleared), then a new
+-- verified backup, then ONE transaction, then a read-back check,
+-- then a non-overwriting receipt. Every outcome after a clear
+-- reports it.
 migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
-migrateStoreWith hooks path cfg backupDir =
-  (first MigrateConfig <$> configSelectsStore path cfg) >>? \() ->
-  checkBackupDir path backupDir >>? \() ->
-  attempt False
+migrateStoreWith hooks path0 cfg backupDir =
+  (first MigrateConfig <$> configSelectsStore path0 cfg) >>? \() -> do
+    path <- resolveStorePath path0
+    checkBackupDir path backupDir >>? \() ->
+      migrateResolved hooks path cfg backupDir
+
+-- | 'migrateStoreWith' on an already-resolved path: the config check
+-- ran on the operator's spelling, the backup-directory guard ran on
+-- the resolved path (a link must not smuggle backups beside the
+-- real file), and every sidecar and every open below derives from
+-- the real file.
+migrateResolved :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
+migrateResolved hooks path cfg backupDir = do
+  ePlan <- first MigrateStore <$> checkStoreOpen path cfg
+  case ePlan of
+    Left (MigrateStore (StoreJournalCold _)) -> handleCold
+    Left err -> pure (Left err)
+    Right plan -> runPlan False plan
   where
-    -- A cold journal is cleared at most once; a journal that is still
-    -- cold afterwards, or any other refusal, is reported, never
-    -- retried.
-    attempt :: Bool -> IO (Either MigrateError MigrateOutcome)
-    attempt cleared = do
-      ePlan <- first MigrateStore <$> checkStoreOpen path cfg
-      case ePlan of
-        Left (MigrateStore (StoreJournalCold _))
-          | not cleared -> do
-              eClear <- first MigrateStore <$> clearColdJournal path
-              case eClear of
-                Left err -> pure (Left err)
-                Right () -> attempt True
+    -- Plan despite the cold journal, without touching it, to learn
+    -- the verdict. Only a migration-required verdict proceeds to
+    -- ownership, where the journal is cleared after the snapshot
+    -- comparison; any other outcome leaves it untouched.
+    handleCold :: IO (Either MigrateError MigrateOutcome)
+    handleCold = do
+      eSnap <- first MigrateStore <$> checkStoreOpenAllowCold path cfg
+      case eSnap of
         Left err -> pure (Left err)
         Right plan -> case planVerdict plan of
+          VerdictMigrationRequired -> runPlan True plan
           VerdictIdentityRefused r -> pure (Left (MigrateIdentityRefused r))
           VerdictOpenable -> pure (Right MigrateNotNeeded)
-          VerdictMigrationRequired ->
-            pure (traverse freezeOne (rowless plan)) >>? \freeze -> do
-              mhAfterPlan hooks
-              owned <- withOwnedStoreFile path (\o -> underOwnership cleared o plan freeze)
-              pure (either (Left . MigrateStore) id owned)
+    runPlan :: Bool -> StoreOpenPlan -> IO (Either MigrateError MigrateOutcome)
+    runPlan needsClear plan = case planVerdict plan of
+      VerdictIdentityRefused r -> pure (Left (MigrateIdentityRefused r))
+      VerdictOpenable -> pure (Right MigrateNotNeeded)
+      VerdictMigrationRequired ->
+        pure (traverse freezeOne (rowless plan)) >>? \freeze -> do
+          mhAfterPlan hooks
+          owned <- withOwnedStoreFile path (\o -> underOwnership needsClear o plan freeze)
+          pure (either (Left . MigrateStore) id owned)
+    -- The owned re-read tolerates the cold journal exactly when
+    -- the unowned plan did, so the comparison is like-for-like.
+    readUnderOwnership needsClear
+      | needsClear = readStoreSnapshotAllowCold path
+      | otherwise = readStoreSnapshot path
     rowless plan =
       [t | t <- snapTokens (sopSnapshot plan), trId t `elem` sopAbsentCredentials plan]
     -- Unreachable after an accepted reconciliation (every stored
@@ -343,29 +445,36 @@ migrateStoreWith hooks path cfg backupDir =
       Right (catalogCredential cfg (trId t))
     underOwnership :: Bool -> OwnedStoreFile -> StoreOpenPlan -> [CredentialRecord]
                    -> IO (Either MigrateError MigrateOutcome)
-    underOwnership cleared o plan freeze =
-      (first MigrateStore <$> readStoreSnapshot path) >>? \snap ->
+    underOwnership needsClear o plan freeze =
+      (first MigrateStore <$> readUnderOwnership needsClear) >>? \snap ->
       if snap /= sopSnapshot plan then pure (Left MigrateStoreChanged) else do
-      now <- mhClock hooks
-      writeVerifiedBackup hooks path backupDir (sopSchema plan) now snap >>? \(bak, nBytes, sha) -> do
-        mhAfterBackup hooks
-        eTx <- migrateOwned o (SQLiteMigration (sopSchema plan) freeze) (mhSQLite hooks)
-        case eTx of
-          Left err -> pure (Left (MigrateTxnFailed bak err))
-          Right () ->
-            verifyMigrated plan bak >>? \() -> do
-              done <- mhClock hooks
-              let rc = MigrationReceipt
-                    { mrStore = path, mrFrom = sopSchema plan, mrTo = sqliteSchemaVersion
-                    , mrFrozen = map crToken freeze, mrPreserved = sopCredentialTokens plan
-                    , mrBackup = bak, mrBackupBytes = nBytes, mrBackupSha256 = sha
-                    , mrReceipt = bak ++ ".receipt", mrEpoch = now, mrCompleted = done
-                    , mrColdJournalRemoved = cleared }
-              w <- writeReceipt (mhAfterCreate hooks) (mhLink hooks) (mrReceipt rc) (BC8.pack (renderReceipt rc)) backupDir
-              pure $ case w of
-                Written -> Right (Migrated rc)
-                NameTaken -> Left (MigrateReceiptFailed bak (mrReceipt rc ++ " appeared during the migration"))
-                WriteFailed why -> Left (MigrateReceiptFailed bak why)
+      eClear <- if needsClear
+        then clearColdJournalOwned (mhOnColdClear hooks) path
+        else pure (Right ())
+      case eClear of
+        Left err -> pure (Left (MigrateStore err))
+        Right () -> do
+          now <- mhClock hooks
+          writeVerifiedBackup hooks path backupDir (sopSchema plan) now snap >>? \(bak, nBytes, sha) -> do
+            mhOnBackupVerified hooks bak nBytes sha
+            mhAfterBackup hooks
+            eTx <- migrateOwned o (SQLiteMigration (sopSchema plan) freeze) (mhSQLite hooks)
+            case eTx of
+              Left err -> pure (Left (MigrateTxnFailed bak err))
+              Right () ->
+                verifyMigrated plan bak >>? \() -> do
+                  done <- mhClock hooks
+                  let rc = MigrationReceipt
+                        { mrStore = path, mrFrom = sopSchema plan, mrTo = sqliteSchemaVersion
+                        , mrFrozen = map crToken freeze, mrPreserved = sopCredentialTokens plan
+                        , mrBackup = bak, mrBackupBytes = nBytes, mrBackupSha256 = sha
+                        , mrReceipt = bak ++ ".receipt", mrEpoch = now, mrCompleted = done
+                        , mrColdJournalRemoved = needsClear }
+                  w <- writeReceipt (mhAfterCreate hooks) (mhLink hooks) (mrReceipt rc) (BC8.pack (renderReceipt rc)) backupDir
+                  pure $ case w of
+                    Written -> Right (Migrated rc)
+                    NameTaken -> Left (MigrateReceiptFailed bak (mrReceipt rc ++ " appeared during the migration"))
+                    WriteFailed why -> Left (MigrateReceiptFailed bak why)
     verifyMigrated plan bak = do
       e <- readStoreSnapshot path
       pure $ case e of
@@ -461,13 +570,16 @@ syncDir dir = bracket (openFd dir ReadOnly guardFlags) closeFd fileSynchronise
 -- 'writeExclusive'; it is then moved into place by link(2) plus unlink
 -- (unlike rename(2), link never replaces an existing name), and the
 -- directory is fsynced. Our temporary is removed on every path after
--- its write. On filesystems without hard links (the link fails with
--- EPERM, ENOTSUP, EOPNOTSUPP or EXDEV) it falls back to an O_EXCL
--- create-and-write of the final name, which still never overwrites;
--- any other link failure stays a receipt failure.
+-- its write. Stale temporaries from provably-dead owners are swept
+-- before writing (see 'sweepStaleReceiptTemps'). On filesystems
+-- without hard links (the link fails with EPERM, ENOTSUP, EOPNOTSUPP
+-- or EXDEV) it falls back to an O_EXCL create-and-write of the final
+-- name, which still never overwrites; any other link failure stays a
+-- receipt failure.
 writeReceipt :: (FilePath -> IO ()) -> (FilePath -> FilePath -> IO ()) -> FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
 writeReceipt afterCreate link final bytes dir = mask $ \restore -> do
   pid <- getProcessID
+  sweepStaleReceiptTemps dir (fromIntegral pid)
   attempt restore pid 0
   where
     attempt restore pid nonce
@@ -501,6 +613,55 @@ writeReceipt afterCreate link final bytes dir = mask $ \restore -> do
                       _ <- tryIOError (syncDir dir)
                       pure (WriteFailed ("cannot move " ++ tmp ++ " to " ++ final ++ ": " ++ show e))
 
+-- | Remove stale receipt temporaries from provably-dead owners:
+-- files named @<receipt>.tmp.\<pid\>.\<nonce\>@ in the backup
+-- directory whose pid is dead ('pidIsDead') and is not ours. Files
+-- that do not parse, live owners, unknowable liveness and our own
+-- pid are all left alone. Best-effort: every failure is ignored, so
+-- a sweep that cannot complete only leaves files for the next run.
+-- | Directory entries streamed over a POSIX directory handle (no
+-- @directory@ dependency in the library). Unlike 'listDirectory',
+-- @.@ and @..@ are included; callers filter them.
+listDirEntries :: FilePath -> IO [String]
+listDirEntries dir =
+  bracket (openDirStream dir) closeDirStream $ \s -> collect s []
+  where
+    collect s acc = do
+      e <- readDirStream s
+      if null e then pure (reverse acc) else collect s (e : acc)
+
+sweepStaleReceiptTemps :: FilePath -> Int -> IO ()
+sweepStaleReceiptTemps dir self = do
+  eNames <- tryIOError (listDirEntries dir)
+  case eNames of
+    Left _ -> pure ()
+    Right names -> forM_ (filter (\n -> n /= "." && n /= "..") names) $ \name ->
+      case stalePid name of
+        Just pid | pid /= self -> do
+          dead <- pidIsDead pid
+          whenDead dead (dir ++ "/" ++ name)
+        _ -> pure ()
+  where
+    whenDead True p = do
+      _ <- tryIOError (removeLink p)
+      pure ()
+    whenDead False _ = pure ()
+    stalePid :: String -> Maybe Int
+    stalePid name
+      | ".receipt.tmp." `isInfixOf` name = case breakOn ".tmp." name of
+          Just rest -> case span (/= '.') rest of
+            (pidTxt@(_ : _), '.' : nonceTxt) -> case (reads pidTxt, reads nonceTxt) of
+              ([(pid, "")], [(nonce, "")]) | pid > 0 && nonce >= (0 :: Int) -> Just pid
+              _ -> Nothing
+            _ -> Nothing
+          Nothing -> Nothing
+      | otherwise = Nothing
+    breakOn :: String -> String -> Maybe String
+    breakOn pat str = case str of
+      [] -> Nothing
+      _ | pat `isPrefixOf` str -> Just (drop (length pat) str)
+      (_ : t) -> breakOn pat t
+
 -- | How many unique temporary receipt names are tried before the
 -- receipt write gives up (a stale temporary only costs one attempt).
 maxReceiptTmpAttempts :: Int
@@ -519,21 +680,31 @@ isLinkUnsupported e = case ioe_errno e of
 -- | Hash, then copy the owned store into the first free candidate
 -- name, then verify by byte readback and by a read-only snapshot
 -- equal to the store's (file identity aside). A hashing failure
--- refuses before any file exists.
+-- refuses before any file exists. A backup that fails verification
+-- is removed again (best effort, directory synced), never left for
+-- a later restore to trust: only our own O_EXCL create can be at
+-- this path.
 writeVerifiedBackup :: MigrateHooks -> FilePath -> FilePath -> Int -> Integer -> StoreSnapshot
                     -> IO (Either MigrateError (FilePath, Int, String))
 writeVerifiedBackup hooks store dir from now snap =
   readOrFail ("cannot read the store " ++ store) store >>? \bytes ->
   (first MigrateBackupFailed <$> mhDigest hooks bytes) >>? \sha ->
-  pickAndWrite bytes candidates >>? \bak ->
-  readOrFail ("cannot read back the backup " ++ bak) bak >>? \back -> do
-    eSnap <- readStoreSnapshot bak
-    pure $ case eSnap of
-      _ | back /= bytes -> Left (MigrateBackupFailed ("backup readback differs: " ++ bak))
-      Right b | b { snapFile = snapFile snap } == snap -> Right (bak, BS.length bytes, sha)
-      Right _ -> Left (MigrateBackupFailed ("backup does not read as the same store: " ++ bak))
-      Left err -> Left (MigrateBackupFailed ("backup does not open read-only: " ++ bak ++ ": " ++ show err))
+  pickAndWrite bytes candidates >>? \bak -> do
+    eBack <- tryIOError (readFileCloexec bak)
+    case eBack of
+      Left e -> discard bak ("cannot read back the backup " ++ bak ++ ": " ++ show e)
+      Right back -> do
+        eSnap <- readStoreSnapshot bak
+        case eSnap of
+          _ | back /= bytes -> discard bak ("backup readback differs: " ++ bak)
+          Right b | b { snapFile = snapFile snap } == snap -> pure (Right (bak, BS.length bytes, sha))
+          Right _ -> discard bak ("backup does not read as the same store: " ++ bak)
+          Left err -> discard bak ("backup does not open read-only: " ++ bak ++ ": " ++ show err)
   where
+    discard bak why = do
+      _ <- tryIOError (removeLink bak)
+      _ <- tryIOError (syncDir dir)
+      pure (Left (MigrateBackupFailed why))
     candidates = backupCandidates store dir from now
     readOrFail what p = first (\e -> MigrateBackupFailed (what ++ ": " ++ show e)) <$> tryIOError (readFileCloexec p)
     pickAndWrite _ [] = pure (Left (MigrateBackupExists firstName))
@@ -586,3 +757,21 @@ renderMigrateError e = case e of
     ++ " (docs/operations-notes.md, Upgrade, backup and recovery)")
   MigrateReceiptFailed bak why -> ("migrate-receipt-failed", "the migration committed; the "
     ++ "receipt was not written (" ++ why ++ "). Backup at " ++ bak)
+
+-- | Like 'renderMigrateError', but for a migration run that already
+-- cleared a cold journal: the post-clear refusals must not claim
+-- nothing was written or the store was unchanged. The tags are
+-- unchanged; anything that can only fail before the clear renders
+-- exactly as before.
+renderMigrateErrorAfterClear :: MigrateError -> (String, String)
+renderMigrateErrorAfterClear e = case e of
+  MigrateBackupExists p -> ("migrate-backup-exists",
+    "every backup name is taken (first: " ++ p
+      ++ "); the store database was not changed (a cold journal was removed; see above)")
+  MigrateBackupFailed why -> ("migrate-backup-failed", why
+    ++ "; the store database was not changed (a cold journal was removed; see above)")
+  MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction rolled back ("
+    ++ snd (renderStoreRefusal se)
+    ++ "); the store database was not changed (a cold journal was removed; see above). Backup kept at "
+    ++ bak)
+  _ -> renderMigrateError e

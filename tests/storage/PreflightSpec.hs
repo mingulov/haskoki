@@ -4,16 +4,17 @@
 released-binary fixtures, refused opens that write nothing, the
 read-only snapshot and plan, the owned migration, and recovery.
 -}
-module PreflightSpec (spec, migrateChildMain, migrateChildSmallMain) where
+module PreflightSpec (spec, migrateChildMain, migrateChildSmallMain, reservedHolderMain) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import qualified Data.Map.Strict as Map
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Exception (AsyncException (ThreadKilled), IOException, bracket, throwIO, try)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (AsyncException (ThreadKilled), IOException, bracket, onException, throwIO, try)
 import Control.Monad (forever)
 import Data.Bits ((.&.))
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, stripPrefix)
 import qualified Database.SQLite3 as S
 import Foreign.C.Error (eACCES, eNOTSUP, eOPNOTSUPP, ePERM, eXDEV, errnoToIOError)
@@ -23,12 +24,14 @@ import System.Directory (createDirectory, doesFileExist, listDirectory, removeFi
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath ((</>))
-import System.Posix.Files (createSymbolicLink, fileMode, fileSize, getFileStatus, modificationTime)
+import System.Posix.Files (createNamedPipe, createSymbolicLink, fileMode, fileSize, getFileStatus, modificationTime)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
 import System.Posix.Signals (sigKILL, signalProcess)
+import System.IO (IOMode (AppendMode), hClose, openFile)
 import System.IO.Error (fullErrorType, mkIOError)
 import System.Posix.User (getEffectiveUserID)
-import System.Process (CreateProcess (..), createProcess, getPid, proc, waitForProcess)
+import System.Timeout (timeout)
+import System.Process (CreateProcess (..), ProcessHandle, StdStream (..), createProcess, getPid, getProcessExitCode, proc, waitForProcess)
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (HUnitFailure, assertBool, assertEqual, assertFailure, testCase)
 
@@ -55,6 +58,8 @@ spec :: TestTree
 spec = testGroup "Store preflight"
   [ testGroup "released fixtures"
       [ testCase "sha-256 is the standard digest" caseSha256Vector
+      , testCase "sha-256 of the empty string" caseSha256Empty
+      , testCase "sha-256 of the 448-bit FIPS message" caseSha256Long
       , testCase "v0.3.1.0 fixture matches its manifest" (caseFixtureManifest "v0.3.1.0")
       , testCase "v0.4.0.0 fixture matches its manifest" (caseFixtureManifest "v0.4.0.0")
       , testCase "v0.3.1.0 manifest names the committed generator and template" (caseManifestGenerator "v0.3.1.0")
@@ -70,12 +75,15 @@ spec = testGroup "Store preflight"
       , testCase "schema 1 with a credentials table is corrupt, unchanged" caseV1WithCredentialsCorrupt
       , testCase "unknown schema versions refuse unchanged" caseUnknownVersionsRefuse
       , testCase "schema-3 rowless tokens still name their ids" caseV3RowlessNamesIds
+      , testCase "a foreign WAL refuses the serving open, merging nothing" caseServingRefusesForeignWal
+      , testCase "a FIFO store refuses the serving open without hanging" caseServingRefusesFifoStore
       ]
   , testGroup "snapshot"
       [ testCase "snapshot reads a released store without writing" caseSnapshotReadsFixture
       , testCase "snapshot never creates a missing store" caseSnapshotNeverCreates
       , testCase "snapshot reads a store in a read-only directory" caseSnapshotReadOnlyDir
       , testCase "snapshot refuses a hot journal, touching nothing" caseSnapshotRefusesJournal
+      , testCase "snapshot refuses a symlinked, FIFO or device journal without hanging" caseSnapshotRefusesNonRegularJournal
       , testCase "snapshot diagnoses garbage and corrupt records" caseSnapshotDiagnoses
       , testCase "owner probe: absent and in-process live" caseProbeAbsentAndLive
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
@@ -126,18 +134,26 @@ spec = testGroup "Store preflight"
       , testCase "a hot journal refuses before ownership, both files untouched" caseMigrateHotJournal
       , testCase "a zero-byte journal is ignored" caseMigrateZeroByteJournal
       , testCase "a cold journal is cleared under exclusive locks, then the migration runs" caseMigrateClearsColdJournal
+      , testCase "a cold journal plus a foreign -wal refuses with everything untouched" caseMigrateColdJournalWithWalRefuses
+      , testCase "a migration through a symlink locks the target file" caseMigrateSymlinkLocksTarget
+      , testCase "a store changed after the plan keeps its cold journal" caseMigrateStoreChangedKeepsColdJournal
+      , testCase "a cold journal that vanished counts as already cleared" caseMigrateVanishedColdJournalCleared
+      , testCase "a failure after the clear still reports the clearing" caseMigrateReportsClearOnFailure
+      , testCase "a schema-3 store plus a cold journal needs nothing, journal untouched" caseMigrateSchema3ColdNotNeeded
       , testCase "a migration with no cold journal records cold-journal-removed: no" caseMigrateReceiptColdJournalNo
-      , testCase "a cold journal while another connection holds RESERVED refuses" caseColdJournalReservedRefuses
+      , testCase "a cold journal while another process holds RESERVED refuses" caseColdJournalReservedRefuses
       , testCase "a store changed after the plan refuses" caseMigrateStoreChanged
       , testCase "an existing backup name is never overwritten" caseMigrateNeverOverwrites
       , testCase "all 100 backup names taken refuses" caseMigrateBackupNamesExhausted
       , testCase "a hashing failure refuses before any write" caseMigrateHashFailure
       , testCase "the clock: one reading names the backup, completion is read after the commit" caseMigrateClockReadings
+      , testCase "the verified backup is recorded before BEGIN" caseBackupVerifiedBeforeBegin
       , testCase "a backup write failing after create refuses; only an existing name advances" caseMigrateBackupWriteFails
       , testCase "an interrupted backup write leaves no file" caseMigrateInterruptedWriteLeavesNoFile
       , testCase "a failed read-back after commit is reported with the backup" caseMigrateVerifyFails
       , testCase "a receipt name taken after the backup is never overwritten" caseMigrateReceiptFails
       , testCase "a stale receipt temporary from a crash is ignored, not fatal" caseMigrateStaleReceiptTmpIgnored
+      , testCase "a stale receipt temporary from a dead pid is cleaned on the next migrate" caseMigrateStaleReceiptTmpCleaned
       , testCase "repeated interrupted backup writes leave no file" caseMigrateInterruptedWriteRepeated
       , testCase "a link failure for want of hard links falls back to a direct receipt write" caseMigrateReceiptLinkFallback
       , testCase "the link fallback never overwrites a taken receipt name" caseMigrateReceiptLinkFallbackNeverOverwrites
@@ -146,6 +162,7 @@ spec = testGroup "Store preflight"
       , testCase "appended catalog tokens are left to the next open" caseMigrateLeavesSeedsToOpen
       , testCase "naming: candidate backup names" caseBackupCandidates
       , testCase "migrate errors render tags and paths, never PINs" caseMigrateErrorRender
+      , testCase "a foreign sidecar refusal names moving both files aside" caseForeignSidecarRemedy
       ]
   , testGroup "recovery"
       [ after AllFinish "/death after reservation leaves a gap, never reuse/" $
@@ -165,6 +182,18 @@ caseSha256Vector = do
   r <- sha256Hex "abc"
   assertEqual "FIPS 180-2 vector"
     (Right "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") r
+
+caseSha256Empty :: IO ()
+caseSha256Empty = do
+  r <- sha256Hex ""
+  assertEqual "FIPS 180-4 empty vector"
+    (Right "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") r
+
+caseSha256Long :: IO ()
+caseSha256Long = do
+  r <- sha256Hex "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+  assertEqual "FIPS 180-4 448-bit vector"
+    (Right "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1") r
 
 -- | The committed store is byte-for-byte the one the manifest
 -- describes, and its read-only shape matches the recorded shape.
@@ -268,6 +297,44 @@ caseV3RowlessNamesIds = withScratch "refused-open" $ \dir -> do
     Right acq -> closeAcquired acq >> assertFailure "rowless store opened"
   assertUnchanged "schema-3 rowless store" before store
 
+-- A valid foreign WAL beside a current store refuses the serving
+-- open before any SQLite connection opens: the store bytes are
+-- unchanged, the WAL stays in place, and no lock or -shm remains.
+caseServingRefusesForeignWal :: IO ()
+caseServingRefusesForeignWal = withScratch "refused-open" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 3 store [fixtureToken 1 0 "haskoki-demo", fixtureToken 2 1 "haskoki-ops"]
+    [ CredentialRecord (TokenId 1) "58213946" (Just "12873465")
+    , CredentialRecord (TokenId 2) "69324057" (Just "34095687") ]
+  plantForeignWal store "meta"
+  dbBefore <- BS.readFile store
+  wBefore <- BS.readFile (store ++ "-wal")
+  r <- openSQLiteStore store
+  case r of
+    Left (StoreForeignSidecar p) -> assertEqual "names the wal" (store ++ "-wal") p
+    Left other -> assertFailure ("wrong refusal: " ++ show other)
+    Right s -> storeClose s >> assertFailure "the serving open took a store with a foreign WAL"
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  BS.readFile (store ++ "-wal") >>= \b -> assertBool "wal untouched" (b == wBefore)
+  shmLeft <- doesFileExist (store ++ "-shm")
+  assertBool "no -shm created" (not shmLeft)
+  lockLeft <- doesFileExist (store ++ ".lock")
+  assertBool "no lock left" (not lockLeft)
+
+-- A FIFO at the store path refuses the serving open by lstat,
+-- never opened: the held writer only keeps a regression from
+-- hanging the suite.
+caseServingRefusesFifoStore :: IO ()
+caseServingRefusesFifoStore = withScratch "refused-open" $ \dir -> do
+  let store = dir </> "store.db"
+  createNamedPipe store 0o600
+  withFifoWriter store "not a database file, only pipe garbage" $ do
+    r <- openSQLiteStore store
+    case r of
+      Left (StoreIO m) -> assertBool "names non-regular" ("not a regular file" `isInfixOf` m)
+      Left other -> assertFailure ("wrong refusal: " ++ show other)
+      Right s -> storeClose s >> assertFailure "the serving open took a FIFO store"
+
 -- | The manifest's generator and template digests name the files in
 -- the tree, so an edit to either cannot leave a stale record.
 caseManifestGenerator :: String -> IO ()
@@ -332,6 +399,44 @@ caseSnapshotRefusesJournal = withScratch "snapshot" $ \dir -> do
   assertEqual "refused" (Left (StoreJournalPresent (store ++ "-journal"))) (snapSchema <$> r)
   BS.readFile store >>= assertEqual "db untouched" dbBefore
   BS.readFile (store ++ "-journal") >>= assertEqual "journal untouched" jBefore
+
+-- A journal that is not a regular file is refused without opening
+-- it: a symlink to a FIFO would block forever, a symlink to a
+-- device misclassifies. Each FIFO probe holds a writer first, so a
+-- regression that opens the journal reads zeros (cold, the wrong
+-- refusal) and fails instead of hanging the suite; the timeout is
+-- only a backstop. A device read is interruptible, so the /dev/zero
+-- probe keeps the timeout alone.
+caseSnapshotRefusesNonRegularJournal :: IO ()
+caseSnapshotRefusesNonRegularJournal = withScratch "snapshot" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  let journal = store ++ "-journal"
+      zeros = BS.replicate 512 0
+  let fifo = dir </> "fifo"
+  createNamedPipe fifo 0o600
+  createSymbolicLink fifo journal
+  mr1 <- withFifoWriter fifo zeros (timeout 5000000 (readStoreSnapshot store))
+  case mr1 of
+    Nothing -> assertFailure "snapshot hung on a symlinked FIFO journal"
+    Just r1 -> case r1 of
+      Left (StoreJournalPresent _) -> pure ()
+      other -> assertFailure ("symlink FIFO: " ++ show (fmap snapSchema other))
+  removeFile journal
+  createNamedPipe journal 0o600
+  mr2 <- withFifoWriter journal zeros (timeout 5000000 (readStoreSnapshot store))
+  case mr2 of
+    Nothing -> assertFailure "snapshot hung on a FIFO journal"
+    Just r2 -> case r2 of
+      Left (StoreJournalPresent _) -> pure ()
+      other -> assertFailure ("FIFO: " ++ show (fmap snapSchema other))
+  removeFile journal
+  createSymbolicLink "/dev/zero" journal
+  mr3 <- timeout 5000000 (readStoreSnapshot store)
+  case mr3 of
+    Nothing -> assertFailure "snapshot hung on a symlinked device journal"
+    Just r3 -> case r3 of
+      Left (StoreJournalPresent _) -> pure ()
+      other -> assertFailure ("device symlink: " ++ show (fmap snapSchema other))
 
 caseSnapshotDiagnoses :: IO ()
 caseSnapshotDiagnoses = withScratch "snapshot" $ \dir -> do
@@ -580,7 +685,13 @@ casePlanTransientLockFree = withScratch "plan" $ \dir -> do
   bracket (openFd store ReadOnly defaultFileFlags) closeFd $ \fd -> do
     rc <- c_flockT (fromIntegral fd) 2 -- LOCK_EX
     assertEqual "test holds the db lock" 0 rc
-    _ <- forkIO (threadDelay 10000 >> voidFlock fd)
+    -- Condition-based release: the holder waits for the check to
+    -- start, then releases after a 1ms head start so the probe has
+    -- attempted the lock (contention, not a vacuous early release),
+    -- well inside the 20ms retry window.
+    started <- newEmptyMVar
+    _ <- forkIO (takeMVar started >> threadDelay 1000 >> voidFlock fd)
+    putMVar started ()
     r <- checkStoreOpen store cfg
     case r of
       Right plan -> assertEqual "migration still planned" VerdictMigrationRequired (planVerdict plan)
@@ -1062,6 +1173,144 @@ caseMigrateClearsColdJournal = withScratch "migrate" $ \dir -> do
   r2 <- migrateStoreWith fixedClock store cfg backups
   assertEqual "second run needs nothing" (Right MigrateNotNeeded) r2
 
+-- A cold journal plus a foreign -wal refuses with everything
+-- untouched: the -wal is checked before the cold classification,
+-- and no SQLite connection opens.
+caseMigrateColdJournalWithWalRefuses :: IO ()
+caseMigrateColdJournalWithWalRefuses = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"; wal = store ++ "-wal"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  dbBefore <- BS.readFile store
+  BS.writeFile journal (BS.replicate 512 0)
+  BS.writeFile wal "foreign write-ahead log"
+  jBefore <- BS.readFile journal
+  wBefore <- BS.readFile wal
+  r <- migrateStoreWith fixedClock store cfg backups
+  case r of
+    Left (MigrateStore (StoreForeignSidecar p)) ->
+      assertBool "names the wal" (p == wal)
+    other -> assertFailure ("wrong result: " ++ show other)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
+  BS.readFile wal >>= \b -> assertBool "wal untouched" (b == wBefore)
+  listBackups backups >>= assertEqual "no backup" []
+
+-- Ownership taken through a symlink guards the real file: while the
+-- migration holds ownership, the lock sidecar sits beside the
+-- target, never beside the link.
+caseMigrateSymlinkLocksTarget :: IO ()
+caseMigrateSymlinkLocksTarget = withScratch "migrate" $ \dir -> do
+  (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  seen <- newIORef (True, False)
+  let watch = fixedClock { mhAfterBackup = do
+        l <- doesFileExist (link ++ ".lock")
+        t <- doesFileExist (real ++ ".lock")
+        atomicModifyIORef' seen (const ((l, t), ())) }
+  r <- migrateStoreWith watch link cfg backups
+  case r of
+    Right (Migrated _) -> pure ()
+    other -> assertFailure ("migration through a symlink failed: " ++ show other)
+  readIORef seen >>= assertEqual "lock beside the target only" (False, True)
+
+-- The clear runs after the snapshot comparison inside the single
+-- ownership window: a store that changed after the plan refuses
+-- with its cold journal still in place (never removed
+-- unreported). The poke appends one trailing byte (SQLite ignores
+-- it; the file identity changes): poking through a read-write
+-- SQLite open would itself delete the cold journal on close.
+caseMigrateStoreChangedKeepsColdJournal :: IO ()
+caseMigrateStoreChangedKeepsColdJournal = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  BS.writeFile journal (BS.replicate 512 0)
+  jBefore <- BS.readFile journal
+  cleared <- newIORef False
+  let poke = noMigrateHooks
+        { mhAfterPlan = BS.appendFile store "x"
+        , mhOnColdClear = writeIORef cleared True }
+  r <- migrateStoreWith poke store cfg backups
+  assertEqual "changed store refused" (Left MigrateStoreChanged) r
+  BS.readFile journal >>= \b -> assertBool "journal still in place" (b == jBefore)
+  readIORef cleared >>= assertEqual "no clearing reported" False
+  listBackups backups >>= assertEqual "no backup" []
+  lockLeft <- doesFileExist (store ++ ".lock")
+  assertBool "ownership released" (not lockLeft)
+
+-- A cold journal that vanished between the plan and the clear
+-- counts as already cleared: the migration proceeds and records
+-- the clearing.
+caseMigrateVanishedColdJournalCleared :: IO ()
+caseMigrateVanishedColdJournalCleared = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  BS.writeFile journal (BS.replicate 512 0)
+  cleared <- newIORef False
+  let vanish = fixedClock
+        { mhAfterPlan = removeFile journal
+        , mhOnColdClear = writeIORef cleared True }
+  r <- migrateStoreWith vanish store cfg backups
+  rc <- case r of
+    Right (Migrated got) -> pure got
+    other -> assertFailure ("vanished journal blocked the migration: " ++ show other)
+  assertBool "receipt records the clearing" (mrColdJournalRemoved rc)
+  readIORef cleared >>= assertEqual "clearing reported" True
+  gone <- not <$> doesFileExist journal
+  assertBool "journal gone" gone
+  roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'" >>= assertEqual "migrated" ["3"]
+
+-- Every outcome after a clear reports it: a transaction failure
+-- after the clear still fires the clearing hook (the CLI prints
+-- the line on stdout). Uses the v0.3.1 store, whose migration
+-- needs a fresh page, so the page-count cap bites.
+caseMigrateReportsClearOnFailure :: IO ()
+caseMigrateReportsClearOnFailure = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.3.1.0" dir
+  let backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  BS.writeFile journal (BS.replicate 512 0)
+  cleared <- newIORef False
+  let full = fixedClock
+        { mhOnColdClear = writeIORef cleared True
+        , mhSQLite = noMigrationHooks { mgAfterBegin = \db -> do
+            n <- pragmaInt db "PRAGMA page_count"
+            S.exec db (T.pack ("PRAGMA max_page_count = " ++ show n)) } }
+  r <- migrateStoreWith full store cfg backups
+  case r of
+    Left (MigrateTxnFailed _ (StoreFull _)) -> pure ()
+    other -> assertFailure ("wrong result: " ++ show other)
+  readIORef cleared >>= assertEqual "clearing reported" True
+  gone <- not <$> doesFileExist journal
+  assertBool "journal removed" gone
+
+-- A schema-3 store plus a cold journal needs nothing and the
+-- journal is left untouched: clearing runs only when the plan says
+-- the migration proceeds.
+caseMigrateSchema3ColdNotNeeded :: IO ()
+caseMigrateSchema3ColdNotNeeded = withScratch "migrate" $ \dir -> do
+  let store = dir </> "store.sqlite"; backups = dir </> "backups"; journal = store ++ "-journal"
+  createDirectory backups
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  openReconciled store cfg >>= either (assertFailure . show) closeAcquired
+  dbBefore <- BS.readFile store
+  BS.writeFile journal (BS.replicate 512 0)
+  jBefore <- BS.readFile journal
+  r <- migrateStoreWith fixedClock store cfg backups
+  assertEqual "not needed" (Right MigrateNotNeeded) r
+  BS.readFile journal >>= \b -> assertBool "journal untouched" (b == jBefore)
+  BS.readFile store >>= \b -> assertBool "store untouched" (b == dbBefore)
+  listBackups backups >>= assertEqual "no backup" []
+
 -- Without a cold journal the receipt says so.
 caseMigrateReceiptColdJournalNo :: IO ()
 caseMigrateReceiptColdJournalNo = withScratch "migrate" $ \dir -> do
@@ -1069,33 +1318,73 @@ caseMigrateReceiptColdJournalNo = withScratch "migrate" $ \dir -> do
   assertBool "not removed" (not (mrColdJournalRemoved rc))
   readFile (mrReceipt rc) >>= assertBool "receipt line" . ("cold-journal-removed: no\n" `isInfixOf`)
 
--- A cold journal while another connection holds a SQLite RESERVED
+-- A cold journal while another process holds a SQLite RESERVED
 -- lock refuses: the clearing only runs when no other writer is in
--- the database. Releasing the lock lets the retry clear and migrate.
+-- the database. The holder is a separate OS process, so the BUSY
+-- must come through kernel locks, not SQLite's in-process inode
+-- table. Releasing the lock lets the retry clear and migrate.
 caseColdJournalReservedRefuses :: IO ()
 caseColdJournalReservedRefuses = withScratch "migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let backups = dir </> "backups"
       journal = store ++ "-journal"
+      ready = dir </> "holder.ready"
+      go = dir </> "holder.go"
   createDirectory backups
   pre <- BS.readFile store
   cfg <- loadConfigOrFail cfgPath
   BS.writeFile journal (BS.replicate 512 0)
+  reaped <- newIORef False
+  bracket (spawnReservedHolder store ready go) (releaseHolder reaped) $ \ph -> do
+    waitForFileOrExit ph ready 3000
+    r <- migrateStore store cfg backups
+    case r of
+      Left (MigrateStore (StoreJournalCold j)) -> assertEqual "names the journal" journal j
+      other -> assertFailure ("wrong result: " ++ show other)
+    BS.readFile journal >>= \b -> assertBool "journal kept" (b == BS.replicate 512 0)
+    BS.readFile store >>= \b -> assertBool "store unchanged" (b == pre)
+    listBackups backups >>= assertEqual "no backup" []
+    writeFile go "go\n"
+    awaitHolderExit reaped ph "reserved-holder"
+    r2 <- migrateStore store cfg backups
+    case r2 of
+      Right (Migrated rc) -> assertBool "retry cleared" (mrColdJournalRemoved rc)
+      other -> assertFailure ("retry: " ++ show other)
+
+-- | Child process holding a SQLite RESERVED lock in a separate OS
+-- process: BEGIN IMMEDIATE, signal ready, wait for the go file, then
+-- COMMIT and exit. A missing go file times out and fails, so a dead
+-- parent never strands the holder.
+reservedHolderMain :: FilePath -> FilePath -> FilePath -> IO ()
+reservedHolderMain store readyFile goFile = do
   holder <- S.open (T.pack store)
   S.exec holder "BEGIN IMMEDIATE"
-  r <- migrateStore store cfg backups
-  case r of
-    Left (MigrateStore (StoreJournalCold j)) -> assertEqual "names the journal" journal j
-    other -> assertFailure ("wrong result: " ++ show other)
-  BS.readFile journal >>= \b -> assertBool "journal kept" (b == BS.replicate 512 0)
-  BS.readFile store >>= \b -> assertBool "store unchanged" (b == pre)
-  listBackups backups >>= assertEqual "no backup" []
+  writeFile readyFile "held\n"
+  waitForFile goFile 3000
   S.exec holder "COMMIT"
   S.close holder
-  r2 <- migrateStore store cfg backups
-  case r2 of
-    Right (Migrated rc) -> assertBool "retry cleared" (mrColdJournalRemoved rc)
-    other -> assertFailure ("retry: " ++ show other)
+
+-- | Spawn the RESERVED holder child (separate OS process, no shared
+-- SQLite state, stdio inherited).
+spawnReservedHolder :: FilePath -> FilePath -> FilePath -> IO ProcessHandle
+spawnReservedHolder store ready go = do
+  exe <- getExecutablePath
+  (_, _, _, ph) <- createProcess (proc exe ["--reserved-holder", store, ready, go]) { close_fds = True }
+  pure ph
+
+-- | Wait for a child to create a file, failing fast if the child
+-- exits first (a bad config or early crash must not cost a 30s wait).
+waitForFileOrExit :: ProcessHandle -> FilePath -> Int -> IO ()
+waitForFileOrExit ph p polls = do
+  ok <- doesFileExist p
+  if ok then pure ()
+  else do
+    mSt <- getProcessExitCode ph
+    case mSt of
+      Just st -> assertFailure ("holder child exited early (" ++ show st ++ ") before " ++ p)
+      Nothing ->
+        if polls <= 0 then assertFailure ("timed out waiting for " ++ p)
+        else threadDelay 10000 >> waitForFileOrExit ph p (polls - 1)
 
 caseMigrateStoreChanged :: IO ()
 caseMigrateStoreChanged = withScratch "migrate" $ \dir -> do
@@ -1193,6 +1482,34 @@ caseMigrateClockReadings = withScratch "migrate" $ \dir -> do
   t <- readFile (mrReceipt rc)
   assertBool "receipt: backup epoch" ("backup-epoch-seconds: 1700000000\n" `isInfixOf` t)
   assertBool "receipt: completion" ("completed-epoch-seconds: 1700000007\n" `isInfixOf` t)
+
+-- The verified backup's path and digest are recorded before the
+-- transaction begins, so a killed run still leaves a digest the
+-- restore step can verify against.
+caseBackupVerifiedBeforeBegin :: IO ()
+caseBackupVerifiedBeforeBegin = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  order <- newIORef ([] :: [String])
+  seen <- newIORef ("", 0, "")
+  let mark s = atomicModifyIORef' order (\ss -> (ss ++ [s], ()))
+      hooks = fixedClock
+        { mhOnBackupVerified = \bak n sha -> do
+            writeIORef seen (bak, n, sha)
+            mark "backup-verified"
+        , mhSQLite = noMigrationHooks { mgAfterBegin = \_ -> mark "begin" }
+        }
+  r <- migrateStoreWith hooks store cfg backups
+  rc <- case r of
+    Right (Migrated rc) -> pure rc
+    other -> assertFailure ("migration failed: " ++ show other)
+  readIORef order >>= assertEqual "recorded before BEGIN" ["backup-verified", "begin"]
+  (bak, n, sha) <- readIORef seen
+  assertEqual "recorded path" (mrBackup rc) bak
+  assertEqual "recorded bytes" (mrBackupBytes rc) n
+  assertEqual "recorded digest" (mrBackupSha256 rc) sha
 
 -- A failure after the backup file is created (here a simulated full
 -- disk) refuses: the incomplete file is removed and the next name is
@@ -1315,6 +1632,31 @@ caseMigrateStaleReceiptTmpIgnored = withScratch "migrate" $ \dir -> do
     [ "store.sqlite.pre-migrate.schema2.1700000000.bak"
     , "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt"
     , "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt.tmp" ]
+
+-- A stale new-format temporary (<receipt>.tmp.<pid>.<nonce>) from a
+-- dead pid is removed when the next migration writes its receipt;
+-- only provably-dead owners are cleaned.
+caseMigrateStaleReceiptTmpCleaned :: IO ()
+caseMigrateStaleReceiptTmpCleaned = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+      bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
+      receipt = bak ++ ".receipt"
+  createDirectory backups
+  dead <- reapedPid
+  let stale = receipt ++ ".tmp." ++ show dead ++ ".0"
+  writeFile stale "stale temporary from a crashed run"
+  cfg <- loadConfigOrFail cfgPath
+  r <- migrateStoreWith fixedClock store cfg backups
+  rc <- case r of
+    Right (Migrated got) -> pure got
+    other -> assertFailure ("migration failed: " ++ show other)
+  assertEqual "receipt" receipt (mrReceipt rc)
+  gone <- not <$> doesFileExist stale
+  assertBool "stale temporary cleaned" gone
+  listBackups backups >>= assertEqual "backup and receipt only, stale cleaned"
+    [ "store.sqlite.pre-migrate.schema2.1700000000.bak"
+    , "store.sqlite.pre-migrate.schema2.1700000000.bak.receipt" ]
 
 -- Repeated asynchronous interruptions of the backup write never
 -- leave a file behind: the descriptor release is registered before
@@ -1489,6 +1831,27 @@ caseMigrateErrorRender = do
   mapM_ (\err -> assertBool ("names the backup: " ++ show err) (bak `isInfixOf` snd (renderMigrateError err)))
     [MigrateTxnFailed bak (StoreFull "disk full"), MigrateVerifyFailed bak "x", MigrateReceiptFailed bak "x"]
 
+-- The foreign-sidecar refusal never sends the operator to the
+-- serving open (whose checkpoint would merge the WAL): it names
+-- moving both files aside, keeping them, and checking again.
+caseForeignSidecarRemedy :: IO ()
+caseForeignSidecarRemedy = do
+  let (tag, detail) = renderStoreRefusal (StoreForeignSidecar "/srv/t/token.sqlite-wal")
+  assertEqual "tag" "store-foreign-sidecar" tag
+  assertBool "names the wal" ("/srv/t/token.sqlite-wal" `isInfixOf` detail)
+  assertBool "names the shm" ("/srv/t/token.sqlite-shm" `isInfixOf` detail)
+  assertBool "never start the service" ("do not start the service" `isInfixOf` detail)
+  assertBool "keep both" ("keep both" `isInfixOf` detail)
+  assertBool "check again" ("run store check again" `isInfixOf` detail)
+  assertBool "no start-the-service route" (not ("Start the serving" `isInfixOf` detail))
+  assertBool "single line" (not ('\n' `elem` detail))
+  assertNoPins "remedy" (tag ++ ": " ++ detail)
+  let (tag2, detail2) = renderStoreRefusal (StoreForeignSidecar "/srv/t/token.sqlite-shm")
+  assertEqual "shm tag" "store-foreign-sidecar" tag2
+  assertBool "shm names the wal" ("/srv/t/token.sqlite-wal" `isInfixOf` detail2)
+  assertEqual "migrate tag" "store-foreign-sidecar"
+    (fst (renderMigrateError (MigrateStore (StoreForeignSidecar "/b/store.sqlite-wal"))))
+
 -- | Child process for the kill test: a real migration that pauses
 -- forever after its transaction body, just before COMMIT.
 migrateChildMain :: FilePath -> FilePath -> FilePath -> FilePath -> IO ()
@@ -1524,19 +1887,35 @@ migrateChildSmallMain store cfgPath backups ready = do
   exitWith (ExitFailure 3)
 
 -- | Start a migrate child on a copy of the v0.4.0.0 fixture, wait
--- until it pauses before COMMIT, SIGKILL it and reap it.
+-- until it pauses before COMMIT, SIGKILL it and reap it. The child
+-- runs under a bracket (killed and reaped on any failure), its stdio
+-- goes to a log file, and the ready wait fails fast if the child
+-- exits early.
 killPausedMigration :: String -> FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
 killPausedMigration childFlag dir = do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
-  let backups = dir </> "backups"; ready = dir </> "ready"
+  let backups = dir </> "backups"; ready = dir </> "ready"; logPath = dir </> "migrate-child.log"
   createDirectory backups
   pre <- BS.readFile store
   exe <- getExecutablePath
-  (_, _, _, ph) <- createProcess (proc exe [childFlag, store, cfgPath, backups, ready]) { close_fds = True }
-  waitForFile ready 3000
-  getPid ph >>= maybe (assertFailure "migrate child exited early") (signalProcess sigKILL)
-  _ <- waitForProcess ph
-  pure (store, cfgPath, backups, pre)
+  reaped <- newIORef False
+  bracket (spawnMigrateChild exe childFlag store cfgPath backups ready logPath) (releaseHolder reaped) $ \ph -> do
+    waitForFileOrExit ph ready 3000
+    getPid ph >>= maybe (assertFailure "migrate child exited early") (signalProcess sigKILL)
+    _ <- waitForProcess ph
+    _ <- claimReap reaped
+    pure (store, cfgPath, backups, pre)
+
+-- | Spawn a migrate child with its stdio captured to a log file (a
+-- child that dies early must not noise the runner's output).
+spawnMigrateChild :: FilePath -> String -> FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> IO ProcessHandle
+spawnMigrateChild exe childFlag store cfgPath backups ready logPath = do
+  h <- openFile logPath AppendMode
+  (_, _, _, ph) <- createProcess ((proc exe [childFlag, store, cfgPath, backups, ready])
+    { close_fds = True, std_in = NoStream, std_out = UseHandle h, std_err = UseHandle h })
+    `onException` hClose h
+  hClose h
+  pure ph
 
 killMidMigration :: FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
 killMidMigration dir = do
@@ -1594,6 +1973,12 @@ caseKilledMigrationRecovers = withScratch "killed" $ \dir -> do
   assertEqual "retry migrates" 0 (ceCode r)
   baks2 <- filter (".bak" `isSuffixOf`) <$> listDirectory backups
   assertEqual "the retry wrote a new backup" 2 (length baks2)
+  roTexts store "SELECT value FROM store_meta WHERE key = 'schema_version'"
+    >>= assertEqual "retry migrated to schema 3" ["3"]
+  rcpts2 <- filter (".receipt" `isSuffixOf`) <$> listDirectory backups
+  assertEqual "the retry wrote its receipt" 1 (length rcpts2)
+  afterBytes <- BS.readFile store
+  assertBool "the 20MB spill value is gone (db back to normal size)" (BS.length afterBytes < 1000000)
 
 caseKilledRestoreMovesJournal :: IO ()
 caseKilledRestoreMovesJournal = withScratch "killed" $ \dir -> do
@@ -1656,6 +2041,9 @@ caseRestoreBringsBackOldCredentials = withScratch "restore" $ \dir -> do
   c <- storeCommit s emptyDelta { sdPutCredentials = [CredentialRecord (TokenId 2) "69324057" (Just "45106798")] }
   storeClose s
   assertEqual "post-upgrade PIN change" Committed c
+  migrated <- captureState store
+  assertBool "migrated credentials differ from pre (frozen row plus changed PIN)"
+    (ssCredentials migrated /= ssCredentials pre)
   -- restore: move the migrated store aside, copy the backup in
   bak <- case [l' | l <- lines (ceOut r), Just l' <- [stripPrefix "backup: " l]] of
     [one] -> pure one
@@ -1695,14 +2083,17 @@ caseCheckNeverOwns = withScratch "ro" $ \dir -> do
   createDirectory sub
   createDirectory backups
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" sub
-  withFileMode store 0o444 $ withFileMode sub 0o555 $ do
-    c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
-    assertBool "check read the store" ("verdict: migration-required" `isInfixOf` ceOut c)
-    m <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
-    assertEqual "migrate cannot take ownership here" 1 (ceCode m)
-    -- Pinned to the observed tag: a sidecar the owner probe
-    -- cannot create reads as a live owner.
-    assertBool "migrate names the live owner" ("store-live:" `isPrefixOf` ceErr m)
+  euid <- getEffectiveUserID
+  if euid == 0
+    then putStrLn "skipped the read-only check: mode 0555/0444 does not deny root"
+    else withFileMode store 0o444 $ withFileMode sub 0o555 $ do
+      c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
+      assertBool "check read the store" ("verdict: migration-required" `isInfixOf` ceOut c)
+      m <- runCtl ["store", "migrate", "--path", store, "--config", cfgPath, "--backup-dir", backups]
+      assertEqual "migrate cannot take ownership here" 1 (ceCode m)
+      -- Pinned to the observed tag: a sidecar the owner probe
+      -- cannot create reads as a live owner.
+      assertBool "migrate names the live owner" ("store-live:" `isPrefixOf` ceErr m)
   noLock <- not <$> doesFileExist (store ++ ".lock")
   assertBool "no lock created" noLock
   listDirectory backups >>= assertEqual "no backup" []

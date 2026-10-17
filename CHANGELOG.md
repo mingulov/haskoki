@@ -64,7 +64,9 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   is then the PIN authority: editing a configured PIN no longer changes
   what an existing token accepts.
 - SQLite stores move to schema 3. Stores written by v0.4.0.0 (schema 2)
-  or v0.3.x (schema 1) are refused at open, with nothing written, until
+  or v0.3.x (schema 1) are refused at open, with nothing written absent
+  a hot journal or a `-wal`/`-shm` sibling (a hot journal is rolled
+  back by the serving open before it refuses), until
   `haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR`
   migrates them once. An ordinary open never migrates; `store migrate` is
   the only path to schema 3. Migrate takes ownership, writes a verified
@@ -75,6 +77,14 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
 - `haskoki-ctl store check --path FILE --config FILE` reports, without
   writing, whether the store opens with that config, and what migration or
   catalog fix it needs.
+- SQLite stores refuse to open, with `C_Initialize` failing closed, when
+  a non-empty `-wal` or `-shm` sibling exists. Haskoki never writes one,
+  so it comes from foreign tooling; the open refuses before any SQLite
+  connection, so no foreign frame is checkpointed into the store.
+- A store path that is a symlink is resolved once, and the lock and
+  journal sidecars follow the real file. A link whose target is missing
+  refuses at open instead of creating a store at the target; a missing
+  store under a symlinked parent directory is still created.
 - Identity refusal messages no longer say 'in this phase'; they name the
   absence of a relabel or slot-move command.
 - The test-only `storeResetToken` keeps the token's credential row.

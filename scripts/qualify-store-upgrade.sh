@@ -9,7 +9,10 @@
 # old binary opens the restored backup -> check again, plus per-tag
 # journal recovery: a planted cold journal clears through migrate
 # (check names it, migrate records the clearing) and a planted hot
-# journal stays refused with nothing written.
+# journal stays refused with nothing written. Old-module digests are
+# asserted against the fixture manifests; every refusal asserts its
+# specific tag. A schema-3 cold journal needs nothing and stays
+# untouched.
 #
 # Not a test-*.sh driver: it needs the downloaded, verified release
 # bundles (ws/plans/2026-10-15-v050-wp05.md, Task 2), which the
@@ -56,6 +59,9 @@ done
 run_tag() {
   local tag=$1 ver=${1#v} rc
   local old="$BUNDLES/$tag/haskoki-$ver/lib/libhaskoki.so"
+  local want_lib; want_lib=$(sed -n 's/^libhaskoki-sha256: //p' "tests/fixtures/stores/$tag/manifest.txt")
+  [ -n "$want_lib" ] || fail "$tag: manifest libhaskoki-sha256 missing"
+  [ "$(sha "$old")" = "$want_lib" ] || fail "$tag: old module digest differs from the manifest"
   local w="$EVID/$tag"
   mkdir -p "$w/backups"
   cp "tests/fixtures/stores/$tag/store.sqlite" "$w/store.sqlite"
@@ -66,16 +72,21 @@ run_tag() {
 
   set +e; "$CTL" store check --path "$w/store.sqlite" --config "$w/config.toml" >"$w/check1.out" 2>"$w/check1.err"; rc=$?; set -e
   [ "$rc" -eq 1 ] && grep -qx 'verdict: migration-required' "$w/check1.out" || fail "$tag: check before migrate"
+  grep -q '^store-migration-required:' "$w/check1.err" || fail "$tag: check1 stderr tag"
   [ "$(sha "$w/store.sqlite")" = "$s0" ] || fail "$tag: check wrote the store"
   [ ! -e "$w/store.sqlite.lock" ] || fail "$tag: check left a lock"
 
   if pkcs11-tool --module "$NEW" -L >"$w/new-open-old.out" 2>&1; then fail "$tag: new module opened an old store"; fi
+  grep -q 'CKR_GENERAL_ERROR' "$w/new-open-old.out" || fail "$tag: new-open-old is not the GENERAL_ERROR refusal"
   [ "$(sha "$w/store.sqlite")" = "$s0" ] || fail "$tag: refused new open wrote the store"
 
   "$CTL" store migrate --path "$w/store.sqlite" --config "$w/config.toml" --backup-dir "$w/backups" \
     >"$w/migrate.out" 2>"$w/migrate.err" || fail "$tag: migrate"
   grep -qx 'migrate-done' "$w/migrate.out" || fail "$tag: migrate-done missing"
-  local bak; bak=$(sed -n 's/^backup: //p' "$w/migrate.out")
+  [ "$(grep -c '^backup: ' "$w/migrate.out")" = 2 ] || fail "$tag: want the pre-BEGIN backup line plus the receipt echo"
+  [ "$(grep '^backup: ' "$w/migrate.out" | sort -u | wc -l)" = 1 ] || fail "$tag: pre-BEGIN and receipt backup lines differ"
+  [ "$(grep -c "^backup-sha256: $s0" "$w/migrate.out")" = 2 ] || fail "$tag: want the pre-BEGIN digest line plus the receipt echo"
+  local bak; bak=$(awk '/^backup: /{print substr($0, 9); exit}' "$w/migrate.out")
   [ "$(sha "$bak")" = "$s0" ] || fail "$tag: backup differs from the pre-migration store"
   grep -qx "backup-sha256: $s0" "$bak.receipt" || fail "$tag: receipt digest"
   grep -qx 'cold-journal-removed: no' "$w/migrate.out" || fail "$tag: migrate output misses cold-journal-removed no"
@@ -101,6 +112,7 @@ run_tag() {
 
   local s1; s1=$(sha "$w/store.sqlite")
   if pkcs11-tool --module "$old" -L >"$w/old-open-migrated.out" 2>&1; then fail "$tag: old module opened a schema-3 store"; fi
+  grep -q 'CKR_GENERAL_ERROR' "$w/old-open-migrated.out" || fail "$tag: old-open-migrated is not the GENERAL_ERROR refusal"
   [ "$(sha "$w/store.sqlite")" = "$s1" ] || fail "$tag: old module wrote the migrated store"
   {
     echo "after old open of migrated store (expected refusal):"
@@ -118,6 +130,7 @@ run_tag() {
   } > "$w/old-lock-restored.txt" 2>&1
   set +e; "$CTL" store check --path "$w/store.sqlite" --config "$w/config.toml" >"$w/check2.out" 2>"$w/check2.err"; rc=$?; set -e
   [ "$rc" -eq 1 ] && grep -qx 'verdict: migration-required' "$w/check2.out" || fail "$tag: restored store not migration-required"
+  grep -q '^store-migration-required:' "$w/check2.err" || fail "$tag: check2 stderr tag"
 
   local rcw="$w/recovery-cold"
   mkdir -p "$rcw/backups"
@@ -137,7 +150,8 @@ run_tag() {
     >"$w/recovery-cold.migrate.out" 2>"$w/recovery-cold.migrate.err" || fail "$tag: cold journal migrate"
   grep -qx 'migrate-done' "$w/recovery-cold.migrate.out" || fail "$tag: cold journal migrate-done missing"
   grep -qx 'cold-journal-removed: yes' "$w/recovery-cold.migrate.out" || fail "$tag: cold journal stdout line"
-  local bak_cold; bak_cold=$(sed -n 's/^backup: //p' "$w/recovery-cold.migrate.out")
+  [ "$(grep -c '^backup: ' "$w/recovery-cold.migrate.out")" = 2 ] || fail "$tag: cold journal wants the pre-BEGIN backup line plus the receipt echo"
+  local bak_cold; bak_cold=$(awk '/^backup: /{print substr($0, 9); exit}' "$w/recovery-cold.migrate.out")
   [ "$(sha "$bak_cold")" = "$s_cold" ] || fail "$tag: cold journal backup differs"
   grep -qx "backup-sha256: $s_cold" "$bak_cold.receipt" || fail "$tag: cold journal receipt digest"
   grep -qx 'cold-journal-removed: yes' "$bak_cold.receipt" || fail "$tag: cold journal receipt line"
@@ -172,6 +186,35 @@ run_tag() {
   [ -z "$(ls -A "$rhw/backups")" ] || fail "$tag: hot journal migrate wrote a backup"
   if grep -qE "$PINS" "$w/recovery-hot.check.out" "$w/recovery-hot.check.err" "$w/recovery-hot.migrate.out" "$w/recovery-hot.migrate.err"; then
     fail "$tag: hot journal PIN leak"
+  fi
+
+  local r3w="$w/recovery-cold-current"
+  mkdir -p "$r3w/backups"
+  [ -f "$w/store.sqlite.migrated" ] || fail "$tag: migrated store missing for the current cold case"
+  cp "$w/store.sqlite.migrated" "$r3w/store.sqlite"
+  chmod 600 "$r3w/store.sqlite"
+  sed "s#@STORE@#$r3w/store.sqlite#" tests/fixtures/stores/config.toml.in > "$r3w/config.toml"
+  set +e; "$CTL" store check --path "$r3w/store.sqlite" --config "$r3w/config.toml" >"$w/recovery-cold-current.pre.out" 2>"$w/recovery-cold-current.pre.err"; rc=$?; set -e
+  [ "$rc" -eq 0 ] && grep -qx 'verdict: ok' "$w/recovery-cold-current.pre.out" || fail "$tag: current cold premise not openable"
+  local s_r3; s_r3=$(sha "$r3w/store.sqlite")
+  head -c 512 /dev/zero > "$r3w/store.sqlite-journal"
+  local j_r3; j_r3=$(sha "$r3w/store.sqlite-journal")
+  set +e; "$CTL" store check --path "$r3w/store.sqlite" --config "$r3w/config.toml" >"$w/recovery-cold-current.check.out" 2>"$w/recovery-cold-current.check.err"; rc=$?; set -e
+  [ "$rc" -eq 0 ] || fail "$tag: current cold check exit"
+  grep -qx 'verdict: ok' "$w/recovery-cold-current.check.out" || fail "$tag: current cold verdict"
+  grep -qx 'journal: cold (harmless; reused by the next write)' "$w/recovery-cold-current.check.out" || fail "$tag: current cold journal line"
+  [ ! -s "$w/recovery-cold-current.check.err" ] || fail "$tag: current cold stderr not empty"
+  [ "$(sha "$r3w/store.sqlite")" = "$s_r3" ] || fail "$tag: current cold check wrote the store"
+  [ "$(sha "$r3w/store.sqlite-journal")" = "$j_r3" ] || fail "$tag: current cold check wrote the journal"
+  set +e; "$CTL" store migrate --path "$r3w/store.sqlite" --config "$r3w/config.toml" --backup-dir "$r3w/backups" \
+    >"$w/recovery-cold-current.migrate.out" 2>"$w/recovery-cold-current.migrate.err"; rc=$?; set -e
+  [ "$rc" -eq 0 ] || fail "$tag: current cold migrate exit"
+  grep -q '^migrate-not-needed:' "$w/recovery-cold-current.migrate.out" || fail "$tag: current cold migrate tag"
+  [ "$(sha "$r3w/store.sqlite")" = "$s_r3" ] || fail "$tag: current cold migrate wrote the store"
+  [ "$(sha "$r3w/store.sqlite-journal")" = "$j_r3" ] || fail "$tag: current cold migrate touched the journal"
+  [ -z "$(ls -A "$r3w/backups")" ] || fail "$tag: current cold migrate wrote a backup"
+  if grep -qE "$PINS" "$w/recovery-cold-current.check.out" "$w/recovery-cold-current.check.err" "$w/recovery-cold-current.migrate.out" "$w/recovery-cold-current.migrate.err"; then
+    fail "$tag: current cold PIN leak"
   fi
 
   unset HASKOKI_CONFIG

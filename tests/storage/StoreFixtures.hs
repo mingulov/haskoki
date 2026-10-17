@@ -9,6 +9,8 @@ module StoreFixtures
   , copyReleasedFixture, readManifest, loadConfigOrFail
   , fixtureLabels, fixtureSo, fixtureUser, fixturePins, assertNoPins
   , withFileMode, reapedPid
+  , walChildMain, plantForeignWal, withSymlinkedFixture
+  , withFifoWriter, fifoWriterMain
   , StoreState (..), captureState, assertUnchanged, makeSchemaStore
   , writeStoreConfig, expectStdNeedsMigration, fixtureToken
   , spawnedPid, claimReap, waitBounded, releaseHolder, awaitHolderExit
@@ -20,18 +22,20 @@ import Control.Exception (bracket, bracket_)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
-import Data.Char (isDigit)
+import Data.Char (digitToInt, intToDigit, isDigit, isHexDigit)
 import Data.List (isPrefixOf, sort)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
-import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive)
+import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
-import System.IO.Error (catchIOError, isAlreadyExistsError)
-import System.Posix.Files (fileExist, fileMode, getFileStatus, setFileMode)
-import System.Posix.Process (getProcessID)
-import System.Posix.Signals (sigKILL, signalProcess)
+import System.IO.Error (catchIOError, isAlreadyExistsError, isDoesNotExistError, tryIOError)
+import System.Posix.Files (createSymbolicLink, fileExist, fileMode, getFileStatus, setFileMode)
+import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
+import System.Posix.IO.ByteString (fdWrite)
+import System.Posix.Process (exitImmediately, getProcessID)
+import System.Posix.Signals (scheduleAlarm, sigKILL, signalProcess)
 import System.Posix.Types (FileMode, ProcessID)
 import System.Process (ProcessHandle, createProcess, getPid, getProcessExitCode, proc, CreateProcess (..))
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure)
@@ -248,6 +252,117 @@ withFileMode :: FilePath -> FileMode -> IO a -> IO a
 withFileMode p mode action = do
   st <- getFileStatus p
   bracket_ (setFileMode p mode) (setFileMode p (fileMode st)) action
+
+-- | Child process body for planting a foreign WAL: opens the given
+-- scratch store in WAL mode with no autocheckpoint, applies one
+-- foreign write, and _exits without closing, so the -wal file
+-- remains. Mode "meta" inserts a foreign store_meta row; mode
+-- "credential" rewrites token 2's SO PIN inside its credential
+-- document (the v0.4 fixture's token-2 row). Dispatched from the
+-- test binary's @--wal-child@ flag; the parent waits for it.
+walChildMain :: FilePath -> String -> IO ()
+walChildMain store mode = do
+  db <- S.open (T.pack store)
+  S.exec db "PRAGMA journal_mode=WAL"
+  S.exec db "PRAGMA wal_autocheckpoint=0"
+  case mode of
+    "meta" -> S.exec db "INSERT INTO store_meta(key,value) VALUES ('foreign-marker','merged')"
+    "credential" ->
+      S.exec db "UPDATE credentials SET record_json = replace(record_json, 'NjkzMjQwNTc=', 'MTExMTExMTE=')"
+    _ -> exitImmediately (ExitFailure 2)
+  exitImmediately ExitSuccess
+
+-- | Plant a valid foreign -wal beside the target store: the WAL is
+-- built against a scratch copy (the child flips only the copy to WAL
+-- mode) and the resulting -wal file is copied beside the target,
+-- whose own bytes stay exactly as they were. Mirrors a WAL left by
+-- foreign tooling.
+plantForeignWal :: FilePath -> String -> IO ()
+plantForeignWal target mode = do
+  let dir = takeDirectory target
+      scratch = dir </> "wal-scratch.sqlite"
+  BS.readFile target >>= BS.writeFile scratch
+  mapM_ removeIfExists [scratch ++ "-wal", scratch ++ "-shm"]
+  exe <- getExecutablePath
+  reaped <- newIORef False
+  bracket (spawnWalChild exe scratch mode) (releaseHolder reaped) $ \ph ->
+    awaitHolderExit reaped ph "wal-child"
+  walBytes <- BS.readFile (scratch ++ "-wal")
+  assertBool "the WAL child left a non-empty WAL" (not (BS.null walBytes))
+  BS.writeFile (target ++ "-wal") walBytes
+  where
+    spawnWalChild exe scratch m = do
+      (_, _, _, ph) <- createProcess ((proc exe ["--wal-child", scratch, m]) { close_fds = True })
+      pure ph
+    removeIfExists p = do
+      exists <- doesFileExist p
+      when exists (removeFile p)
+
+-- | Keep a FIFO writable while the action runs: a re-executed
+-- @--fifo-writer@ child loops raw blocking opens of the FIFO (each
+-- open unblocks one reader open), writing the given bytes, and
+-- closing (so readers see EOF instead of hanging). A process, not
+-- a thread: only the kernel schedules it, so no RTS or masking
+-- interaction can stall either side; and fork-plus-exec with
+-- @close_fds@, not a bare fork, so the child inherits no database
+-- or lock fd whose flock would wedge parallel tests. The child is
+-- killed and reaped afterwards; it also exits once the scratch
+-- FIFO is deleted, or after two minutes (so a killed run cannot
+-- leak it forever). Keeps a regression from hanging the suite: it
+-- fails instead.
+withFifoWriter :: FilePath -> BS.ByteString -> IO a -> IO a
+withFifoWriter fifo bytes act = do
+  exe <- getExecutablePath
+  reaped <- newIORef False
+  bracket (spawnWriter exe) (releaseHolder reaped) (const act)
+  where
+    spawnWriter exe = do
+      (_, _, _, ph) <- createProcess
+        ((proc exe ["--fifo-writer", fifo, hexEncode bytes]) { close_fds = True })
+      pure ph
+
+-- | The @--fifo-writer@ child: loop blocking opens of the FIFO,
+-- writing the hex-decoded bytes each time. Exits once the FIFO is
+-- gone, or after two minutes.
+fifoWriterMain :: FilePath -> String -> IO ()
+fifoWriterMain fifo hexBytes = case unhex hexBytes of
+  Nothing -> exitImmediately (ExitFailure 2)
+  Just bytes -> do
+    _ <- scheduleAlarm 120
+    writerLoop bytes
+  where
+    writerLoop bytes = do
+      e <- tryIOError (bracket (openFd fifo WriteOnly defaultFileFlags) closeFd (`fdWrite` bytes))
+      case e of
+        Left err | isDoesNotExistError err -> exitImmediately ExitSuccess
+        _ -> writerLoop bytes
+
+hexEncode :: BS.ByteString -> String
+hexEncode bs =
+  [ c | w <- BS.unpack bs
+      , c <- [intToDigit (fromIntegral w `div` 16), intToDigit (fromIntegral w `mod` 16)] ]
+
+unhex :: String -> Maybe BS.ByteString
+unhex [] = Just BS.empty
+unhex (a : b : rest)
+  | isHexDigit a && isHexDigit b =
+      BS.cons (fromIntegral (digitToInt a * 16 + digitToInt b)) <$> unhex rest
+  | otherwise = Nothing
+unhex _ = Nothing
+
+-- | Copy a released fixture under a real directory, point a symlink
+-- at the copy, and write a config naming the symlink (as an
+-- operator aliasing the store would). Returns the symlink path, the
+-- config path and the real store path.
+withSymlinkedFixture :: String -> FilePath -> IO (FilePath, FilePath, FilePath)
+withSymlinkedFixture tag dir = do
+  let realDir = dir </> "real"
+  createDirectory realDir
+  (realStore, _) <- copyReleasedFixture tag realDir
+  let link = dir </> "link.sqlite"
+  createSymbolicLink realStore link
+  cfgPath <- writeStoreConfig (dir </> "config.toml") link fixtureLabels fixtureSo fixtureUser
+  pure (link, cfgPath, realStore)
 
 -- | A provably-dead pid: spawn a fresh process with no inherited
 -- store descriptors, reap it, and confirm @\/proc@ has no entry

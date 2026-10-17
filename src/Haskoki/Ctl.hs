@@ -48,6 +48,7 @@ import Text.Read (readMaybe)
 import Haskoki.Ctl.Store (storeCheckCommand, storeMigrateCommand)
 import Haskoki.Runtime.Async (newAsyncTable)
 import Haskoki.Runtime.Config
+import Haskoki.Runtime.Storage.SQLite (resolveStorePath, resolveStorePathTracked)
 import Haskoki.Runtime.Control
   ( Json (..)
   , Scenario (..)
@@ -675,8 +676,11 @@ readLockState dbPath = do
 
 -- | Offline inspect: report lock state + table counts over a
 -- SELECT-only connection. Never creates the sidecar, never writes.
+-- The path is resolved once up front, so the lock read and the
+-- counts both name the real file.
 inspectStore :: FilePath -> IO CtlExit
-inspectStore path = do
+inspectStore path0 = do
+  path <- resolveStorePath path0
   exists <- fileExist path
   if not exists
     then pure (CtlExit 1 "" ("store-missing: " ++ path ++ "\n"))
@@ -734,10 +738,17 @@ readCounts path = do
         Right other -> pure (Left ("unexpected count row in " ++ table ++ ": " ++ show other))
 
 -- | Offline reset: refuse live stores; reset offline ones only with
--- the confirm flag (removes the db + sidecar; the next open
--- recreates).
+-- the confirm flag (removes the db + sidecar). The path is resolved
+-- once up front, so the liveness check and the removal both name
+-- the real file; the operator's symlink itself is left in place.
+-- Through the operator's own path the next open recreates a fresh
+-- store, but through a store symlink the link now dangles and the
+-- next start refuses until the target is recreated or the link
+-- removed. The success report keeps its stdout line and says so on
+-- stderr; a plain reset stays silent there.
 resetStore :: FilePath -> Bool -> IO CtlExit
-resetStore path confirmed = do
+resetStore path0 confirmed = do
+  (path, sawFinalLink) <- resolveStorePathTracked path0
   exists <- fileExist path
   if not exists
     then pure (CtlExit 1 "" ("store-missing: " ++ path ++ "\n"))
@@ -753,6 +764,14 @@ resetStore path confirmed = do
                 _ <- tryIOError (removeLink path)
                 _ <- tryIOError (removeLink (path ++ ".lock"))
                 stillThere <- fileExist path
+                -- Only a link at the store's own final component
+                -- dangles after its target is removed; a symlinked
+                -- ancestor directory is intact, and the next open
+                -- through it recreates the store.
+                let danglingNote
+                      | sawFinalLink = "reset-dangling-link: " ++ path0 ++ " now dangles;"
+                          ++ " the next start refuses until the target is recreated or the link removed\n"
+                      | otherwise = ""
                 if stillThere
                   then pure (CtlExit 1 "" ("reset-failed: cannot remove " ++ path ++ "\n"))
-                  else pure (CtlExit 0 ("reset: " ++ path ++ " removed (offline)\n") "")
+                  else pure (CtlExit 0 ("reset: " ++ path ++ " removed (offline)\n") danglingNote)

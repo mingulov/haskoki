@@ -245,6 +245,11 @@ jobs:
             echo "::error::warning scan failed (grep exit $rc)"
             exit "$rc"
           fi
+          # Release hook gate: the operator tool must link no engine
+          # test-hook object. make-release.sh refuses a hooked ctl at
+          # packaging time; run the same check on every build, before
+          # the suite, so a regression fails here instead of at release.
+          scripts/make-release.sh --check-hooks-only "$(cabal list-bin haskoki-ctl)" 'main|hs_main'
           cabal test all 2>&1 | tee haskell-test.log
       - name: Benchmark self-test
         run: |
