@@ -1,0 +1,105 @@
+{
+  "$schema": "haskoki-client-journeys/1",
+  "portfolio": {
+    "run": "final/portfolio",
+    "source": {
+      "sha": "217b02ef2eaf7e4044068526fdb30f63d8b5b4ec",
+      "dirty": false,
+      "dirty_basis": "caller"
+    },
+    "artifact": {
+      "kind": "bundle",
+      "haskoki_version": "0.4.0.0",
+      "bundle_sha256": "82c428af91f6f4d6cb15291633566d7984662198c7bce205ff8b0b6d8a2bc967",
+      "image_id": null,
+      "toolchain_record_sha256": "c3d505c30e4c66785bfbc04b859a66cb51178104b53bc382516f88adb6e862a5"
+    },
+    "aggregate": "fail",
+    "required": 61,
+    "passed": 60,
+    "failed_legs": [
+      "java-keystore-refuse-mismatched"
+    ],
+    "phases_complete": [
+      "module",
+      "verifier"
+    ],
+    "module_sha256": "10f2a81bfed478f8d10a7c0ff49ca65c95add020c46ad2e5e9b2ccb81f33b6d1",
+    "module_sha256_stable": true,
+    "first_verified_signature": {
+      "leg": "opensc-sign",
+      "seconds": 2.43767745,
+      "t0_basis": "bundle-extract"
+    },
+    "client_setup_seconds": 45.0,
+    "client_setup_seconds_basis": "caller",
+    "versions": {
+      "opensc": {
+        "package_version": "0.27.0~rc1-1",
+        "runtime_version": "0.27.0~rc1-1"
+      },
+      "openssl": {
+        "package_version": "3.5.5-1ubuntu3.7",
+        "runtime_version": "OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)"
+      },
+      "native": {
+        "package_version": null,
+        "runtime_version": null
+      },
+      "gnutls": {
+        "package_version": "3.8.12-2ubuntu1.1",
+        "runtime_version": "p11tool 3.8.12\nCopyright (C) 2000-2023 Free Software Foundation, and others\nThis is free software. It is licensed for use, modification and\nredistribution under the terms of the GNU General Public License,\nversion 3 or later <http://gnu.org/licenses/gpl.html>\n\nPlease send bug reports to:  <bugs@gnutls.org>"
+      },
+      "java": {
+        "package_version": "2:1.25-77",
+        "runtime_version": "openjdk version \"25.0.4.1\" 2026-08-18\nOpenJDK Runtime Environment (build 25.0.4.1+1-1-26.04.4-Ubuntu)\nOpenJDK 64-Bit Server VM (build 25.0.4.1+1-1-26.04.4-Ubuntu, mixed mode, sharing)"
+      }
+    }
+  },
+  "image": {
+    "run": "final/image",
+    "source": {
+      "sha": "817fe8c3060b75a1330b6558c3f79e8fef3ba59f",
+      "dirty": false,
+      "dirty_basis": "caller"
+    },
+    "artifact": {
+      "kind": "image",
+      "haskoki_version": "0.4.0.0",
+      "bundle_sha256": null,
+      "image_id": "sha256:52ee65d797bd777bcc4ddb3932a17327f547a4fb0d352247c685aa174c3272e0",
+      "toolchain_record_sha256": "c3d505c30e4c66785bfbc04b859a66cb51178104b53bc382516f88adb6e862a5"
+    },
+    "aggregate": "pass",
+    "required": 28,
+    "passed": 28,
+    "failed_legs": [],
+    "phases_complete": [
+      "module",
+      "verifier"
+    ],
+    "module_sha256": "10f2a81bfed478f8d10a7c0ff49ca65c95add020c46ad2e5e9b2ccb81f33b6d1",
+    "module_sha256_stable": true,
+    "first_verified_signature": {
+      "leg": "opensc-sign",
+      "seconds": 0.778536065,
+      "t0_basis": "module-phase-start"
+    },
+    "client_setup_seconds": null,
+    "client_setup_seconds_basis": "not-measured",
+    "versions": {
+      "opensc": {
+        "package_version": "0.27.0~rc1-1",
+        "runtime_version": "0.27.0~rc1-1"
+      },
+      "native": {
+        "package_version": null,
+        "runtime_version": null
+      },
+      "openssl": {
+        "package_version": "3.5.5-1ubuntu3.7",
+        "runtime_version": "OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)"
+      }
+    }
+  }
+}

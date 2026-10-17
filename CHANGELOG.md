@@ -231,6 +231,12 @@ record: symbol separation, sanitizer runs, evidence limits) and
 
 ### Added
 
+- An installed client portfolio runner executes 61 journey legs
+  against the release bundle (portfolio profile: pinned OpenSC,
+  GnuTLS, JDK and openssl clients in a disposable container) and
+  the candidate demo image (image profile: module phase in-image,
+  verifier phase on the host), recording one evidence record per
+  leg and recomputing every verdict from the records.
 - PIN-change races are now exercised with distinct values: two threads
   racing `A->B` against `A->C` over the public C entry points produce
   one winner, the loser's credential is refused with
