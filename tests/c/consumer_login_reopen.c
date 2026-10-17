@@ -576,6 +576,8 @@ int main(int argc, char **argv) {
     {
       CK_SESSION_HANDLE pubrw = 0, pubro = 0, usr = 0, so = 0;
       CK_OBJECT_CLASS klass = CKO_DATA;
+      CK_OBJECT_CLASS secklass = CKO_SECRET_KEY;
+      CK_KEY_TYPE generic = CKK_GENERIC_SECRET;
       CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
       CK_OBJECT_HANDLE h = 0, h2 = 0;
       CK_BYTE label[64], value[64];
@@ -609,13 +611,24 @@ int main(int argc, char **argv) {
         { CKA_LABEL, "matrix-vsess", 12 },
         { CKA_VALUE, "vess-secret", 11 },
       };
+      /* TRUSTED cells use a secret-key class, where TRUSTED is
+       * defined (it is not defined for data objects). */
       CK_ATTRIBUTE trustedtok[] = {
-        { CKA_CLASS, &klass, sizeof(klass) },
+        { CKA_CLASS, &secklass, sizeof(secklass) },
+        { CKA_KEY_TYPE, &generic, sizeof(generic) },
         { CKA_TOKEN, &yes, sizeof(yes) },
         { CKA_PRIVATE, &no, sizeof(no) },
         { CKA_LABEL, "matrix-trust", 12 },
-        { CKA_VALUE, "trust-bytes", 11 },
+        { CKA_VALUE, "trust-secret-bytes", 18 },
         { CKA_TRUSTED, &yes, sizeof(yes) },
+      };
+      CK_ATTRIBUTE secretok[] = {
+        { CKA_CLASS, &secklass, sizeof(secklass) },
+        { CKA_KEY_TYPE, &generic, sizeof(generic) },
+        { CKA_TOKEN, &yes, sizeof(yes) },
+        { CKA_PRIVATE, &no, sizeof(no) },
+        { CKA_LABEL, "matrix-plain", 12 },
+        { CKA_VALUE, "plain-secret-bytes", 18 },
       };
       nslots = 8;
       use_config(g_mem_cfg);
@@ -761,7 +774,7 @@ int main(int argc, char **argv) {
       rv = f->C_DestroyObject(pubro, h);
       CHECKM(rv == CKR_SESSION_READ_ONLY, "matrix: user RO destroy of token object refused");
       h2 = 0;
-      rv = f->C_CreateObject(usr, trustedtok, 6, &h2);
+      rv = f->C_CreateObject(usr, trustedtok, 7, &h2);
       CHECKM(rv == CKR_ATTRIBUTE_READ_ONLY && h2 == 0, "matrix: user TRUSTED create refused");
       { CK_ATTRIBUTE set[] = { { CKA_TRUSTED, &yes, sizeof(yes) } };
         rv = f->C_SetAttributeValue(usr, h, set, 1);
@@ -825,10 +838,10 @@ int main(int argc, char **argv) {
       rv = f->C_DestroyObject(so, h2);
       CHECKM(rv == CKR_OK, "matrix: SO destroys the copy");
       h = 0;
-      rv = f->C_CreateObject(so, trustedtok, 6, &h);
+      rv = f->C_CreateObject(so, trustedtok, 7, &h);
       CHECKM(rv == CKR_OK && h != 0, "matrix: SO creates TRUSTED object");
       h2 = 0;
-      rv = f->C_CreateObject(so, pubtok, 5, &h2);
+      rv = f->C_CreateObject(so, secretok, 6, &h2);
       CHECKM(rv == CKR_OK && h2 != 0 && h2 != h, "matrix: SO creates plain target");
       { CK_ATTRIBUTE set[] = { { CKA_TRUSTED, &yes, sizeof(yes) } };
         rv = f->C_SetAttributeValue(so, h2, set, 1);

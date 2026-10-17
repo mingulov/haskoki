@@ -2291,25 +2291,30 @@ casePublicRwPositive = do
 -- | Trusted objects admit only the security officer: user create/set
 -- of TRUSTED=true refuse, SO create/set commit, and admission
 -- outranks the trusted check (a public read-only set of
--- TRUSTED=true on a public token target reports the mode).
+-- TRUSTED=true on a public token target reports the mode). The
+-- cells use a secret-key class, where TRUSTED is defined (it is
+-- not defined for data objects).
 caseTrustedSoOnly :: IO ()
 caseTrustedSoOnly = do
+  let secretClass = (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
+      secretType = (AttrKeyType, ValULong (mustKeyTypeId "CKK_GENERIC_SECRET"))
+      secretBytes = (AttrValue, ValBytes "0123456789abcdef0123456789abcdef")
   (sid, m0) <- openSessionMode slot0 False seeded
   mU <- loginAs m0 sid
   (codeC, m1) <- runReject mU
-    (createReq sid [classData, label "t-user", isToken True, isPrivate False, (AttrTrusted, ValBool True)])
+    (createReq sid [secretClass, secretType, secretBytes, label "t-user", isToken True, isPrivate False, (AttrTrusted, ValBool True)])
   assertEqual "user create TRUSTED refused" CKR_ATTRIBUTE_READ_ONLY codeC
   mP1 <- snd <$> runCommit m1 (logoutReq sid)
   mSO <- loginAsSo mP1 sid
   (pcT, m2) <- runCommit mSO
-    (createReq sid [classData, label "t-so", isToken True, isPrivate False, (AttrTrusted, ValBool True)])
+    (createReq sid [secretClass, secretType, secretBytes, label "t-so", isToken True, isPrivate False, (AttrTrusted, ValBool True)])
   assertEqual "SO create TRUSTED commits" CKR_OK (pcCode pcT)
   hT <- commitHandle pcT
   ostT <- mustResolve m2 hT
   assertEqual "SO trusted stored"
     (Just (ValBool True)) (Map.lookup AttrTrusted (osAttrs ostT))
   (pcP, m3) <- runCommit m2
-    (createReq sid [classData, label "plain", isToken True, isPrivate False])
+    (createReq sid [secretClass, secretType, secretBytes, label "plain", isToken True, isPrivate False])
   hP <- commitHandle pcP
   mP2 <- snd <$> runCommit m3 (logoutReq sid)
   mU2 <- loginAs mP2 sid
