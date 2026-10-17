@@ -117,7 +117,15 @@
       ],
       "allowed_imports": {
         "Control.Concurrent.MVar": ["newMVar"],
+        "Haskoki.Runtime.Storage": ["CommitResult", "Store", "StoreDelta", "TokenRecord", "emptyDelta"],
+        "Haskoki.Runtime.Storage.Memory": ["newMemoryWorld", "openMemoryStore"],
+        "Haskoki.Session": ["tokenAuthNew"],
+        "Haskoki.Types": ["Generation", "SlotId", "TokenId"],
         "Test.Tasty": ["defaultMain", "testGroup"]
+      },
+      "allowed_dotdot": {
+        "Haskoki.Runtime.Storage": ["CommitResult", "Store", "StoreDelta", "TokenRecord"],
+        "Haskoki.Types": ["Generation", "SlotId", "TokenId"]
       },
       "executed_by": [
         {
@@ -275,7 +283,7 @@
         "haskoki model + lifecycle"
       ],
       "allowed_imports": {
-        "Test.Tasty": ["defaultMain", "testGroup"]
+        "Test.Tasty": ["TestTree", "defaultMain", "testGroup"]
       },
       "executed_by": [
         {
@@ -576,8 +584,14 @@
       ],
       "allowed_imports": {
         "Gen": ["propCases", "propSeedOverride"],
+        "Haskoki.Engine.Backend": ["BackendEnv", "EngineResult", "closeBackend", "openBackend"],
+        "Haskoki.Engine.OpenSSL4": ["OpenSSL4"],
+        "Haskoki.Engine.Synthetic": ["Synthetic"],
         "System.IO": ["hPutStrLn", "stderr"],
         "Test.Tasty": ["defaultMain", "testGroup"]
+      },
+      "allowed_dotdot": {
+        "Haskoki.Engine.Backend": ["EngineResult"]
       },
       "executed_by": [
         {
@@ -650,12 +664,19 @@
       ],
       "allowed_imports": {
         "Control.Concurrent": ["getNumCapabilities"],
+        "Haskoki.Runtime.Storage": ["CommitResult", "Store", "StoreDelta", "TokenRecord", "emptyDelta"],
+        "Haskoki.Runtime.Storage.Memory": ["newMemoryWorld", "openMemoryStore"],
+        "Haskoki.Runtime.Storage.SQLite": ["openSQLiteStore"],
+        "Haskoki.Session": ["tokenAuthNew"],
+        "Haskoki.Types": ["Generation", "SlotId", "TokenId"],
         "System.Environment": ["getArgs"],
         "Test.Tasty": ["defaultMain", "localOption", "testGroup"],
         "Test.Tasty.Runners": ["NumThreads"],
-        "StoreFixtures": ["fifoWriterMain", "walChildMain"]
+        "StoreFixtures": ["fifoWriterMain", "walChildMain", "withScratch"]
       },
       "allowed_dotdot": {
+        "Haskoki.Runtime.Storage": ["CommitResult", "Store", "StoreDelta", "TokenRecord"],
+        "Haskoki.Types": ["Generation", "SlotId", "TokenId"],
         "Test.Tasty.Runners": ["NumThreads"]
       },
       "executed_by": [

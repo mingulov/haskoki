@@ -4,7 +4,7 @@ module NotificationsSpec (spec) where
 import Control.Concurrent (forkIO, forkFinally, myThreadId, killThread, yield)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, readMVar, tryReadMVar)
 import Control.Concurrent.STM (atomically, newTQueueIO, readTQueue, writeTQueue, newTVarIO, readTVar, modifyTVar', check)
-import Control.Exception (SomeException, bracket, try)
+import Control.Exception (IOException, SomeException, bracket, try)
 import Control.Monad (foldM, forM_, replicateM, replicateM_)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sort, sortOn)
@@ -18,8 +18,10 @@ import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr)
 import Foreign.Storable (peek, poke, sizeOf)
-import System.Directory (createDirectoryIfMissing, removeFile)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory (createDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
+import System.FilePath ((</>))
 import System.Timeout (timeout)
 import GHC.Conc (threadStatus, ThreadStatus (..), BlockReason (..))
 import Test.Tasty (TestTree, testGroup, after, DependencyType (AllFinish))
@@ -687,10 +689,31 @@ caseServingSlotBoundary = forM_ [False, True] $ \removable ->
       flagBytes >>= assertEqual "closed flags untouched" [sentinel, sentinel, sentinel]
       countBytes >>= assertEqual "closed count untouched" [sentinel, sentinel, sentinel]
 
+-- | A fresh private directory under the temp root, removed on exit.
+withPrivateDir :: (FilePath -> IO a) -> IO a
+withPrivateDir = bracket create (\d -> try' (removeDirectoryRecursive d))
+  where
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base </> ("haskoki-notifications-" ++ show t ++ "-" ++ show n)
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+    try' :: IO () -> IO ()
+    try' act = do
+      _ <- (try act :: IO (Either IOException ()))
+      pure ()
+
 caseServingWaitOutput :: Assertion
-caseServingWaitOutput = do
-  createDirectoryIfMissing True "/tmp/haskoki-notifications"
-  let path = "/tmp/haskoki-notifications/model-wait-config.toml"
+caseServingWaitOutput = withPrivateDir $ \tmp -> do
+  let path = tmp </> "model-wait-config.toml"
   bracket (lookupEnv "HASKOKI_CONFIG")
     (\old -> maybe (unsetEnv "HASKOKI_CONFIG") (setEnv "HASKOKI_CONFIG") old) $ \_ ->
     bracket (writeFile path (unlines

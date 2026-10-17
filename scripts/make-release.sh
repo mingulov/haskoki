@@ -88,7 +88,7 @@ $CHK_DSYMS"
   [ -n "$CHK_SYMS" ] || fail "empty nm listing for $CHK_F (stripped or foreign ELF?)"
   printf '%s\n' "$CHK_ALL" | grep -Eq -- "$CHK_ANCHOR" \
     || fail "anchor '$CHK_ANCHOR' missing from nm listing of $CHK_F (stripped or foreign ELF?)"
-  CHK_HOOKS=$(printf '%s\n' "$CHK_ALL" | grep -E 'hsk_ossl4_test_|_gated' || true)
+  CHK_HOOKS=$(printf '%s\n' "$CHK_ALL" | grep -E 'hsk_ossl4_test_|_gated|capabilities_test_hook' || true)
   [ -z "$CHK_HOOKS" ] || { echo "$CHK_HOOKS"; fail "test-hook symbols in shipped $CHK_F"; }
 }
 

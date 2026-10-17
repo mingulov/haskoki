@@ -102,11 +102,13 @@ module Haskoki.FFI.Async
   , registerFixtureCtx
   , registerBorrowedCtx
   , retireCtx
+  , releaseBorrowedView
   , setEnterTestHook
   , ctxPendingReclaims
   , ctxReclaimStats
   , ctxAcquireBorrowTest
   , ctxReleaseBorrowTest
+  , ctxInspectEntryTest
   , submitTransfer
   , joinTransfer
   , joinAcquireTransfer
@@ -156,7 +158,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Word (Word32, Word8, Word64)
 import Foreign.C.String (CString, peekCString)
-import Foreign.C.Types (CInt (..), CULLong (..), CULong (..))
+import Foreign.C.Types (CInt (..), CUInt (..), CULLong (..), CULong (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr, ptrToWordPtr, wordPtrToPtr)
@@ -409,10 +411,11 @@ isNullStable p = castStablePtrToPtr p == nullPtr
 -- null check, the registry admission, and the dereference run
 -- masked as one entry step (no interruptible operation inside, so
 -- no kill can split them), and the admitted borrower holds its
--- count across the whole call — close claims the gate and waits
--- the count out before it drains or frees anything. Null,
--- unknown, and retired contexts refuse identically, before
--- touching any state.
+-- count across the whole call — an owned close claims the gate
+-- and waits the count out before it drains or frees anything
+-- (borrowed views never claim the table; their release parks the
+-- pointer on the reclaim queue instead). Null, unknown, and
+-- retired contexts refuse identically, before touching any state.
 withCtx :: StablePtr AsyncCtx -> (AsyncCtx -> IO CULong) -> IO CULong
 withCtx ctx k = guarded $ mask $ \restore -> do
   mC <- enterCtx ctx
@@ -441,7 +444,19 @@ data CtxEntry
 -- same way. A live entry always names a live pointer; a tombstone
 -- always refuses without dereferencing; an absent key (never
 -- registered: a foreign value, or a hook-only park) refuses the
--- same way, before any dereference. A hook runs after its pointer's
+-- same way, before any dereference. A caller that uses a context
+-- pointer after its close completed — or whose call began before
+-- the close and looks up after it — and lands on a pointer value
+-- the allocator has reused for a new live owner, is admitted to
+-- the new owner (documented ABA: the tombstone refuses only until
+-- the value is reused, and freed values are handed back promptly,
+-- so landing on a live reuse is the likely case. Memory-safe:
+-- admission holds a registry borrow across the dereference, and
+-- every close waits out admitted borrowers before freeing — an
+-- owned close through its claim-quiesce-drain path, a
+-- borrowed-view release through the reclaim queue. The admitted
+-- call runs against the new owner outside the C state lock; the
+-- application used a closed handle). A hook runs after its pointer's
 -- null check and before its registry lookup — the exact interval
 -- a racing close can complete in — so a barrier test parks a
 -- caller there deterministically. Scoped per pointer (never
@@ -475,6 +490,12 @@ foreign import ccall unsafe "haskoki_ctx_register"
 
 foreign import ccall unsafe "haskoki_ctx_retire"
   c_ctxRetire :: Ptr () -> IO ()
+
+foreign import ccall unsafe "haskoki_ctx_enqueue_free"
+  c_ctxEnqueueFree :: Ptr () -> StablePtr AsyncCtx -> IO ()
+
+foreign import ccall unsafe "haskoki_ctx_inspect"
+  c_ctxInspect :: Ptr () -> Ptr CUInt -> Ptr CUInt -> IO CInt
 
 foreign import ccall unsafe "haskoki_ctx_lookup_acquire"
   c_ctxLookupAcquire :: Ptr () -> Ptr (StablePtr AsyncTable) -> IO CInt
@@ -607,9 +628,12 @@ registerOwnedCtx sp table = mask_ $ do
 -- release. Overwrites that value's tombstone when the allocator
 -- reuses a freed pointer value, so a valid borrowed view on a
 -- recycled index admits while genuinely retired contexts stay
--- refused. Borrowed Standard views are internal and serialized by
--- the C state lock; concurrent direct borrowed-view use is not
--- offered.
+-- refused. Standard installs and retires borrowed views under the
+-- C state lock, but admission on a view does not take that lock:
+-- a caller admitted on one — including a stale native-API pointer
+-- that lands on a reused value — runs outside it. Views are
+-- internal (no interface offers them directly), yet reachable from
+-- any retained pointer value.
 registerBorrowedCtx :: StablePtr AsyncCtx -> AsyncTable -> IO ()
 registerBorrowedCtx sp table = mask_ $ do
   stable <- newStablePtr table
@@ -620,14 +644,32 @@ registerBorrowedCtx sp table = mask_ $ do
 -- tombstone that refuses without dereferencing, and the entry's
 -- test hook (if any) clears in the same step. The winning
 -- slot-close calls this after teardown and before it frees the
--- pointer, and borrowed-view release calls this before it frees
--- the view: retire strictly before free, so a caller resuming
--- after the close — even one that passed its null check before
--- it — meets the tombstone and refuses instead of dereferencing
--- a freed pointer.
+-- pointer; borrowed-view release retires through
+-- 'releaseBorrowedView' instead, which calls @c_ctxRetire@
+-- itself and defers the free behind the borrow count. Retire
+-- strictly before free, so a caller resuming after the close —
+-- even one that passed its null check before it — meets the
+-- tombstone and refuses instead of dereferencing a freed pointer.
 retireCtx :: StablePtr AsyncCtx -> IO ()
 retireCtx sp = mask_ $ do
   c_ctxRetire (ctxKey sp)
+  drainReclaims
+
+-- | Release a borrowed view: retire its entry, then park the
+-- view's own pointer on the entry's reclaim queue instead of
+-- freeing it outright. The free waits behind the entry's borrow
+-- count like any displaced root, so a caller admitted before the
+-- release — holding a registry borrow across its dereference —
+-- never sees the pointer freed underneath it. The trailing drain
+-- frees immediately when no borrow stands (the uncontended
+-- close); under contention the freeing release drains. The one
+-- release for every borrowed-view close (session close, instance
+-- close and the open-session rollback). Owned closes keep their
+-- claim-quiesce-drain path and never use this.
+releaseBorrowedView :: StablePtr AsyncCtx -> IO ()
+releaseBorrowedView sp = mask_ $ do
+  c_ctxRetire (ctxKey sp)
+  c_ctxEnqueueFree (ctxKey sp) sp
   drainReclaims
 
 -- | TEST-ONLY: arm ('Just') or clear ('Nothing') a pointer's
@@ -656,6 +698,20 @@ ctxAcquireBorrowTest sp = mask_ $ alloca $ \pTable -> do
 -- then drain.
 ctxReleaseBorrowTest :: StablePtr AsyncCtx -> IO ()
 ctxReleaseBorrowTest sp = mask_ $ releaseCtxBorrow (ctxKey sp)
+
+-- | TEST-ONLY: read one entry's @(state, borrows, queued)@ in one
+-- locked step, without acquiring anything. The state mirrors the
+-- lookup codes (0 absent or hook-only, 1 owned, 2 borrowed, 3
+-- retired); the borrow count is the entry's outstanding
+-- borrowed-root holders; the queued count is its reclaim backlog.
+-- A single-reader view of one key, so parallel tests on other
+-- keys never disturb it.
+ctxInspectEntryTest :: StablePtr AsyncCtx -> IO (Int, Int, Int)
+ctxInspectEntryTest sp = mask_ $ alloca $ \pRefs -> alloca $ \pQueued -> do
+  st <- c_ctxInspect (ctxKey sp) pRefs pQueued
+  refs <- peek pRefs
+  queued <- peek pQueued
+  pure (fromIntegral st, fromIntegral refs, fromIntegral queued)
 
 -- | Dereference one acquired live entry and release the borrow:
 -- the StablePtr mapping is read strictly before the release, so
@@ -696,9 +752,11 @@ lookupEnterHook sp = mask_ $ alloca $ \pHook -> do
 -- | Masked entry step for 'withCtx': null check, test hook,
 -- externally reachable admission, then the dereference.
 -- Admission consults the registry — reachable from the bare
--- pointer bits — BEFORE any dereference, so a concurrent
--- slot-close cannot free the pointer between the check and the
--- dereference: either this call admits first (and the close
+-- pointer bits — BEFORE any dereference, and the context
+-- dereference runs UNDER the lookup borrow the admission took:
+-- the borrow is released only after the pointer is read, so a
+-- concurrent close cannot free the pointer between the check and
+-- the dereference. Either this call admits first (and the close
 -- waits it out before freeing), the close claims first (and this
 -- call refuses at the gate without dereferencing), or the close
 -- completes first (and this call meets the tombstone and refuses
@@ -711,25 +769,31 @@ lookupEnterHook sp = mask_ $ alloca $ \pHook -> do
 enterCtx :: StablePtr AsyncCtx -> IO (Maybe AsyncCtx)
 enterCtx ctx
   | isNullStable ctx = pure Nothing
-  | otherwise = do
+  | otherwise = mask_ $ alloca $ \pTable -> do
       mHook <- lookupEnterHook ctx
       case mHook of
         Nothing -> pure ()
         Just hook -> hook
-      mEntry <- lookupCtxEntry ctx
-      case mEntry of
-        Just (CtxLive table) -> do
-          ok <- enterTableUse table
-          if ok
-            then Just <$> deRefStablePtr ctx
-            else pure Nothing
-        Just (CtxBorrowed table) -> do
-          ok <- enterTableUse table
-          if ok
-            then Just <$> deRefStablePtr ctx
-            else pure Nothing
-        Just CtxRetired -> pure Nothing
-        Nothing -> pure Nothing
+      kind <- c_ctxLookupAcquire (ctxKey ctx) pTable
+      case kind of
+        1 -> enterLive pTable
+        2 -> enterLive pTable
+        -- Retired or absent: the acquire held no borrow, so there
+        -- is nothing to release.
+        _ -> pure Nothing
+  where
+    enterLive pTable = do
+      stable <- peek pTable
+      table <- deRefStablePtr stable
+      ok <- enterTableUse table
+      if ok
+        then do
+          c <- deRefStablePtr ctx
+          releaseCtxBorrow (ctxKey ctx)
+          pure (Just c)
+        else do
+          releaseCtxBorrow (ctxKey ctx)
+          pure Nothing
 
 -- | Encode a job id as its opaque handle token under the table's
 -- exact salt: the high 32 bits carry the salt, the low 32 the

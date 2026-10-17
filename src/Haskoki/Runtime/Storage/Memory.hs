@@ -38,7 +38,7 @@ import Control.Concurrent.MVar
   , tryTakeMVar
   , withMVar
   )
-import Control.Exception (bracket_, mask_, onException, throwIO, uninterruptibleMask_)
+import Control.Exception (bracket_, evaluate, mask_, onException, throwIO, uninterruptibleMask_)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (nub, sortOn)
 import Data.Unique (Unique, newUnique)
@@ -54,6 +54,7 @@ import Haskoki.Runtime.Storage
   , FaultInjector (..)
   , FaultPoint (..)
   , HandleState (..)
+  , JobBody (..)
   , JobRecord (..)
   , LoadedState (..)
   , ObjectPut (..)
@@ -91,6 +92,7 @@ import Haskoki.Runtime.Storage
   , storeClosed
   , zeroStats
   )
+import Haskoki.Session (TokenAuth (..))
 import Haskoki.Types (Generation (..), ObjectId (..), Revision, TokenId (..))
 
 -- | The durable state behind one memory store identity.
@@ -394,8 +396,10 @@ reserveLocked world inj qVar sVar = do
             pure (Left err)
           Right (pid, advanced) -> do
             let old = Map.lookup jobIdCounterKey (wsMeta wst)
-            putMVar (mwState world)
-              (wst { wsMeta = Map.insert jobIdCounterKey advanced (wsMeta wst) })
+                reserved =
+                  wst { wsMeta = Map.insert jobIdCounterKey advanced (wsMeta wst) }
+            evaluate (forceWorldState reserved)
+            putMVar (mwState world) reserved
             ambiguous <- fiFire inj FaultAmbiguousCommit
             (classification, ePid) <-
               if ambiguous
@@ -495,6 +499,7 @@ protocolLocked world limits inj qVar sVar delta0 = do
                   pure result
                 else do
                   let applied = applyDelta st delta
+                  evaluate (forceWorldState applied)
                   putMVar (mwState world) applied
                   ambiguous <- fiFire inj FaultAmbiguousCommit
                   result <-
@@ -669,6 +674,47 @@ effectiveDelta applied delta =
       | (k, _) <- sdPutMeta delta
       , Just v <- [Map.lookup k (wsMeta applied)]
       ]
+
+-- | Force a new state, commit or job-id reservation, before it
+-- is stored in the world's MVar, so no thread evaluates another
+-- thread's shared state thunk (a space leak, and a concurrent
+-- first-evaluation candidate for GHC #27272). Depth, per map:
+-- every map spine fully (the folds match each node); every
+-- record to WHNF, which evaluates each strict field to WHNF; and
+-- the lazy string spines below the records fully — the token
+-- label, the auth principal, the material encoding, the job
+-- function name, the pending
+-- recipe name, and every meta key and value. The remaining cells
+-- stop at WHNF: the auth login (always 'Nothing': the commit
+-- boundary scrubs it), the attribute-map keys and values, the SO
+-- PIN, and the 'Just' payloads of the key type, the material
+-- bytes, and the user PIN. The nullary leaves
+-- ('JobExecState', 'ReturnCode', 'AttributeType', the
+-- 'ActiveLogin' cases) and the strict scalar fields are complete
+-- at WHNF, and 'ByteString' has no lazy spine below WHNF, so a
+-- below-WHNF thunk can remain only inside those three 'Just'
+-- payloads. Cost: O(state) per commit or reservation — the
+-- walk re-folds the strings of records earlier writes already
+-- forced.
+forceWorldState :: WorldState -> ()
+forceWorldState (WorldState toks objs jobs meta creds) =
+  Map.foldr (\t r -> tok t `seq` r) () toks
+    `seq` Map.foldr (\o r -> obj o `seq` r) () objs
+    `seq` Map.foldr (\j r -> job j `seq` r) () jobs
+    `seq` Map.foldrWithKey (\k v r -> str k `seq` str v `seq` r) () meta
+    `seq` Map.foldr (\c r -> c `seq` r) () creds
+  where
+    str :: String -> ()
+    str = foldr seq ()
+    tok t = t `seq` str (trLabel t) `seq` auth (trAuth t)
+    auth a = a `seq` case taPrincipal a of
+      Nothing -> ()
+      Just p -> str p
+    obj o = o `seq` str (orMaterialEncoding o)
+      `seq` Map.foldrWithKey (\k v r -> k `seq` v `seq` r) () (orAttrs o)
+    job j = j `seq` str (jrFunction j) `seq` jbody (jrBody j)
+    jbody (JobPending name _) = str name
+    jbody (JobResult code _) = code `seq` ()
 
 -- | Pure delta application (shared shape with the SQLite backend's
 -- statement plan). Dropping a token removes its owned objects,

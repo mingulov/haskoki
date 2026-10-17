@@ -10,17 +10,19 @@ failures stay NULL-identical; the @foreign export@ boundary keeps
 its catch-all so no Haskell exception crosses into C), so the
 mid-open kill aborts the open.
 
-Probe shape (deliberately NOT a kill spray): the victim signals
-@entered@ from inside a seconds-long open (a large memory catalog:
-50k seatings, no files, no environment reads), main fires ONE
-@killThread@ (the victim is provably alive and far from exit, so
-the synchronous throw is always delivered mid-open and always
-returns), then joins on @outcome@. Both joins carry a 10s
-'System.Timeout' backstop ('assertFailure' on expiry) per the
-no-wedge rule. Prior attempts wedged here with a masked-driver
-kill spray: the first kill lands before the victim installs its
-report handler, the victim dies silently, and the join blocks
-forever (64\/64 kills returned,
+Probe shape (deliberately NOT a kill spray): the victim opens
+through injected acquisition steps whose backend step signals
+@entered@ and then parks on a gate, so the victim is blocked
+inside the open when main fires ONE @killThread@. The gate (not
+a timing margin) puts the delivery mid-open: however late the
+kill arrives, the victim cannot have completed the open. Main
+then releases the gate, so a missed kill would surface as a
+completed open instead of a wedge, and joins on @outcome@. Both
+joins carry a 10s 'System.Timeout' backstop ('assertFailure' on
+expiry) per the no-wedge rule. Prior attempts wedged here with a
+masked-driver kill spray: the first kill lands before the victim
+installs its report handler, the victim dies silently, and the
+join blocks forever (64\/64 kills returned,
 @iters=0@, @outcome=Nothing@). The entered-rendezvous makes that
 impossible: no kill precedes handler installation.
 
@@ -33,7 +35,7 @@ parallel; the engine suite has no environment writers, so its
 crypto probes are race-free.
 -}
 {-# LANGUAGE OverloadedStrings #-}
-module FfiAsyncSpec (spec) where
+module FfiAsyncSpec (spec, commitPathWarmup) where
 
 import Control.Concurrent
   ( MVar
@@ -52,6 +54,7 @@ import Control.Exception
   , IOException
   , SomeException
   , bracket
+  , bracket_
   , finally
   , fromException
   , mask_
@@ -60,13 +63,14 @@ import Control.Exception
   )
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import qualified Data.Map as Map
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Set as Set
 import Data.Word (Word64)
 import Foreign.C.String (withCString)
 import Foreign.C.Types (CInt (..), CLong (..), CULong (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, wordPtrToPtr)
+import Foreign.Ptr (Ptr, castPtr, nullFunPtr, nullPtr, wordPtrToPtr)
 import Foreign.StablePtr
   ( StablePtr
   , castPtrToStablePtr
@@ -85,7 +89,7 @@ import System.Directory
   )
 import System.FilePath ((</>))
 import System.Timeout (timeout)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, inOrderTestGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import qualified Haskoki.Engine.Backend as B
@@ -109,6 +113,7 @@ import Haskoki.FFI.Async
   , asyncCloseCtx
   , asyncLiveHandles
   , ctxAcquireBorrowTest
+  , ctxInspectEntryTest
   , ctxPendingReclaims
   , ctxReclaimStats
   , ctxReleaseBorrowTest
@@ -138,7 +143,19 @@ import Haskoki.FFI.Async
   , StoreBox (..)
   , submitTransfer
   )
-import Haskoki.FFI.Standard (StdInstance, haskokiStdClose, openStdInstance)
+import Haskoki.FFI.Standard
+  ( SessionOpenPoint (..)
+  , StdAcquisition (..)
+  , StdInstance (..)
+  , haskokiStdClose
+  , haskokiStdCloseSession
+  , haskokiStdOpenSession
+  , haskokiStdOpenSessionWithNotifyWithKey
+  , openStdInstance
+  , openStdInstanceWith
+  , stdAcquisition
+  , stdRvOf
+  )
 import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Model (Model (..))
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
@@ -252,14 +269,40 @@ import Haskoki.Types
   , JobId (..)
   , Outcome (..)
   , Pkcs11Version (..)
-  , ReturnCode (CKR_ARGUMENTS_BAD)
+  , ReturnCode (CKR_ARGUMENTS_BAD, CKR_GENERAL_ERROR, CKR_OK)
   , SessionId (..)
   , SlotId (..)
   , TokenId (..)
   )
 
 spec :: TestTree
-spec = testGroup "FFI acquisition"
+-- Every case in this group runs alone, one at a time, under tasty's
+-- 'inOrderTestGroup' (no lock value: the scheduler orders the
+-- cases, so no worker idles holding one and wait time never counts
+-- against a case's timeout; the dependency-group variant would
+-- shield earlier cases from '-p' filtering and break the
+-- ownership-matrix patterns, so this group uses the variant whose
+-- filtering matches 'testGroup'). The RTS reuses freed 'StablePtr'
+-- values, so
+-- two parallel cases could observe the same pointer bits: a caller
+-- parked before its lookup admitted to a new owner that registered
+-- those bits live (wrong refusal code), a borrower census counting
+-- a foreign caller, and fixture teardown that retires and frees
+-- without the close-path drain freeing under another case's
+-- admitted caller (use-after-free). Sequencing also removes the
+-- concurrent first-evaluation races that coincided with the
+-- commit-path BlackHole hangs. Two of those shapes were product
+-- defects, fixed alongside: borrowed-view closes now defer their
+-- free behind the entry's borrow count, and the provider pins one
+-- RTS capability. The 'counted' wrapper on each case is unchanged
+-- (child thread, labels, ownership counters). Sequencing covers
+-- this group only: keys stay safe across groups because each case
+-- pins its keys through its assertions (pin-while-allocated), or
+-- accepts both codes under reuse, and no other group parks callers
+-- or holds test borrows. Do not parallelize this group without re-proving
+-- every tombstone, census, reclaim and hang assertion under
+-- parallel execution.
+spec = inOrderTestGroup "FFI acquisition"
   [ testCase "std open succeeds then closes" (counted "m3-ffi-acquisition" "std-open-succeeds-then-closes" (caseStdSuccess))
   , testCase "std open bad sqlite path is NULL" (counted "m3-ffi-acquisition" "std-open-bad-sqlite-path-is-null" (caseStdBadSqlite))
   , testCase "std open zero slots is NULL" (counted "m3-ffi-acquisition" "std-open-zero-slots-is-null" (caseStdZeroSlots))
@@ -284,7 +327,10 @@ spec = testGroup "FFI acquisition"
   , testCase "registry roots reclaim across churn" (counted "m3-ffi-acquisition" "registry-roots-reclaim-across-churn" (caseRegistryRootsReclaim))
   , testCase "stacked displacements preserve every root" (counted "m3-ffi-acquisition" "stacked-displacements-preserve-every-root" (caseReclaimOverlappingReuse))
   , testCase "kill during acquire rolls back and nulls" (counted "m3-ffi-acquisition" "kill-during-acquire-rolls-back-and-nulls" (caseJoinAcquireKillDuringAcquire))
-  , testGroup "standalone ownership"
+  , testCase "session close defers the borrowed view free" (counted "m3-ffi-acquisition" "session-close-defers-the-borrowed-view-free" (caseSessionCloseDefersViewFree))
+  , testCase "instance close defers the borrowed view free" (counted "m3-ffi-acquisition" "instance-close-defers-the-borrowed-view-free" (caseInstanceCloseDefersViewFree))
+  , testCase "open rollback defers the borrowed view free" (counted "m3-ffi-acquisition" "open-rollback-defers-the-borrowed-view-free" (caseOpenRollbackDefersViewFree))
+  , inOrderTestGroup "standalone ownership"
       [ testCase "store box killed after store open closes the store" (counted "m3-standalone-ownership" "store-box-killed-after-store-open-closes-the-store" (caseBoxKilledAfterStoreOpen))
       , testCase "store box killed after token setup closes the store" (counted "m3-standalone-ownership" "store-box-killed-after-token-setup-closes-the-store" (caseBoxKilledAfterTokenSetup))
       , testCase "store box killed during token load closes the store" (counted "m3-standalone-ownership" "store-box-killed-during-token-load-closes-the-store" (caseBoxKilledDuringTokenLoad))
@@ -386,40 +432,37 @@ caseStdNonPoison = do
 -- swallowed and the open completed)
 -- ---------------------------------------------------------------------------
 
--- | A slow-but-successful open: 50k catalog seatings on the memory
--- backend (no files, no environment reads). The seating loop runs
--- ~100ms+, so a kill fired right after @entered@ is delivered
--- mid-open with a 100x+ margin — deterministically, without hooks.
--- The slot bound admits the whole catalog (seating must SUCCEED;
--- a refusal would fail fast and evaporate the slow window).
-bigCatalogCfg :: Config
-bigCatalogCfg = defaultConfig
-  { cfgLimits = (cfgLimits defaultConfig) { limSlots = bigCatalogSeats + 8 }
-  , cfgTokens = (cfgTokens defaultConfig)
-      { tcEntries =
-          [ ("tok-" ++ show i, "0000", "1111") | i <- [1 .. bigCatalogSeats] ]
-      }
-  }
-
-bigCatalogSeats :: Int
-bigCatalogSeats = 50000
-
+-- | A kill delivered while the open is provably in flight: the
+-- victim opens through injected acquisition steps whose backend
+-- step signals @entered@ and then parks on @proceed@, so the
+-- victim is blocked inside the open (past the store acquire, in
+-- the restored backend step) when the single 'killThread' lands.
+-- No timing margin: however late the kill arrives, the victim
+-- cannot have completed the open, so the outcome is always
+-- 'Left'. After the kill the main thread releases @proceed@, so
+-- a missed kill (a real defect) would surface as a completed
+-- open instead of a wedge.
 caseStdAsyncSlow :: IO ()
 caseStdAsyncSlow = do
   entered <- newEmptyMVar
+  proceed <- newEmptyMVar
   outcome <- newEmptyMVar
+  let sa = stdAcquisition
+        { saOpenBackend = putMVar entered () >> takeMVar proceed
+            >> saOpenBackend stdAcquisition
+        }
   victimTid <- forkIO $ do
-    r <- try $ do
-      putMVar entered ()
-      openStdInstance bigCatalogCfg
+    r <- try $ openStdInstanceWith sa defaultConfig
     putMVar outcome (r :: Either SomeException (StablePtr StdInstance))
   mEntered <- timeout 10000000 (takeMVar entered)
   case mEntered of
     Nothing -> assertFailure "wedge detected: victim never entered the open"
     Just () -> pure ()
-  -- Single kill: the victim is alive inside a ~100ms+ open, so this
-  -- is delivered mid-open and returns (no spray, no exit race).
+  -- Single kill: the victim is parked at the backend gate inside
+  -- the open (it cannot proceed until released below), so this is
+  -- delivered mid-open and returns (no spray, no exit race).
   killThread victimTid
+  _ <- tryPutMVar proceed ()
   mOut <- timeout 10000000 (takeMVar outcome)
   case mOut of
     Nothing -> assertFailure "wedge detected: open never reported after kill"
@@ -439,6 +482,16 @@ countingRunner :: IORef Int -> CryptoEffect -> IO CryptoResult
 countingRunner ref _fx = do
   modifyIORef' ref (+ 1)
   pure (GotBytes cannedFfiDigest)
+
+-- | GHC #27272 warm-up MITIGATION (not a fix), run once by the
+-- model suite's 'Main' before tasty forks any worker: one
+-- seat-token commit, single-threaded, so the commit-path constants
+-- are values before any two workers can first-evaluate them
+-- together (the orphaned-black-hole hang of the known upstream
+-- runtime bug GHC #27272). This lowers the hang rate; it does not
+-- fix the upstream bug.
+commitPathWarmup :: IO ()
+commitPathWarmup = mkFfiStore >> pure ()
 
 -- | A memory store with the home token record seated (generation 0).
 mkFfiStore :: IO Store
@@ -1404,7 +1457,12 @@ caseOwnedToBorrowedReuse = do
 -- dereferences the freed pointer. Before tombstones, a caller
 -- resuming after the close fell through to a dereference of the
 -- freed pointer. The hook is scoped to this pointer and reset
--- under 'finally', so parallel tests never observe it.
+-- under 'finally', so parallel tests never observe it. The close
+-- runs over an acquisition that defers its pointer free into
+-- 'freedRef': the value stays allocated (hence unreusable by any
+-- other group) until the assertion completes, then frees whatever
+-- the outcome — the pin-while-allocated shape of
+-- 'caseOwnedToBorrowedReuse'.
 caseEnterBarrierCloseTombstones :: IO ()
 caseEnterBarrierCloseTombstones = do
   _store <- mkFfiStore
@@ -1417,6 +1475,8 @@ caseEnterBarrierCloseTombstones = do
     entered <- newEmptyMVar
     proceed <- newEmptyMVar
     done <- newEmptyMVar
+    freedRef <- newIORef []
+    let acq = asyncAcquisition { aaFreeCtxPtr = \fp -> modifyIORef' freedRef (fp :) }
     setEnterTestHook sp (Just (putMVar entered () >> takeMVar proceed))
     (do
       _ <- forkIO $ do
@@ -1426,7 +1486,7 @@ caseEnterBarrierCloseTombstones = do
       case mEntered of
         Nothing -> assertFailure "caller never parked pre-lookup"
         Just () -> pure ()
-      haskokiAsyncClose pSlot
+      closeCtxSlotWith acq pSlot
       after <- peek pSlot
       assertBool "close completed under the parked caller" (isNull after)
       gateMid <- inspectTableGate (acTable ctx)
@@ -1439,7 +1499,7 @@ caseEnterBarrierCloseTombstones = do
       case r of
         Right rv -> assertEqual "parked caller refused by tombstone" rvGeneral rv
         Left e -> assertFailure ("caller failed: " ++ show e)
-      ) `finally` setEnterTestHook sp Nothing
+      ) `finally` (readIORef freedRef >>= mapM_ freeStablePtr >> setEnterTestHook sp Nothing)
 
 -- | Retiring clears the entry hook in the same step as the
 -- tombstone: arm a hook, retire, then re-register the same
@@ -1468,6 +1528,82 @@ caseRetireClearsHook = do
   retireCtx sp
   freeStablePtr sp
   awaitNoPendingReclaims
+
+-- | Open a live Standard session on the default config and return
+-- the instance, the session handle and the installed borrowed-view
+-- key. The caller owns the instance and closes it.
+openStdSessionView :: IO (StablePtr StdInstance, CULong, StablePtr AsyncCtx)
+openStdSessionView = do
+  inst <- openStdInstance defaultConfig
+  assertBool "instance opened" (castStablePtrToPtr inst /= nullPtr)
+  h <- alloca $ \pSession -> do
+    haskokiStdOpenSession inst 0 0 pSession
+      >>= assertEqual "session opened" (stdRvOf CKR_OK)
+    peek pSession
+  views <- deRefStablePtr inst >>= readIORef . siAsyncViews
+  case Map.lookup (SessionId (fromIntegral h)) views of
+    Nothing -> assertFailure "borrowed view installed"
+    Just view -> pure (inst, h, view)
+
+-- | Session close retires the borrowed view but defers its pointer
+-- free behind the entry's borrow count: with a borrow held across
+-- the close, the retired entry keeps both roots (the displaced
+-- table and the view pointer itself) queued until the release.
+caseSessionCloseDefersViewFree :: IO ()
+caseSessionCloseDefersViewFree =
+  bracket openStdSessionView (\(inst, _, _) -> haskokiStdClose inst) $
+    \(inst, h, view) -> do
+      bracket_ (ctxAcquireBorrowTest view) (ctxReleaseBorrowTest view) $ do
+        setup <- ctxInspectEntryTest view
+        assertEqual "view live under the held borrow" (2, 1, 0) setup
+        haskokiStdCloseSession inst h
+          >>= assertEqual "session closed" (stdRvOf CKR_OK)
+        mid <- ctxInspectEntryTest view
+        assertEqual "retired view keeps its roots queued under the borrow"
+          (3, 1, 2) mid
+      awaitNoPendingReclaims
+
+-- | Instance close releases every session view the same way: the
+-- retired entry keeps both roots queued while a borrow stands.
+caseInstanceCloseDefersViewFree :: IO ()
+caseInstanceCloseDefersViewFree = do
+  (inst, _, view) <- openStdSessionView
+  bracket_ (ctxAcquireBorrowTest view) (ctxReleaseBorrowTest view) $ do
+    setup <- ctxInspectEntryTest view
+    assertEqual "view live under the held borrow" (2, 1, 0) setup
+    haskokiStdClose inst
+    mid <- ctxInspectEntryTest view
+    assertEqual "retired view keeps its roots queued under the borrow"
+      (3, 1, 2) mid
+  awaitNoPendingReclaims
+
+-- | The open-session rollback releases its never-installed view the
+-- same way: the seam observer holds a borrow on the view key, the
+-- injected fault runs the rollback, and the retired entry keeps
+-- both roots queued until the release.
+caseOpenRollbackDefersViewFree :: IO ()
+caseOpenRollbackDefersViewFree = do
+  inst <- openStdInstance defaultConfig
+  assertBool "instance opened" (castStablePtrToPtr inst /= nullPtr)
+  keyRef <- newIORef Nothing
+  let observe BeforeBorrowedViewInstall (Just view) = do
+        writeIORef keyRef (Just view)
+        ctxAcquireBorrowTest view
+        ioError (userError "injected rollback")
+      observe _ _ = pure ()
+  flip finally (haskokiStdClose inst) $ alloca $ \pSession -> do
+    haskokiStdOpenSessionWithNotifyWithKey observe inst 0 0 0 nullPtr nullFunPtr pSession
+      >>= assertEqual "injected open fault fenced" (stdRvOf CKR_GENERAL_ERROR)
+    mView <- readIORef keyRef
+    view <- case mView of
+      Nothing -> assertFailure "seam reached the view-install point"
+      Just v -> pure v
+    (do
+      mid <- ctxInspectEntryTest view
+      assertEqual "rolled-back view keeps its roots queued under the borrow"
+        (3, 1, 2) mid
+      ) `finally` ctxReleaseBorrowTest view
+    awaitNoPendingReclaims
 
 -- | Poll the C reclamation backlog to quiescence (bounded):
 -- borrows span adjacent lines only, so a live backlog drains

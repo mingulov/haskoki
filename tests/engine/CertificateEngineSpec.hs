@@ -33,7 +33,7 @@ import Control.Concurrent
   , takeMVar
   , threadDelay
   )
-import Control.Exception (SomeException, bracket, catch, finally)
+import Control.Exception (IOException, SomeException, bracket, catch, finally, try)
 import Control.Monad (forM_, guard, unless, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
@@ -56,7 +56,8 @@ import Foreign.StablePtr
   )
 import Foreign.Storable (peek, poke)
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
-import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory (createDirectory, getTemporaryDirectory)
 import System.IO (BufferMode (..), hFlush, hSetBuffering, stdout)
 import Text.Read (readMaybe)
 import Test.Tasty (TestTree, testGroup)
@@ -1442,18 +1443,29 @@ newCommits probe before = drop before <$> readIORef (cpCommits probe)
 -- Temp-directory SQLite opens
 -- ---------------------------------------------------------------------------
 
+-- | A fresh unique directory per call: concurrent suite processes
+-- must never share a cert store path. The directory is claimed
+-- atomically (create-then-retry, never check-then-create). No
+-- cleanup: callers hold bare paths, as before.
+newCertWorkDir :: String -> IO FilePath
+newCertWorkDir tag = do
+  base <- getTemporaryDirectory
+  let go :: Int -> IO FilePath
+      go n = do
+        t <- getMonotonicTimeNSec
+        let d = base ++ "/haskoki-cert-" ++ tag ++ "-" ++ show t ++ "-" ++ show n
+        r <- try (createDirectory d)
+        case r of
+          Right () -> pure d
+          Left (e :: IOException)
+            | n < 100 -> go (n + 1)
+            | otherwise -> ioError e
+  go 0
+
 certDbPath :: String -> IO FilePath
 certDbPath tag = do
-  base <- getTemporaryDirectory
-  let path = base ++ "/haskoki-cert-" ++ tag ++ ".db"
-  removeIfExists path
-  removeIfExists (path ++ ".lock")
-  pure path
-
-removeIfExists :: FilePath -> IO ()
-removeIfExists path = do
-  exists <- doesFileExist path
-  when exists (removeFile path)
+  dir <- newCertWorkDir tag
+  pure (dir ++ "/store.db")
 
 certConfig :: FilePath -> Config
 certConfig path = defaultConfig

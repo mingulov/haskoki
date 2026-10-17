@@ -36,6 +36,13 @@
  * 'haskoki_ctx_stats' reports the independent
  * displaced/taken/freed accounting, which balances at quiescence.
  *
+ * A context pointer itself can retire through the same queue:
+ * 'haskoki_ctx_enqueue_free' parks the pointer's own root on its
+ * entry, so the free waits for the entry's borrow count to reach
+ * zero like any displaced root. 'haskoki_ctx_inspect' reads one
+ * entry's state, borrow count and queued-root count in one locked
+ * step without acquiring anything (TEST-ONLY).
+ *
  * Allocation failure aborts: silently dropping a register, a retire,
  * or a queued root would corrupt admission or strand a root, so the
  * table stops the process instead of misbehaving.
@@ -45,6 +52,11 @@ __attribute__((visibility("hidden"))) void haskoki_ctx_register(void *key,
                                                                 int kind,
                                                                 void *table);
 __attribute__((visibility("hidden"))) void haskoki_ctx_retire(void *key);
+__attribute__((visibility("hidden"))) void haskoki_ctx_enqueue_free(void *key,
+                                                                    void *root);
+__attribute__((visibility("hidden"))) int haskoki_ctx_inspect(void *key,
+                                                              unsigned *refs_out,
+                                                              unsigned *queued_out);
 __attribute__((visibility("hidden"))) int haskoki_ctx_lookup_acquire(void *key,
                                                                      void **table_out);
 __attribute__((visibility("hidden"))) void haskoki_ctx_hook_set(void *key,

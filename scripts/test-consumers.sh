@@ -22,6 +22,27 @@
 #                       full-byte agreement, size-query liveness, an
 #                       independent sha256("abc") oracle, cross-worker
 #                       distinctness, and session conservation
+#   consumer_rts_caps   capability-count legs against the built module:
+#                       GHCRTS=-N4 and unsafe GHCRTS=-A8m must both
+#                       yield one capability with the host surviving
+#   consumer_rts_race   concurrent first-call race against the built
+#                       module: 8 barrier-released threads make their
+#                       first native call (haskoki_async_open) at once,
+#                       in each of 20 fresh processes; every call must
+#                       return a context, and a post-init fork child
+#                       must refuse the native surface
+#   rts_midfork_probe   deterministic mid-init fork probe against the
+#                       built module: interposed hs_init_ghc parks the
+#                       winning thread inside init while a mid-init
+#                       fork child must refuse every surface and a
+#                       loser thread must keep waiting (explicit
+#                       wiring below; not a consumer_*.c scenario: it
+#                       needs the RTS headers and -rdynamic, so the
+#                       generic scenario build cannot take it)
+#   rts_caps_probe      same GHCRTS legs against rts_bootstrap.c
+#                       compiled from source with its test-only
+#                       capability-count accessor (explicit wiring
+#                       below; not a consumer_*.c scenario)
 #
 # Usage:
 #   scripts/test-consumers.sh             # build scenarios, run all (must PASS)
@@ -30,7 +51,9 @@
 # and every bogus value fails fast before the build):
 #   HASKOKI_QUAL_ONLY=<basename>  run only the scenario whose basename
 #                                 (minus .c) matches exactly, e.g.
-#                                 consumer_multithread or async_routed
+#                                 consumer_multithread, async_routed,
+#                                 rts_caps_probe, or rts_midfork_probe
+#                                 (each probe skips the scenarios then)
 #   HASKOKI_WIDTH_LEG=64          compile every scenario with
 #                                 -DHASKOKI_WIDTH_LEG=64 (the 64-bit cell)
 # Probe legs pass through untouched (the probes read them):
@@ -77,9 +100,22 @@ SCEN_LIST=$(
   done | LC_ALL=C sort -u
 )
 [ -n "$SCEN_LIST" ] || fail "consumer scenario list empty"
-if [ -n "${HASKOKI_QUAL_ONLY:-}" ]; then
+RUN_PROBE=1
+RUN_MIDFORK=1
+if [ "${HASKOKI_QUAL_ONLY:-}" = "rts_caps_probe" ]; then
+  SCEN_LIST=""
+  RUN_MIDFORK=0
+  echo "scenario filter: rts_caps_probe (RTS bootstrap probe only)"
+elif [ "${HASKOKI_QUAL_ONLY:-}" = "rts_midfork_probe" ]; then
+  SCEN_LIST=""
+  RUN_PROBE=0
+  echo "scenario filter: rts_midfork_probe (RTS mid-init fork probe only)"
+elif [ -n "${HASKOKI_QUAL_ONLY:-}" ]; then
   # Scenario filter: exact basename match (minus .c), validated
   # before the build so a bogus hint fails fast without a toolchain.
+  # Both probes are skipped under a scenario filter.
+  RUN_PROBE=0
+  RUN_MIDFORK=0
   QUAL_HIT=""
   for scen in $SCEN_LIST; do
     if [ "$(basename "$scen" .c)" = "$HASKOKI_QUAL_ONLY" ]; then
@@ -167,6 +203,90 @@ fi
 for scen in $SCEN_LIST; do
   run_scenario "$scen"
 done
+
+# RTS include discovery, shared by the two probes below (each needs
+# -I on the threaded RTS include dir).
+RTS_INCDIR=""
+if [ "$RUN_PROBE" = "1" ] || [ "$RUN_MIDFORK" = "1" ]; then
+  command -v ghc >/dev/null 2>&1 || fail "ghc not found (the RTS probes need ghc --print-libdir)"
+  GHC_LIBDIR=$(ghc --print-libdir) || fail "ghc --print-libdir failed"
+  RTS_ARCHDIR=""
+  RTS_ARCH_COUNT=0
+  for d in "$GHC_LIBDIR"/x86_64-linux-ghc-*; do
+    [ -d "$d" ] || continue
+    RTS_ARCHDIR="$d"
+    RTS_ARCH_COUNT=$((RTS_ARCH_COUNT + 1))
+  done
+  [ "$RTS_ARCH_COUNT" -eq 1 ] || fail "expected exactly one GHC arch dir under $GHC_LIBDIR, found $RTS_ARCH_COUNT"
+  RTS_INC_COUNT=0
+  for d in "$RTS_ARCHDIR"/rts-*/include; do
+    [ -d "$d" ] || continue
+    RTS_INCDIR="$d"
+    RTS_INC_COUNT=$((RTS_INC_COUNT + 1))
+  done
+  [ "$RTS_INC_COUNT" -eq 1 ] || fail "expected exactly one RTS include dir under $RTS_ARCHDIR, found $RTS_INC_COUNT"
+fi
+
+# RTS bootstrap probe: compiles cbits/rts_bootstrap.c from source with
+# the test-only capability-count accessor (the shipped module never
+# defines the macro) and drives its init code under hostile GHCRTS
+# values. Needs the threaded RTS link; skipped under a scenario
+# filter unless the filter names this probe.
+if [ "$RUN_PROBE" = "1" ]; then
+  [ -f tests/c/rts_caps_probe.c ] || fail "RTS bootstrap probe missing"
+  PROBE_BIN="$TMPD/rts_caps_probe"
+  # Linked with ghc -no-hs-main (a C main): only ghc knows the
+  # RTS/base library closure a plain cc link cannot satisfy. The
+  # startup under test is still rts_bootstrap.c's own init call.
+  if ! ghc -no-hs-main -threaded \
+      -I"$RTS_INCDIR" \
+      -optc-DHSK_OSSL4_TEST_HOOKS \
+      -optc-std=c11 -optc-O2 -optc-g -optc-Wall -optc-Wextra -optc-Werror \
+      -optl-Wl,-rpath,"$RTS_ARCHDIR" \
+      -odir "$TMPD" -hidir "$TMPD" \
+      -o "$PROBE_BIN" tests/c/rts_caps_probe.c cbits/rts_bootstrap.c \
+      -lpthread -ldl; then
+    echo "FAIL: rts_caps_probe did not compile"
+    FAILURES="$FAILURES rts_caps_probe(compile)"
+  else
+    echo "scenario compiled: $PROBE_BIN (bootstrap: cbits/rts_bootstrap.c)"
+    ec=0; "$PROBE_BIN" || ec=$?
+    echo "child exit: rts_caps_probe $ec"
+    if [ "$ec" -ne 0 ]; then
+      echo "FAIL: rts_caps_probe reported failures"
+      FAILURES="$FAILURES rts_caps_probe(exit $ec)"
+    fi
+  fi
+fi
+
+# RTS mid-init fork probe: interposes hs_init_ghc (the binary exports
+# its own, hence -rdynamic) to park the winning thread inside init
+# while a mid-init fork child must refuse every surface and a loser
+# thread must keep waiting. A plain cc link takes it (no RTS link:
+# the real init is reached through the dlopen'd module); skipped
+# under a scenario filter unless the filter names this probe.
+if [ "$RUN_MIDFORK" = "1" ]; then
+  [ -f tests/c/rts_midfork_probe.c ] || fail "RTS mid-init fork probe missing"
+  MIDFORK_BIN="$TMPD/rts_midfork_probe"
+  # shellcheck disable=SC2086
+  if ! cc -std=c11 -O2 -g -Wall -Wextra -Werror \
+      -Ispec/vendor \
+      -I"$RTS_INCDIR" \
+      -rdynamic \
+      $WIDTH_FLAGS \
+      -o "$MIDFORK_BIN" tests/c/rts_midfork_probe.c -ldl -lpthread; then
+    echo "FAIL: rts_midfork_probe did not compile"
+    FAILURES="$FAILURES rts_midfork_probe(compile)"
+  else
+    echo "scenario compiled: $MIDFORK_BIN (headers: spec/vendor + RTS)"
+    ec=0; "$MIDFORK_BIN" "$SO" || ec=$?
+    echo "child exit: rts_midfork_probe $ec"
+    if [ "$ec" -ne 0 ]; then
+      echo "FAIL: rts_midfork_probe reported failures"
+      FAILURES="$FAILURES rts_midfork_probe(exit $ec)"
+    fi
+  fi
+fi
 
 [ -z "$FAILURES" ] || fail "consumer failures:$FAILURES"
 

@@ -4,7 +4,7 @@ module NotificationsEngineSpec (spec) where
 import Control.Concurrent (ThreadId, isCurrentThreadBound, runInBoundThread, forkFinally, killThread, myThreadId, throwTo, yield)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryReadMVar)
 import Control.Concurrent.STM (atomically, newTQueueIO, readTQueue, writeTQueue)
-import Control.Exception (SomeException, AsyncException (ThreadKilled), MaskingState (..), bracket, evaluate, try, mask, getMaskingState, fromException)
+import Control.Exception (SomeException, AsyncException (ThreadKilled), IOException, MaskingState (..), bracket, catch, evaluate, try, mask, getMaskingState, fromException)
 import Control.Monad (forM_, replicateM, replicateM_, when)
 import qualified Data.ByteString as Bytes
 import qualified Data.ByteString.Char8 as BS
@@ -20,8 +20,9 @@ import Foreign.Marshal.Array (peekArray, pokeArray)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr, deRefStablePtr, newStablePtr, freeStablePtr)
 import Foreign.Storable (peek, poke, peekByteOff, sizeOf)
+import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Conc (threadStatus, ThreadStatus (..), BlockReason (..))
-import System.Directory (createDirectoryIfMissing, doesFileExist, getCurrentDirectory, removeFile)
+import System.Directory (createDirectory, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Mem.StableName (makeStableName)
 import System.IO (hFlush, hClose, openBinaryTempFile, stdout)
@@ -114,25 +115,44 @@ status ctl args = do
 row :: Integer -> Bool -> Integer -> Json
 row slot present epoch = JObj [("slot", JNum slot), ("present", JBool present), ("generation", JNum epoch)]
 
-withServing :: MVar () -> Bool -> IO a -> IO a
-withServing envLock removable action = withEnvLock envLock $ do
-  createDirectoryIfMissing True "/tmp/haskoki-notifications"
-  let path = "/tmp/haskoki-notifications/engine-config.toml"
+-- | A fresh private directory under the temp root, removed on exit.
+withPrivateDir :: (FilePath -> IO a) -> IO a
+withPrivateDir = bracket create (\d -> removeDirectoryRecursive d `catch` ignoreIO)
+  where
+    ignoreIO :: IOException -> IO ()
+    ignoreIO _ = pure ()
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base ++ "/haskoki-notifications-engine-" ++ show t ++ "-" ++ show n
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+
+withServing :: MVar () -> Bool -> (FilePath -> IO a) -> IO a
+withServing envLock removable action = withEnvLock envLock $ withPrivateDir $ \tmp -> do
+  let path = tmp ++ "/engine-config.toml"
   bracket (lookupEnv "HASKOKI_CONFIG")
     (\old -> maybe (unsetEnv "HASKOKI_CONFIG") (setEnv "HASKOKI_CONFIG") old) $ \_ -> do
       writeFile path (unlines ["schema_version = 1", "[control]", "test_enabled = " ++ if removable then "true" else "false", "[tokens]", "labels = [\"haskoki-demo\", \"second\"]", "so_pins = [\"5678\", \"5678\"]", "user_pins = [\"1234\", \"1234\"]", "[limits]", "events = 2", "jobs = 32"])
       setEnv "HASKOKI_CONFIG" path
-      action
+      action tmp
 
 -- Catches a second environment resolution or hub, startup indications, changed
 -- provisioning, and accidental use of Instance's configurable private table.
 caseServingInitialSnapshot :: MVar () -> Assertion
 caseServingInitialSnapshot envLock = do
-  forM_ [False, True] $ \removable -> withServing envLock removable $
+  forM_ [False, True] $ \removable -> withServing envLock removable $ \tmp ->
     bracket haskokiInstanceOpen haskokiInstanceClose $ \cell -> do
       assertBool "authoritative config opens" (not (isNull cell))
       Just ops <- readLiveInstance cell
-      setEnv "HASKOKI_CONFIG" "/tmp/haskoki-notifications/missing-config.toml"
+      setEnv "HASKOKI_CONFIG" (tmp ++ "/missing-config.toml")
       bracket (haskokiStdOpen cell) haskokiStdClose $ \sp -> do
         assertBool "Standard borrows resolved config despite invalid current env" (not (isNull sp))
         std <- deRefStablePtr sp
@@ -157,23 +177,23 @@ caseServingInitialSnapshot envLock = do
           =<< atomically (publishPresenceSTM (siSlots std) (SlotId 1) False)
   -- SQLite success/reopen: a single acquisition of each native owner per open,
   -- the existing store is borrowed and startup never replays a flag.
-  let path = "/tmp/haskoki-notifications/engine-initial.db"
-      cfg = (cfgTwo True) { cfgStorage = (cfgStorage defaultConfig) { scKind = StorageSQLite, scPath = Just path } }
-  createDirectoryIfMissing True "/tmp/haskoki-notifications"
-  bracket (removeDB path) (const (removeDB path)) $ \_ -> forM_ [1, 2 :: Int] $ \_ -> do
-    ops <- buildInstance cfg
-    counts <- newIORef ([] :: [String])
-    let note x = modifyIORef' counts (++ [x])
-        sa = counted note
-    bracket (openStdInstanceWithSlots sa cfg (instSlots ops)) haskokiStdClose $ \sp -> do
-      assertBool "SQLite opens/reopens" (not (isNull sp))
-      std <- deRefStablePtr sp
-      assertBool "SQLite has its one store" (not (isNothing (siStore std)))
-      assertEqual "SQLite catalog fully seated" 2 (Map.size (siCatalog std))
-      assertEqual "SQLite initial snapshot" (initial True) =<< snapshotSlots (siSlots std)
-      assertEqual "SQLite startup flags clear" SlotNoEvent =<< waitSlot (siSlots std) DontBlock
-      assertEqual "one backend and store acquisition" ["store+", "backend+"] =<< readIORef counts
-    assertEqual "one close per acquired resource" ["store+", "backend+", "backend-", "store-"] =<< readIORef counts
+  withPrivateDir $ \tmp -> do
+    let path = tmp ++ "/engine-initial.db"
+        cfg = (cfgTwo True) { cfgStorage = (cfgStorage defaultConfig) { scKind = StorageSQLite, scPath = Just path } }
+    bracket (removeDB path) (const (removeDB path)) $ \_ -> forM_ [1, 2 :: Int] $ \_ -> do
+      ops <- buildInstance cfg
+      counts <- newIORef ([] :: [String])
+      let note x = modifyIORef' counts (++ [x])
+          sa = counted note
+      bracket (openStdInstanceWithSlots sa cfg (instSlots ops)) haskokiStdClose $ \sp -> do
+        assertBool "SQLite opens/reopens" (not (isNull sp))
+        std <- deRefStablePtr sp
+        assertBool "SQLite has its one store" (not (isNothing (siStore std)))
+        assertEqual "SQLite catalog fully seated" 2 (Map.size (siCatalog std))
+        assertEqual "SQLite initial snapshot" (initial True) =<< snapshotSlots (siSlots std)
+        assertEqual "SQLite startup flags clear" SlotNoEvent =<< waitSlot (siSlots std) DontBlock
+        assertEqual "one backend and store acquisition" ["store+", "backend+"] =<< readIORef counts
+      assertEqual "one close per acquired resource" ["store+", "backend+", "backend-", "store-"] =<< readIORef counts
 
 assertCapacity8 :: StdInstance -> Assertion
 assertCapacity8 std = do
@@ -209,10 +229,9 @@ removeDB path = forM_ [path, path ++ "-wal", path ++ "-shm"] $ \p -> do
 -- Catches missed/double unwind, binding retained after failed publication,
 -- open services after refusal, and failure state poisoning the next open.
 caseServingAcquisitionUnwind :: Assertion
-caseServingAcquisitionUnwind = do
-  createDirectoryIfMissing True "/tmp/haskoki-notifications"
+caseServingAcquisitionUnwind = withPrivateDir $ \tmp ->
   forM_ ["store", "backend", "assembly", "binding"] $ \stage -> do
-    let path = "/tmp/haskoki-notifications/unwind-" ++ stage ++ ".db"
+    let path = tmp ++ "/unwind-" ++ stage ++ ".db"
         cfg = (cfgTwo True) { cfgStorage = (cfgStorage defaultConfig) { scKind = StorageSQLite, scPath = Just path } }
     bracket (removeDB path) (const (removeDB path)) $ \_ -> do
       ops <- buildInstance cfg
@@ -268,7 +287,7 @@ caseServingConfigLimits = do
 
 -- Catches implicit legacy-registry fallback and hooks outliving Standard.
 caseServingControlOwnership :: MVar () -> Assertion
-caseServingControlOwnership envLock = withServing envLock True $
+caseServingControlOwnership envLock = withServing envLock True $ \_ ->
   bracket haskokiInstanceOpen haskokiInstanceClose $ \cell -> do
     Just ops <- readLiveInstance cell
     _ <- insertToken (instRegistry ops) (SlotId 99)
@@ -359,9 +378,8 @@ startDigest ctx h output = do
     peek len >>= assertEqual "submission does not write length" 32
 
 withRemovalFixture :: String -> NotificationHooks -> Word64 -> Bool -> (RemovalFixture -> IO a) -> IO a
-withRemovalFixture tag hooks epoch removable action = do
-  createDirectoryIfMissing True "/tmp/haskoki-notifications"
-  let path = "/tmp/haskoki-notifications/n03-" ++ tag ++ ".db"
+withRemovalFixture tag hooks epoch removable action = withPrivateDir $ \tmp -> do
+  let path = tmp ++ "/n03-" ++ tag ++ ".db"
       cfg = (cfgTwo removable) { cfgStorage = (cfgStorage defaultConfig) { scKind = StorageSQLite, scPath = Just path } }
   bracket (removeDB path) (const (removeDB path)) $ \_ -> allocaBytes 192 $ \buffers -> do
     pokeArray buffers (replicate 192 (0xa5 :: Word8))
@@ -599,7 +617,7 @@ casePresenceCleanupFault envLock = do
 -- the assertions above distinguish their pre/post-publication state effects.
 assertControlFault :: MVar () -> StdInstance
   -> (SlotId -> Bool -> IO (Either PresenceError (PresenceChange,Int))) -> Assertion
-assertControlFault envLock inst change = withServing envLock True $
+assertControlFault envLock inst change = withServing envLock True $ \_ ->
   bracket haskokiInstanceOpen haskokiInstanceClose $ \cell -> do
     Just ops <- readLiveInstance cell
     bindPresenceOwner (instControl ops) (Just (PresenceOwner (snapshotSlots (siSlots inst)) change))
@@ -883,9 +901,10 @@ caseServingMaskedHandoff = do
 foreign import ccall safe "system" nativeSystem :: CString -> IO CInt
 
 runFinalizeProbe :: Assertion
-runFinalizeProbe = do
-  createDirectoryIfMissing True "/tmp/haskoki-notifications"
-  writeFile "/tmp/haskoki-notifications/finalize-probe.c" finalizeProbeSource
+runFinalizeProbe = withPrivateDir $ \tmp -> do
+  let src = tmp ++ "/finalize-probe.c"
+      bin = tmp ++ "/finalize-probe"
+  writeFile src finalizeProbeSource
   let child :: String -> [String] -> Assertion
       child label argv = do
         putStrLn ("T-N05 child " ++ label ++ " argv=" ++ show argv)
@@ -897,18 +916,18 @@ runFinalizeProbe = do
       quote s = "'" ++ concatMap (\c -> if c == '\'' then "'\\''" else [c]) s ++ "'"
   child "compile" ["cc", "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror",
     "-ffunction-sections", "-fdata-sections", "-Icbits", "-Ispec/vendor",
-    "/tmp/haskoki-notifications/finalize-probe.c", "cbits/standard_surface.c", "cbits/notify_guard.c",
-    "-Wl,--gc-sections", "-lpthread", "-o", "/tmp/haskoki-notifications/finalize-probe"]
+    src, "cbits/standard_surface.c", "cbits/notify_guard.c",
+    "-Wl,--gc-sections", "-lpthread", "-o", bin]
   -- Preserve the actual engine-built executable before Docker removes /tmp.
   cwd <- getCurrentDirectory
   let artifacts = cwd ++ "/dist-release-evidence/notifications/task-n05/native-probes"
   createDirectoryIfMissing True artifacts
   (artifact, handle) <- openBinaryTempFile artifacts "finalize-probe"
-  Bytes.readFile "/tmp/haskoki-notifications/finalize-probe" >>= Bytes.hPut handle
+  Bytes.readFile bin >>= Bytes.hPut handle
   hClose handle
   writeFile (artifact ++ ".c") finalizeProbeSource
   putStrLn ("T-N05 native artifact=" ++ artifact)
-  child "run" ["/tmp/haskoki-notifications/finalize-probe"]
+  child "run" [bin]
 
 finalizeProbeSource :: String
 finalizeProbeSource = unlines
@@ -1355,9 +1374,9 @@ silent label action = do
   pure value
 
 caseNotifyNonProducers :: Assertion
-caseNotifyNonProducers = runInBoundThread $ allocaBytes 1 $ \cookie -> allocaBytes 96 $ \whole -> alloca $ \len -> do
-  createDirectoryIfMissing True "/tmp/haskoki-notifications"
-  let db = "/tmp/haskoki-notifications/n07-silent.db"
+caseNotifyNonProducers = runInBoundThread $ allocaBytes 1 $ \cookie -> allocaBytes 96 $ \whole -> alloca $ \len ->
+  withPrivateDir $ \tmp -> do
+  let db = tmp ++ "/n07-silent.db"
       cfg = notifyConfig { cfgStorage = (cfgStorage notifyConfig) { scKind = StorageSQLite, scPath = Just db } }
       out = whole `plusPtr` 16
       reset = pokeArray whole (replicate 96 (0xa5 :: Word8)) >> poke len 64

@@ -1,7 +1,7 @@
 -- REGISTRATION: haskoki-model-tests
 module Main (main) where
 
-import Test.Tasty (defaultMain, testGroup)
+import Test.Tasty (TestTree, defaultMain, testGroup)
 
 import qualified AdmissionSpec
 import qualified AsyncSpec
@@ -92,7 +92,19 @@ import qualified TransitionSpec
 import qualified ULongSpec
 
 main :: IO ()
-main = defaultMain $ testGroup "haskoki model + lifecycle"
+-- GHC #27272 warm-up MITIGATION (not a fix): one single-threaded
+-- first commit before tasty forks any worker (see
+-- 'FfiAsyncSpec.commitPathWarmup'). Concurrent first evaluation of
+-- the commit-path constants can orphan a string-literal black hole
+-- and hang the suite binary (GHC #27272, a known upstream runtime
+-- bug); pre-forcing them up front removes the concurrent first
+-- evaluation. This lowers the hang rate; it does not fix upstream.
+main = do
+  FfiAsyncSpec.commitPathWarmup
+  defaultMain tests
+
+tests :: TestTree
+tests = testGroup "haskoki model + lifecycle"
   [ TransitionSpec.spec
   , SessionCancelSpec.spec
   , SessionSpec.spec

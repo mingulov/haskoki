@@ -260,8 +260,8 @@ caseStdStoreFail = do
   assertEqual "no backend acquisition" 0 =<< readIORef backendCalls
 
 caseStdBackendFail :: IO ()
-caseStdBackendFail = do
-  let path = "/tmp/haskoki-acquire-std.db"
+caseStdBackendFail = withPrivateDir $ \tmp -> do
+  let path = tmp ++ "/haskoki-acquire-std.db"
   bracket (removeIfExists path) (\_ -> removeIfExists path) $ \_ -> do
     storeOpens <- newIORef (0 :: Int)
     storeCloses <- newIORef (0 :: Int)
@@ -381,8 +381,8 @@ asSync :: IO a -> IO (Either SomeException a)
 asSync = try
 
 caseStdAsyncUnwind :: IO ()
-caseStdAsyncUnwind = do
-  let path = "/tmp/haskoki-acquire-unwind.db"
+caseStdAsyncUnwind = withPrivateDir $ \tmp -> do
+  let path = tmp ++ "/haskoki-acquire-unwind.db"
   bracket (removeIfExists path) (\_ -> removeIfExists path) $ \_ -> do
     entered <- newEmptyMVar
     proceed <- newEmptyMVar
@@ -483,9 +483,8 @@ dishonestToml = unlines
   ]
 
 withDishonestEnv :: MVar () -> String -> (FilePath -> IO a) -> IO a
-withDishonestEnv envLock tag action = withTimeout "dishonest open" $ do
-  base <- getTemporaryDirectory
-  let path = base ++ "/haskoki-dishonest-" ++ tag ++ ".toml"
+withDishonestEnv envLock tag action = withTimeout "dishonest open" $ withPrivateDir $ \tmp -> do
+  let path = tmp ++ "/haskoki-dishonest-" ++ tag ++ ".toml"
   bracket (writeFile path dishonestToml >> pure path) removeIfExists $ \p ->
     withConfigEnv envLock (Just p) (action p)
 
