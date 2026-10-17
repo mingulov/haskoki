@@ -635,7 +635,7 @@
       "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "mismatch-refusal", "--run", "@RUN@", "--signed", "out/mismatch.jar", "--ca", "ca/ca.pem", "--sig-dir", "sigm", "--", "jarsigner", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234", "-sigalg", "SHA256withECDSA", "-signedjar", "@RUN@/out/mismatch.jar", "@RUN@/out/app.jar", "mismatched-key"],
       "timeout_seconds": 120,
       "expect": {"exit": 0},
-      "expect_refusal": {"markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=verify"]},
+      "expect_refusal": {"markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=sign", "private key algorithm does not match algorithm of public key"]},
       "depends_on": ["keystore-mismatch-write-cert", "keystore-make-jar"]
     },
     {

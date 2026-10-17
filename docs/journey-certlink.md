@@ -106,11 +106,18 @@ fixture certificate under the same id and label.
 `keystore-mismatch-spki` compares the RSA certificate SPKI
 against the EC public half and refuses with `SPKI-MISMATCH`
 (exit 1). The `java-keystore-refuse-mismatched` leg then attempts
-the full sign path and expects no verified signature; it is an
-open marker question (fail P): jarsigner refuses the
-cross-algorithm entry at the sign stage with
-`IllegalArgumentException` while the row expects the verify
-stage. See the status note in
+the full sign path and expects no verified signature (pass P):
+jarsigner refuses the cross-algorithm entry at the sign stage
+with `jarsigner error:
+java.lang.IllegalArgumentException: private key algorithm does
+not match algorithm of public key in end entity certificate (the
+1st in certPath)` (`logs/java-keystore-refuse-mismatched.log:1`),
+so the row pins `JOURNEY-NO-VERIFIED-SIGNATURE stage=sign` plus
+that cause line. The verify stage is unreachable with this
+fixture: jarsigner compares the private-key algorithm against
+the end-entity certificate's public-key algorithm client-side
+before signing, with no `PKCS11Exception` wrapper for the
+provider to influence. See the status note in
 [client-portfolio.md](client-portfolio.md).
 
 ### Keytool on-token generation

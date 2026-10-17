@@ -1,25 +1,23 @@
 {
   "$schema": "haskoki-client-journeys/1",
   "portfolio": {
-    "run": "final/portfolio",
+    "run": "final-r8a/portfolio",
     "source": {
-      "sha": "217b02ef2eaf7e4044068526fdb30f63d8b5b4ec",
-      "dirty": false,
+      "sha": "a996c59f6fbba41bfd10c9f61b4011f1982ae9e4",
+      "dirty": true,
       "dirty_basis": "caller"
     },
     "artifact": {
       "kind": "bundle",
       "haskoki_version": "0.4.0.0",
-      "bundle_sha256": "82c428af91f6f4d6cb15291633566d7984662198c7bce205ff8b0b6d8a2bc967",
+      "bundle_sha256": "d3770f7dbdc3d7656b3c8886265990d42cf94482a088869b4ce43bb70d3bd9b9",
       "image_id": null,
-      "toolchain_record_sha256": "c3d505c30e4c66785bfbc04b859a66cb51178104b53bc382516f88adb6e862a5"
+      "toolchain_record_sha256": "dda06711f2be6360e2239abc90cd29f748ddd2df0e20f1c2d33a8c303fd22e53"
     },
-    "aggregate": "fail",
+    "aggregate": "pass",
     "required": 61,
-    "passed": 60,
-    "failed_legs": [
-      "java-keystore-refuse-mismatched"
-    ],
+    "passed": 61,
+    "failed_legs": [],
     "phases_complete": [
       "module",
       "verifier"
@@ -28,7 +26,7 @@
     "module_sha256_stable": true,
     "first_verified_signature": {
       "leg": "opensc-sign",
-      "seconds": 2.43767745,
+      "seconds": 2.02849783,
       "t0_basis": "bundle-extract"
     },
     "client_setup_seconds": 45.0,

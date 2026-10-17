@@ -12,16 +12,19 @@ in [journey-aead.md](journey-aead.md) and
 Status: the installed portfolio runner
 (`scripts/test-client-journeys.sh` over `tests/journeys/legs.json`)
 qualifies the release bundle and the candidate demo image. Run P
-(`final/portfolio`, source `217b02e`, bundle tarball SHA-256
-`82c428af…b967`) passes 60 of 61 legs; run I (`final/image`, source
-`817fe8c`, image `sha256:52ee65d7…`) passes 28 of 28. Per-leg
-results are in [client-journeys.json](release-results/client-journeys.json),
+(`final-r8a/portfolio`, source `a996c59` caller-recorded dirty,
+bundle tarball SHA-256 `d3770f7d…d9b9`) passes 61 of 61 legs;
+run I (`final/image`, source `817fe8c`, image
+`sha256:52ee65d7…`) passes 28 of 28. Per-leg results are in
+[client-journeys.json](release-results/client-journeys.json),
 which the evidence cells below cite as P (portfolio) and I (image).
-The single failing leg, `java-keystore-refuse-mismatched`, is an
-open marker question (see the KeyStore journey): jarsigner refuses
-the mismatched entry at the sign stage while the row expects the
-verify stage. Prior receipts from product-review run 38346498528
-establish the named artifact only, never the current tree.
+The `java-keystore-refuse-mismatched` leg pins jarsigner's
+sign-stage refusal of the RSA-cert/EC-key entry (see the KeyStore
+journey): the row expects `JOURNEY-NO-VERIFIED-SIGNATURE
+stage=sign` plus the `private key algorithm does not match
+algorithm of public key` cause line. Prior receipts from
+product-review run 38346498528 establish the named artifact only,
+never the current tree.
 
 ## Pinned versions
 
@@ -210,7 +213,7 @@ memory store). The probe is `tests/journeys/java/JavaTokenProbe.java`
 | `java-keystore-verify-independent` | openssl CMS verification over the extracted signature block against the journey CA | exit 0; `CMS Verification successful` | pass P |
 | `java-keystore-tamper` | tamper the payload, re-verify | `JOURNEY-TAMPER-DETECTED` with `digest error`; `jar verified.` absent | pass P |
 | `java-keystore-refuse-alias` | `jarsigner` with `no-such-alias` | exit 1; `Certificate chain not found for: no-such-alias`; output jar absent | pass P |
-| `java-keystore-refuse-mismatched` | sign with the RSA-cert/EC-key entry, expect no verified signature | open marker question: jarsigner refuses at the sign stage (`IllegalArgumentException`, private-key/cert algorithm mismatch) while the row expects the verify stage | fail P |
+| `java-keystore-refuse-mismatched` | sign with the RSA-cert/EC-key entry, expect no verified signature | `JOURNEY-NO-VERIFIED-SIGNATURE stage=sign` plus jarsigner's `private key algorithm does not match algorithm of public key` cause line (`logs/java-keystore-refuse-mismatched.log:1`); the verify stage is unreachable with this fixture (see [journey-certlink.md](journey-certlink.md)) | pass P |
 | `java-keystore-generate` | `keytool -genkeypair` on the token (`EC`, `secp256r1`) | exit 0; key pair and self-signed certificate generated | pass P |
 | `java-keystore-sign-generated` | `jarsigner` signs with the generated entry | exit 0; `jar signed.` | pass P |
 

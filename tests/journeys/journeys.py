@@ -3521,7 +3521,9 @@ def mut_mismatch_verified_signature(root):
         "timeout_seconds": 60,
         "expect": {"exit": 0, "markers": []},
         "expect_refusal": {
-            "markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=verify"]},
+            "markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=sign",
+                        "private key algorithm does not match "
+                        "algorithm of public key"]},
         "depends_on": [],
     }
     log = ("JOURNEY-MISMATCH sign exit=0 stage=sign\n"
@@ -3543,7 +3545,9 @@ def mut_mismatch_sign_stage_passes(root):
         "timeout_seconds": 60,
         "expect": {"exit": 0, "markers": []},
         "expect_refusal": {
-            "markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=verify"]},
+            "markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=sign",
+                        "private key algorithm does not match "
+                        "algorithm of public key"]},
         "depends_on": [],
     }
     log = ("jarsigner error: java.security.ProviderException: "
@@ -3696,7 +3700,7 @@ SELF_TEST_CASES = [
     ("mismatched alias produced a verified signature",
      {JR_EXIT, JR_REFUSAL_UNREACHED},
      mut_mismatch_verified_signature, None),
-    ("mismatched alias refused at sign, not verify",
+    ("mismatched alias refused without the cause pin",
      {JR_REFUSAL_UNREACHED, JR_SELF_REPORT},
      mut_mismatch_sign_stage_passes, None),
     ("wrong alias changed the jar",
@@ -3937,10 +3941,12 @@ def committed_application_rows_problems(table):
     refusal = row.get("expect_refusal")
     if not isinstance(refusal, dict) \
             or refusal.get("markers") != \
-            ["JOURNEY-NO-VERIFIED-SIGNATURE stage=verify"]:
+            ["JOURNEY-NO-VERIFIED-SIGNATURE stage=sign",
+             "private key algorithm does not match "
+             "algorithm of public key"]:
         return [(RUN_LEG,
                  "committed java-keystore-refuse-mismatched lacks "
-                 "its verify-stage refusal marker")]
+                 "its sign-stage refusal markers")]
     row = by_name["java-keystore-refuse-pin"]
     if "-v" not in (row.get("argv") or []):
         return [(RUN_LEG,
