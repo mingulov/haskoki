@@ -568,11 +568,86 @@ int main(int argc, char **argv) {
     rv = f->C_CreateObject(sess, ktmpl, 5, &k);
     CHECK(rv == CKR_OK && k != 0, "sensitive key without EXTRACTABLE imported");
     rv = f->C_CopyObject(sess, k, up, 1, &cpy);
-    CHECK(rv == CKR_TEMPLATE_INCONSISTENT && cpy == 0,
+    CHECK(rv == CKR_ATTRIBUTE_READ_ONLY && cpy == 0,
           "copy to EXTRACTABLE=true refused (rv=0x%lx)", (unsigned long)rv);
     up[0].pValue = &bFalse;
     rv = f->C_CopyObject(sess, k, up, 1, &cpy);
     CHECK(rv == CKR_OK && cpy != 0, "copy to EXTRACTABLE=false ok");
+    /* A history attribute in a copy override is refused: caller
+     * templates may not forge history. Each of the four rows is
+     * attempted toward stronger protection on its own. */
+    {
+      CK_ULONG forgeKgm = CKM_AES_KEY_GEN;
+      struct {
+        CK_ATTRIBUTE_TYPE type;
+        void *val;
+        CK_ULONG len;
+        const char *name;
+      } forges[] = {
+          {CKA_ALWAYS_SENSITIVE, &bTrue, sizeof(bTrue), "ALWAYS_SENSITIVE"},
+          {CKA_NEVER_EXTRACTABLE, &bTrue, sizeof(bTrue), "NEVER_EXTRACTABLE"},
+          {CKA_LOCAL, &bTrue, sizeof(bTrue), "LOCAL"},
+          {CKA_KEY_GEN_MECHANISM, &forgeKgm, sizeof(forgeKgm), "KEY_GEN_MECHANISM"},
+      };
+      size_t fi;
+      for (fi = 0; fi < sizeof(forges) / sizeof(forges[0]); fi++) {
+        CK_ATTRIBUTE histUp[] = {
+            {forges[fi].type, forges[fi].val, forges[fi].len},
+        };
+        CK_OBJECT_HANDLE hHist = 0;
+        rv = f->C_CopyObject(sess, k, histUp, 1, &hHist);
+        CHECK(rv == CKR_ATTRIBUTE_READ_ONLY && hHist == 0,
+              "copy %s-upgrade refused (rv=0x%lx)", forges[fi].name,
+              (unsigned long)rv);
+      }
+    }
+    /* The tightened copy reports its derived protection: the
+     * inherited sensitive-true, the tightened extractable-false,
+     * the inherited history, and the unavailable mechanism id. */
+    if (cpy != 0) {
+      {
+        CK_BBOOL got = 0xa5;
+        CK_ATTRIBUTE q[] = {{CKA_EXTRACTABLE, &got, sizeof(got)}};
+        rv = f->C_GetAttributeValue(sess, cpy, q, 1);
+        CHECK(rv == CKR_OK && got == CK_FALSE && q[0].ulValueLen == sizeof(got),
+              "EXTRACTABLE reads false (rv=0x%lx)", (unsigned long)rv);
+      }
+      {
+        CK_BBOOL got = 0xa5;
+        CK_ATTRIBUTE q[] = {{CKA_SENSITIVE, &got, sizeof(got)}};
+        rv = f->C_GetAttributeValue(sess, cpy, q, 1);
+        CHECK(rv == CKR_OK && got == CK_TRUE && q[0].ulValueLen == sizeof(got),
+              "SENSITIVE reads true (rv=0x%lx)", (unsigned long)rv);
+      }
+      {
+        CK_BBOOL got = 0xa5;
+        CK_ATTRIBUTE q[] = {{CKA_ALWAYS_SENSITIVE, &got, sizeof(got)}};
+        rv = f->C_GetAttributeValue(sess, cpy, q, 1);
+        CHECK(rv == CKR_OK && got == CK_FALSE && q[0].ulValueLen == sizeof(got),
+              "ALWAYS_SENSITIVE reads false (rv=0x%lx)", (unsigned long)rv);
+      }
+      {
+        CK_BBOOL got = 0xa5;
+        CK_ATTRIBUTE q[] = {{CKA_NEVER_EXTRACTABLE, &got, sizeof(got)}};
+        rv = f->C_GetAttributeValue(sess, cpy, q, 1);
+        CHECK(rv == CKR_OK && got == CK_FALSE && q[0].ulValueLen == sizeof(got),
+              "NEVER_EXTRACTABLE reads false (rv=0x%lx)", (unsigned long)rv);
+      }
+      {
+        CK_BBOOL got = 0xa5;
+        CK_ATTRIBUTE q[] = {{CKA_LOCAL, &got, sizeof(got)}};
+        rv = f->C_GetAttributeValue(sess, cpy, q, 1);
+        CHECK(rv == CKR_OK && got == CK_FALSE && q[0].ulValueLen == sizeof(got),
+              "LOCAL reads false (rv=0x%lx)", (unsigned long)rv);
+      }
+      {
+        CK_ULONG kgm = 0;
+        CK_ATTRIBUTE q[] = {{CKA_KEY_GEN_MECHANISM, &kgm, sizeof(kgm)}};
+        rv = f->C_GetAttributeValue(sess, cpy, q, 1);
+        CHECK(rv == CKR_OK && kgm == (CK_ULONG)~0UL && q[0].ulValueLen == sizeof(kgm),
+              "KGM reads unavailable (rv=0x%lx)", (unsigned long)rv);
+      }
+    }
     if (cpy != 0) f->C_DestroyObject(sess, cpy);
     f->C_DestroyObject(sess, k);
   }

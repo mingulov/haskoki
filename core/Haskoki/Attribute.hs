@@ -15,6 +15,8 @@ module Haskoki.Attribute
   , getAttributes
   , payloadSealed
   , sealedAttrs
+  , historyAttrs
+  , stampKeyDefaults
   , encodeValue
   , decodeValue
   , maxAttributeBytes
@@ -35,6 +37,7 @@ import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Data.Word (Word64)
 
+import Haskoki.Attribute.Generated (mustClassId)
 import Haskoki.Types (ReturnCode (..), redactShown)
 
 -- | Attribute inventory: exactly the types the object flows
@@ -105,6 +108,10 @@ data AttributeType
   | AttrCertificateCategory
   | AttrStartDate
   | AttrEndDate
+  | AttrAlwaysSensitive
+  | AttrNeverExtractable
+  | AttrLocal
+  | AttrKeyGenMechanism
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Owned attribute values. The semantic value stays separate
@@ -176,9 +183,10 @@ getAttributes attrs wanted =
       | otherwise = CKR_OK
 
 -- | Attributes sealed by the payload rule (sensitive or
--- unextractable): the opaque value plus the private key components.
--- Public components (modulus, public exponent, curve point) stay
--- readable under the same flags.
+-- unextractable): the opaque value plus the private key components
+-- (the RSA CRT set and the PQC private seed). Public components
+-- (modulus, public exponent, curve point) stay readable under the
+-- same flags.
 sealedAttrs :: [AttributeType]
 sealedAttrs =
   [ AttrValue
@@ -188,15 +196,56 @@ sealedAttrs =
   , AttrExponent1
   , AttrExponent2
   , AttrCoefficient
+  , AttrSeed
   ]
+
+-- | Token-assigned history/origin attributes: the module stamps
+-- them at creation, so caller templates and copy overrides may
+-- never carry them (every entry refuses them as inconsistent).
+historyAttrs :: [AttributeType]
+historyAttrs =
+  [ AttrAlwaysSensitive
+  , AttrNeverExtractable
+  , AttrLocal
+  , AttrKeyGenMechanism
+  ]
+
+-- | Stamp the caller-wins creation defaults for the protection
+-- pair onto a validated key template: non-sensitive and
+-- unextractable for secret and private keys, non-sensitive and
+-- extractable for public keys (public material is always
+-- readable, so the extractable default tells the truth).
+-- Explicit values always win (absent rows only); non-key classes
+-- pass through unchanged. History and origin rows are derived
+-- per creation path at the call sites, never here. Lives here
+-- (not in the object planner) so the recipe layer can share it
+-- without an import cycle.
+stampKeyDefaults :: Word64 -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+stampKeyDefaults cls attrs
+  | cls == mustClassId "CKO_PUBLIC_KEY" = fill [(AttrSensitive, False), (AttrExtractable, True)] attrs
+  | cls == mustClassId "CKO_PRIVATE_KEY" || cls == mustClassId "CKO_SECRET_KEY" =
+      fill [(AttrSensitive, False), (AttrExtractable, False)] attrs
+  | otherwise = attrs
+  where
+    fill rows m = foldr insertMissing m rows
+    insertMissing (t, v) acc
+      | Map.member t acc = acc
+      | otherwise = Map.insert t (ValBool v) acc
 
 -- | Whether the payload ('AttrValue') of the given attribute map is
 -- sealed: sensitive or unextractable. Either flag alone seals it.
+-- Public keys never seal: sensitivity and extractability protect
+-- private and secret key values only, so whatever flags a public
+-- object carries, its material stays readable.
 payloadSealed :: Map AttributeType AttributeValue -> Bool
-payloadSealed attrs = isTrue AttrSensitive || isFalse AttrExtractable
+payloadSealed attrs
+  | isPublicKey = False
+  | otherwise = isTrue AttrSensitive || isFalse AttrExtractable
   where
     isTrue t = Map.lookup t attrs == Just (ValBool True)
     isFalse t = Map.lookup t attrs == Just (ValBool False)
+    isPublicKey =
+      Map.lookup AttrClass attrs == Just (ValULong (mustClassId "CKO_PUBLIC_KEY"))
 
 -- | Bound on external byte-array attribute encodings (4 MiB;
 -- pinned single source of truth, ConfigSpec pins the value).
@@ -278,6 +327,10 @@ shapeOf t = case t of
   AttrSubprimeBits -> ShapeULong
   AttrStartDate -> ShapeBytes
   AttrEndDate -> ShapeBytes
+  AttrAlwaysSensitive -> ShapeBool
+  AttrNeverExtractable -> ShapeBool
+  AttrLocal -> ShapeBool
+  AttrKeyGenMechanism -> ShapeULong
 
 -- | Whether a value carries its type's shape. The template
 -- wrong-type gate ('Haskoki.Object.validateTemplate' refuses
@@ -409,6 +462,10 @@ attributeTypeByName name = case name of
   "CKA_CERTIFICATE_CATEGORY" -> Just AttrCertificateCategory
   "CKA_START_DATE" -> Just AttrStartDate
   "CKA_END_DATE" -> Just AttrEndDate
+  "CKA_ALWAYS_SENSITIVE" -> Just AttrAlwaysSensitive
+  "CKA_NEVER_EXTRACTABLE" -> Just AttrNeverExtractable
+  "CKA_LOCAL" -> Just AttrLocal
+  "CKA_KEY_GEN_MECHANISM" -> Just AttrKeyGenMechanism
   _ -> Nothing
 
 -- | 8-byte big-endian decoding; total over 8-byte inputs (only

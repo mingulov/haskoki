@@ -24,7 +24,8 @@ A source correction and an executed crypto case are different observations.
 | GMAC vectors | Wrong parameter shape and sign-direction handling | Use the 3.x GCM structure and verify direction; earlier skipped vectors were not failed crypto executions |
 
 These were originally tracked as P11C-001 through P11C-010. Other provider
-findings, such as unavailable `CKA_LOCAL`, are not erased by a checker fix.
+findings, such as `CKA_LOCAL` (now reported on keys), are not erased by a
+checker fix.
 
 ## Pending upstream reports
 

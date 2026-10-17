@@ -106,11 +106,11 @@ def check_counting_discipline(path, prefix, want_canon, want_total,
         if canon_tag in line:
             continue
         if alias_line.match(line):
-            # Bare-name array element: aliases, or (attributes.json)
-            # required/forbidden rule refs. Totals are pinned exactly,
-            # so any drift fails loudly; rule refs are additionally
-            # validated against the header name sets by
-            # check-attributes.py.
+            # Bare-name array element: aliases, applies_to refs, or
+            # (attributes.json) required/forbidden rule refs. Totals
+            # are pinned exactly, so any drift fails loudly; rule
+            # refs are additionally validated against the header
+            # name sets by check-attributes.py.
             continue
         if allow_rules and rule_ref.match(line):
             continue
@@ -155,8 +155,10 @@ def main():
          for m in attrs.get("key_types", [])],
         "attributes.json/key_types")
     # Template-rule refs: 8 CKA (required), 4 CKO (class), 4 CKK (key_type).
+    # Reviewed attribute rows add 10 CKO applies_to refs (LOCAL 3,
+    # KEY_GEN_MECHANISM 3, ALWAYS_SENSITIVE 2, NEVER_EXTRACTABLE 2).
     check_counting_discipline(ATTR_PATH, "CKA_", 158, 170, allow_rules=True)
-    check_counting_discipline(ATTR_PATH, "CKO_", 13, 17, allow_rules=True)
+    check_counting_discipline(ATTR_PATH, "CKO_", 13, 27, allow_rules=True)
     check_counting_discipline(ATTR_PATH, "CKK_", 67, 73, allow_rules=True)
 
     # --- function-contracts.json vs 3.2 layout ---

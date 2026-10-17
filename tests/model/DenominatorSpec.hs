@@ -20,15 +20,17 @@ collation):
   required-refs and the HOTP rule 2 more, so the quoted total
   is 168.
 * 13 @CKO_*@ classes (no aliases) in @spec/attributes.json@, plus 4
-  rule class refs (quoted total 17).
+  rule class refs and 10 reviewed-row @applies_to@ refs (quoted
+  total 27).
 * 69 @CKK_*@ names: 67 canonical + 2 aliases (ECDSA\/EC, CAST5\/CAST128)
   in @spec/attributes.json@, plus 4 rule key-type refs (quoted
   total 73).
 * 104 @C_*@ functions in @spec/function-contracts.json@
 
 The generator keeps quoted @CKX_*@ sequences out of every field
-except @canonical_name@\/@aliases@ (and @\"name\"@ for functions), so
-counting those occurrences pins the catalogued-name population.
+except @canonical_name@\/@aliases@\/@applies_to@ (and @\"name\"@ for
+functions), so counting those occurrences pins the
+catalogued-name population.
 Byte-exactness of numeric IDs against the headers, generator
 idempotency, and the soundness of this counting method are enforced
 by @scripts/check-denominators.py@ (host gate); these tests pin the
@@ -46,7 +48,7 @@ import Test.Tasty.HUnit (assertEqual, testCase)
 spec :: TestTree
 spec = testGroup "Denominators"
   [ testCase "mechanisms.json holds 464+16 CKM names" caseMechanisms
-  , testCase "attributes.json holds 158+2+10/13+4/67+2+4 refs" caseAttributes
+  , testCase "attributes.json holds 158+2+10/13+4+10/67+2+4 refs" caseAttributes
   , testCase "function-contracts.json holds 104 functions" caseFunctions
   ]
 
@@ -65,8 +67,8 @@ caseAttributes :: IO ()
 caseAttributes = do
   -- Totals include template-rule references (8 CKA
   -- required refs, 2 CKA forbidden refs, 4 CKO class refs, 4 CKK
-  -- key-type refs); canonical counts pin the header populations
-  -- exactly.
+  -- key-type refs) and reviewed-row applies_to references (10
+  -- CKO); canonical counts pin the header populations exactly.
   content <- TIO.readFile "spec/attributes.json"
   assertEqual "CKA canonical entries" 158
     (countTag "\"canonical_name\": \"CKA_" content)
@@ -74,7 +76,7 @@ caseAttributes = do
     (countTag "\"CKA_" content)
   assertEqual "CKO canonical entries" 13
     (countTag "\"canonical_name\": \"CKO_" content)
-  assertEqual "CKO total quoted names" 17
+  assertEqual "CKO total quoted names" 27
     (countTag "\"CKO_" content)
   assertEqual "CKK canonical entries" 67
     (countTag "\"canonical_name\": \"CKK_" content)

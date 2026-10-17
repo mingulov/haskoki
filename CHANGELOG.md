@@ -4,6 +4,137 @@
 
 Behaviour changes a caller written against 0.4.0.0 can observe:
 
+- Fresh keys report explicit creation history. Generated keys read
+  `CKA_LOCAL` true with `CKA_KEY_GEN_MECHANISM` set to the generating
+  mechanism; `CKA_ALWAYS_SENSITIVE` reads true when the key was born
+  sensitive and `CKA_NEVER_EXTRACTABLE` reads true when it was born
+  unextractable. Imported, unwrapped and derived keys read `CKA_LOCAL`
+  false with an unavailable mechanism; unwrapped and imported keys read
+  both history rows false, while derived keys conjoin the child flags
+  with the source history. Secret keys produced by KEM encapsulate and
+  decapsulate read `CKA_LOCAL` false with both history rows false and
+  an unavailable `CKA_KEY_GEN_MECHANISM`. In 0.4.0.0 these four
+  attributes were unmapped: reads failed with
+  `CKR_ATTRIBUTE_TYPE_INVALID`. Keys generated from a password
+  (`CKM_PKCS5_PBKD2` and the PBE mechanisms) stamp the same rows per
+  the spec; their values can be recomputed off-token from the
+  password, so their history flags do not prove the value never
+  existed elsewhere.
+- `C_UnwrapKey` with a template that omits `CKA_EXTRACTABLE` now yields
+  an extractable key (PKCS#11 v3.2 section 5.18.4). In 0.4.0.0 the
+  flag stayed absent: reads of `CKA_EXTRACTABLE` failed with
+  `CKR_ATTRIBUTE_TYPE_INVALID`, the value read back in clear, and
+  wrapping the key failed. Now the flag reads true and wrapping works.
+- `C_DeriveKey` with a template that omits `CKA_SENSITIVE` or
+  `CKA_EXTRACTABLE` now inherits the source values. In 0.4.0.0 omitted
+  flags stayed absent, and reads failed with
+  `CKR_ATTRIBUTE_TYPE_INVALID`. Derived children of extractable bases
+  are now extractable.
+- `C_CopyObject` refuses history attributes (`CKA_ALWAYS_SENSITIVE`,
+  `CKA_NEVER_EXTRACTABLE`, `CKA_LOCAL`, `CKA_KEY_GEN_MECHANISM`) in the
+  template unconditionally, even when the value matches the source.
+  In 0.4.0.0 these attributes were unmapped, so no copy template
+  could name them.
+- Byte-operation derives now read the base key's effective
+  `CKA_EXTRACTABLE`: a base without stored protection flags counts
+  as unextractable, so a derive template asking
+  `CKA_EXTRACTABLE=true` over such a base fails with
+  `CKR_TEMPLATE_INCONSISTENT`. Create the base with
+  `CKA_SENSITIVE=false` and `CKA_EXTRACTABLE=true` explicitly to
+  keep deriving readable children from it.
+- Public keys report `CKA_SENSITIVE=false` and
+  `CKA_EXTRACTABLE=true` when the template omits them, and public
+  key material always reads back, whatever protection flags the
+  template stored. Explicit flags on a public template are stored
+  and reported, with no sealing effect.
+- `C_CopyObject` validates its template through the same
+  per-attribute policy as `C_SetAttributeValue` on the source.
+  Copies can no longer replace key material, forge protection
+  labels, drop `CKA_ALWAYS_AUTHENTICATE`, widen
+  `CKA_ALLOWED_MECHANISMS`, or change anything on a
+  `CKA_MODIFIABLE=false` source beyond the copy exemptions.
+  Refusals use the set path's `CKR_ATTRIBUTE_READ_ONLY`.
+- `C_CopyObject` with `CKA_MODIFIABLE=true` over a
+  `CKA_MODIFIABLE=false` source fails with
+  `CKR_ATTRIBUTE_READ_ONLY`: the copy may only tighten
+  (`true` to `false`) or keep the value. Loosening by copy
+  would let a caller set usage flags the source forbids.
+- `C_CopyObject` may set `CKA_TOKEN` and `CKA_DESTROYABLE`
+  freely in both directions; the source is untouched. A token
+  object copies to a session object with `CKA_TOKEN=false`,
+  and back with `CKA_TOKEN=true`. `CKA_COPYABLE` still only
+  goes to `false`, and a sealed key still cannot be made
+  public (`CKA_PRIVATE` `true` to `false`).
+- `C_CopyObject` of a `CKA_MODIFIABLE=false` data object with
+  a new `CKA_VALUE` fails with `CKR_ATTRIBUTE_READ_ONLY`.
+  The data value merge applies on modifiable sources only.
+- `C_CopyObject` refuses `CKA_START_DATE`, `CKA_END_DATE`
+  and `CKA_SUBJECT` changes on keys, matching the set path,
+  with `CKR_ATTRIBUTE_READ_ONLY`. On certificates these fields
+  were already refused; they now report `CKR_ATTRIBUTE_READ_ONLY`
+  where they used to report `CKR_TEMPLATE_INCONSISTENT`.
+- `C_CopyObject` refuses any template naming `CKA_TRUSTED`
+  on a certificate source with `CKR_ATTRIBUTE_READ_ONLY`,
+  even for the same value and even for the Security Officer.
+  Copy a certificate by omitting `CKA_TRUSTED` from the
+  template; a `TRUSTED=true` source still needs the Security
+  Officer, and a normal user cannot copy it at all.
+- `C_CopyObject` refuses `CKA_CLASS` and `CKA_KEY_TYPE`
+  overrides with `CKR_ATTRIBUTE_READ_ONLY`, matching the set
+  path. Copying a sealed private or secret key as a public key
+  or data object no longer works; certificate class-override
+  copies report this code too, where they used to report
+  `CKR_TEMPLATE_INCONSISTENT`.
+- Reads of `CKA_SEED` on a sensitive or unextractable ML-DSA,
+  ML-KEM or SLH-DSA private key now fail with
+  `CKR_ATTRIBUTE_SENSITIVE` instead of returning the seed, and
+  `C_FindObjects` no longer matches such keys by seed. In
+  0.4.0.0 the seed, the private key material, read back in
+  clear.
+- A private or secret key stored without `CKA_EXTRACTABLE`
+  now counts as unextractable: reads of its value fail with
+  `CKR_ATTRIBUTE_SENSITIVE`, and `C_FindObjects` withholds its
+  sealed components. Such keys used to read back in clear.
+- Stores written with the new key attributes are refused by
+  older binaries: unknown attribute names fail decode, so
+  upgrade is one-way.
+- New private and secret keys default to unextractable.
+  `C_GenerateKey`, the private half of `C_GenerateKeyPair`,
+  `C_CreateObject` and the KEM outputs stamp `CKA_EXTRACTABLE=false`
+  when the template omits it, so reads of `CKA_VALUE` and the private
+  components fail with `CKR_ATTRIBUTE_SENSITIVE`. In 0.4.0.0 the flag
+  stayed absent and the values read back in clear. Set
+  `CKA_EXTRACTABLE=true` and `CKA_SENSITIVE=false` explicitly in the
+  template to keep a new key readable.
+- Caller templates may no longer carry creation-history attributes
+  on any path: create, generate, key-pair, unwrap, derive and KEM
+  templates naming `CKA_ALWAYS_SENSITIVE`, `CKA_NEVER_EXTRACTABLE`,
+  `CKA_LOCAL` or `CKA_KEY_GEN_MECHANISM` fail with
+  `CKR_TEMPLATE_INCONSISTENT`, and `C_SetAttributeValue` refuses them
+  with `CKR_ATTRIBUTE_READ_ONLY`. In 0.4.0.0 both answers were
+  `CKR_ATTRIBUTE_TYPE_INVALID`, since the attributes were unmapped.
+- Copy refusals that reported `CKR_TEMPLATE_INCONSISTENT` in
+  0.4.0.0 now report the set path's `CKR_ATTRIBUTE_READ_ONLY`:
+  clearing `CKA_SENSITIVE`, setting `CKA_EXTRACTABLE` true,
+  `CKA_TRUSTED=true` from a non-SO session, every
+  certificate-immutable field, and `CKA_VALUE_LEN`. The copies were
+  already refused; only the code changed.
+- `C_FindObjects` templates naming `CKA_SENSITIVE`,
+  `CKA_EXTRACTABLE` or a creation-history attribute now match key
+  objects by effective value, so a key stored without
+  `CKA_EXTRACTABLE` matches `CKA_EXTRACTABLE=false`. In 0.4.0.0
+  matching ran over the stored rows, so absent flags never matched.
+- Public keys report no `CKA_ALWAYS_SENSITIVE` and no
+  `CKA_NEVER_EXTRACTABLE`: reads fail with
+  `CKR_ATTRIBUTE_TYPE_INVALID`, since PKCS#11 Table 27 assigns those
+  rows to private and secret keys only. In 0.4.0.0 the attributes
+  were unmapped on every class; now only public keys answer this way.
+- `C_CopyObject` naming the value or a private component of a
+  sealed key fails with `CKR_ATTRIBUTE_READ_ONLY` whatever the value,
+  even when it matches the source. In 0.4.0.0 the copy succeeded, so
+  a caller could confirm a guessed key value or seed one guess at a
+  time. Copy a sealed key by omitting its sealed components from the
+  template; unsealed keys are unchanged.
 - `CKM_AES_GMAC` no longer advertises `CKF_MESSAGE_SIGN` or
   `CKF_MESSAGE_VERIFY`: PKCS#11 defines no message-API parameter shape
   for it. Single-part sign and verify with `CK_GCM_PARAMS` are unchanged.
@@ -201,12 +332,13 @@ record: symbol separation, sanitizer runs, evidence limits) and
   explicit value. Changing either attribute from false to true is
   still refused.
 - `C_CopyObject` refuses a template that sets `CKA_EXTRACTABLE` true
-  unless the source object is explicitly extractable. A key created
+  unless the source object is effectively extractable, with the set
+  path's `CKR_ATTRIBUTE_READ_ONLY`. A private or secret key created
   without `CKA_EXTRACTABLE` cannot be wrapped, and setting the
-  attribute to true on it is refused, but a copy that set it to true
-  succeeded, and that copy could be wrapped. Such a copy now fails with
-  `CKR_TEMPLATE_INCONSISTENT`. A copy that sets `CKA_EXTRACTABLE` false,
-  or leaves it out, still succeeds.
+  attribute to true on it is refused; a copy that set it to true used
+  to succeed, and that copy could be wrapped. A copy that sets
+  `CKA_EXTRACTABLE` false, or leaves it out, still succeeds, and so
+  does a copy of a public key, which counts as extractable.
 - A failed RSA-OAEP decrypt cleansed the output buffer with the length
   the failing OpenSSL call reported instead of the allocation size.
   The failure path now cleanses the recorded allocation. The same

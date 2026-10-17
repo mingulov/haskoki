@@ -1652,6 +1652,10 @@ attrName t = case t of
   AttrCertificateCategory -> "certificate_category"
   AttrStartDate -> "start_date"
   AttrEndDate -> "end_date"
+  AttrAlwaysSensitive -> "always_sensitive"
+  AttrNeverExtractable -> "never_extractable"
+  AttrLocal -> "local"
+  AttrKeyGenMechanism -> "key_gen_mechanism"
 
 -- | Name back to type; unknown names fail.
 nameAttr :: String -> Maybe AttributeType
@@ -1713,6 +1717,10 @@ nameAttr s = case s of
   "certificate_category" -> Just AttrCertificateCategory
   "start_date" -> Just AttrStartDate
   "end_date" -> Just AttrEndDate
+  "always_sensitive" -> Just AttrAlwaysSensitive
+  "never_extractable" -> Just AttrNeverExtractable
+  "local" -> Just AttrLocal
+  "key_gen_mechanism" -> Just AttrKeyGenMechanism
   _ -> Nothing
 
 -- | Encode one attribute value: bools as JSON booleans, unsigned
@@ -1785,6 +1793,10 @@ decodeAttrValue t j = case t of
   AttrCertificateCategory -> ulongOf j
   AttrStartDate -> bytesOf j
   AttrEndDate -> bytesOf j
+  AttrAlwaysSensitive -> boolOf j
+  AttrNeverExtractable -> boolOf j
+  AttrLocal -> boolOf j
+  AttrKeyGenMechanism -> ulongOf j
   where
     boolOf (JBool b) = Just (ValBool b)
     boolOf _ = Nothing

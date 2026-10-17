@@ -352,11 +352,16 @@ static void xor_unequal_legs(CK_FUNCTION_LIST_PTR f, CK_SESSION_HANDLE s) {
     CK_KEY_DERIVATION_STRING_DATA sd;
     CK_MECHANISM m;
     CK_RV r;
+    /* Explicitly readable base: absent flags report
+     * unextractable, which would refuse the readable output
+     * template below. */
     CK_ATTRIBUTE baseT[] = {
       { CKA_CLASS, &cls, sizeof(cls) },
       { CKA_KEY_TYPE, &kt, sizeof(kt) },
       { CKA_TOKEN, &fa, sizeof(fa) },
       { CKA_DERIVE, &t, sizeof(t) },
+      { CKA_SENSITIVE, &fa, sizeof(fa) },
+      { CKA_EXTRACTABLE, &t, sizeof(t) },
       { CKA_VALUE, base, baseLens[leg] },
     };
     CK_ATTRIBUTE outT[] = {
@@ -372,7 +377,7 @@ static void xor_unequal_legs(CK_FUNCTION_LIST_PTR f, CK_SESSION_HANDLE s) {
       base[i] = (CK_BYTE)(i * 13 + 5);
       data[i] = (CK_BYTE)(i * 37 + 11);
     }
-    r = f->C_CreateObject(s, baseT, 5, &hb);
+    r = f->C_CreateObject(s, baseT, 7, &hb);
     CHECKC(r == CKR_OK && hb != 0, "xor-unequal/%lu-%lu: base imports",
            baseLens[leg], dataLens[leg]);
     sd.pData = data;
@@ -6633,11 +6638,16 @@ int main(int argc, char **argv) {
             };
             CK_BYTE bwant4[2] = { 0x00, 0x10 };
             CK_ULONG bv64 = 64, bv16 = 16, bv2 = 2;
+            /* Explicitly readable bases: absent flags report
+             * unextractable, which would refuse the readable
+             * derive template below. */
             CK_ATTRIBUTE bbaseT[] = {
               { CKA_CLASS, &seccls, sizeof(seccls) },
               { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
               { CKA_TOKEN, &no, sizeof(no) },
               { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
               { CKA_VALUE, bsec, sizeof(bsec) },
             };
             CK_ATTRIBUTE bauxT[] = {
@@ -6645,6 +6655,8 @@ int main(int argc, char **argv) {
               { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
               { CKA_TOKEN, &no, sizeof(no) },
               { CKA_DERIVE, &yes, sizeof(yes) },
+              { CKA_SENSITIVE, &no, sizeof(no) },
+              { CKA_EXTRACTABLE, &yes, sizeof(yes) },
               { CKA_VALUE, baux, sizeof(baux) },
             };
             CK_ATTRIBUTE bdtmpl[] = {
@@ -6665,9 +6677,9 @@ int main(int argc, char **argv) {
             for (bi = 0; bi < 32; bi++) baux[bi] = (CK_BYTE)(bi + 32);
             for (bi = 0; bi < 16; bi++) bdat[bi] = 1;
             for (bi = 0; bi < 32; bi++) bxor[bi] = 0x0f;
-            rv = f->C_CreateObject(sess, bbaseT, 5, &bbase);
+            rv = f->C_CreateObject(sess, bbaseT, 7, &bbase);
             CHECKC(rv == CKR_OK && bbase != 0, "byte-op base imports");
-            rv = f->C_CreateObject(sess, bauxT, 5, &bauxh);
+            rv = f->C_CreateObject(sess, bauxT, 7, &bauxh);
             CHECKC(rv == CKR_OK && bauxh != 0, "byte-op aux imports");
             bsecond = bauxh;
             if (!isProxy) {

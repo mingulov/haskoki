@@ -27,7 +27,12 @@ module Haskoki.Object
   , decodeHandle
   , resolveHandle
   , isStorageObject
+  , isKeyClass
+  , keyDefaults
   , effectiveAttrs
+  , effectiveSensitive
+  , effectiveExtractable
+  , flagOr
   , objectToken
   , objectPrivate
   , mergedIsToken
@@ -46,7 +51,7 @@ module Haskoki.Object
 import Data.Bits (countLeadingZeros)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
-import Data.List (find)
+import Data.List (find, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing, listToMaybe)
@@ -62,8 +67,11 @@ import Haskoki.Attribute
   , decodeValue
   , encodeValue
   , getAttributes
+  , historyAttrs
   , payloadSealed
+  , sealedAttrs
   , shapeMatches
+  , stampKeyDefaults
   )
 import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
@@ -379,22 +387,92 @@ isStorageObject attrs = case Map.lookup AttrClass attrs of
   Just (ValULong c) -> c `notElem` nonStorageClasses
   _ -> False
 
+-- | Whether stored attributes describe a key object: the secret,
+-- private and public key classes. A map without a class is not one.
+isKeyClass :: Map AttributeType AttributeValue -> Bool
+isKeyClass attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c) -> c == ckoSecretKey || c == ckoPrivateKey || c == ckoPublicKey
+  _ -> False
+
+-- | Whether stored attributes describe a public key object. A map
+-- without a class is not one.
+isPublicKeyClass :: Map AttributeType AttributeValue -> Bool
+isPublicKeyClass attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c) -> c == ckoPublicKey
+  _ -> False
+
+-- | The reported key attributes a private or secret key object
+-- lacks: non-sensitive, unextractable, with the weakest
+-- history/origin claim (no false never-extracted assurance for
+-- legacy rows). Key-generation mechanism reads
+-- @CK_UNAVAILABLE_INFORMATION@: it carries a valid value only when
+-- @CKA_LOCAL@ is true.
+keyDefaults :: [(AttributeType, AttributeValue)]
+keyDefaults =
+  [ (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool False)
+  , (AttrAlwaysSensitive, ValBool False)
+  , (AttrNeverExtractable, ValBool False)
+  , (AttrLocal, ValBool False)
+  -- maxBound is CK_UNAVAILABLE_INFORMATION: KGM is valid only when
+  -- LOCAL is TRUE (PKCS#11 Table 26).
+  , (AttrKeyGenMechanism, ValULong maxBound)
+  ]
+
+-- | The reported key attributes a public key object lacks:
+-- non-sensitive and extractable, plus the origin pair. Public keys
+-- own no ALWAYS_SENSITIVE\/NEVER_EXTRACTABLE (Table 27), so reads
+-- of those report unknown. Public material is always readable
+-- (the seal never applies to public keys), so the default tells
+-- the truth. Caller-supplied values are stored and reported, but
+-- never seal.
+publicKeyDefaults :: [(AttributeType, AttributeValue)]
+publicKeyDefaults =
+  [ (AttrSensitive, ValBool False)
+  , (AttrExtractable, ValBool True)
+  , (AttrLocal, ValBool False)
+  -- maxBound is CK_UNAVAILABLE_INFORMATION: KGM is valid only when
+  -- LOCAL is TRUE (PKCS#11 Table 26).
+  , (AttrKeyGenMechanism, ValULong maxBound)
+  ]
+
 -- | The attribute view that reads and finds see. A storage object
 -- owns every common storage attribute, so each one its stored map
 -- lacks is filled in: the flags with the enforced defaults above,
--- @CKA_LABEL@ with the PKCS#11 empty default. Stored values always
--- win. The view is computed per call and never stored, so stored
--- records and their durable bytes are unchanged. @CKA_UNIQUE_ID@ is
--- not modeled and stays unreported. Non-storage objects pass through
--- unchanged.
+-- @CKA_LABEL@ with the PKCS#11 empty default. Key objects
+-- additionally own the key attributes and gain 'keyDefaults' for
+-- the ones they lack; public keys gain 'publicKeyDefaults'
+-- instead. Stored values always win. The view is computed per call
+-- and never stored, so stored records and their durable bytes are
+-- unchanged. @CKA_UNIQUE_ID@ is not modeled and stays unreported.
+-- Non-storage objects pass through unchanged.
 effectiveAttrs :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 effectiveAttrs attrs
+  | isPublicKeyClass attrs =
+      Map.union attrs (Map.union storageDefaults publicKeyDefaultMap)
+  | isKeyClass attrs = Map.union attrs (Map.union storageDefaults keyDefaultMap)
   | isStorageObject attrs = Map.union attrs storageDefaults
   | otherwise = attrs
   where
     storageDefaults = Map.fromList
       ((AttrLabel, ValBytes BS.empty)
         : [(t, ValBool d) | (t, d) <- storageFlagDefaults])
+    keyDefaultMap = Map.fromList keyDefaults
+    publicKeyDefaultMap = Map.fromList publicKeyDefaults
+
+-- | Effective protection flags for enforcement: the stored value,
+-- else the class default from 'effectiveAttrs' (public keys report
+-- EXTRACTABLE=TRUE, all other keys FALSE). Non-key classes own no
+-- flags and read FALSE (fail-closed). Every enforcement predicate
+-- reads these, never a literal default, so a reported default
+-- cannot drift from the enforced one.
+effectiveSensitive, effectiveExtractable :: Map AttributeType AttributeValue -> Bool
+effectiveSensitive attrs = case Map.lookup AttrSensitive (effectiveAttrs attrs) of
+  Just (ValBool b) -> b
+  _ -> False
+effectiveExtractable attrs = case Map.lookup AttrExtractable (effectiveAttrs attrs) of
+  Just (ValBool b) -> b
+  _ -> False
 
 -- | The object's token flag (absent or wrongly shaped = session object).
 objectToken :: ObjectState -> Bool
@@ -459,10 +537,30 @@ objectVisible st ost =
 -- Planning
 -- ---------------------------------------------------------------------------
 
+-- | Stamp one imported key: the caller-wins protection defaults
+-- plus import history. Imported material was exposed outside the
+-- token, so history and origin read false (secret and private
+-- keys take false history rows; public keys take the origin pair
+-- and own no history rows). Non-key classes pass through
+-- unchanged. Runs after 'importMaterial', before admission.
+stampCreatedKey :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+stampCreatedKey attrs = case Map.lookup AttrClass attrs of
+  Just (ValULong c)
+    | c == ckoPublicKey ->
+        Map.insert AttrKeyGenMechanism (ValULong maxBound)
+          (Map.insert AttrLocal (ValBool False) (stampKeyDefaults c attrs))
+    | c == ckoPrivateKey || c == ckoSecretKey ->
+        Map.insert AttrKeyGenMechanism (ValULong maxBound)
+          (Map.insert AttrLocal (ValBool False)
+            (Map.insert AttrNeverExtractable (ValBool False)
+              (Map.insert AttrAlwaysSensitive (ValBool False) (stampKeyDefaults c attrs))))
+  _ -> attrs
+
 -- | Plan object creation: validate the template, derive key-import
--- material ('importMaterial'), then allocate the object id and handle
--- deterministically from the model counters. A failed template
--- leaves no partial object and no binding.
+-- material ('importMaterial'), stamp creation history on keys,
+-- then allocate the object id and handle deterministically from
+-- the model counters. A failed template leaves no partial object
+-- and no binding.
 planCreateObject
   :: Model -> SessionState -> [(AttributeType, AttributeValue)] -> PlanResult
 planCreateObject model st tmpl = case validateTemplate tmpl of
@@ -472,7 +570,11 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
     ("wrong shape for attribute: " ++ show t)
   Left TemplateIncomplete -> templateReject CKR_TEMPLATE_INCOMPLETE
     "template is missing the class"
-  Right attrs -> case checkCertificateDates attrs of
+  Right attrs
+    | Just t <- find (`elem` historyAttrs) (Map.keys attrs) ->
+        templateReject CKR_TEMPLATE_INCONSISTENT
+          ("history attribute not allowed in creation template: " ++ show t)
+    | otherwise -> case checkCertificateDates attrs of
     Left e -> templateReject CKR_TEMPLATE_INCONSISTENT
       ("certificate date: " ++ show e)
     Right () -> case checkCertificateTemplate attrs of
@@ -487,7 +589,7 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
               ("unknown object class: " ++ show c)
         | otherwise -> case importMaterial attrs of
             Left (code, msg) -> templateReject code msg
-            Right stored
+            Right stored0
               | Left deny <- admitPrivate (ssLogin st) (mergedIsPrivate stored) ->
                   templateReject (admitCode deny)
                     "only the normal user may create private objects"
@@ -515,6 +617,8 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
                   , pcReleases = []
                   , pcReasons = ["created object " ++ show oid]
                   }
+              where
+                stored = stampCreatedKey stored0
 
 ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes, ckkDsa, ckkDh, ckkX9_42Dh, ckkEcEdwards, ckkMlDsa, ckkSlhDsa, ckkMlKem :: Word64
 ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
@@ -535,6 +639,9 @@ ckkAes = mustKeyTypeId "CKK_AES"
 
 ckoCertificate :: Word64
 ckoCertificate = mustClassId "CKO_CERTIFICATE"
+
+ckoData :: Word64
+ckoData = mustClassId "CKO_DATA"
 
 -- | CKC_X_509 per the pinned header (spec/vendor/pkcs11.h:300);
 -- there is no model inventory of certificate types.
@@ -1005,20 +1112,127 @@ planDestroyObject model st h = case resolveHandle model h of
         , pcReasons = ["destroyed object " ++ show (osId ost)]
         }
 
+-- | Derive the stored attributes of a copy. Non-key copies keep
+-- the merged map verbatim. Key copies additionally materialize the
+-- absent protection flags from the source-effective view: the two
+-- caller-settable flags where the merged map lacks them, and the
+-- history/origin rows per the copy rule (a true->false EXTRACTABLE
+-- flip forces NEVER_EXTRACTABLE false, since the key was
+-- extractable once; the other rows inherit the source-effective
+-- values). Public key copies carry no history rows (defensive: drops
+-- any stored ALWAYS/NEVER a public source carries; class-changing
+-- copies are refused, so private history cannot arrive here).
+deriveCopyAttrs
+  :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+  -> Map AttributeType AttributeValue
+deriveCopyAttrs srcAttrs over
+  | not (isKeyClass merged) = merged
+  | isPublicKeyClass merged =
+      fill [AttrSensitive, AttrExtractable, AttrLocal, AttrKeyGenMechanism]
+        (Map.delete AttrAlwaysSensitive (Map.delete AttrNeverExtractable merged))
+  | flipsDown =
+      Map.insert AttrNeverExtractable (ValBool False)
+        (fill [AttrSensitive, AttrExtractable, AttrAlwaysSensitive, AttrLocal, AttrKeyGenMechanism] merged)
+  | otherwise =
+      fill [AttrSensitive, AttrExtractable, AttrAlwaysSensitive, AttrNeverExtractable, AttrLocal, AttrKeyGenMechanism] merged
+  where
+    merged = Map.union over srcAttrs
+    srcEff = effectiveAttrs srcAttrs
+    flipsDown =
+      Map.lookup AttrExtractable srcEff == Just (ValBool True)
+        && Map.lookup AttrExtractable over == Just (ValBool False)
+    fill ts m = foldr insertMissing m ts
+    insertMissing t m
+      | Map.member t m = m
+      | otherwise = Map.insert t (srcEffOr t) m
+    srcEffOr t = case Map.lookup t srcEff of
+      Just v -> v
+      Nothing
+        | t == AttrKeyGenMechanism -> ValULong maxBound
+        | otherwise -> ValBool False
+
+-- | The shared per-attribute mutability policy behind
+-- 'planSetAttributes' and 'planCopyObject': Nothing = mutable,
+-- Just = refusal. Each ratchet compares against the effective value
+-- (the reported view): writing what a read reports succeeds and only
+-- a flip against the ratchet refuses. Non-key classes own no key
+-- flags and read FALSE, so their enforcement is unchanged by
+-- construction. Copy and set call this one function, so the two
+-- paths cannot drift on any attribute.
+setAttributePolicy
+  :: Map AttributeType AttributeValue
+  -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
+setAttributePolicy cur t v
+  | not (flagOr modifiableDefault AttrModifiable cur)
+  , Map.lookup t cur /= Just v = Just (CKR_ATTRIBUTE_READ_ONLY,
+      "object is not modifiable (CKA_MODIFIABLE=false)")
+  | t `elem` [AttrLabel, AttrApplication, AttrId] = Nothing
+  | t `elem` [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
+             , AttrSignRecover, AttrVerifyRecover
+             , AttrWrap, AttrUnwrap, AttrDerive
+             , AttrEncapsulate, AttrDecapsulate ] = Nothing
+  | t == AttrToken = ratchet (flagOr tokenDefault AttrToken cur) True
+      "CKA_TOKEN can only change false->true"
+  | t == AttrExtractable = ratchet (effectiveExtractable cur) False
+      "CKA_EXTRACTABLE can only change true->false"
+  | t == AttrSensitive = ratchet (effectiveSensitive cur) True
+      "CKA_SENSITIVE can only change false->true"
+  | t == AttrCopyable = ratchet (flagOr copyableDefault AttrCopyable cur) False
+      "CKA_COPYABLE can only change true->false"
+  | t == AttrDestroyable = ratchet (flagOr destroyableDefault AttrDestroyable cur) False
+      "CKA_DESTROYABLE can only change true->false"
+  | t == AttrTrusted = Nothing
+  | otherwise = Just (CKR_ATTRIBUTE_READ_ONLY,
+      "attribute is not modifiable: " ++ show t)
+  where
+    ratchet c allowTrue msg = case v of
+      ValBool n
+        | c == n -> Nothing
+        | n == allowTrue -> Nothing
+      _ -> Just (CKR_ATTRIBUTE_READ_ONLY, msg)
+
+-- | Copy-template check order. Seal (sensitive/extractable) precedes
+-- certificate immutability, so a mixed template reports the seal;
+-- class/key-type precede both. Within one priority the attribute
+-- order decides.
+copyPriority :: AttributeType -> Int
+copyPriority t
+  | t `elem` [AttrClass, AttrKeyType] = 0
+  | t `elem` [AttrSensitive, AttrExtractable] = 1
+  | t == AttrTrusted = 2
+  | t `elem` certImmutable = 3
+  | t `elem` historyAttrs = 4
+  | otherwise = 5
+
+-- | Attributes a copy template may set even on a non-modifiable
+-- source (PKCS#11 3.2 C_CopyObject): the storage flags. TOKEN and
+-- DESTROYABLE are freely settable on the copy in both directions;
+-- COPYABLE keeps its true->false ratchet; PRIVATE keeps its
+-- sealed-object guard; MODIFIABLE may only tighten (true->false).
+copyExempt :: AttributeType -> Bool
+copyExempt t = t `elem`
+  [AttrToken, AttrPrivate, AttrModifiable, AttrDestroyable, AttrCopyable]
+
 -- | Plan object copy: the source handle must resolve and be
 -- visible to the calling session, the override template must be
 -- contradiction-free, and the merged attributes must still carry a
 -- class. The copy gets a fresh id and handle; the source is
--- untouched. Seal ratchet: overrides that flip sensitive true->false,
--- or set extractable true on a source that is not explicitly
--- extractable (false or absent), are rejected
--- ('CKR_TEMPLATE_INCONSISTENT');
--- sealed flags otherwise inherit, so a copy of a sealed object is
--- sealed too. Wrongly shaped overrides refuse before any rule;
--- TRUSTED=true overrides need the SO login; certificate sources
--- refuse overrides of the certificate-immutable set (all
--- 'CKR_TEMPLATE_INCONSISTENT'). An explicit @CKA_COPYABLE=false@ on
--- the source prohibits the copy ('CKR_ACTION_PROHIBITED').
+-- untouched. Every override is validated through the shared
+-- 'setAttributePolicy' against the source (same code as the set
+-- path: 'CKR_ATTRIBUTE_READ_ONLY'); a no-op same-value override
+-- still copies. Copy exemptions: TOKEN, PRIVATE, MODIFIABLE,
+-- DESTROYABLE and COPYABLE may be set even on a non-modifiable
+-- source (TOKEN and DESTROYABLE freely in both directions;
+-- MODIFIABLE tightens only; COPYABLE to false only; PRIVATE
+-- true->false on a sealed object refuses); data-object CKA_VALUE
+-- overrides merge on modifiable sources only.
+-- TRUSTED=true overrides need the SO login, and a merged
+-- TRUSTED=true without the SO refuses (no silent inheritance).
+-- Stored key copies materialize absent protection from the
+-- source-effective view, with a true->false EXTRACTABLE flip
+-- forcing NEVER_EXTRACTABLE false. Wrongly shaped overrides refuse
+-- before any rule. An explicit @CKA_COPYABLE=false@ on the source
+-- prohibits the copy ('CKR_ACTION_PROHIBITED').
 planCopyObject
   :: Model -> SessionState -> ExternalHandle -> [(AttributeType, AttributeValue)]
   -> PlanResult
@@ -1037,27 +1251,15 @@ planCopyObject model st h tmpl = case resolveHandle model h of
           Just t -> templateReject CKR_TEMPLATE_INCONSISTENT
             ("wrong shape for attribute: " ++ show t)
           Nothing
-            | Map.lookup AttrSensitive (osAttrs src) == Just (ValBool True)
-            , Map.lookup AttrSensitive over == Just (ValBool False) ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
-                  "copy cannot clear the sensitive flag"
-            -- A copy may set EXTRACTABLE=true only when the source is
-            -- explicitly extractable. An absent flag counts as
-            -- unextractable here, as on the set path and at wrap, so a
-            -- key that cannot be wrapped cannot become wrappable
-            -- through a copy.
-            | not (flagOr False AttrExtractable (osAttrs src))
-            , Map.lookup AttrExtractable over == Just (ValBool True) ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
-                  "copy cannot set extractable on an unextractable source"
             | Map.lookup AttrTrusted over == Just (ValBool True)
             , ssLogin st /= LoginSO ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
+                templateReject CKR_ATTRIBUTE_READ_ONLY
                   "only the security officer may copy to TRUSTED=true"
-            | isCertSource
-            , Just t <- find (`elem` certImmutable) (Map.keys over) ->
-                templateReject CKR_TEMPLATE_INCONSISTENT
-                  ("copy cannot override certificate field: " ++ show t)
+            | Just (code, msg) <- copyRefusal (osAttrs src) over ->
+                templateReject code msg
+            | mergedTrusted, ssLogin st /= LoginSO ->
+                templateReject CKR_ATTRIBUTE_READ_ONLY
+                  "copy would inherit TRUSTED=true without the security officer"
             | Just msg <- valueLenConflict (Map.union over (osAttrs src)) ->
                 templateReject CKR_TEMPLATE_INCONSISTENT msg
             | Left deny <- admitPrivate (ssLogin st)
@@ -1069,7 +1271,7 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                 templateReject (admitCode deny)
                   "read-only session cannot copy to token objects"
             | otherwise ->
-                let merged = Map.union over (osAttrs src)
+                let merged = deriveCopyAttrs (osAttrs src) over
                 in if Map.member AttrClass merged
               then
                 let oid = ObjectId (mNextObject model)
@@ -1091,8 +1293,96 @@ planCopyObject model st h tmpl = case resolveHandle model h of
               else templateReject CKR_TEMPLATE_INCOMPLETE
                 "merged template is missing the class"
             where
+              mergedTrusted =
+                Map.lookup AttrTrusted (Map.union over (osAttrs src))
+                  == Just (ValBool True)
               isCertSource =
                 Map.lookup AttrClass (osAttrs src) == Just (ValULong ckoCertificate)
+              isDataSource =
+                Map.lookup AttrClass (osAttrs src) == Just (ValULong ckoData)
+              -- First copy-template refusal in priority order, if any.
+              -- TRUSTED on a certificate source stays refused even
+              -- same-value (no SO exception); history attributes
+              -- always refuse (token-assigned rows are never
+              -- caller-carried, even same-value); a sealed
+              -- component named on a sealed source refuses whatever
+              -- the value, before the same-value no-op, so copy
+              -- cannot confirm a guessed value or seed; same-value
+              -- overrides are otherwise no-ops; data VALUE merges
+              -- on modifiable sources only; exemptions bypass the
+              -- modifiable gate; everything else goes through the
+              -- shared policy with copy wording.
+              copyRefusal srcAttrs overM = go ordered
+                where
+                  ordered = sortOn (\(t, _) -> (copyPriority t, fromEnum t))
+                    (Map.toList overM)
+                  go [] = Nothing
+                  go ((t, v) : rest)
+                    | isCertSource, t == AttrTrusted =
+                        Just (CKR_ATTRIBUTE_READ_ONLY,
+                          "copy cannot override certificate field: " ++ show t)
+                    | t `elem` historyAttrs = case setAttributePolicy srcAttrs t v of
+                        Just (code, sharedMsg) ->
+                          Just (code, copyMessage t v sharedMsg)
+                        -- Unreachable: the shared policy refuses
+                        -- history attributes unconditionally.
+                        Nothing -> go rest
+                    | t `elem` sealedAttrs
+                    , payloadSealed (effectiveAttrs srcAttrs) =
+                        Just (CKR_ATTRIBUTE_READ_ONLY,
+                          "copy cannot name a sealed component: " ++ show t)
+                    | Map.lookup t srcAttrs == Just v = go rest
+                    | t == AttrValue, isDataSource
+                    , flagOr modifiableDefault AttrModifiable srcAttrs = go rest
+                    | copyExempt t = case exemptRefusal t v of
+                        Just refusal -> Just refusal
+                        Nothing -> go rest
+                    | otherwise = case setAttributePolicy srcAttrs t v of
+                        Nothing -> go rest
+                        Just (code, sharedMsg) ->
+                          Just (code, copyMessage t v sharedMsg)
+                  exemptRefusal t v
+                    | t == AttrModifiable = modifiableCopyRefusal v
+                    | t == AttrPrivate = privateRefusal v
+                    | t == AttrToken = Nothing
+                    | t == AttrDestroyable = Nothing
+                    | otherwise =
+                        setAttributePolicy modCur t v
+                    where
+                      modCur = Map.insert AttrModifiable (ValBool True) srcAttrs
+                  modifiableCopyRefusal v = case v of
+                    ValBool n
+                      | flagOr modifiableDefault AttrModifiable srcAttrs == n -> Nothing
+                      | n == False -> Nothing
+                      | otherwise -> Just (CKR_ATTRIBUTE_READ_ONLY,
+                          "copy cannot loosen MODIFIABLE false->true")
+                    _ -> Just (CKR_ATTRIBUTE_READ_ONLY,
+                      "copy cannot override immutable attribute: " ++ show AttrModifiable)
+                  privateRefusal v = case v of
+                    ValBool n
+                      | flagOr privateDefault AttrPrivate srcAttrs == n -> Nothing
+                      | n == False
+                      , flagOr privateDefault AttrPrivate srcAttrs
+                      , payloadSealed (effectiveAttrs srcAttrs) ->
+                          Just (CKR_ATTRIBUTE_READ_ONLY,
+                            "copy cannot make a sealed object public")
+                      | otherwise -> Nothing
+                    _ -> Just (CKR_ATTRIBUTE_READ_ONLY,
+                      "copy cannot override immutable attribute: " ++ show AttrPrivate)
+                  copyMessage t v sharedMsg
+                    | not (flagOr modifiableDefault AttrModifiable srcAttrs) = sharedMsg
+                    | t == AttrSensitive, v == ValBool False
+                    , effectiveSensitive srcAttrs =
+                        "copy cannot clear the sensitive flag"
+                    | t == AttrExtractable, v == ValBool True
+                    , not (effectiveExtractable srcAttrs) =
+                        "copy cannot set extractable on an unextractable source"
+                    | isCertSource, t `elem` certImmutable =
+                        "copy cannot override certificate field: " ++ show t
+                    | t `elem` historyAttrs =
+                        "copy cannot override history attribute: " ++ show t
+                    | otherwise =
+                        "copy cannot override immutable attribute: " ++ show t
 
 -- | Plan an attribute change: the handle must resolve and be
 -- visible to the calling session, the template must be
@@ -1148,48 +1438,9 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
                   }
   where
     firstRefusal _ [] = Nothing
-    firstRefusal cur ((t, v) : rest) = case mutableAs cur t v of
+    firstRefusal cur ((t, v) : rest) = case setAttributePolicy cur t v of
       Just refusal -> Just refusal
       Nothing -> firstRefusal cur rest
-    -- Nothing = mutable, Just = refusal. A common storage flag that
-    -- is absent reads as its enforced default ('flagOr' and the
-    -- shared defaults). The ratchets here read an absent SENSITIVE
-    -- and an absent EXTRACTABLE as false. For SENSITIVE that matches
-    -- every other path. For EXTRACTABLE it matches the copy guard,
-    -- wrap and SSL3 derive, but not sealing or the byte-operation
-    -- protection, which treat an absent EXTRACTABLE as extractable;
-    -- that split is not settled here. A write of the value a flag
-    -- already reads as succeeds; a flip against the ratchet refuses.
-    mutableAs :: Map AttributeType AttributeValue
-      -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)
-    mutableAs cur t v
-      | not (flagOr modifiableDefault AttrModifiable cur)
-      , Map.lookup t cur /= Just v = Just (CKR_ATTRIBUTE_READ_ONLY,
-          "object is not modifiable (CKA_MODIFIABLE=false)")
-      | t `elem` [AttrLabel, AttrApplication, AttrId] = Nothing
-      | t `elem` [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
-                 , AttrSignRecover, AttrVerifyRecover
-                 , AttrWrap, AttrUnwrap, AttrDerive
-                 , AttrEncapsulate, AttrDecapsulate ] = Nothing
-      | t == AttrToken = ratchet (flagOr tokenDefault AttrToken cur) True
-          "CKA_TOKEN can only change false->true"
-      | t == AttrExtractable = ratchet (flagOr False AttrExtractable cur) False
-          "CKA_EXTRACTABLE can only change true->false"
-      | t == AttrSensitive = ratchet (flagOr False AttrSensitive cur) True
-          "CKA_SENSITIVE can only change false->true"
-      | t == AttrCopyable = ratchet (flagOr copyableDefault AttrCopyable cur) False
-          "CKA_COPYABLE can only change true->false"
-      | t == AttrDestroyable = ratchet (flagOr destroyableDefault AttrDestroyable cur) False
-          "CKA_DESTROYABLE can only change true->false"
-      | t == AttrTrusted = Nothing
-      | otherwise = Just (CKR_ATTRIBUTE_READ_ONLY,
-          "attribute is not modifiable: " ++ show t)
-      where
-        ratchet c allowTrue msg = case v of
-          ValBool n
-            | c == n -> Nothing
-            | n == allowTrue -> Nothing
-          _ -> Just (CKR_ATTRIBUTE_READ_ONLY, msg)
 
 -- | Plan a one-shot find: matches carry equality over the effective
 -- attributes ('effectiveAttrs': stored values, plus the common
@@ -1199,10 +1450,10 @@ planSetAttributes model st h tmpl = case resolveHandle model h of
 -- visible object; a contradictory template is rejected, never
 -- silently emptied. Matches without a current binding gain fresh
 -- ones in the same combined delta (discovery mints bindings; it
--- never reuses a dead handle). Sealed payloads never match on
--- 'AttrValue': a template naming the value only matches unsealed
--- objects, so find cannot serve as a guess-oracle against a sealed
--- payload (sealed objects stay discoverable by their other
+-- never reuses a dead handle). Sealed components never match: a
+-- template naming the value or any private component only matches
+-- unsealed objects, so find cannot serve as a guess-oracle against
+-- sealed material (sealed objects stay discoverable by their other
 -- attributes).
 planFindObjects
   :: Model -> SessionState -> [(AttributeType, AttributeValue)] -> PlanResult
@@ -1213,8 +1464,8 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
     let matches =
           [ (oid, ost)
           | (oid, ost) <- Map.toAscList (mObjects model)
-          , matchAll q ost
           , objectVisible st ost
+          , matchAll q ost
           ]
         (binds, outs) = assign (mNextHandle model) matches
     in Immediate PreparedCommit
@@ -1230,8 +1481,8 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
     matchAll q ost = all hit (Map.toList q)
       where
         view = effectiveAttrs (osAttrs ost)
-        hit (AttrValue, _)
-          | payloadSealed (osAttrs ost) = False
+        hit (t, _)
+          | t `elem` sealedAttrs, payloadSealed view = False
         hit (t, v) = Map.lookup t view == Just v
     currentHandle :: ObjectId -> ObjectState -> Maybe ExternalHandle
     currentHandle oid ost = listToMaybe
@@ -1265,10 +1516,9 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
 -- the DSA/DH public value @y@ through @CKA_VALUE@ — so a public
 -- DSA/DH object whose value parses as an SPKI reads @y@ instead
 -- of the DER. Anything else (private halves, secrets, opaque
--- synthetic values, unparseable DER) passes through untouched;
--- sealing still applies to the projected read (the projection
--- runs before 'getAttributes', so a sealed flag redacts @y@
--- exactly like the stored value).
+-- synthetic values, unparseable DER) passes through untouched.
+-- The projection runs before 'getAttributes'; the seal never
+-- applies to these public objects, so @y@ always reads.
 projectPublicValue :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 projectPublicValue attrs = case (classOf, keyTypeOf, Map.lookup AttrValue attrs) of
   (Just c, Just k, Just (ValBytes der))

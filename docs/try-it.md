@@ -195,7 +195,7 @@ Downloading Actions artifacts requires a GitHub login.
 - **Output permission denied:** create `out` yourself and use the UID/GID
   arguments shown above. A read-only mount cannot hold reports.
 - **Attribute warnings:** OpenSC may report `CKR_ATTRIBUTE_TYPE_INVALID`
-  while inspecting `LOCAL`, `DERIVE`, `VERIFY_RECOVER`, or
+  while inspecting `DERIVE`, `VERIFY_RECOVER`, or
   `ALWAYS_AUTHENTICATE`. These are current attribute-reporting limitations;
   key generation and signature verification must still succeed.
 - **A command reports findings:** exit 1 means a check failed; exit 2 means

@@ -156,6 +156,28 @@ typedef CK_RV (*fn_decapsulate)(CK_SESSION_HANDLE, CK_MECHANISM_PTR,
                                 CK_BYTE_PTR, CK_ULONG, CK_OBJECT_HANDLE_PTR);
 typedef CK_RV (*fn_get_slot_list)(CK_BBOOL, CK_SLOT_ID_PTR, CK_ULONG_PTR);
 
+static void expect_kem_bool(const char *tag, fn_get_attr pGetAttr,
+                            CK_SESSION_HANDLE sess, CK_OBJECT_HANDLE h,
+                            CK_ATTRIBUTE_TYPE t, CK_BBOOL want,
+                            const char *what) {
+  CK_BBOOL got = 0xa5;
+  CK_ATTRIBUTE q[] = { { t, &got, sizeof(got) } };
+  CK_RV rv = pGetAttr(sess, h, q, 1);
+  CHECKC(rv == CKR_OK && got == want && q[0].ulValueLen == sizeof(got),
+         "%s: %s reads %s", tag, what, want ? "true" : "false");
+}
+
+static void expect_kem_ulong(const char *tag, fn_get_attr pGetAttr,
+                             CK_SESSION_HANDLE sess, CK_OBJECT_HANDLE h,
+                             CK_ATTRIBUTE_TYPE t, CK_ULONG want,
+                             const char *what) {
+  CK_ULONG got = 0;
+  CK_ATTRIBUTE q[] = { { t, &got, sizeof(got) } };
+  CK_RV rv = pGetAttr(sess, h, q, 1);
+  CHECKC(rv == CKR_OK && got == want && q[0].ulValueLen == sizeof(got),
+         "%s: %s reads 0x%lx", tag, what, (unsigned long)want);
+}
+
 static void run_kem_scenario(const char *tag, fn_open_session pOpen,
                              fn_close_session pClose,
                              fn_generate_keypair pGenPair,
@@ -331,6 +353,86 @@ static void run_kem_scenario(const char *tag, fn_open_session pOpen,
   CHECKC(rv == CKR_OK && getT[0].ulValueLen == 32 &&
              memcmp(ss1, ss2, 32) == 0,
          "%s: decaps recovers the same secret", tag);
+
+  /* KEM outputs carry creation history: explicit flags win, history
+   * and origin read false/unavailable on both paths. */
+  expect_kem_bool(tag, pGetAttr, sess, secret, CKA_SENSITIVE, CK_FALSE,
+                  "encaps SENSITIVE");
+  expect_kem_bool(tag, pGetAttr, sess, secret, CKA_EXTRACTABLE, CK_TRUE,
+                  "encaps EXTRACTABLE");
+  expect_kem_bool(tag, pGetAttr, sess, secret, CKA_ALWAYS_SENSITIVE, CK_FALSE,
+                  "encaps ALWAYS_SENSITIVE");
+  expect_kem_bool(tag, pGetAttr, sess, secret, CKA_NEVER_EXTRACTABLE, CK_FALSE,
+                  "encaps NEVER_EXTRACTABLE");
+  expect_kem_bool(tag, pGetAttr, sess, secret, CKA_LOCAL, CK_FALSE,
+                  "encaps LOCAL");
+  expect_kem_ulong(tag, pGetAttr, sess, secret, CKA_KEY_GEN_MECHANISM,
+                   CK_UNAVAILABLE_INFORMATION, "encaps KEY_GEN_MECHANISM");
+  expect_kem_bool(tag, pGetAttr, sess, recovered, CKA_SENSITIVE, CK_FALSE,
+                  "decaps SENSITIVE");
+  expect_kem_bool(tag, pGetAttr, sess, recovered, CKA_EXTRACTABLE, CK_TRUE,
+                  "decaps EXTRACTABLE");
+  expect_kem_bool(tag, pGetAttr, sess, recovered, CKA_ALWAYS_SENSITIVE,
+                  CK_FALSE, "decaps ALWAYS_SENSITIVE");
+  expect_kem_bool(tag, pGetAttr, sess, recovered, CKA_NEVER_EXTRACTABLE,
+                  CK_FALSE, "decaps NEVER_EXTRACTABLE");
+  expect_kem_bool(tag, pGetAttr, sess, recovered, CKA_LOCAL, CK_FALSE,
+                  "decaps LOCAL");
+  expect_kem_ulong(tag, pGetAttr, sess, recovered, CKA_KEY_GEN_MECHANISM,
+                   CK_UNAVAILABLE_INFORMATION, "decaps KEY_GEN_MECHANISM");
+
+  /* Minimal secret templates mint defaulted protection plus false history. */
+  {
+    CK_ATTRIBUTE minT[4];
+    CK_OBJECT_HANDLE minEnc = 0, minDec = 0;
+    CK_ULONG minCtLen = sizeof(ct);
+    minT[0].type = CKA_CLASS;
+    minT[0].pValue = &ckcls;
+    minT[0].ulValueLen = sizeof(ckcls);
+    minT[1].type = CKA_KEY_TYPE;
+    minT[1].pValue = &gkt;
+    minT[1].ulValueLen = sizeof(gkt);
+    minT[2].type = CKA_VALUE_LEN;
+    minT[2].pValue = &vlen32;
+    minT[2].ulValueLen = sizeof(vlen32);
+    minT[3].type = CKA_TOKEN;
+    minT[3].pValue = &bFalse;
+    minT[3].ulValueLen = sizeof(bFalse);
+    rv = pEncaps(sess, &kem, pubs[1], minT, 4, ct, &minCtLen, &minEnc);
+    CHECKC(rv == CKR_OK && minEnc != 0, "%s: minimal encaps mints", tag);
+    if (rv == CKR_OK && minEnc != 0) {
+      expect_kem_bool(tag, pGetAttr, sess, minEnc, CKA_SENSITIVE, CK_FALSE,
+                      "minimal encaps SENSITIVE");
+      expect_kem_bool(tag, pGetAttr, sess, minEnc, CKA_EXTRACTABLE, CK_FALSE,
+                      "minimal encaps EXTRACTABLE");
+      expect_kem_bool(tag, pGetAttr, sess, minEnc, CKA_ALWAYS_SENSITIVE,
+                      CK_FALSE, "minimal encaps ALWAYS_SENSITIVE");
+      expect_kem_bool(tag, pGetAttr, sess, minEnc, CKA_NEVER_EXTRACTABLE,
+                      CK_FALSE, "minimal encaps NEVER_EXTRACTABLE");
+      expect_kem_bool(tag, pGetAttr, sess, minEnc, CKA_LOCAL, CK_FALSE,
+                      "minimal encaps LOCAL");
+      expect_kem_ulong(tag, pGetAttr, sess, minEnc, CKA_KEY_GEN_MECHANISM,
+                       CK_UNAVAILABLE_INFORMATION,
+                       "minimal encaps KEY_GEN_MECHANISM");
+    }
+    rv = pDecaps(sess, &kem, privs[1], minT, 4, ct, minCtLen, &minDec);
+    CHECKC(rv == CKR_OK && minDec != 0, "%s: minimal decaps mints", tag);
+    if (rv == CKR_OK && minDec != 0) {
+      expect_kem_bool(tag, pGetAttr, sess, minDec, CKA_SENSITIVE, CK_FALSE,
+                      "minimal decaps SENSITIVE");
+      expect_kem_bool(tag, pGetAttr, sess, minDec, CKA_EXTRACTABLE, CK_FALSE,
+                      "minimal decaps EXTRACTABLE");
+      expect_kem_bool(tag, pGetAttr, sess, minDec, CKA_ALWAYS_SENSITIVE,
+                      CK_FALSE, "minimal decaps ALWAYS_SENSITIVE");
+      expect_kem_bool(tag, pGetAttr, sess, minDec, CKA_NEVER_EXTRACTABLE,
+                      CK_FALSE, "minimal decaps NEVER_EXTRACTABLE");
+      expect_kem_bool(tag, pGetAttr, sess, minDec, CKA_LOCAL, CK_FALSE,
+                      "minimal decaps LOCAL");
+      expect_kem_ulong(tag, pGetAttr, sess, minDec, CKA_KEY_GEN_MECHANISM,
+                       CK_UNAVAILABLE_INFORMATION,
+                       "minimal decaps KEY_GEN_MECHANISM");
+    }
+  }
 
   /* Generic-secret output shape serves too. */
   secT[1].pValue = &gkt;

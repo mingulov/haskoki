@@ -32,9 +32,12 @@ import Haskoki.Attribute
   , AttributeType (..)
   , AttributeValue (..)
   , PartialReads (..)
+  , Shape (..)
   , attributeTypeByName
+  , decodeValue
   , encodeValue
   , getAttributes
+  , shapeOf
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Der (curveTable, dhParamsDer, dhParamsDerQ, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaParamsDer, dsaPrivateDer, dsaPublicDer, ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer, mlkemPkcs8Fields, mlkemSpkiFields, montgomeryPrivateDer, montgomeryPublicDer, parseDhParams, parseDsaParams, rsaPrivateDer, rsaPublicDer)
@@ -70,7 +73,7 @@ import Haskoki.Model
   , emptyModel
   , lookupSession
   )
-import Haskoki.Object (resolveHandle)
+import Haskoki.Object (planCopyObject, planGetAttributes, resolveHandle)
 import Haskoki.Operation.Cipher (pkcs7Pad, pkcs7Unpad)
 import Haskoki.Operation
   ( CipherSpec (..)
@@ -129,9 +132,11 @@ import Haskoki.Operation.KeyManagement
   , ckkEcEdwards
   , ckkEcMontgomery
   , ckkGenericSecret
+  , ckkHotp
   , ckkMlDsa
   , ckkMlKem
   , ckkRsa
+  , ckkSlhDsa
   , ckkX9_42Dh
   , ckkAesXts
   , ckkDes
@@ -196,6 +201,8 @@ import Haskoki.Operation.KeyManagement
   , genericSecretKeyGenMech
   , genericSecretKeygenMaxBytes
   , genericSecretKeygenMinBytes
+  , hotpKeyGenMech
+  , slhdsaKeyPairGenMech
   , keyBytesOf
   , keyPairCompatible
   , padPkcs7
@@ -268,8 +275,10 @@ import Haskoki.Outcome
   )
 import Haskoki.Output (OutputPlan (..), TypedWrite (..), WritePayload (..))
 import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCapabilities)
+import Haskoki.Recipe.Dh (encodeDhParams)
 import Haskoki.Recipe.Ecdh (encodeEcdhParams)
 import Haskoki.Recipe.Kdf (encodePbkd2Params, maxPbkd2Iters)
+import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Recipe.Sp800108 (encodeSp800Params, maxSp800Total)
 import Haskoki.Recipe.TlsKdf (encodeTlsKdfParams, maxTlsKdfOutput)
 import Haskoki.Recipe.ByteOps (encodeByteOpsParams)
@@ -282,11 +291,13 @@ import Haskoki.Recipe.WrapComp (encodeWrapCompEcdhParams)
 import Haskoki.Recipe.WrapCompRsa (encodeWrapCompRsaParams)
 import Haskoki.Registry.Generated
   ( ckm_AES_CCM
+  , ckm_AES_CBC_ENCRYPT_DATA
   , ckm_DES3_MAC
   , ckm_DES3_MAC_GENERAL
   , ckm_CONCATENATE_BASE_AND_DATA
   , ckm_CONCATENATE_BASE_AND_KEY
   , ckm_CONCATENATE_DATA_AND_BASE
+  , ckm_DH_PKCS_DERIVE
   , ckm_ECDH1_DERIVE
   , ckm_EXTRACT_KEY_FROM_KEY
   , ckm_IKE1_EXTENDED_DERIVE
@@ -298,6 +309,8 @@ import Haskoki.Registry.Generated
   , ckm_SHA256_HMAC
   , ckm_SHA1_KEY_DERIVATION
   , ckm_SHA256_KEY_DERIVATION
+  , ckm_SHAKE_128_KEY_DERIVATION
+  , ckm_TLS_PRF
   , ckm_SP800_108_COUNTER_KDF
   , ckm_SP800_108_DOUBLE_PIPELINE_KDF
   , ckm_SP800_108_FEEDBACK_KDF
@@ -332,6 +345,7 @@ import Haskoki.Session (SessionLogin (..))
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
+  , ObjectId (..)
   , ReturnCode (..)
   , SessionId (..)
   , SlotId (..)
@@ -365,6 +379,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "RSA keypair stamps components and round-trips" caseRsaKeygen
   , testCase "RSA keypair stamps modulus bits on the public half" caseRsaModulusBits
   , testCase "RSA keypair generations are distinct" caseRsaKeygenDistinct
+  , testCase "generated public halves read without protection flags"
+      caseGeneratedPublicReads
   , testCase "RSA keygen bounds refuse out-of-window specs" caseRsaKeygenBounds
   , testCase "RSA exponent plans, agrees and refuses" caseRsaExponentPlanner
   , testCase "RSA stamping refuses mismatched halves" caseRsaStampMismatch
@@ -453,7 +469,17 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Byte-op plans rows, refuses bad shapes" caseByteOpsPlans
   , testCase "Real byte-op derives match the KATs" caseRealByteOpsVector
   , testCase "Byte-op derives preserve source protection" caseByteOpsProtection
+  , testCase "Generate stamps key attributes at birth" caseGenerateStampsKeyAttrs
+  , testCase "Generated pairs stamp both halves" casePairStampsBothHalves
+  , testCase "Every single-key keygen stamps birth history" caseGenerateStampsEveryKeygen
+  , testCase "Every pair mechanism stamps both halves" casePairStampsEveryPair
+  , testCase "Explicit birth flags drive the history rows" caseGenerateExplicitBirthFlags
+  , testCase "Every unwrap mechanism stamps import history" caseUnwrapStampsEveryMech
+  , testCase "Every derive family stamps source-derived history" caseDeriveStampsEveryFamily
+  , testCase "Copies of generated keys inherit birth history" caseCopyGeneratedKeyDerivesHistory
+  , testCase "Generate refuses history attributes in the caller template" caseKeyTemplatesRefuseHistory
   , testCase "Key-material plans rows, refuses bad shapes" caseKeyMatPlans
+  , testCase "Key-material absent base reads the defaults" caseKeyMatAbsentBase
   , testCase "Real key-material derives match the KATs" caseRealKeyMatVector
   , testCase "SSL3 plans rows, refuses bad shapes" caseSsl3DerivePlans
   , testCase "Real SSL3 derives match the KATs" caseRealSsl3Vector
@@ -467,6 +493,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
   , testCase "KEM accepts AES-256 secret templates" caseKemAesTemplate
   , testCase "KEM keygen honors CKA_PARAMETER_SET" caseKemKeygenParamSet
+  , testCase "KEM outputs stamp creation history" caseKemStampsOutputHistory
   , testCase "Handle writeback plans one exact handle" caseHandleWriteback
   , testCase "Wrapped writeback plans query/short/exact" caseWrappedWriteback
   , testCase "Ciphertext writeback enforces the length" caseCiphertextWriteback
@@ -661,6 +688,58 @@ caseKemKeygen = withSynth $ \answer -> do
       assertBool "priv material nonempty" (not (BS.null q))
       assertBool "halves differ" (p /= q)
     _ -> assertFailure "keypair halves lack stored material"
+
+-- | Generated public halves read back under minimal templates: no
+-- protection flags are minted or needed. Each leg pins its public
+-- template carries none, then reads the public value straight off
+-- the finished pair. The RSA leg also reads the stamped modulus
+-- (the synthetic EC halves are opaque, so no point is stamped
+-- there).
+caseGeneratedPublicReads :: IO ()
+caseGeneratedPublicReads = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, kemH) <- mint answer m0 st "ML-KEM" mlKemKeyPairGenMech kemPubTmpl kemPrivTmpl
+  (m2, mldsaH) <- mint answer m1 st "ML-DSA" mldsaKeyPairGenMech mldsaPubTmpl mldsaPrivTmpl
+  (m3, dhH) <- mint answer m2 st "DH" dhKeyPairGenMech dhPubTmpl dhPrivTmpl
+  (m4, dsaH) <- mint answer m3 st "DSA" dsaKeyPairGenMech dsaPubTmpl dsaPrivTmpl
+  (m5, ecH) <- mint answer m4 st "EC" ecKeyPairGenMech ecPubTmpl ecPrivTmpl
+  (m6, rsaH) <- mint answer m5 st "RSA" rsaKeyPairGenMech rsaPubTmpl rsaPrivTmpl
+  mapM_ (readValue m6 st)
+    [ ("ML-KEM", kemH), ("ML-DSA", mldsaH), ("DH", dhH)
+    , ("DSA", dsaH), ("EC", ecH), ("RSA", rsaH)
+    ]
+  Just rsaPub <- pure (resolveHandle m6 rsaH)
+  case Map.lookup AttrModulus (osAttrs rsaPub) of
+    Just (ValBytes n) -> do
+      got <- readAttr m6 st "RSA modulus" rsaH AttrModulus
+      assertEqual "RSA modulus" (Just (ValBytes n)) got
+    other -> assertFailure ("RSA public lacks modulus: " ++ show other)
+  where
+    mint answer m st tag mech pubT privT = do
+      assertBool (tag ++ ": public template carries no protection flags")
+        (all (\(t, _) -> t /= AttrSensitive && t /= AttrExtractable) pubT)
+      case planGenerateKeyPair defaultRules m st mech pubT privT of
+        KeyEffect pw fx -> do
+          res <- answer m fx
+          c <- finishCommit m st pw res 2
+          pubH <- handleOf (pcOutputs c !! 0)
+          m' <- expectRight (publishDelta m (pcDelta c))
+          pure (m', pubH)
+        other -> assertFailure (tag ++ ": pair plan is not an effect: " ++ show other)
+          >> undefined
+    readValue m st (tag, h) = do
+      Just ost <- pure (resolveHandle m h)
+      Just mat <- pure (keyBytesOf ost)
+      got <- readAttr m st (tag ++ " public value") h AttrValue
+      assertEqual (tag ++ " public value") (Just (ValBytes mat)) got
+    readAttr m st tag h t = case planGetAttributes m st h [t] of
+      Immediate c -> case pcOutputs c of
+        [o] -> pure (decodeValue t (outBytes o))
+        _ -> assertFailure (tag ++ ": read outputs arity") >> undefined
+      Reject rej -> assertFailure (tag ++ ": read rejected: " ++ show (rejCode rej))
+        >> undefined
+      Execute _ _ -> assertFailure (tag ++ ": read must not execute") >> undefined
 
 caseKemLengthQuery :: IO ()
 caseKemLengthQuery = withSynth $ \answer -> do
@@ -3012,6 +3091,33 @@ caseWrapRoundtrip = withSynth $ \answer -> do
         (Just (ValBytes "unwrapped")) (Map.lookup AttrLabel (osAttrs ost))
       assertEqual "usage landed" (Just (ValBool True)) (Map.lookup AttrEncrypt (osAttrs ost))
     other -> assertFailure ("unwrap plan is not an effect: " ++ show other)
+  -- A minimal template mints explicit import history: protection
+  -- defaults (non-sensitive, extractable) plus false origin rows.
+  let bareTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrToken, ValBool False)
+        ]
+  case planUnwrapKey defaultRules m2 st aesCbcMech iv16 wrapH blob bareTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m3 <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle m3 h)
+      assertEqual "minimal sensitive"
+        (Just (ValBool False)) (Map.lookup AttrSensitive (osAttrs ost))
+      assertEqual "minimal extractable"
+        (Just (ValBool True)) (Map.lookup AttrExtractable (osAttrs ost))
+      assertEqual "minimal always-sensitive"
+        (Just (ValBool False)) (Map.lookup AttrAlwaysSensitive (osAttrs ost))
+      assertEqual "minimal never-extractable"
+        (Just (ValBool False)) (Map.lookup AttrNeverExtractable (osAttrs ost))
+      assertEqual "minimal local"
+        (Just (ValBool False)) (Map.lookup AttrLocal (osAttrs ost))
+      assertEqual "minimal key-gen mechanism"
+        (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (osAttrs ost))
+    other -> assertFailure ("bare unwrap plan is not an effect: " ++ show other)
 
 -- | Extractable generic-secret template with caller-chosen length
 -- (ragged wrap targets the AES keygen bounds cannot mint).
@@ -5762,6 +5868,13 @@ caseHkdfDataPlans = do
     KeyDenied (KeyDeny code _) ->
       assertEqual "extract-only code" CKR_MECHANISM_PARAM_INVALID code
     other -> assertFailure ("extract-only must deny, got: " ++ show other)
+  -- A history attribute in a data-output template refuses
+  -- inconsistent, like every other creation entry.
+  case planDerive defaultRules m2 st hkdfDataMech baseH
+      (encodeDeriveParams frame [dat ++ [(AttrLocal, ValBool True)]]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "history data code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("history data must deny, got: " ++ show other)
 
 caseRealHkdfDataVector :: IO ()
 caseRealHkdfDataVector = withRealEnv $ \env -> do
@@ -6356,6 +6469,20 @@ caseRealByteOpsVector = withRealEnv $ \env -> do
   gotExt4 <- derive extractMech fExt4 2
   assertEqual "extract sub-byte KAT" (Just (hex "0010")) gotExt4
 
+-- | The delta a key plan would publish: denials carry no objects
+-- (empty delta); immediate outcomes carry their own delta; an
+-- effect would allocate its pending objects on finish, so it maps
+-- to a sentinel allocation at the model's next id (a plan that
+-- allocates fails the size check instead of passing it).
+denialDelta :: Model -> KeyPlan -> StateDelta
+denialDelta m plan = case plan of
+  KeyDenied _ -> StateDelta []
+  KeyImmediate pr -> case pr of
+    Immediate pc -> pcDelta pc
+    Reject rej -> rejDelta rej
+    Execute _ _ -> StateDelta [DeltaCreateObject (ObjectId (mNextObject m))]
+  KeyEffect _ _ -> StateDelta [DeltaCreateObject (ObjectId (mNextObject m))]
+
 -- | Byte-operation protection inheritance (OASIS 3.2 §6.43.3–§6.43.7,
 -- finding TS4): a template that explicitly downgrades inherited
 -- protection refuses 'CKR_TEMPLATE_INCONSISTENT'; matching and
@@ -6454,8 +6581,9 @@ caseByteOpsProtection = withSynth $ \answer -> do
     (encodeDeriveParams fKeyProtAux [kidOmit 64]))
   -- Split-flag sources prove the two rules are independent on every
   -- row: each flag alone refuses its own downgrade, stamps only
-  -- itself when omitted (the unrequired flag stays omitted), and
-  -- passes its own matching template through.
+  -- itself when omitted (the unrequired flag inherits the
+  -- source-effective value), and passes its own matching template
+  -- through.
   mapM_ (\(mech, frame, n) -> do
     case planDerive defaultRules m5 st mech sensOnlyH
         (encodeDeriveParams frame [kidDown n]) of
@@ -6476,7 +6604,15 @@ caseByteOpsProtection = withSynth $ \answer -> do
         assertEqual ("sens-only omitted sensitive " ++ show mech)
           (Just (ValBool True)) (Map.lookup AttrSensitive (poAttrs po))
         assertEqual ("sens-only omitted extractable " ++ show mech)
-          Nothing (Map.lookup AttrExtractable (poAttrs po))
+          (Just (ValBool True)) (Map.lookup AttrExtractable (poAttrs po))
+        assertEqual ("sens-only omitted always " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrAlwaysSensitive (poAttrs po))
+        assertEqual ("sens-only omitted never " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrNeverExtractable (poAttrs po))
+        assertEqual ("sens-only omitted local " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrLocal (poAttrs po))
+        assertEqual ("sens-only omitted kgm " ++ show mech)
+          (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (poAttrs po))
       other -> assertFailure ("sens-only omitted must plan, got: " ++ show other)
     case planDerive defaultRules m5 st mech unextrOnlyH
         (encodeDeriveParams frame [kidDown n]) of
@@ -6495,9 +6631,17 @@ caseByteOpsProtection = withSynth $ \answer -> do
         (encodeDeriveParams frame [kidOmit n]) of
       KeyEffect (PwDerive (po : _) _) _ -> do
         assertEqual ("unextr-only omitted sensitive " ++ show mech)
-          Nothing (Map.lookup AttrSensitive (poAttrs po))
+          (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
         assertEqual ("unextr-only omitted extractable " ++ show mech)
           (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
+        assertEqual ("unextr-only omitted always " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrAlwaysSensitive (poAttrs po))
+        assertEqual ("unextr-only omitted never " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrNeverExtractable (poAttrs po))
+        assertEqual ("unextr-only omitted local " ++ show mech)
+          (Just (ValBool False)) (Map.lookup AttrLocal (poAttrs po))
+        assertEqual ("unextr-only omitted kgm " ++ show mech)
+          (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (poAttrs po))
       other -> assertFailure ("unextr-only omitted must plan, got: " ++ show other))
     [ (concatKeyMech, fKeyPlainAux, 64)
     , (concatDataMech, fBD, 16)
@@ -6539,13 +6683,18 @@ caseByteOpsProtection = withSynth $ \answer -> do
     KeyDenied (KeyDeny code _) ->
       assertEqual "overrun code" CKR_ARGUMENTS_BAD code
     other -> assertFailure ("overrun must deny, got: " ++ show other)
-  -- A refused derivation allocates nothing.
+  -- A refused derivation allocates nothing: publishing the
+  -- denied plan's own delta leaves the pre-snapshot unchanged. The
+  -- size check runs before the code match, so a plan that allocates
+  -- fails here rather than below.
   let before = Map.size (mObjects m5)
-  case planDerive defaultRules m5 st extractMech protBaseH
-      (encodeDeriveParams fExt [kidDown 16]) of
+      deniedPlan = planDerive defaultRules m5 st extractMech protBaseH
+        (encodeDeriveParams fExt [kidDown 16])
+  mAfterDeny <- expectRight (publishDelta m5 (denialDelta m5 deniedPlan))
+  assertEqual "denied derive allocates nothing" before (Map.size (mObjects mAfterDeny))
+  case deniedPlan of
     KeyDenied _ -> pure ()
     other -> assertFailure ("downgrade must deny, got: " ++ show other)
-  assertEqual "denied derive allocates nothing" before (Map.size (mObjects m5))
   -- The sealed flags retain through finish/publication with exact
   -- output bytes; readback and wrap then refuse typed.
   (m6, childH) <- case planDerive defaultRules m5 st extractMech protBaseH
@@ -6572,17 +6721,33 @@ caseByteOpsProtection = withSynth $ \answer -> do
     KeyDenied (KeyDeny code _) ->
       assertEqual "wrap code" CKR_KEY_UNEXTRACTABLE code
     other -> assertFailure ("sealed child wrap must deny, got: " ++ show other)
-  -- History attributes stay unmapped: native templates carrying
-  -- them refuse at the FFI chase and reads report
-  -- 'CKR_ATTRIBUTE_TYPE_INVALID' (existing boundary behavior, no
-  -- silent weakening through an unstamped flag).
-  assertEqual "ALWAYS_SENSITIVE unmapped"
-    Nothing (attributeTypeByName "CKA_ALWAYS_SENSITIVE")
-  assertEqual "NEVER_EXTRACTABLE unmapped"
-    Nothing (attributeTypeByName "CKA_NEVER_EXTRACTABLE")
+  -- A key with no stored flags wraps as unextractable: the absent
+  -- EXTRACTABLE reads as unextractable through the effective view.
+  (mFlagless, flaglessH) <- plantKey m6 st
+    [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkAes),
+     (AttrToken, ValBool False)] (BS.pack [96..111])
+  case planWrapKey mFlagless st aesCbcMech iv16 wrapH flaglessH IntentNull of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "flag-less wrap code" CKR_KEY_UNEXTRACTABLE code
+    other -> assertFailure ("flag-less wrap must deny, got: " ++ show other)
+  -- History attributes are inventoried: the names map and the
+  -- mechanism-id shape is unsigned-long. Caller templates carrying
+  -- them refuse inconsistent at every creation entry (the derive
+  -- leg below proves the lenient choke point; generation proves
+  -- the strict one).
+  assertEqual "ALWAYS_SENSITIVE mapped"
+    (Just AttrAlwaysSensitive) (attributeTypeByName "CKA_ALWAYS_SENSITIVE")
+  assertEqual "NEVER_EXTRACTABLE mapped"
+    (Just AttrNeverExtractable) (attributeTypeByName "CKA_NEVER_EXTRACTABLE")
+  assertEqual "LOCAL mapped"
+    (Just AttrLocal) (attributeTypeByName "CKA_LOCAL")
+  assertEqual "KEY_GEN_MECHANISM mapped"
+    (Just AttrKeyGenMechanism) (attributeTypeByName "CKA_KEY_GEN_MECHANISM")
+  assertEqual "KGM shape" ShapeULong (shapeOf AttrKeyGenMechanism)
   -- Unaffected inputs: unprotected byte-op derivations keep the
-  -- caller's readable template, and omitted attributes stay
-  -- omitted (template or default wins when nothing is required).
+  -- caller's readable template, and omitted attributes inherit the
+  -- source-effective values (inherit-or-default when nothing is
+  -- required).
   case planDerive defaultRules m5 st extractMech plainBaseH
       (encodeDeriveParams fExt [kidDown 16]) of
     KeyEffect (PwDerive (po : _) _) _ -> do
@@ -6595,10 +6760,74 @@ caseByteOpsProtection = withSynth $ \answer -> do
       (encodeDeriveParams fKeyPlainAux [kidOmit 64]) of
     KeyEffect (PwDerive (po : _) _) _ -> do
       assertEqual "plain omitted sensitive"
-        Nothing (Map.lookup AttrSensitive (poAttrs po))
+        (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
       assertEqual "plain omitted extractable"
-        Nothing (Map.lookup AttrExtractable (poAttrs po))
+        (Just (ValBool True)) (Map.lookup AttrExtractable (poAttrs po))
+      assertEqual "plain omitted always-sensitive"
+        (Just (ValBool False)) (Map.lookup AttrAlwaysSensitive (poAttrs po))
+      assertEqual "plain omitted never-extractable"
+        (Just (ValBool False)) (Map.lookup AttrNeverExtractable (poAttrs po))
+      assertEqual "plain omitted local"
+        (Just (ValBool False)) (Map.lookup AttrLocal (poAttrs po))
+      assertEqual "plain omitted key-gen mechanism"
+        (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (poAttrs po))
     other -> assertFailure ("plain concat-key must plan, got: " ++ show other)
+  -- Over a protected base the omitted template stamps sealed: the
+  -- inherited protection plus history derived from the sources
+  -- (both lack stored history, so it reads false).
+  case planDerive defaultRules m5 st concatKeyMech protBaseH
+      (encodeDeriveParams fKeyPlainAux [kidOmit 64]) of
+    KeyEffect (PwDerive (po : _) _) _ -> do
+      assertEqual "protected omitted sensitive"
+        (Just (ValBool True)) (Map.lookup AttrSensitive (poAttrs po))
+      assertEqual "protected omitted extractable"
+        (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
+      assertEqual "protected omitted always-sensitive"
+        (Just (ValBool False)) (Map.lookup AttrAlwaysSensitive (poAttrs po))
+      assertEqual "protected omitted never-extractable"
+        (Just (ValBool False)) (Map.lookup AttrNeverExtractable (poAttrs po))
+      assertEqual "protected omitted local"
+        (Just (ValBool False)) (Map.lookup AttrLocal (poAttrs po))
+      assertEqual "protected omitted key-gen mechanism"
+        (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (poAttrs po))
+    other -> assertFailure ("protected concat-key must plan, got: " ++ show other)
+  -- A base with no protection flags derives unextractable but
+  -- non-sensitive: the absent EXTRACTABLE reads as unextractable
+  -- through the effective view, the absent SENSITIVE as false.
+  (mAbsBase, absBaseH) <- plantKey m5 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] baseMat
+  case planDerive defaultRules mAbsBase st extractMech absBaseH
+      (encodeDeriveParams fExt [kidOmit 16]) of
+    KeyEffect (PwDerive (po : _) _) _ -> do
+      assertEqual "absent-base omitted sensitive"
+        (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
+      assertEqual "absent-base omitted extractable"
+        (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
+      assertEqual "absent-base omitted always-sensitive"
+        (Just (ValBool False)) (Map.lookup AttrAlwaysSensitive (poAttrs po))
+      assertEqual "absent-base omitted never-extractable"
+        (Just (ValBool False)) (Map.lookup AttrNeverExtractable (poAttrs po))
+      assertEqual "absent-base omitted local"
+        (Just (ValBool False)) (Map.lookup AttrLocal (poAttrs po))
+      assertEqual "absent-base omitted key-gen mechanism"
+        (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (poAttrs po))
+    other -> assertFailure ("absent-base derive must plan, got: " ++ show other)
+  -- A history attribute in the derive template refuses
+  -- inconsistent and allocates nothing: publishing the denied
+  -- plan's own delta leaves the pre-snapshot unchanged.
+  let histBefore = Map.size (mObjects m5)
+      histPlan = planDerive defaultRules m5 st concatKeyMech plainBaseH
+        (encodeDeriveParams fKeyPlainAux [kidOmit 64 ++ [(AttrLocal, ValBool True)]])
+  mAfterHist <- expectRight (publishDelta m5 (denialDelta m5 histPlan))
+  assertEqual "refused history derive allocates nothing" histBefore (Map.size (mObjects mAfterHist))
+  case histPlan of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "history derive code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("history derive must deny, got: " ++ show other)
   -- Unaffected family: HKDF carries no §6.43 inheritance rule, so
   -- a readable template over a protected base still plans with the
   -- caller's flags (scoping control against a global rule).
@@ -6611,6 +6840,30 @@ caseByteOpsProtection = withSynth $ \answer -> do
       assertEqual "hkdf template extractable"
         (Just (ValBool True)) (Map.lookup AttrExtractable (poAttrs po))
     other -> assertFailure ("HKDF control must plan, got: " ++ show other)
+
+-- | A history attribute in a generation template refuses
+-- inconsistent at the strict choke point and allocates nothing:
+-- publishing the denied plan's own delta leaves the pre-snapshot
+-- unchanged.
+caseKeyTemplatesRefuseHistory :: IO ()
+caseKeyTemplatesRefuseHistory = do
+  m0 <- seedModel
+  st <- getSession m0
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        , (AttrAlwaysSensitive, ValBool True)
+        ]
+      before = Map.size (mObjects m0)
+      genPlan = planGenerateKey defaultRules m0 st aesKeyGenMech BS.empty tmpl
+  mAfterGen <- expectRight (publishDelta m0 (denialDelta m0 genPlan))
+  assertEqual "refused history generate allocates nothing" before (Map.size (mObjects mAfterGen))
+  case genPlan of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "history generate code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("history generate must deny, got: " ++ show other)
 
 keyMat10Mech, keyMat12Mech, keyMatSafeMech :: MechanismId
 keyMat10Mech = MechanismId ckm_TLS_KEY_AND_MAC_DERIVE
@@ -6859,6 +7112,49 @@ caseKeyMatPlans = do
     KeyDenied (KeyDeny code _) ->
       assertEqual "wrong-row code" CKR_ARGUMENTS_BAD code
     other -> assertFailure ("wrong row must deny, got: " ++ show other)
+
+-- | Key-material protection over a base with no stored flags: the
+-- absent base reads as non-sensitive and unextractable, so a
+-- matching false/false template and an omitted template plan,
+-- while either flag set true refuses as a conflict.
+caseKeyMatAbsentBase :: IO ()
+caseKeyMatAbsentBase = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, baseH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 47])
+  let f12 = encodeTlsKeyMatParams 4 0 16 16 keyMatCr keyMatSr
+      kid prot =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        ] ++ prot
+      matchFalse = kid [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)]
+      omitted = kid []
+      conflictSens = kid [(AttrSensitive, ValBool True), (AttrExtractable, ValBool False)]
+      conflictExtr = kid [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)]
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [matchFalse]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("absent-base match must plan, got: " ++ show other)
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [omitted]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("absent-base omitted must plan, got: " ++ show other)
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [conflictSens]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "absent-base sens code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("absent-base sens must deny, got: " ++ show other)
+  case planDerive defaultRules m1 st keyMat12Mech baseH
+      (encodeDeriveParams f12 [conflictExtr]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "absent-base extr code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("absent-base extr must deny, got: " ++ show other)
 
 caseRealKeyMatVector :: IO ()
 caseRealKeyMatVector = withRealEnv $ \env -> do
@@ -7171,6 +7467,95 @@ caseKemAesTemplate = withSynth $ \answer -> do
       (IntentBuffer (fromIntegral ctLen)) of
     KeyEffect _ _ -> pure ()
     other -> assertFailure ("must plan, got: " ++ show other)
+
+-- | KEM outputs stamp creation history: minimal templates mint
+-- defaulted protection plus false history and origin on both the
+-- encapsulate and decapsulate paths, for generic-secret and AES-256
+-- shapes; explicit flags win without forging history; history rows
+-- in the caller template refuse.
+caseKemStampsOutputHistory :: IO ()
+caseKemStampsOutputHistory = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, pubH, privH) <- genKemPair answer m0 st
+  let ctLen = kemCtLen KemMl768
+      intent = IntentBuffer (fromIntegral ctLen)
+      minimalGeneric = bareSecretTmpl ckkGenericSecret 32
+      minimalAes = bareSecretTmpl ckkAes 32
+      explicit = minimalGeneric ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]
+  (m2, ct) <- case planKemEncaps m1 st mlKemMech pubH KemMl768 minimalGeneric intent of
+    KeyEffect pw fx -> do
+      res <- answer m1 fx
+      c <- finishCommit m1 st pw res 1
+      hh <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m1 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertKemHistory "encaps generic" (osAttrs ost) False False
+      case pcOutputs c !! 0 of
+        NativeOutput (RegionBytes "ciphertext" _) bytes -> pure (m', bytes)
+        o -> assertFailure ("no ciphertext: " ++ show o) >> undefined
+    other -> assertFailure ("encaps must plan, got: " ++ show other) >> undefined
+  m3 <- case planKemDecaps m2 st mlKemMech privH KemMl768 ct minimalGeneric of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      hh <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m2 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertKemHistory "decaps generic" (osAttrs ost) False False
+      pure m'
+    other -> assertFailure ("decaps must plan, got: " ++ show other) >> undefined
+  (m4, ctAes) <- case planKemEncaps m3 st mlKemMech pubH KemMl768 minimalAes intent of
+    KeyEffect pw fx -> do
+      res <- answer m3 fx
+      c <- finishCommit m3 st pw res 1
+      hh <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m3 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertEqual "encaps aes keytype" (Just (ValULong ckkAes))
+        (Map.lookup AttrKeyType (osAttrs ost))
+      assertKemHistory "encaps aes" (osAttrs ost) False False
+      case pcOutputs c !! 0 of
+        NativeOutput (RegionBytes "ciphertext" _) bytes -> pure (m', bytes)
+        o -> assertFailure ("no ciphertext: " ++ show o) >> undefined
+    other -> assertFailure ("encaps aes must plan, got: " ++ show other) >> undefined
+  m5 <- case planKemDecaps m4 st mlKemMech privH KemMl768 ctAes minimalAes of
+    KeyEffect pw fx -> do
+      res <- answer m4 fx
+      c <- finishCommit m4 st pw res 1
+      hh <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m4 (pcDelta c))
+      Just ost <- pure (resolveHandle m' hh)
+      assertKemHistory "decaps aes" (osAttrs ost) False False
+      pure m'
+    other -> assertFailure ("decaps aes must plan, got: " ++ show other) >> undefined
+  case planKemEncaps m5 st mlKemMech pubH KemMl768 explicit intent of
+    KeyEffect pw fx -> do
+      res <- answer m5 fx
+      c <- finishCommit m5 st pw res 1
+      hh <- handleOf (pcOutputs c !! 1)
+      m6 <- expectRight (publishDelta m5 (pcDelta c))
+      Just ost <- pure (resolveHandle m6 hh)
+      assertKemHistory "encaps explicit" (osAttrs ost) True True
+      case planKemDecaps m6 st mlKemMech privH KemMl768 ct explicit of
+        KeyEffect pw2 fx2 -> do
+          res2 <- answer m6 fx2
+          c2 <- finishCommit m6 st pw2 res2 1
+          hh2 <- handleOf (pcOutputs c2 !! 0)
+          m7 <- expectRight (publishDelta m6 (pcDelta c2))
+          Just ost2 <- pure (resolveHandle m7 hh2)
+          assertKemHistory "decaps explicit" (osAttrs ost2) True True
+        other2 -> assertFailure ("decaps explicit must plan, got: " ++ show other2)
+    other -> assertFailure ("encaps explicit must plan, got: " ++ show other)
+  let forged = (AttrAlwaysSensitive, ValBool True) : minimalGeneric
+  case planKemEncaps m5 st mlKemMech pubH KemMl768 forged intent of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "encaps history code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("encaps history must deny, got: " ++ show other)
+  case planKemDecaps m5 st mlKemMech privH KemMl768 ct forged of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "decaps history code" CKR_TEMPLATE_INCONSISTENT code
+    other -> assertFailure ("decaps history must deny, got: " ++ show other)
 
 caseKemKeygenParamSet :: IO ()
 caseKemKeygenParamSet = withSynth $ \answer -> do
@@ -7653,3 +8038,780 @@ caseFinishUntrustedUserSucceeds = do
     (GotBytes (encodeKeyPair mat (Just mat))) 2
   _ <- finishCommit m st (PwDerive [plainSecret] [16]) (GotBytes mat) 1
   pure ()
+
+-- ---------------------------------------------------------------------------
+-- Creation stamping: every path mints explicit protection and history
+-- ---------------------------------------------------------------------------
+
+-- | Assert one stored or pending boolean row.
+assertStoredBool :: String -> Map.Map AttributeType AttributeValue -> AttributeType -> Bool -> IO ()
+assertStoredBool tag attrs t v =
+  assertEqual tag (Just (ValBool v)) (Map.lookup t attrs)
+
+-- | Assert the birth-history rows of a freshly generated secret or
+-- private key: defaulted protection plus birth history.
+assertBirthHistory :: String -> Map.Map AttributeType AttributeValue -> MechanismId -> IO ()
+assertBirthHistory tag attrs mech = do
+  assertStoredBool (tag ++ " sensitive") attrs AttrSensitive False
+  assertStoredBool (tag ++ " extractable") attrs AttrExtractable False
+  assertStoredBool (tag ++ " always-sensitive") attrs AttrAlwaysSensitive False
+  assertStoredBool (tag ++ " never-extractable") attrs AttrNeverExtractable True
+  assertStoredBool (tag ++ " local") attrs AttrLocal True
+  assertEqual (tag ++ " key-gen mechanism")
+    (Just (ValULong (unMechanismId mech))) (Map.lookup AttrKeyGenMechanism attrs)
+
+-- | Assert the import-history rows of an unwrapped key: the unwrap
+-- protection defaults plus false origin rows.
+assertImportHistory :: String -> Map.Map AttributeType AttributeValue -> IO ()
+assertImportHistory tag attrs = do
+  assertStoredBool (tag ++ " sensitive") attrs AttrSensitive False
+  assertStoredBool (tag ++ " extractable") attrs AttrExtractable True
+  assertStoredBool (tag ++ " always-sensitive") attrs AttrAlwaysSensitive False
+  assertStoredBool (tag ++ " never-extractable") attrs AttrNeverExtractable False
+  assertStoredBool (tag ++ " local") attrs AttrLocal False
+  assertEqual (tag ++ " key-gen mechanism")
+    (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism attrs)
+
+-- | Assert one derived secret child: caller-or-inherited protection
+-- plus source-derived history.
+assertDerivedHistory :: String -> Map.Map AttributeType AttributeValue
+  -> Bool -> Bool -> Bool -> Bool -> IO ()
+assertDerivedHistory tag attrs sens ext alw nev = do
+  assertStoredBool (tag ++ " sensitive") attrs AttrSensitive sens
+  assertStoredBool (tag ++ " extractable") attrs AttrExtractable ext
+  assertStoredBool (tag ++ " always-sensitive") attrs AttrAlwaysSensitive alw
+  assertStoredBool (tag ++ " never-extractable") attrs AttrNeverExtractable nev
+  assertStoredBool (tag ++ " local") attrs AttrLocal False
+  assertEqual (tag ++ " key-gen mechanism")
+    (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism attrs)
+
+-- | Assert one KEM output secret: caller-or-defaulted protection
+-- plus false history and origin (exposed material, never a
+-- never-extracted claim).
+assertKemHistory :: String -> Map.Map AttributeType AttributeValue
+  -> Bool -> Bool -> IO ()
+assertKemHistory tag attrs sens ext = do
+  assertStoredBool (tag ++ " sensitive") attrs AttrSensitive sens
+  assertStoredBool (tag ++ " extractable") attrs AttrExtractable ext
+  assertStoredBool (tag ++ " always-sensitive") attrs AttrAlwaysSensitive False
+  assertStoredBool (tag ++ " never-extractable") attrs AttrNeverExtractable False
+  assertStoredBool (tag ++ " local") attrs AttrLocal False
+  assertEqual (tag ++ " key-gen mechanism")
+    (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism attrs)
+
+-- | Assert that no key row is present (non-key outputs own none).
+assertNoKeyRows :: String -> Map.Map AttributeType AttributeValue -> IO ()
+assertNoKeyRows tag attrs = mapM_
+  (\t -> assertEqual (tag ++ " absent " ++ show t) Nothing (Map.lookup t attrs))
+  [AttrSensitive, AttrExtractable, AttrAlwaysSensitive, AttrNeverExtractable, AttrLocal, AttrKeyGenMechanism]
+
+-- | A minimal secret template: class, key type, length and the
+-- session mark. No protection or usage flags.
+bareSecretTmpl :: Word64 -> Int -> [(AttributeType, AttributeValue)]
+bareSecretTmpl kt n =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong kt)
+  , (AttrValueLen, ValULong (fromIntegral n))
+  , (AttrToken, ValBool False)
+  ]
+
+-- | AES generation from a minimal template mints explicit birth
+-- history: defaulted protection plus the mechanism origin.
+caseGenerateStampsKeyAttrs :: IO ()
+caseGenerateStampsKeyAttrs = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        ]
+  (m1, h) <- genAesKey answer m0 st tmpl
+  Just ost <- pure (resolveHandle m1 h)
+  assertBirthHistory "aes" (osAttrs ost) aesKeyGenMech
+
+-- | A minimal pair mints both halves with birth history: the
+-- private half carries the birth rows, the public half the public
+-- rows plus origin and no history rows at all.
+casePairStampsBothHalves :: IO ()
+casePairStampsBothHalves = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let pub =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkMlKem)
+        , (AttrKemAlg, ValULong 768)
+        , (AttrToken, ValBool False)
+        , (AttrPrivate, ValBool False)
+        ]
+      priv =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkMlKem)
+        , (AttrKemAlg, ValULong 768)
+        , (AttrToken, ValBool False)
+        , (AttrPrivate, ValBool True)
+        ]
+  (m1, pubH, privH) <-
+    case planGenerateKeyPair defaultRules m0 st mlKemKeyPairGenMech pub priv of
+      KeyEffect pw fx -> do
+        res <- answer m0 fx
+        c <- finishCommit m0 st pw res 2
+        h1 <- handleOf (pcOutputs c !! 0)
+        h2 <- handleOf (pcOutputs c !! 1)
+        m' <- expectRight (publishDelta m0 (pcDelta c))
+        pure (m', h1, h2)
+      other -> assertFailure ("pair plan is not an effect: " ++ show other) >> undefined
+  Just pubOst <- pure (resolveHandle m1 pubH)
+  Just privOst <- pure (resolveHandle m1 privH)
+  assertStoredBool "pub sensitive" (osAttrs pubOst) AttrSensitive False
+  assertStoredBool "pub extractable" (osAttrs pubOst) AttrExtractable True
+  assertStoredBool "pub local" (osAttrs pubOst) AttrLocal True
+  assertEqual "pub key-gen mechanism"
+    (Just (ValULong (unMechanismId mlKemKeyPairGenMech)))
+    (Map.lookup AttrKeyGenMechanism (osAttrs pubOst))
+  assertEqual "pub always-sensitive absent" Nothing
+    (Map.lookup AttrAlwaysSensitive (osAttrs pubOst))
+  assertEqual "pub never-extractable absent" Nothing
+    (Map.lookup AttrNeverExtractable (osAttrs pubOst))
+  assertBirthHistory "priv" (osAttrs privOst) mlKemKeyPairGenMech
+
+-- | Mint one sweep row and pin its birth history (the mechanism id
+-- proves the stamp ran at that row's own site).
+mintSweepStampRow
+  :: (Model -> CryptoEffect -> IO CryptoResult)
+  -> SessionState -> Model
+  -> (String, MechanismId, Word64, SweepLens, Bool)
+  -> IO Model
+mintSweepStampRow answer st m (label, mech, kt, lens, _parity) = do
+  let (good, _, _) = sweepLengths lens
+  case good of
+    [] -> assertFailure (label ++ " sweep has no good length") >> pure m
+    (g0 : _) -> do
+      (m', h) <- genSweepKey answer m st mech (sweepTmpl kt g0)
+      Just ost <- pure (resolveHandle m' h)
+      assertBirthHistory label (osAttrs ost) mech
+      pure m'
+
+-- | Every single-key keygen mints birth history: the full sweep
+-- table end to end, the bespoke arms end to end, and the PBE rows
+-- at plan level (both work shapes).
+caseGenerateStampsEveryKeygen :: IO ()
+caseGenerateStampsEveryKeygen = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let go m [] = pure m
+      go m (row : rows) = do
+        m' <- mintSweepStampRow answer st m row
+        go m' rows
+  m1 <- go m0 keygenSweepTable
+  (m2, hDes3) <- genDes3Key answer m1 st (bareSecretTmpl ckkDes3 24)
+  Just ostDes3 <- pure (resolveHandle m2 hDes3)
+  assertBirthHistory "des3" (osAttrs ostDes3) des3KeyGenMech
+  (m3, hDes3d) <- genDes3Key answer m2 st
+    [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkDes3), (AttrToken, ValBool False)]
+  Just ostDes3d <- pure (resolveHandle m3 hDes3d)
+  assertEqual "des3 default length" (Just 24) (fmap BS.length (keyBytesOf ostDes3d))
+  assertBirthHistory "des3-default" (osAttrs ostDes3d) des3KeyGenMech
+  (m4, hHotp) <- genKeyWith answer m3 st hotpKeyGenMech (bareSecretTmpl ckkHotp 32)
+  Just ostHotp <- pure (resolveHandle m4 hHotp)
+  assertBirthHistory "hotp" (osAttrs ostHotp) hotpKeyGenMech
+  (m5, hCha) <- genKeyWith answer m4 st chacha20KeyGenMech (bareSecretTmpl ckkChacha20 32)
+  Just ostCha <- pure (resolveHandle m5 hCha)
+  assertBirthHistory "chacha20" (osAttrs ostCha) chacha20KeyGenMech
+  (m6, hGen) <- genKeyWith answer m5 st genericSecretKeyGenMech (genericTmpl 32)
+  Just ostGen <- pure (resolveHandle m6 hGen)
+  assertBirthHistory "generic" (osAttrs ostGen) genericSecretKeyGenMech
+  (m7, hTls) <- genPremasterKey answer m6 st tlsPremasterKeyGenMech
+    (BS.pack [3, 3]) (premasterTmpl 48)
+  Just ostTls <- pure (resolveHandle m7 hTls)
+  assertBirthHistory "tls-premaster" (osAttrs ostTls) tlsPremasterKeyGenMech
+  (m8, hSsl) <- genPremasterKey answer m7 st ssl3PremasterKeyGenMech
+    (BS.pack [3, 0]) (premasterTmpl 48)
+  Just ostSsl <- pure (resolveHandle m8 hSsl)
+  assertBirthHistory "ssl3-premaster" (osAttrs ostSsl) ssl3PremasterKeyGenMech
+  (m9, hWtls) <- genPremasterKey answer m8 st wtlsPremasterKeyGenMech
+    (BS.singleton 1) (premasterTmpl 32)
+  Just ostWtls <- pure (resolveHandle m9 hWtls)
+  assertBirthHistory "wtls-premaster" (osAttrs ostWtls) wtlsPremasterKeyGenMech
+  let pbkd2Mech = MechanismId ckm_PKCS5_PBKD2
+      pbkd2Frame = encodePbkd2Params 4 4096 "salt" "password"
+  (m10, hPbkd2) <- genPremasterKey answer m9 st pbkd2Mech pbkd2Frame (premasterTmpl 32)
+  Just ostPbkd2 <- pure (resolveHandle m10 hPbkd2)
+  assertBirthHistory "pbkd2-generic" (osAttrs ostPbkd2) pbkd2Mech
+  (m11, hPbkd2a) <- genPremasterKey answer m10 st pbkd2Mech pbkd2Frame (bareSecretTmpl ckkAes 32)
+  Just ostPbkd2a <- pure (resolveHandle m11 hPbkd2a)
+  assertEqual "pbkd2 aes type" (Just (ValULong ckkAes))
+    (Map.lookup AttrKeyType (osAttrs ostPbkd2a))
+  assertBirthHistory "pbkd2-aes" (osAttrs ostPbkd2a) pbkd2Mech
+  -- The PBE rows plan with birth history on both work shapes
+  -- (key-only RC4 rows, key-plus-IV rows).
+  let pbeFrame = encodePbeParams 1024 pbePw pbeSalt
+      pbeBare k =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong k)
+        , (AttrEncrypt, ValBool True)
+        , (AttrDecrypt, ValBool True)
+        , (AttrToken, ValBool False)
+        ]
+  mapM_ (\(mech, wantKey) ->
+    case planGenerateKey defaultRules m11 st mech pbeFrame (pbeBare wantKey) of
+      KeyEffect (PwGenerateKey po) _ ->
+        assertBirthHistory ("pbe " ++ show mech) (poAttrs po) mech
+      KeyEffect (PwGenerateKeyIv po _) _ ->
+        assertBirthHistory ("pbe " ++ show mech) (poAttrs po) mech
+      other -> assertFailure ("PBE must plan, got: " ++ show other))
+    [ (pbeDes3Mech, ckkDes3), (pbeDes2Mech, ckkDes2)
+    , (pbeSha1Cast128Mech, ckkCast128)
+    , (pbeSha1Rc4_128Mech, ckkRc4)
+    , (pbeSha1Rc4_40Mech, ckkRc4)
+    , (pbeSha1Rc2_128Mech, ckkRc2)
+    , (pbeSha1Rc2_40Mech, ckkRc2)
+    , (pbeMd5DesMech, ckkDes)
+    , (pbeMd5CastMech, ckkCast)
+    , (pbeMd5Cast3Mech, ckkCast3)
+    , (pbeMd5Cast128Mech, ckkCast128)
+    ]
+
+-- | Assert the public-half rows of a freshly generated pair: the
+-- public protection rows plus origin, with no history rows.
+assertPubBirthHistory :: String -> Map.Map AttributeType AttributeValue -> MechanismId -> IO ()
+assertPubBirthHistory tag attrs mech = do
+  assertStoredBool (tag ++ " sensitive") attrs AttrSensitive False
+  assertStoredBool (tag ++ " extractable") attrs AttrExtractable True
+  assertStoredBool (tag ++ " local") attrs AttrLocal True
+  assertEqual (tag ++ " key-gen mechanism")
+    (Just (ValULong (unMechanismId mech))) (Map.lookup AttrKeyGenMechanism attrs)
+  assertEqual (tag ++ " always-sensitive absent") Nothing
+    (Map.lookup AttrAlwaysSensitive attrs)
+  assertEqual (tag ++ " never-extractable absent") Nothing
+    (Map.lookup AttrNeverExtractable attrs)
+
+-- | Every pair mechanism mints both halves with birth history end
+-- to end; domain-parameter outputs own no key rows; explicit
+-- caller flags win on both halves.
+casePairStampsEveryPair :: IO ()
+casePairStampsEveryPair = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let barePub kt extra =
+        [(AttrClass, ValULong ckoPublicKey), (AttrKeyType, ValULong kt), (AttrToken, ValBool False)]
+          ++ extra
+      barePriv kt =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong kt)
+        , (AttrToken, ValBool False)
+        , (AttrPrivate, ValBool True)
+        ]
+      mintOne m (tag, mech, pubT, privT) =
+        case planGenerateKeyPair defaultRules m st mech pubT privT of
+          KeyEffect pw fx -> do
+            res <- answer m fx
+            c <- finishCommit m st pw res 2
+            pubH <- handleOf (pcOutputs c !! 0)
+            privH <- handleOf (pcOutputs c !! 1)
+            m' <- expectRight (publishDelta m (pcDelta c))
+            Just pubOst <- pure (resolveHandle m' pubH)
+            Just privOst <- pure (resolveHandle m' privH)
+            assertPubBirthHistory tag (osAttrs pubOst) mech
+            assertBirthHistory tag (osAttrs privOst) mech
+            pure m'
+          other -> assertFailure (tag ++ " pair plan is not an effect: " ++ show other)
+            >> undefined
+      go m [] = pure m
+      go m (row : rows) = do
+        m' <- mintOne m row
+        go m' rows
+  m1 <- go m0
+    [ ("kem", mlKemKeyPairGenMech
+      , barePub ckkMlKem [(AttrKemAlg, ValULong 768), (AttrPrivate, ValBool False)]
+      , barePriv ckkMlKem ++ [(AttrKemAlg, ValULong 768)])
+    , ("ec", ecKeyPairGenMech
+      , barePub ckkEc [(AttrEcParams, ValBytes "P-256")]
+      , barePriv ckkEc)
+    , ("ec-extra-bits", ecExtraBitsKeyPairGenMech
+      , barePub ckkEc [(AttrEcParams, ValBytes "P-256")]
+      , barePriv ckkEc)
+    , ("rsa", rsaKeyPairGenMech
+      , barePub ckkRsa [(AttrModulusBits, ValULong 2048)]
+      , barePriv ckkRsa ++ [(AttrModulusBits, ValULong 2048)])
+    , ("dsa", dsaKeyPairGenMech
+      , barePub ckkDsa
+          [(AttrPrime, ValBytes dsaP), (AttrSubprime, ValBytes dsaQ), (AttrBase, ValBytes dsaG)]
+      , barePriv ckkDsa)
+    , ("dh", dhKeyPairGenMech
+      , barePub ckkDh [(AttrPrime, ValBytes dhP), (AttrBase, ValBytes dhG)]
+      , barePriv ckkDh)
+    , ("x9.42-dh", x9_42DhKeyPairGenMech
+      , barePub ckkX9_42Dh
+          [(AttrPrime, ValBytes dhP), (AttrBase, ValBytes dhG), (AttrSubprime, ValBytes dhQ)]
+      , barePriv ckkX9_42Dh)
+    , ("edwards", edwardsKeyPairGenMech
+      , barePub ckkEcEdwards [(AttrEcParams, ValBytes "Ed25519")]
+      , barePriv ckkEcEdwards)
+    , ("montgomery", montgomeryKeyPairGenMech
+      , barePub ckkEcMontgomery [(AttrEcParams, ValBytes "X25519")]
+      , barePriv ckkEcMontgomery)
+    , ("ml-dsa", mldsaKeyPairGenMech
+      , barePub ckkMlDsa [(AttrParameterSet, ValULong 1)]
+      , barePriv ckkMlDsa)
+    , ("slh-dsa", slhdsaKeyPairGenMech
+      , barePub ckkSlhDsa [(AttrParameterSet, ValULong 1)]
+      , barePriv ckkSlhDsa)
+    ]
+  -- Domain-parameter outputs are not keys: no protection or
+  -- history rows are stamped.
+  mapM_ (\(tag, mech, tmpl) ->
+    case planGenerateKey defaultRules m1 st mech BS.empty tmpl of
+      KeyEffect (PwGenerateKey po) _ -> assertNoKeyRows tag (poAttrs po)
+      other -> assertFailure (tag ++ " paramgen must plan, got: " ++ show other))
+    [ ("dsa-params", dsaParameterGenMech, dsaParamsTmpl 1024)
+    , ("x9.42-params", x9_42DhParameterGenMech, x942ParamsTmpl 2048 256)
+    , ("dh-pkcs-params", dhPkcsParameterGenMech, dhPkcsParamsTmpl 2048 256)
+    ]
+  -- Explicit caller flags win on both halves; the private history
+  -- follows the birth flags, the public half keeps no history.
+  let expPub =
+        barePub ckkRsa [(AttrModulusBits, ValULong 2048), (AttrSensitive, ValBool True)]
+      expPriv =
+        barePriv ckkRsa ++ [(AttrModulusBits, ValULong 2048)
+          , (AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]
+  case planGenerateKeyPair defaultRules m1 st rsaKeyPairGenMech expPub expPriv of
+    KeyEffect (PwGeneratePair pub priv) _ -> do
+      assertStoredBool "explicit pub sensitive" (poAttrs pub) AttrSensitive True
+      assertStoredBool "explicit pub extractable" (poAttrs pub) AttrExtractable True
+      assertStoredBool "explicit pub local" (poAttrs pub) AttrLocal True
+      assertEqual "explicit pub always-sensitive absent" Nothing
+        (Map.lookup AttrAlwaysSensitive (poAttrs pub))
+      assertEqual "explicit pub never-extractable absent" Nothing
+        (Map.lookup AttrNeverExtractable (poAttrs pub))
+      assertStoredBool "explicit priv sensitive" (poAttrs priv) AttrSensitive True
+      assertStoredBool "explicit priv extractable" (poAttrs priv) AttrExtractable True
+      assertStoredBool "explicit priv always-sensitive" (poAttrs priv) AttrAlwaysSensitive True
+      assertStoredBool "explicit priv never-extractable" (poAttrs priv) AttrNeverExtractable False
+      assertStoredBool "explicit priv local" (poAttrs priv) AttrLocal True
+    other -> assertFailure ("explicit pair must plan, got: " ++ show other)
+
+-- | Explicit birth flags drive the history rows end to end: a
+-- sensitive birth stamps always-sensitive true, an extractable
+-- birth stamps never-extractable false.
+caseGenerateExplicitBirthFlags :: IO ()
+caseGenerateExplicitBirthFlags = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  let mint tag sens ext = do
+        (m', h) <- genAesKey answer m0 st
+          [ (AttrClass, ValULong ckoSecretKey)
+          , (AttrKeyType, ValULong ckkAes)
+          , (AttrValueLen, ValULong 16)
+          , (AttrToken, ValBool False)
+          , (AttrSensitive, ValBool sens)
+          , (AttrExtractable, ValBool ext)
+          ]
+        Just ost <- pure (resolveHandle m' h)
+        assertStoredBool (tag ++ " sensitive") (osAttrs ost) AttrSensitive sens
+        assertStoredBool (tag ++ " extractable") (osAttrs ost) AttrExtractable ext
+        assertStoredBool (tag ++ " always-sensitive") (osAttrs ost) AttrAlwaysSensitive sens
+        assertStoredBool (tag ++ " never-extractable") (osAttrs ost) AttrNeverExtractable (not ext)
+        assertStoredBool (tag ++ " local") (osAttrs ost) AttrLocal True
+        assertEqual (tag ++ " key-gen mechanism")
+          (Just (ValULong (unMechanismId aesKeyGenMech)))
+          (Map.lookup AttrKeyGenMechanism (osAttrs ost))
+  mint "sensitive-extractable" True True
+  mint "sensitive-locked" True False
+
+-- | Project the pending attributes out of any unwrap plan shape.
+unwrapPending :: String -> KeyPlan -> IO (Map.Map AttributeType AttributeValue)
+unwrapPending tag plan = case plan of
+  KeyEffect (PwUnwrap po) _ -> pure (poAttrs po)
+  KeyEffect (PwUnwrapRaw po) _ -> pure (poAttrs po)
+  KeyEffect (PwUnwrapPad8 po) _ -> pure (poAttrs po)
+  KeyEffect (PwUnwrapTail po _ _) _ -> pure (poAttrs po)
+  other -> assertFailure (tag ++ " unwrap plan is not an effect: " ++ show other) >> undefined
+
+-- | Every unwrap mechanism stamps import history on its pending
+-- child; explicit caller flags win but never forge history.
+caseUnwrapStampsEveryMech :: IO ()
+caseUnwrapStampsEveryMech = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, wrapH) <- genAesKey answer m0 st wrapKeyTmpl
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  let bareTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrToken, ValBool False)
+        ]
+      wrapBlob m mech params wh th = do
+        n <- case planWrapKey m st mech params wh th IntentNull of
+          KeyImmediate (Immediate c) -> case pcOutputs c of
+            [NativeOutput (RegionBytes "wrapped" _) bs] -> case decodeValue AttrValueLen bs of
+              Just (ValULong k) -> pure (fromIntegral k)
+              _ -> assertFailure ("query length shape " ++ show mech) >> undefined
+            o -> assertFailure ("query outputs: " ++ show o) >> undefined
+          other -> assertFailure ("query must commit: " ++ show other) >> undefined
+        case planWrapKey m st mech params wh th (IntentBuffer n) of
+          KeyEffect pw fx -> do
+            res <- answer m fx
+            case finishWork m st pw res of
+              Immediate c -> case pcOutputs c of
+                [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+                o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+              other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+          other -> assertFailure ("wrap plan is not an effect: " ++ show other) >> undefined
+      mintPair m tag mech pubT privT =
+        case planGenerateKeyPair defaultRules m st mech pubT privT of
+          KeyEffect pw fx -> do
+            res <- answer m fx
+            c <- finishCommit m st pw res 2
+            pubH <- handleOf (pcOutputs c !! 0)
+            privH <- handleOf (pcOutputs c !! 1)
+            m' <- expectRight (publishDelta m (pcDelta c))
+            pure (m', pubH, privH)
+          other -> assertFailure (tag ++ " pair plan is not an effect: " ++ show other)
+            >> undefined
+  -- The AES rows plan over shaped blobs (no wrap needed).
+  poCbc <- unwrapPending "aes-cbc"
+    (planUnwrapKey defaultRules m2 st aesCbcMech iv16 wrapH (BS.replicate 32 0) bareTmpl)
+  assertImportHistory "aes-cbc" poCbc
+  poKw <- unwrapPending "aes-kw"
+    (planUnwrapKey defaultRules m2 st aesKwMech BS.empty wrapH (BS.replicate 24 0) bareTmpl)
+  assertImportHistory "aes-kw" poKw
+  poKwp <- unwrapPending "aes-kwp"
+    (planUnwrapKey defaultRules m2 st aesKwpMech BS.empty wrapH (BS.replicate 16 0) bareTmpl)
+  assertImportHistory "aes-kwp" poKwp
+  poKwPad <- unwrapPending "aes-kw-pad"
+    (planUnwrapKey defaultRules m2 st aesKwPadMech BS.empty wrapH (BS.replicate 16 0) bareTmpl)
+  assertImportHistory "aes-kw-pad" poKwPad
+  poKwp7 <- unwrapPending "aes-kw-pkcs7"
+    (planUnwrapKey defaultRules m2 st aesKwp7Mech BS.empty wrapH (BS.replicate 24 0) bareTmpl)
+  assertImportHistory "aes-kw-pkcs7" poKwp7
+  -- The RSA rows plan over modulus-wide blobs.
+  (m3, rsaPubH, rsaPrivH) <- mintPair m2 "rsa" rsaKeyPairGenMech
+    (rsaPubTmpl ++ [(AttrWrap, ValBool True)])
+    (rsaPrivTmpl ++ [(AttrUnwrap, ValBool True)])
+  let oaep = encodeOaepParams "SHA256" "SHA256" BS.empty
+      rsaBlob = BS.replicate 256 0
+  poPkcs <- unwrapPending "rsa-pkcs"
+    (planUnwrapKey defaultRules m3 st rsaPkcsMech BS.empty rsaPrivH rsaBlob bareTmpl)
+  assertImportHistory "rsa-pkcs" poPkcs
+  poOaep <- unwrapPending "rsa-oaep"
+    (planUnwrapKey defaultRules m3 st rsaOaepMech oaep rsaPrivH rsaBlob bareTmpl)
+  assertImportHistory "rsa-oaep" poOaep
+  poX509 <- unwrapPending "rsa-x509"
+    (planUnwrapKey defaultRules m3 st rsaX509Mech BS.empty rsaPrivH rsaBlob
+      (bareTmpl ++ [(AttrValueLen, ValULong 16)]))
+  assertImportHistory "rsa-x509" poX509
+  -- The composition rows plan over freshly wrapped blobs.
+  (m4, ecPubH, ecPrivH) <- mintPair m3 "ec" ecKeyPairGenMech
+    (ecPubTmpl ++ [(AttrWrap, ValBool True)])
+    (ecPrivTmpl ++ [(AttrUnwrap, ValBool True)])
+  let compParams = encodeWrapCompEcdhParams 0 BS.empty 128
+  mapM_ (\mech -> do
+    blob <- wrapBlob m4 mech compParams ecPubH targetH
+    po <- unwrapPending (show mech)
+      (planUnwrapKey defaultRules m4 st mech compParams ecPrivH blob bareTmpl)
+    assertImportHistory (show mech) po)
+    [ecdhAesKwMech, ecdhCofAesKwMech]
+  (m5, xdPubH, xdPrivH) <- mintPair m4 "xdh" montgomeryKeyPairGenMech
+    (xdPubTmpl ++ [(AttrWrap, ValBool True)])
+    (xdPrivTmpl ++ [(AttrUnwrap, ValBool True)])
+  blobX <- wrapBlob m5 ecdhXAesKwMech compParams xdPubH targetH
+  poX <- unwrapPending "ecdh-x"
+    (planUnwrapKey defaultRules m5 st ecdhXAesKwMech compParams xdPrivH blobX bareTmpl)
+  assertImportHistory "ecdh-x" poX
+  let rsaCompParams = encodeWrapCompRsaParams "SHA256" "SHA256" BS.empty 256
+  blobRsa <- wrapBlob m5 rsaAesKwMech rsaCompParams rsaPubH targetH
+  poRsa <- unwrapPending "rsa-comp"
+    (planUnwrapKey defaultRules m5 st rsaAesKwMech rsaCompParams rsaPrivH blobRsa bareTmpl)
+  assertImportHistory "rsa-comp" poRsa
+  -- Authenticated unwrap stamps the same import history.
+  poAuth <- unwrapPending "auth"
+    (planAuthUnwrapKey defaultRules m5 st aesCbcMech iv16 wrapH
+      (BS.replicate 64 0) "auth-aad" bareTmpl)
+  assertImportHistory "auth" poAuth
+  -- Explicit caller flags win on the child but history stays
+  -- false: unwrapped material was exposed outside the token.
+  poExp <- unwrapPending "explicit"
+    (planUnwrapKey defaultRules m5 st aesCbcMech iv16 wrapH (BS.replicate 32 0)
+      (bareTmpl ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool False)]))
+  assertStoredBool "explicit sensitive" poExp AttrSensitive True
+  assertStoredBool "explicit extractable" poExp AttrExtractable False
+  assertStoredBool "explicit always-sensitive" poExp AttrAlwaysSensitive False
+  assertStoredBool "explicit never-extractable" poExp AttrNeverExtractable False
+  assertStoredBool "explicit local" poExp AttrLocal False
+  assertEqual "explicit key-gen mechanism"
+    (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism poExp)
+
+ecdhMech, dhPkcsMech, tlsPrfMech, encDataMech, shake128Mech, sha256KdfMech :: MechanismId
+ecdhMech = MechanismId ckm_ECDH1_DERIVE
+dhPkcsMech = MechanismId ckm_DH_PKCS_DERIVE
+tlsPrfMech = MechanismId ckm_TLS_PRF
+encDataMech = MechanismId ckm_AES_CBC_ENCRYPT_DATA
+shake128Mech = MechanismId ckm_SHAKE_128_KEY_DERIVATION
+sha256KdfMech = MechanismId ckm_SHA256_KEY_DERIVATION
+
+-- | Plan one derive and project the first pending child's
+-- attributes (single-output legs).
+derivePending :: String -> Model -> SessionState -> MechanismId -> ExternalHandle
+  -> ByteString -> [[(AttributeType, AttributeValue)]] -> IO (Map.Map AttributeType AttributeValue)
+derivePending tag m st mech base blob tmpls =
+  case planDerive defaultRules m st mech base (encodeDeriveParams blob tmpls) of
+    KeyEffect (PwDerive (po : _) _) _ -> pure (poAttrs po)
+    other -> assertFailure (tag ++ " derive must plan, got: " ++ show other) >> undefined
+
+-- | Every derive family stamps source-derived history: omitted
+-- protection inherits the sources, history follows the child flags
+-- and the source history, origin stays false. Data outputs own no
+-- key rows; the public row stamps the public set.
+caseDeriveStampsEveryFamily :: IO ()
+caseDeriveStampsEveryFamily = withSynth $ \answer -> do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, protH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool True)
+    , (AttrExtractable, ValBool False)
+    ] (BS.pack [0 .. 31])
+  (m2, plainH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [0 .. 31])
+  (m3, ecH) <- plantKey m2 st
+    [ (AttrClass, ValULong ckoPrivateKey)
+    , (AttrKeyType, ValULong ckkEc)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool True)
+    , (AttrExtractable, ValBool False)
+    ] (BS.pack [0 .. 63])
+  (m4, dhH) <- plantKey m3 st
+    [ (AttrClass, ValULong ckoPrivateKey)
+    , (AttrKeyType, ValULong ckkDh)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool True)
+    , (AttrExtractable, ValBool False)
+    ] (BS.pack [0 .. 63])
+  (m5, aesH) <- plantKey m4 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    ] (BS.pack [0 .. 15])
+  (m6, rsaH) <- plantKey m5 st
+    [ (AttrClass, ValULong ckoPrivateKey)
+    , (AttrKeyType, ValULong ckkRsa)
+    , (AttrToken, ValBool False)
+    ] (BS.pack [0 .. 63])
+  (m7, auxH) <- plantKey m6 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
+    ] (BS.pack [32 .. 63])
+  let kid :: Int -> [(AttributeType, AttributeValue)]
+      kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      auxN = fromIntegral (unExternalHandle auxH)
+  poHkdf <- derivePending "hkdf" m7 st hkdfDeriveMech protH
+    (encodeHkdfInfo 4 0x02 BS.empty "stamp-info") [kid 32]
+  assertDerivedHistory "hkdf" poHkdf True False False False
+  poEcdh <- derivePending "ecdh" m7 st ecdhMech ecH
+    (encodeEcdhParams 0 BS.empty (BS.pack [1 .. 32])) [kid 32]
+  assertDerivedHistory "ecdh" poEcdh True False False False
+  poDh <- derivePending "dh-pkcs" m7 st dhPkcsMech dhH
+    (encodeDhParams 0 (BS.pack [1 .. 32])) [kid 32]
+  assertDerivedHistory "dh-pkcs" poDh True False False False
+  poShaKdf <- derivePending "sha256-kdf" m7 st sha256KdfMech plainH
+    BS.empty [[(AttrClass, ValULong ckoSecretKey), (AttrToken, ValBool False)]]
+  assertDerivedHistory "sha256-kdf" poShaKdf False True False False
+  poXof <- derivePending "shake128" m7 st shake128Mech plainH BS.empty [kid 40]
+  assertDerivedHistory "shake128" poXof False True False False
+  poPrf <- derivePending "tls-prf" m7 st tlsPrfMech plainH
+    (encodeTlsPrfParams "label" (BS.pack [0 .. 31])) [kid 32]
+  assertDerivedHistory "tls-prf" poPrf False True False False
+  poTlsKdf <- derivePending "tls-kdf" m7 st tlsKdfFreeMech plainH
+    (encodeTlsKdfParams 4 "key expansion" tlsKdfSeed64 BS.empty) [kid 32]
+  assertDerivedHistory "tls-kdf" poTlsKdf False True False False
+  case planDerive defaultRules m7 st keyMat12Mech plainH
+      (encodeDeriveParams (encodeTlsKeyMatParams 4 0 16 16 keyMatCr keyMatSr)
+        [[(AttrClass, ValULong ckoSecretKey)
+          , (AttrKeyType, ValULong ckkGenericSecret)
+          , (AttrToken, ValBool False)]]) of
+    KeyEffect (PwDeriveIv pos [16, 16] _) _ ->
+      mapM_ (\po -> assertDerivedHistory "tls-keymat" (poAttrs po) False True False False) pos
+    other -> assertFailure ("tls-keymat must plan, got: " ++ show other)
+  poSsl3m <- derivePending "ssl3-master" m7 st ssl3MasterMech plainH
+    (encodeSsl3MasterParams ssl3Cr ssl3Sr)
+    [[ (AttrClass, ValULong ckoSecretKey)
+      , (AttrKeyType, ValULong ckkGenericSecret)
+      , (AttrValueLen, ValULong 48)
+      , (AttrToken, ValBool False)
+      , (AttrDerive, ValBool True)
+      ]]
+  assertDerivedHistory "ssl3-master" poSsl3m False True False False
+  case planDerive defaultRules m7 st ssl3KeyMatMech plainH
+      (encodeDeriveParams (encodeSsl3KeyMatParams 16 16 16 ssl3Cr ssl3Sr)
+        [[(AttrClass, ValULong ckoSecretKey)
+          , (AttrKeyType, ValULong ckkGenericSecret)
+          , (AttrToken, ValBool False)]]) of
+    KeyEffect (PwDeriveIv pos [16, 16, 16, 16] _) _ ->
+      mapM_ (\po -> assertDerivedHistory "ssl3-keymat" (poAttrs po) False True False False) pos
+    other -> assertFailure ("ssl3-keymat must plan, got: " ++ show other)
+  poIke <- derivePending "ike-plus" m7 st ikePlusMech plainH
+    (encodeIkeParams 4 0 0 0 ikeSeed32 BS.empty) [kid 32]
+  assertDerivedHistory "ike-plus" poIke False True False False
+  poIkeAux <- derivePending "ike1-aux" m7 st ike1Mech plainH
+    (encodeIkeParams 4 0 7 auxN ikeNi ikeNr) [kid 32]
+  assertDerivedHistory "ike1-aux" poIkeAux False True False False
+  poSp800 <- derivePending "sp800" m7 st sp800CounterMech plainH
+    (encodeSp800Params 4 32 32 BS.empty sp800Fixed)
+    [[ (AttrClass, ValULong ckoSecretKey)
+      , (AttrKeyType, ValULong ckkAes)
+      , (AttrValueLen, ValULong 16)
+      , (AttrToken, ValBool False)
+      ]]
+  assertDerivedHistory "sp800" poSp800 False True False False
+  poEncData <- derivePending "encrypt-data" m7 st encDataMech aesH
+    (iv16 <> BS.pack [0 .. 31]) [kid 32]
+  assertDerivedHistory "encrypt-data" poEncData False False False False
+  case planDerive defaultRules m7 st hkdfDataMech plainH
+      (encodeDeriveParams (encodeHkdfInfo 4 0x03 BS.empty rfcInfo)
+        [[ (AttrClass, ValULong ckoData)
+          , (AttrValueLen, ValULong 42)
+          , (AttrToken, ValBool False)
+          ]]) of
+    KeyEffect (PwDerive (po : _) _) _ -> assertNoKeyRows "hkdf-data" (poAttrs po)
+    other -> assertFailure ("hkdf-data must plan, got: " ++ show other)
+  case planDerive defaultRules m7 st pubPrivMech rsaH
+      (encodeDeriveParams BS.empty
+        [[ (AttrClass, ValULong ckoPublicKey)
+          , (AttrKeyType, ValULong ckkRsa)
+          , (AttrToken, ValBool False)
+          ]]) of
+    KeyEffect (PwDerivePub po kty) _ -> do
+      assertEqual "pubpriv type" ckkRsa kty
+      assertStoredBool "pubpriv sensitive" (poAttrs po) AttrSensitive False
+      assertStoredBool "pubpriv extractable" (poAttrs po) AttrExtractable True
+      assertStoredBool "pubpriv local" (poAttrs po) AttrLocal False
+      assertEqual "pubpriv key-gen mechanism"
+        (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (poAttrs po))
+      assertEqual "pubpriv always-sensitive absent" Nothing
+        (Map.lookup AttrAlwaysSensitive (poAttrs po))
+      assertEqual "pubpriv never-extractable absent" Nothing
+        (Map.lookup AttrNeverExtractable (poAttrs po))
+    other -> assertFailure ("pubpriv must plan, got: " ++ show other)
+  -- True history propagates: a generated locked base derives a
+  -- child that is still always-sensitive and never-extractable.
+  (m8, genH) <- genKeyWith answer m7 st genericSecretKeyGenMech
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkGenericSecret)
+    , (AttrValueLen, ValULong 32)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool True)
+    , (AttrExtractable, ValBool False)
+    ]
+  Just genOst <- pure (resolveHandle m8 genH)
+  assertStoredBool "generated base always" (osAttrs genOst) AttrAlwaysSensitive True
+  assertStoredBool "generated base never" (osAttrs genOst) AttrNeverExtractable True
+  poTrue <- derivePending "hkdf-true" m8 st hkdfDeriveMech genH
+    (encodeHkdfInfo 4 0x02 BS.empty "stamp-true") [kid 32]
+  assertDerivedHistory "hkdf-true" poTrue True False True True
+  poTrueByte <- derivePending "extract-true" m8 st extractMech genH
+    (encodeByteOpsParams 0 0 BS.empty) [kid 16]
+  assertDerivedHistory "extract-true" poTrueByte True False True True
+  -- One history-free aux poisons the conjunction: the child keeps
+  -- the inherited protection but loses both history rows.
+  poAnd <- derivePending "concat-aux-and" m8 st concatKeyMech genH
+    (encodeByteOpsParams auxN 0 BS.empty) [kid 64]
+  assertDerivedHistory "concat-aux-and" poAnd True False False False
+  -- Explicit caller flags win over inheritance; history follows
+  -- the child flags, not the base.
+  poExp <- derivePending "hkdf-explicit" m8 st hkdfDeriveMech protH
+    (encodeHkdfInfo 4 0x02 BS.empty "stamp-explicit")
+    [[ (AttrClass, ValULong ckoSecretKey)
+      , (AttrKeyType, ValULong ckkGenericSecret)
+      , (AttrValueLen, ValULong 32)
+      , (AttrToken, ValBool False)
+      , (AttrSensitive, ValBool False)
+      , (AttrExtractable, ValBool True)
+      ]]
+  assertDerivedHistory "hkdf-explicit" poExp False True False False
+
+-- | Copies of generated keys inherit birth history: an
+-- empty-template copy keeps the true history rows and the origin,
+-- forging history through the template is refused, and sensitizing
+-- a born-open key keeps always-sensitive false.
+caseCopyGeneratedKeyDerivesHistory :: IO ()
+caseCopyGeneratedKeyDerivesHistory = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, h) <- genAesKey answer m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrValueLen, ValULong 16)
+    , (AttrToken, ValBool False)
+    , (AttrSensitive, ValBool True)
+    , (AttrExtractable, ValBool False)
+    ]
+  Just src <- pure (resolveHandle m1 h)
+  assertStoredBool "source always-sensitive" (osAttrs src) AttrAlwaysSensitive True
+  assertStoredBool "source never-extractable" (osAttrs src) AttrNeverExtractable True
+  (m2, copyH) <- case planCopyObject m1 st h [] of
+    Immediate c -> do
+      ch <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m1 (pcDelta c))
+      pure (m', ch)
+    other -> assertFailure ("copy must commit: " ++ show other) >> undefined
+  Just cpy <- pure (resolveHandle m2 copyH)
+  assertStoredBool "copy sensitive" (osAttrs cpy) AttrSensitive True
+  assertStoredBool "copy extractable" (osAttrs cpy) AttrExtractable False
+  assertStoredBool "copy always-sensitive" (osAttrs cpy) AttrAlwaysSensitive True
+  assertStoredBool "copy never-extractable" (osAttrs cpy) AttrNeverExtractable True
+  assertStoredBool "copy local" (osAttrs cpy) AttrLocal True
+  assertEqual "copy key-gen mechanism"
+    (Just (ValULong (unMechanismId aesKeyGenMech)))
+    (Map.lookup AttrKeyGenMechanism (osAttrs cpy))
+  mapM_ (\(tag, attr) ->
+    case planCopyObject m2 st h [attr] of
+      Reject r -> do
+        assertEqual (tag ++ " code") CKR_ATTRIBUTE_READ_ONLY (rejCode r)
+        assertEqual (tag ++ " delta") (StateDelta []) (rejDelta r)
+      other -> assertFailure (tag ++ " forge must refuse, got: " ++ show other))
+    [ ("local", (AttrLocal, ValBool False))
+    , ("always", (AttrAlwaysSensitive, ValBool False))
+    , ("never", (AttrNeverExtractable, ValBool False))
+    , ("kgm", (AttrKeyGenMechanism, ValULong 0))
+    ]
+  (m3, openH) <- genAesKey answer m2 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrValueLen, ValULong 16)
+    , (AttrToken, ValBool False)
+    ]
+  (m4, sensH) <- case planCopyObject m3 st openH [(AttrSensitive, ValBool True)] of
+    Immediate c -> do
+      ch <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m3 (pcDelta c))
+      pure (m', ch)
+    other -> assertFailure ("sensitize must commit: " ++ show other) >> undefined
+  Just sensOst <- pure (resolveHandle m4 sensH)
+  assertStoredBool "sensitized sensitive" (osAttrs sensOst) AttrSensitive True
+  assertStoredBool "sensitized always-sensitive" (osAttrs sensOst) AttrAlwaysSensitive False
+  assertStoredBool "sensitized never-extractable" (osAttrs sensOst) AttrNeverExtractable True
+  assertStoredBool "sensitized local" (osAttrs sensOst) AttrLocal True

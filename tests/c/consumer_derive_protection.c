@@ -402,29 +402,30 @@ int main(int argc, char **argv) {
       if (rv == CKR_OK && h != 0) {
         expect_flags(sess, h, CK_TRUE, CK_FALSE, "omitted extract");
         expect_sealed(sess, h, len32, "omitted extract");
-        /* History-attribute boundary: unmapped reads report typed. */
+        /* History attributes are stamped at creation: the derived
+         * child carries stored false history. */
         {
           CK_BBOOL hist = 0xa5;
           CK_ATTRIBUTE q[] = { { CKA_ALWAYS_SENSITIVE, &hist, sizeof(hist) } };
           rv = f->C_GetAttributeValue(sess, h, q, 1);
-          CHECK(rv == CKR_ATTRIBUTE_TYPE_INVALID,
-                "ALWAYS_SENSITIVE reads typed (rv=0x%lx)",
+          CHECK(rv == CKR_OK && hist == CK_FALSE,
+                "ALWAYS_SENSITIVE reads false (rv=0x%lx)",
                 (unsigned long)rv);
         }
         {
           CK_BBOOL hist = 0xa5;
           CK_ATTRIBUTE q[] = { { CKA_NEVER_EXTRACTABLE, &hist, sizeof(hist) } };
           rv = f->C_GetAttributeValue(sess, h, q, 1);
-          CHECK(rv == CKR_ATTRIBUTE_TYPE_INVALID,
-                "NEVER_EXTRACTABLE reads typed (rv=0x%lx)",
+          CHECK(rv == CKR_OK && hist == CK_FALSE,
+                "NEVER_EXTRACTABLE reads false (rv=0x%lx)",
                 (unsigned long)rv);
         }
         rv = f->C_DestroyObject(sess, h);
         CHECK(rv == CKR_OK, "omitted extract destroyed");
       }
     }
-    /* History attributes in a derive template refuse typed at the
-     * frame boundary (no weakening through an unstamped flag). */
+    /* History attributes in a derive template refuse inconsistent:
+     * caller templates may not forge them. */
     {
       CK_BBOOL hist = CK_TRUE;
       CK_ATTRIBUTE dt[] = {
@@ -436,8 +437,8 @@ int main(int argc, char **argv) {
       };
       h = 0;
       rv = f->C_DeriveKey(sess, &m, pbase, dt, 5, &h);
-      CHECK(rv == CKR_ATTRIBUTE_TYPE_INVALID && h == 0,
-            "history-attr template refused typed (rv=0x%lx)",
+      CHECK(rv == CKR_TEMPLATE_INCONSISTENT && h == 0,
+            "history-attr template refused inconsistent (rv=0x%lx)",
             (unsigned long)rv);
     }
   }

@@ -79,14 +79,18 @@ import Haskoki.Model
   , lookupObject
   , lookupSession
   )
-import Haskoki.Object (decodeHandle, planCreateObject)
+import Haskoki.Attribute.Generated (mustClassId, mustKeyTypeId)
+import Haskoki.Object (decodeHandle, effectiveAttrs, planCreateObject, planFindObjects, planGetAttributes)
+import Haskoki.Operation.KeyManagement (KeyDeny (..), KeyPlan (..), aesKwMech, planWrapKey)
 import Haskoki.Outcome
   ( DeltaOp (..)
   , NativeOutput (..)
   , PlanResult (..)
   , PreparedCommit (..)
+  , Rejection (..)
   , StateDelta (..)
   )
+import Haskoki.Request (OutputIntent (..))
 import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
@@ -107,9 +111,11 @@ import Haskoki.Runtime.Storage
   , StoredDoc (..)
   , TokenRecord (..)
   , claimCensus
+  , decodeAttrsDoc
   , defaultLimits
   , docTopKeys
   , emptyDelta
+  , encodeAttrsDoc
   , encodeHex16
   , encodeHexWord64
   , jobIdCounterKey
@@ -402,7 +408,52 @@ spec = testGroup "store contract"
       , testCase "a schema-1 identity refusal writes nothing" caseOpenSchema1IdentityRefusalWithoutWrite
       , testCase "publication resolves moved slots through the reconciled layout" caseProjectionUsesReconciledLayout
       ]
+  , testGroup "attribute codec"
+      [ testCase "history attributes round-trip" testHistoryAttrsRoundTrip
+      , testCase "legacy map encodes to the v0.4 golden bytes" testLegacyGoldenBytes
+      ]
   ]
+
+-- | The history attributes survive the attribute-document codec in
+-- both directions: the three flags as booleans, the mechanism id as
+-- an unsigned long, including the unavailable-information sentinel.
+testHistoryAttrsRoundTrip :: IO ()
+testHistoryAttrsRoundTrip = do
+  let m = Map.fromList
+        [ (AttrAlwaysSensitive, ValBool True)
+        , (AttrNeverExtractable, ValBool False)
+        , (AttrLocal, ValBool True)
+        , (AttrKeyGenMechanism, ValULong 0x1082)
+        ]
+  assertEqual "history codec round-trip" (Just m) (decodeAttrsDoc (encodeAttrsDoc m))
+  let mMax = Map.fromList
+        [ (AttrAlwaysSensitive, ValBool False)
+        , (AttrNeverExtractable, ValBool False)
+        , (AttrLocal, ValBool False)
+        , (AttrKeyGenMechanism, ValULong maxBound)
+        ]
+  assertEqual "history codec sentinel round-trip"
+    (Just mMax) (decodeAttrsDoc (encodeAttrsDoc mMax))
+
+-- | The legacy encoding is pinned byte-for-byte: a fixed v0.4-shaped
+-- attribute map (the same shape the reload case seats as
+-- "legacy-empty") encodes to the bytes the v0.4.0.0 encoder produced
+-- for it, and those bytes decode back to the map. Encoder drift for
+-- the legacy shapes would break the upgrade path, so it must break
+-- this test instead.
+testLegacyGoldenBytes :: IO ()
+testLegacyGoldenBytes = do
+  let m = Map.fromList
+        [ (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
+        , (AttrKeyType, ValULong (mustKeyTypeId "CKK_AES"))
+        , (AttrToken, ValBool True)
+        , (AttrLabel, ValBytes "legacy-empty")
+        , (AttrValue, ValBytes (BS.replicate 16 1))
+        , (AttrValueLen, ValULong 16)
+        ]
+      golden = "{\"class\":\"0000000000000004\",\"key_type\":\"000000000000001f\",\"label\":\"bGVnYWN5LWVtcHR5\",\"token\":true,\"value\":\"AQEBAQEBAQEBAQEBAQEBAQ==\",\"value_len\":\"0000000000000010\"}"
+  assertEqual "legacy bytes match v0.4" golden (encodeAttrsDoc m)
+  assertEqual "golden bytes decode" (Just m) (decodeAttrsDoc golden)
 
 -- | The shared backend contract. Every backend runs every case here.
 contractSpec :: String -> IO Opener -> TestTree
@@ -415,6 +466,8 @@ contractSpec label mkOpener = testGroup label
       withOpener mkOpener staleCloseDoesNotReleaseNewOwner
   , testCase "close/reopen preserves stored bytes exactly" $
       withOpener mkOpener testBytePreservation
+  , testCase "legacy rows reload verbatim and report the key defaults" $
+      withOpener mkOpener testLegacyReloadVerbatim
   , testCase "empty store loads empty" $
       withOpener mkOpener testEmptyLoadsEmpty
   , testCase "revision conflict refuses the whole delta atomically" $
@@ -839,6 +892,262 @@ testBytePreservation o = do
   storeClose s2
   assertEqual "stored bytes survive close/reopen"
     (map show docsBefore) (map show docsAfter)
+
+-- | Legacy, partial and stamped rows reload verbatim and report the
+-- key defaults: v0.4 maps lacking the six attributes, maps with
+-- explicit protection but no history, partially stamped maps, fully
+-- stamped maps, public halves and a non-key control all survive
+-- close/reopen byte-identical on both backends, and the effective
+-- view fills absent rows from the class defaults without unsealing
+-- sealed material or overstating history. Read-only reopen writes
+-- nothing. Hand-built records bypass the planner so the stored bytes
+-- are exactly the legacy shapes (the encoder is untouched by this
+-- lane, so these bytes are byte-identical to what the old base wrote
+-- for the same shapes). The reloaded flag-less PQC and RSA rows are
+-- then seated into a model exactly as stored and exercised through
+-- read, find and wrap, which must all treat them as sealed.
+testLegacyReloadVerbatim :: Opener -> IO ()
+testLegacyReloadVerbatim o = do
+  e1 <- openCurrent o
+  s1 <- either (\e -> assertFailure ("open: " ++ show e)) pure e1
+  let slot = SlotId 0
+      tok = TokenRecord
+        { trId = TokenId 7
+        , trSlot = slot
+        , trGeneration = Generation 1
+        , trLabel = "legacy-token"
+        , trAuth = tokenAuthNew
+        }
+      cSecret = mustClassId "CKO_SECRET_KEY"
+      cPrivate = mustClassId "CKO_PRIVATE_KEY"
+      cPublic = mustClassId "CKO_PUBLIC_KEY"
+      cData = mustClassId "CKO_DATA"
+      kAes = mustKeyTypeId "CKK_AES"
+      kGeneric = mustKeyTypeId "CKK_GENERIC_SECRET"
+      kRsa = mustKeyTypeId "CKK_RSA"
+      kMldsa = mustKeyTypeId "CKK_ML_DSA"
+      keyBase c k lab val =
+        [ (AttrClass, ValULong c)
+        , (AttrKeyType, ValULong k)
+        , (AttrToken, ValBool True)
+        , (AttrLabel, ValBytes lab)
+        , (AttrValue, ValBytes val)
+        , (AttrValueLen, ValULong (fromIntegral (BS.length val)))
+        ]
+      -- (tag, stored map, expected effective six as (present, value);
+      -- Nothing means the effective view carries no such row)
+      cases :: [(String, [(AttributeType, AttributeValue)], [(AttributeType, Maybe AttributeValue)])]
+      cases =
+        [ ("legacy-empty", keyBase cSecret kAes "legacy-empty" (BS.replicate 16 1),
+            eff False False False False False maxBound)
+        , ("legacy-sealed", keyBase cSecret kAes "legacy-sealed" (BS.replicate 16 2)
+            ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool False)],
+            eff True False False False False maxBound)
+        , ("legacy-open", keyBase cSecret kGeneric "legacy-open" (BS.replicate 32 3)
+            ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)],
+            eff False True False False False maxBound)
+        , ("partial-sens-only", keyBase cSecret kAes "partial-sens-only" (BS.replicate 16 4)
+            ++ [(AttrSensitive, ValBool True)],
+            eff True False False False False maxBound)
+        , ("partial-ext-only", keyBase cSecret kAes "partial-ext-only" (BS.replicate 16 5)
+            ++ [(AttrExtractable, ValBool True)],
+            eff False True False False False maxBound)
+        , ("partial-local", keyBase cSecret kAes "partial-local" (BS.replicate 16 6)
+            ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False), (AttrLocal, ValBool False)],
+            eff False False False False False maxBound)
+        , ("partial-almost", keyBase cSecret kAes "partial-almost" (BS.replicate 16 7)
+            ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool False)
+               , (AttrAlwaysSensitive, ValBool False), (AttrNeverExtractable, ValBool False)
+               , (AttrLocal, ValBool False)],
+            eff True False False False False maxBound)
+        , ("stamped-generated", keyBase cSecret kAes "stamped-generated" (BS.replicate 16 8)
+            ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool False)
+               , (AttrAlwaysSensitive, ValBool True), (AttrNeverExtractable, ValBool True)
+               , (AttrLocal, ValBool True), (AttrKeyGenMechanism, ValULong 0x1080)],
+            [ (AttrSensitive, Just (ValBool True)), (AttrExtractable, Just (ValBool False))
+            , (AttrAlwaysSensitive, Just (ValBool True)), (AttrNeverExtractable, Just (ValBool True))
+            , (AttrLocal, Just (ValBool True)), (AttrKeyGenMechanism, Just (ValULong 0x1080)) ])
+        , ("stamped-import", keyBase cSecret kAes "stamped-import" (BS.replicate 16 9)
+            ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)
+               , (AttrAlwaysSensitive, ValBool False), (AttrNeverExtractable, ValBool False)
+               , (AttrLocal, ValBool False), (AttrKeyGenMechanism, ValULong maxBound)],
+            eff False False False False False maxBound)
+        , ("private-legacy", keyBase cPrivate kRsa "private-legacy" (BS.replicate 32 10),
+            eff False False False False False maxBound)
+        , ("mldsa-legacy",
+            [ (AttrClass, ValULong cPrivate)
+            , (AttrKeyType, ValULong kMldsa)
+            , (AttrToken, ValBool True)
+            , (AttrLabel, ValBytes "mldsa-legacy")
+            , (AttrValue, ValBytes (BS.replicate 64 0x11))
+            , (AttrSeed, ValBytes (BS.replicate 32 0x22))
+            , (AttrParameterSet, ValULong 44)
+            ],
+            eff False False False False False maxBound)
+        , ("rsa-legacy",
+            [ (AttrClass, ValULong cPrivate)
+            , (AttrKeyType, ValULong kRsa)
+            , (AttrToken, ValBool True)
+            , (AttrLabel, ValBytes "rsa-legacy")
+            , (AttrModulus, ValBytes "legacy-modulus")
+            , (AttrPublicExponent, ValBytes "legacy-pubexp")
+            , (AttrPrivateExponent, ValBytes "legacy-privexp")
+            , (AttrPrime1, ValBytes "legacy-prime1")
+            , (AttrPrime2, ValBytes "legacy-prime2")
+            , (AttrExponent1, ValBytes "legacy-exp1")
+            , (AttrExponent2, ValBytes "legacy-exp2")
+            , (AttrCoefficient, ValBytes "legacy-coeff")
+            ],
+            eff False False False False False maxBound)
+        , ("public-legacy", keyBase cPublic kRsa "public-legacy" (BS.replicate 32 11),
+            [ (AttrSensitive, Just (ValBool False)), (AttrExtractable, Just (ValBool True))
+            , (AttrAlwaysSensitive, Nothing), (AttrNeverExtractable, Nothing)
+            , (AttrLocal, Just (ValBool False)), (AttrKeyGenMechanism, Just (ValULong maxBound)) ])
+        , ("public-stamped", keyBase cPublic kRsa "public-stamped" (BS.replicate 32 12)
+            ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)
+               , (AttrLocal, ValBool False), (AttrKeyGenMechanism, ValULong maxBound)],
+            [ (AttrSensitive, Just (ValBool False)), (AttrExtractable, Just (ValBool True))
+            , (AttrAlwaysSensitive, Nothing), (AttrNeverExtractable, Nothing)
+            , (AttrLocal, Just (ValBool False)), (AttrKeyGenMechanism, Just (ValULong maxBound)) ])
+        , ("data-control",
+            [ (AttrClass, ValULong cData)
+            , (AttrToken, ValBool True)
+            , (AttrLabel, ValBytes "data-control")
+            , (AttrValue, ValBytes "plain-bytes")
+            ],
+            [ (AttrSensitive, Nothing), (AttrExtractable, Nothing)
+            , (AttrAlwaysSensitive, Nothing), (AttrNeverExtractable, Nothing)
+            , (AttrLocal, Nothing), (AttrKeyGenMechanism, Nothing) ])
+        ]
+      eff sens ext alw nev loc kgm =
+        [ (AttrSensitive, Just (ValBool sens)), (AttrExtractable, Just (ValBool ext))
+        , (AttrAlwaysSensitive, Just (ValBool alw)), (AttrNeverExtractable, Just (ValBool nev))
+        , (AttrLocal, Just (ValBool loc)), (AttrKeyGenMechanism, Just (ValULong kgm)) ]
+      mkOst n attrs = ObjectState
+        { osId = ObjectId n
+        , osRevision = Revision 1
+        , osGeneration = Generation 1
+        , osAttrs = Map.fromList attrs
+        , osOwner = Nothing
+        , osSlot = slot
+        }
+      osts = zipWith (\n (_, m, _) -> mkOst n m) [1 ..] cases
+      recs = [objectToRecord (TokenId 7) ost | ost <- osts]
+  result <- storeCommit s1 emptyDelta
+    { sdPutTokens = [tok]
+    , sdPutObjects = [ObjectPut Nothing r | r <- recs]
+    }
+  assertEqual "legacy commit" Committed result
+  docsBefore <- expectInspect s1
+  assertBool "seeded docs are non-empty" (not (null docsBefore))
+  storeClose s1
+  e2 <- openCurrent o
+  s2 <- either (\e -> assertFailure ("reopen: " ++ show e)) pure e2
+  eLoaded <- storeLoadTokens s2
+  loaded <- either (\e -> assertFailure ("load: " ++ show e)) pure eLoaded
+  case loaded of
+    [(tok2, objs2)] -> do
+      assertEqual "token label survives" "legacy-token" (trLabel tok2)
+      assertEqual "all objects survive" (length cases) (length objs2)
+      mapM_ (checkOne objs2) cases
+      docsAfter <- expectInspect s2
+      assertEqual "read-only reopen writes nothing"
+        (map show docsBefore) (map show docsAfter)
+      enforceReloadedAbsentProtections slot objs2
+    _ -> assertFailure ("expected one token, got: " ++ show (length loaded))
+  storeClose s2
+  where
+    checkOne objs2 (tag, origList, effExpect) = do
+      let orig = Map.fromList origList
+          label = case Map.lookup AttrLabel orig of
+            Just (ValBytes b) -> b
+            _ -> error ("case without label: " ++ tag)
+          found = [rec | rec <- objs2, Map.lookup AttrLabel (orAttrs rec) == Just (ValBytes label)]
+      case found of
+        [rec] -> do
+          assertEqual (tag ++ ": stored map untouched") orig (orAttrs rec)
+          let eff = effectiveAttrs (orAttrs rec)
+          mapM_ (\(t, want) -> assertEqual (tag ++ ": effective " ++ show t) want (Map.lookup t eff)) effExpect
+        _ -> assertFailure (tag ++ ": expected one object, got " ++ show (length found))
+
+-- | Enforcement over reloaded flag-less rows: the reloaded records
+-- seat into a fresh model exactly as stored (a raw reseat, never
+-- through creation, which would stamp them), and the PQC seed plus
+-- the RSA private components must then refuse reads with no output
+-- bytes, match no find, and refuse wrap as unextractable. Positive
+-- controls (a public-component read, a label find) show the
+-- session observes the objects, so the refusals are enforcement
+-- rather than an empty model.
+enforceReloadedAbsentProtections :: SlotId -> [ObjectRecord] -> IO ()
+enforceReloadedAbsentProtections slot objs2 = do
+  mNew <- expectRight "reseat+open" (publishDelta (addToken emptyModel slot)
+    (StateDelta [DeltaOpenSession (SessionId 1) slot False]))
+  let wrapOid = ObjectId (1 + maximum (0 : [unObjectId (orId o) | o <- objs2]))
+      wrapAttrs = Map.fromList
+        [ (AttrClass, ValULong (mustClassId "CKO_SECRET_KEY"))
+        , (AttrKeyType, ValULong (mustKeyTypeId "CKK_AES"))
+        , (AttrToken, ValBool True)
+        , (AttrLabel, ValBytes "kw-wrap")
+        , (AttrValue, ValBytes (BS.replicate 16 0xA5))
+        , (AttrValueLen, ValULong 16)
+        , (AttrSensitive, ValBool False)
+        , (AttrExtractable, ValBool True)
+        , (AttrWrap, ValBool True)
+        ]
+      oids = map orId objs2 ++ [wrapOid]
+      creates =
+        [ DeltaCreateObjectFull (orId o) (orAttrs o) Nothing slot | o <- objs2 ]
+        ++ [DeltaCreateObjectFull wrapOid wrapAttrs Nothing slot]
+      hNew = [ExternalHandle n | n <- [mNextHandle mNew ..]]
+      binds = zipWith DeltaBindHandle hNew oids
+  mBound <- expectRight "rebind" (publishDelta mNew (StateDelta (creates ++ binds)))
+  st <- expectJust "session 1" (lookupSession mBound (SessionId 1))
+  let rowOf lab =
+        case [o | o <- objs2
+              , Map.lookup AttrLabel (orAttrs o) == Just (ValBytes lab)] of
+          [o] -> pure (orId o, orAttrs o)
+          _ -> assertFailure ("missing reloaded row: " ++ show lab)
+      handleOf oid =
+        case [h | (h, b) <- Map.toList (mHandles mBound), hbObject b == oid] of
+          [h] -> pure h
+          hs -> assertFailure
+            ("expected one handle, got " ++ show (length hs))
+  (mldsaOid, mldsaAttrs) <- rowOf "mldsa-legacy"
+  (rsaOid, rsaAttrs) <- rowOf "rsa-legacy"
+  hMldsa <- handleOf mldsaOid
+  hRsa <- handleOf rsaOid
+  hWrap <- handleOf wrapOid
+  let expectSealed tag h wants = case planGetAttributes mBound st h wants of
+        Reject rej -> do
+          assertEqual (tag ++ " code") CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
+          assertEqual (tag ++ " emits no bytes") [] (rejOutputs rej)
+        _ -> assertFailure (tag ++ ": sealed read was served")
+  expectSealed "mldsa seed" hMldsa [AttrSeed]
+  expectSealed "mldsa value" hMldsa [AttrValue]
+  expectSealed "rsa private exponent" hRsa [AttrPrivateExponent]
+  seedVal <- expectJust "seed stored" (Map.lookup AttrSeed mldsaAttrs)
+  expVal <- expectJust "private exponent stored"
+    (Map.lookup AttrPrivateExponent rsaAttrs)
+  valVal <- expectJust "mldsa value stored" (Map.lookup AttrValue mldsaAttrs)
+  let expectNoMatch tag tmpl = case planFindObjects mBound st tmpl of
+        Immediate pc -> assertEqual (tag ++ " matches nothing") [] (pcOutputs pc)
+        _ -> assertFailure (tag ++ ": find refused")
+  expectNoMatch "seed oracle" [(AttrSeed, seedVal)]
+  expectNoMatch "value oracle" [(AttrValue, valVal)]
+  expectNoMatch "private-exponent oracle" [(AttrPrivateExponent, expVal)]
+  let expectUnextractable tag hT =
+        case planWrapKey mBound st aesKwMech BS.empty hWrap hT IntentNull of
+          KeyDenied deny ->
+            assertEqual (tag ++ " code") CKR_KEY_UNEXTRACTABLE (kdCode deny)
+          _ -> assertFailure (tag ++ ": wrap planned over a flag-less key")
+  expectUnextractable "mldsa wrap" hMldsa
+  expectUnextractable "rsa wrap" hRsa
+  case planGetAttributes mBound st hRsa [AttrModulus] of
+    Immediate pc -> assertEqual "modulus reads" 1 (length (pcOutputs pc))
+    _ -> assertFailure "modulus read refused"
+  case planFindObjects mBound st [(AttrLabel, ValBytes "mldsa-legacy")] of
+    Immediate pc -> assertEqual "label finds the key" 1 (length (pcOutputs pc))
+    _ -> assertFailure "label find refused"
 
 -- | Acceptance 2 (empty init): a fresh identity opens and loads
 -- empty (SQLite initializes its schema transactionally).

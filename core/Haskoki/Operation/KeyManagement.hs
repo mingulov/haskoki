@@ -17,10 +17,17 @@ for the driver resolver. The seal ('payloadSealed') governs the
 attribute READ path only: sealed keys stay usable for crypto, per
 PKCS#11.
 
-Template defaults follow PKCS#11: a missing class is incomplete, a
-missing key type defaults to the mechanism's key, usage flags and
-the extractable mark default to false (absent means false, and the
-planners enforce strictly).
+Creation stamps explicit values: a missing class is incomplete,
+a missing key type defaults to the mechanism's key, usage flags
+default to true on the strict key-template path, and the
+protection pair stamps per class (non-sensitive and unextractable
+on private and secret keys, non-sensitive and extractable on
+public keys; unwrapped keys stamp extractable). Generated keys
+additionally take birth history (always-sensitive at the birth
+sensitive mark, never-extractable at the negated birth
+extractable mark, local true, the generating mechanism);
+unwrapped keys take false history and origin. The planners
+enforce the effective (reported) values strictly.
 
 Class, key-type and mechanism ids resolve through the
 generated tables ('Haskoki.Attribute.Generated',
@@ -230,6 +237,7 @@ import Control.Monad (guard)
 import Data.Bits ((.|.), countLeadingZeros, shiftL)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -240,6 +248,8 @@ import Haskoki.Attribute
   , AttributeValue (..)
   , attributeTypeByName
   , encodeValue
+  , historyAttrs
+  , stampKeyDefaults
   )
 import Haskoki.Attribute.Generated
   ( classNameById
@@ -254,6 +264,9 @@ import Haskoki.Object
   , TemplateError (..)
   , TemplateRule (..)
   , checkRules
+  , effectiveAttrs
+  , effectiveExtractable
+  , effectiveSensitive
   , findRule
   , mergedIsPrivate
   , mergedIsToken
@@ -1776,6 +1789,7 @@ ensureTemplateClass wantClass tmpl
   | otherwise = (AttrClass, ValULong wantClass) : tmpl
 
 -- | Check one key template against its expected class and key type:
+-- a history attribute refuses before any other check,
 -- contradictions reject, a missing class defaults to the
 -- mechanism-implied class, a class that is present but wrong is
 -- inconsistent, then the template rule for the @(class, key-type)@
@@ -1784,7 +1798,11 @@ ensureTemplateClass wantClass tmpl
 checkKeyTemplate
   :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
-checkKeyTemplate wantClass wantKey tmpl =
+checkKeyTemplate wantClass wantKey tmpl
+  | Just (t, _) <- find ((`elem` historyAttrs) . fst) tmpl =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("history attribute not allowed in key template: " ++ show t))
+  | otherwise =
   case validateTemplate (ensureTemplateClass wantClass tmpl) of
   Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     ("contradictory attribute: " ++ show t))
@@ -1867,7 +1885,8 @@ applyRules wantClass wantKey attrs =
     _ -> Right ()
 
 -- | Check one key template against its expected class with any key
--- type: contradictions reject, a missing class defaults to the
+-- type: a history attribute refuses before any other check,
+-- contradictions reject, a missing class defaults to the
 -- mechanism-implied class, a class that is present but wrong is
 -- inconsistent, and a missing key type defaults to the caller's
 -- default. Derivation templates use this (derived keys span key
@@ -1875,7 +1894,11 @@ applyRules wantClass wantKey attrs =
 checkKeyTemplateAny
   :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
-checkKeyTemplateAny wantClass defaultKey tmpl =
+checkKeyTemplateAny wantClass defaultKey tmpl
+  | Just (t, _) <- find ((`elem` historyAttrs) . fst) tmpl =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("history attribute not allowed in key template: " ++ show t))
+  | otherwise =
   case validateTemplate (ensureTemplateClass wantClass tmpl) of
   Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     ("contradictory attribute: " ++ show t))
@@ -1994,16 +2017,20 @@ checkDerivedTarget attrs n = do
     admits (DomainRange lo hi) = n >= lo && n <= hi
 
 -- | Check one data-object template for data-output derivations
--- (@CKM_HKDF_DATA@): contradictions and wrong shapes reject, a
--- missing class defaults to the mechanism-implied @CKO_DATA@, a
--- class that is present but wrong is a key-type contradiction
--- (the operation derives data objects, never keys), and a
--- @CKA_KEY_TYPE@ attribute is inconsistent (data objects carry
--- no key type).
+-- (@CKM_HKDF_DATA@): a history attribute refuses before any other
+-- check, contradictions and wrong shapes reject, a missing class
+-- defaults to the mechanism-implied @CKO_DATA@, a class that is
+-- present but wrong is a key-type contradiction (the operation
+-- derives data objects, never keys), and a @CKA_KEY_TYPE@
+-- attribute is inconsistent (data objects carry no key type).
 checkDataTemplate
   :: Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
-checkDataTemplate wantData tmpl =
+checkDataTemplate wantData tmpl
+  | Just (t, _) <- find ((`elem` historyAttrs) . fst) tmpl =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        ("history attribute not allowed in data template: " ++ show t))
+  | otherwise =
   case validateTemplate (ensureTemplateClass wantData tmpl) of
   Left (TemplateContradiction t) -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
     ("contradictory attribute: " ++ show t))
@@ -2019,6 +2046,48 @@ checkDataTemplate wantData tmpl =
           "data template must not carry CKA_KEY_TYPE")
       | otherwise -> Right attrs
     _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE "template is missing the class")
+
+-- | Stamp one freshly generated key: the caller-wins protection
+-- defaults plus birth history. Secret and private keys take
+-- ALWAYS_SENSITIVE at the birth sensitive mark,
+-- NEVER_EXTRACTABLE at the negated birth extractable mark,
+-- LOCAL true and the generating mechanism; public halves take the
+-- origin pair and own no history rows. Explicit caller values
+-- always win. Runs after validation, before 'pendingFromAttrs',
+-- so pending objects carry the final flags. Non-key classes take
+-- the protection defaults only (identity there).
+stampGenerated :: Word64 -> MechanismId -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+stampGenerated cls mech attrs
+  | cls == ckoPublicKey =
+      Map.insert AttrKeyGenMechanism (ValULong (unMechanismId mech))
+        (Map.insert AttrLocal (ValBool True) filled)
+  | cls == ckoPrivateKey || cls == ckoSecretKey =
+      Map.insert AttrKeyGenMechanism (ValULong (unMechanismId mech))
+        (Map.insert AttrLocal (ValBool True)
+          (Map.insert AttrNeverExtractable (ValBool (not ext))
+            (Map.insert AttrAlwaysSensitive (ValBool sens) filled)))
+  | otherwise = filled
+  where
+    filled = stampKeyDefaults cls attrs
+    sens = Map.lookup AttrSensitive filled == Just (ValBool True)
+    ext = Map.lookup AttrExtractable filled == Just (ValBool True)
+
+-- | Stamp one unwrapped key: the caller-wins unwrap defaults
+-- (non-sensitive, extractable) plus import history. Unwrapped
+-- material was exposed outside the token, so history and origin
+-- read false. Runs after validation, before 'pendingFromAttrs'.
+-- Unwrap mints secret keys only (the template class gate).
+stampUnwrapped :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+stampUnwrapped attrs =
+  Map.insert AttrKeyGenMechanism (ValULong maxBound)
+    (Map.insert AttrLocal (ValBool False)
+      (Map.insert AttrNeverExtractable (ValBool False)
+        (Map.insert AttrAlwaysSensitive (ValBool False) filled)))
+  where
+    filled = foldr insertMissing attrs [(AttrSensitive, False), (AttrExtractable, True)]
+    insertMissing (t, v) acc
+      | Map.member t acc = acc
+      | otherwise = Map.insert t (ValBool v) acc
 
 -- | Pending object from validated template attributes: the token
 -- flag decides the lifetime owner, the calling session the home
@@ -2041,8 +2110,9 @@ pendingFromAttrs st attrs = PendingObject
 -- | Required byte-operation child protection (OASIS PKCS#11 3.2
 -- §6.43.3–§6.43.7): sensitivity is required when any input key is
 -- sensitive; nonextractability is required when any input key is
--- unextractable. Explicit source values decide (absent flags are
--- unprotected, matching the readback seal and the copy guard).
+-- unextractable. Source values decide through the effective view
+-- (per-class defaults), matching the readback seal and the copy
+-- guard.
 data ByteOpsProtection = ByteOpsProtection
   { bopSensitive :: !Bool
   , bopUnextractable :: !Bool
@@ -2058,13 +2128,10 @@ byteOpsProtectionOf
   -> Maybe (Map AttributeType AttributeValue)
   -> ByteOpsProtection
 byteOpsProtectionOf base mAux = ByteOpsProtection
-  { bopSensitive = isTrue AttrSensitive base || maybe False (isTrue AttrSensitive) mAux
-  , bopUnextractable = isFalse AttrExtractable base
-      || maybe False (isFalse AttrExtractable) mAux
+  { bopSensitive = effectiveSensitive base || maybe False effectiveSensitive mAux
+  , bopUnextractable = not (effectiveExtractable base)
+      || maybe False (not . effectiveExtractable) mAux
   }
-  where
-    isTrue t attrs = Map.lookup t attrs == Just (ValBool True)
-    isFalse t attrs = Map.lookup t attrs == Just (ValBool False)
 
 -- | Resolve one validated byte-operation caller template against
 -- the required source protection: a template that explicitly
@@ -2073,14 +2140,15 @@ byteOpsProtectionOf base mAux = ByteOpsProtection
 -- otherwise the required flags stamp onto the template (omitted
 -- attributes inherit, matching values pass through) and the merged
 -- map carries into the pending object. When nothing is required
--- the template stands unchanged (template or default wins, per
--- §6.43). Scoped to the five byte-operation mechanisms only: no
--- other derivation family consults this helper.
+-- the template stands unchanged here; the derive merge then fills
+-- omitted rows from the sources (per §6.43). Scoped to the five
+-- byte-operation mechanisms only: no other derivation family
+-- consults this helper.
 --
--- History attributes (@CKA_ALWAYS_SENSITIVE@/@CKA_NEVER_EXTRACTABLE@)
--- are not in the attribute inventory, so they cannot stamp here:
--- native templates carrying them refuse at the FFI chase and reads
--- report @CKR_ATTRIBUTE_TYPE_INVALID@ (existing boundary behavior).
+-- History attributes never stamp here: only the protection pair
+-- inherits (history derives in the composed derive merge).
+-- Templates carrying history refuse inconsistent at the template
+-- check, and reads report the effective view.
 resolveByteOpsProtection
   :: ByteOpsProtection -> Map AttributeType AttributeValue
   -> Either KeyDeny (Map AttributeType AttributeValue)
@@ -2449,7 +2517,9 @@ withPair st mech wantKey pubT privT argsOf =
         Left deny -> Left deny
         Right (args, pubA', privA') ->
           Right
-            ( PwGeneratePair (pendingFromAttrs st pubA') (pendingFromAttrs st privA')
+            ( PwGeneratePair
+                (pendingFromAttrs st (stampGenerated ckoPublicKey mech pubA'))
+                (pendingFromAttrs st (stampGenerated ckoPrivateKey mech privA'))
             , FxGenerateKey mech BS.empty (encodeGenArgs args)
             )
 
@@ -2964,7 +3034,7 @@ planSweepKeygen st mech label kt lens parity tmpl =
           (label ++ " keygen needs CKA_VALUE_LEN"))
   where
     effect attrs n =
-      ( PwGenerateKey (pendingFromAttrs st attrs)
+      ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
       , FxGenerateKey mech BS.empty (encodeGenArgs (args n))
       )
     args n
@@ -3006,7 +3076,7 @@ planTlsPremaster st mech params tmpl = case BS.unpack params of
     "TLS/SSL3 pre-master needs a 2-byte CK_VERSION")
   where
     effect attrs major minor =
-      ( PwGenerateKey (pendingFromAttrs st attrs)
+      ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
       , FxGenerateKey mech params (encodeGenArgs (GenTlsPremaster major minor))
       )
 
@@ -3033,7 +3103,7 @@ planWtlsPremaster st mech params tmpl = case BS.unpack params of
     "WTLS pre-master needs a 1-byte version")
   where
     effect attrs ver n =
-      ( PwGenerateKey (pendingFromAttrs st attrs)
+      ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
       , FxGenerateKey mech params (encodeGenArgs (GenWtlsPremaster ver n))
       )
 
@@ -3096,7 +3166,7 @@ planPbkd2Gen st mech params tmpl = case decodePbkd2Params params of
       | wantKey == ckkAesXts = "the XTS 32/64 domain"
       | otherwise = "1 to " ++ show pbkd2KeygenMaxBytes ++ " bytes"
     effect attrs n =
-      ( PwGenerateKey (pendingFromAttrs st attrs)
+      ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
       , FxGenerateKey mech params (encodeGenArgs (GenPbkd2 n))
       )
 
@@ -3143,11 +3213,11 @@ planPbeGen st mech params tmpl = case pbeRecipeFor mech of
       keyLen = pbeKeyLen (pbeKind r)
       effect attrs
         | pbeIvLen (pbeKind r) > 0 =
-            ( PwGenerateKeyIv (pendingFromAttrs st attrs) keyLen
+            ( PwGenerateKeyIv (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs)) keyLen
             , FxGenerateKey mech params (encodeGenArgs (GenPbe keyLen))
             )
         | otherwise =
-            ( PwGenerateKey (pendingFromAttrs st attrs)
+            ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
             , FxGenerateKey mech params (encodeGenArgs (GenPbe keyLen))
             )
 
@@ -3219,6 +3289,8 @@ planGenerateKey rules model st mech params tmpl =
       | mech == dsaParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkDsa tmpl of
           Left deny -> Left deny
+          -- Domain parameters are not keys: no protection or
+          -- history rows are stamped (pending carries over verbatim).
           Right attrs -> case dsaParamSizes attrs of
             Left deny -> Left deny
             Right (l, n) -> Right
@@ -3235,6 +3307,7 @@ planGenerateKey rules model st mech params tmpl =
       | mech == x9_42DhParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkX9_42Dh tmpl of
           Left deny -> Left deny
+          -- Not keys: no protection or history rows are stamped.
           Right attrs -> case dhParamSizes attrs of
             Left deny -> Left deny
             Right (l, n) -> Right
@@ -3249,6 +3322,7 @@ planGenerateKey rules model st mech params tmpl =
       | mech == dhPkcsParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkDh tmpl of
           Left deny -> Left deny
+          -- Not keys: no protection or history rows are stamped.
           Right attrs -> case dhPkcsParamSizes attrs of
             Left deny -> Left deny
             Right (l, n) -> Right
@@ -3260,7 +3334,7 @@ planGenerateKey rules model st mech params tmpl =
           Right attrs -> case Map.lookup AttrValueLen attrs of
             Just (ValULong n)
               | n `elem` [16, 24, 32] -> Right
-                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
                   , FxGenerateKey mech BS.empty (encodeGenArgs (GenAes (fromIntegral n)))
                   )
               | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
@@ -3274,7 +3348,7 @@ planGenerateKey rules model st mech params tmpl =
           Right attrs -> case Map.lookup AttrValueLen attrs of
             Just (ValULong n)
               | n `elem` [16, 24] -> Right
-                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
                   , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes (fromIntegral n)))
                   )
               | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
@@ -3286,7 +3360,7 @@ planGenerateKey rules model st mech params tmpl =
             -- variant explicitly). Fixed-size keygen defaults where
             -- the size is natural; AES keeps its required length.
             Nothing -> Right
-              ( PwGenerateKey (pendingFromAttrs st attrs)
+              ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
               , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes 24))
               )
       | mech == hotpKeyGenMech = case checkKeyTemplate ckoSecretKey ckkHotp tmpl of
@@ -3294,7 +3368,7 @@ planGenerateKey rules model st mech params tmpl =
           Right attrs -> case Map.lookup AttrValueLen attrs of
             Just (ValULong n)
               | n >= fromIntegral hotpKeygenMinBytes && n <= fromIntegral hotpKeygenMaxBytes -> Right
-                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
                   , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes (fromIntegral n)))
                   )
               | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
@@ -3324,7 +3398,7 @@ planGenerateKey rules model st mech params tmpl =
           Right attrs -> case Map.lookup AttrValueLen attrs of
             Just (ValULong n)
               | n == 32 -> Right
-                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
                   , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes 32))
                   )
               | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
@@ -3339,7 +3413,7 @@ planGenerateKey rules model st mech params tmpl =
           Right attrs -> case Map.lookup AttrValueLen attrs of
             Just (ValULong n)
               | n >= fromIntegral genericSecretKeygenMinBytes && n <= fromIntegral genericSecretKeygenMaxBytes -> Right
-                  ( PwGenerateKey (pendingFromAttrs st attrs)
+                  ( PwGenerateKey (pendingFromAttrs st (stampGenerated ckoSecretKey mech attrs))
                   , FxGenerateKey mech BS.empty (encodeGenArgs (GenBytes (fromIntegral n)))
                   )
               | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
@@ -3535,7 +3609,8 @@ withWrapTarget model st h = case resolveHandle model h of
   Just ost
     | not (objectVisible st ost) -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
         "target not visible in this session")
-    | Map.lookup AttrExtractable (osAttrs ost) /= Just (ValBool True) ->
+    | Map.lookup AttrExtractable (effectiveAttrs (osAttrs ost))
+        /= Just (ValBool True) ->
         Left (KeyDeny CKR_KEY_UNEXTRACTABLE "target is not extractable")
     | otherwise -> case keyBytesOf ost of
         Just mat -> Right mat
@@ -3749,7 +3824,7 @@ planRsaUnwrapKey rules model st mech params wrapH blob tmpl =
                   | mech == rsaX509Mech -> case Map.lookup AttrValueLen attrs of
                       Just (ValULong n)
                         | n >= 1 && fromIntegral n <= k -> Right
-                            ( PwUnwrapTail (pendingFromAttrs st attrs) k (fromIntegral n)
+                            ( PwUnwrapTail (pendingFromAttrs st (stampUnwrapped attrs)) k (fromIntegral n)
                             , FxUnwrap mech (Just wrapOid) params blob
                             )
                         | otherwise -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
@@ -3759,7 +3834,7 @@ planRsaUnwrapKey rules model st mech params wrapH blob tmpl =
                       Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
                         "X.509 unwrap needs CKA_VALUE_LEN")
                   | otherwise -> Right
-                      ( PwUnwrapRaw (pendingFromAttrs st attrs)
+                      ( PwUnwrapRaw (pendingFromAttrs st (stampUnwrapped attrs))
                       , FxUnwrap mech (Just wrapOid) params blob
                       )
 
@@ -3853,7 +3928,7 @@ planAesUnwrapKey rules model st mech iv wrapH blob tmpl =
           Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
             Left deny -> Left deny
             Right attrs -> Right
-              ( PwUnwrap (pendingFromAttrs st attrs)
+              ( PwUnwrap (pendingFromAttrs st (stampUnwrapped attrs))
               , FxUnwrap mech (Just wrapOid) iv blob
               )
 
@@ -3892,7 +3967,7 @@ planAesKwUnwrapKey rules model st mech params wrapH blob tmpl =
           Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
             Left deny -> Left deny
             Right attrs -> Right
-              ( PwUnwrapRaw (pendingFromAttrs st attrs)
+              ( PwUnwrapRaw (pendingFromAttrs st (stampUnwrapped attrs))
               , FxUnwrap mech (Just wrapOid) params blob
               )
 
@@ -3992,7 +4067,7 @@ planAesKwPkcs7UnwrapKey rules model st mech params wrapH blob tmpl =
           Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
             Left deny -> Left deny
             Right attrs -> Right
-              ( PwUnwrapPad8 (pendingFromAttrs st attrs)
+              ( PwUnwrapPad8 (pendingFromAttrs st (stampUnwrapped attrs))
               , FxUnwrap mech (Just wrapOid) params blob
               )
 
@@ -4110,7 +4185,7 @@ planEcdhCompUnwrapKey rules model st mech params wrapH blob tmpl =
                     Just _ -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
                       Left deny -> Left deny
                       Right attrs -> Right
-                        ( PwUnwrapRaw (pendingFromAttrs st attrs)
+                        ( PwUnwrapRaw (pendingFromAttrs st (stampUnwrapped attrs))
                         , FxUnwrap mech (Just wrapOid) params blob
                         )
               _ -> Left (KeyDeny CKR_ARGUMENTS_BAD
@@ -4224,7 +4299,7 @@ planRsaCompUnwrapKey rules model st mech params wrapH blob tmpl =
                     Just _ -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
                       Left deny -> Left deny
                       Right attrs -> Right
-                        ( PwUnwrapRaw (pendingFromAttrs st attrs)
+                        ( PwUnwrapRaw (pendingFromAttrs st (stampUnwrapped attrs))
                         , FxUnwrap mech (Just wrapOid) params blob
                         )
               -- Unreachable post-validation; typed, never a crash.
@@ -4308,6 +4383,6 @@ planAuthUnwrapKey rules model st mech iv wrapH blob aad tmpl =
           Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
             Left deny -> Left deny
             Right attrs -> Right
-              ( PwUnwrap (pendingFromAttrs st attrs)
+              ( PwUnwrap (pendingFromAttrs st (stampUnwrapped attrs))
               , FxAuthUnwrap mech (Just wrapOid) (encodeWrapParams iv aad) blob
               )

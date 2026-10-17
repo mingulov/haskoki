@@ -80,10 +80,10 @@ OpenSC junction for every leg; each leg is its own process.
 | `opensc-refuse-init-token-busy` | `--init-token` while sessions are open | nonzero exit; `CKR_SESSION_EXISTS` surfaces | TO-QUALIFY (contract: [walkthrough](demo-walkthrough.md#token-provisioning-and-state)) |
 
 Attribute warnings are known and stay explicit: OpenSC may report
-`CKR_ATTRIBUTE_TYPE_INVALID` while inspecting `LOCAL`, `DERIVE`,
-`VERIFY_RECOVER`, `SIGN_RECOVER`, `EXTRACTABLE`, `NEVER_EXTRACTABLE`,
-or `ALWAYS_AUTHENTICATE` (also listed in
-[try-it.md](try-it.md#when-something-fails)). Key creation and
+`CKR_ATTRIBUTE_TYPE_INVALID` while inspecting `DERIVE`,
+`VERIFY_RECOVER`, `SIGN_RECOVER`, or `ALWAYS_AUTHENTICATE` (also
+listed in [try-it.md](try-it.md#when-something-fails)). `LOCAL`,
+`EXTRACTABLE` and `NEVER_EXTRACTABLE` now read. Key creation and
 signature checks must still succeed; the warnings never become a
 silent skip.
 

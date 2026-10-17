@@ -15,7 +15,7 @@ module Haskoki.Client.Raw
     -- * Constants from the header
   , ckaClass, ckaKeyType, ckaToken, ckaPrivate, ckaLabel
   , ckaEncrypt, ckaDecrypt, ckaSign, ckaVerify, ckaDerive
-  , ckaExtractable, ckaValue, ckaValueLen, ckaEcParams
+  , ckaSensitive, ckaExtractable, ckaValue, ckaValueLen, ckaEcParams
   , ckoSecretKey, ckoPublicKey, ckoPrivateKey
   , ckkAes, ckkGenericSecret, ckkEc
   , ckmSha256, ckmAesKeyGen, ckmAesCbcPad, ckmGenericSecretKeyGen
@@ -121,7 +121,8 @@ ckaSign = #{const CKA_SIGN}
 ckaVerify = #{const CKA_VERIFY}
 ckaDerive = #{const CKA_DERIVE}
 
-ckaExtractable, ckaValue, ckaValueLen, ckaEcParams :: Word64
+ckaSensitive, ckaExtractable, ckaValue, ckaValueLen, ckaEcParams :: Word64
+ckaSensitive = #{const CKA_SENSITIVE}
 ckaExtractable = #{const CKA_EXTRACTABLE}
 ckaValue = #{const CKA_VALUE}
 ckaValueLen = #{const CKA_VALUE_LEN}

@@ -23,8 +23,8 @@ import Test.Tasty.HUnit
 
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
-   PartialReads (..), decodeValue, getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
+   PartialReads (..), decodeValue, encodeValue, getAttributes)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, slhdsaCkpOfOid, slhdsaPkcs8Fields, slhdsaSpkiFields, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DhSpec (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KemSpec (..), KeyMaterial (..), PqcKemAlg (..), PqcSigAlg (..), SigSpec (..))
@@ -33,9 +33,9 @@ import Haskoki.FFI.Standard (ecParamsFromWire, ecParamsToWire)
 import Haskoki.Model
   (Model, ObjectState (..), SessionState, addToken, emptyModel,
    lookupSession)
-import Haskoki.Object (decodeHandle, planCreateObject, planGetAttributes, resolveHandle)
+import Haskoki.Object (decodeHandle, planCreateObject, planFindObjects, planGetAttributes, resolveHandle)
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkEcMontgomery, ckkMlDsa, ckkMlKem, ckkRsa, ckkX9_42Dh)
+  (ckoPrivateKey, ckoPublicKey, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkEcMontgomery, ckkMlDsa, ckkMlKem, ckkRsa, ckkSlhDsa, ckkX9_42Dh)
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -101,6 +101,9 @@ spec = testGroup "key import"
   , testCase "bad ML-KEM value refuses inconsistent" caseBadMlkemValue
   , testCase "non-canonical ML-KEM ek refuses value-invalid" caseMlkemModulus
   , testCase "imported ML-KEM keys encapsulate through the real backend" caseMlkemExecutes
+  , testCase "ML-DSA seed seals with the payload" caseMldsaSeedSeals
+  , testCase "ML-KEM seed seals with the payload" caseMlkemSeedSeals
+  , testCase "SLH-DSA seed seals with the payload" caseSlhdsaSeedSeals
   ]
 
 slot0 :: SlotId
@@ -167,6 +170,48 @@ expectReject want res = case res of
   Reject rej -> assertEqual "reject code" want (rejCode rej)
   Immediate _ -> assertFailure "must reject, created"
   Execute _ _ -> assertFailure "must reject, executed"
+
+-- | Find handles matching a template; fail unless the find commits.
+doFind :: Model -> SessionState -> [(AttributeType, AttributeValue)]
+  -> IO [ExternalHandle]
+doFind m st tmpl = case planFindObjects m st tmpl of
+  Immediate c -> mapM handleOf (pcOutputs c)
+  Reject rej -> assertFailure ("find must commit, got: " ++ show (rejCode rej)) >> undefined
+  Execute _ _ -> assertFailure "find must not execute" >> undefined
+
+-- | One sealed-seed leg: import the seeded private template with the
+-- given protection flags, then the seed read refuses sensitive with
+-- no bytes and a find by the true seed matches nothing.
+seedSealedLeg :: String -> [(AttributeType, AttributeValue)] -> ByteString -> IO ()
+seedSealedLeg name tmpl seed = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h, _) <- doCreate m0 st tmpl
+  case planGetAttributes m1 st h [AttrSeed] of
+    Reject rej -> do
+      assertEqual ("seed read refused: " ++ name) CKR_ATTRIBUTE_SENSITIVE (rejCode rej)
+      assertEqual ("no seed bytes escape: " ++ name) [] (rejOutputs rej)
+    Immediate _ -> assertFailure ("seed read must refuse: " ++ name)
+    Execute _ _ -> assertFailure ("seed read must not execute: " ++ name)
+  hits <- doFind m1 st [(AttrSeed, ValBytes seed)]
+  assertEqual ("seed guess matches nothing: " ++ name) [] hits
+
+-- | The open-seed control: on an extractable non-sensitive key the
+-- seed reads back and a find by the true seed hits exactly it.
+seedOpenLeg :: String -> [(AttributeType, AttributeValue)] -> ByteString -> IO ()
+seedOpenLeg name tmpl seed = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h, _) <- doCreate m0 st tmpl
+  case planGetAttributes m1 st h [AttrSeed] of
+    Immediate pc -> do
+      assertEqual ("seed read code: " ++ name) CKR_OK (pcCode pc)
+      assertEqual ("seed reads back: " ++ name)
+        [encodeValue (ValBytes seed)] (map outBytes (pcOutputs pc))
+    Reject rej -> assertFailure ("seed read must commit: " ++ name ++ ", got: " ++ show (rejCode rej))
+    Execute _ _ -> assertFailure ("seed read must not execute: " ++ name)
+  hits <- doFind m1 st [(AttrSeed, ValBytes seed)]
+  assertEqual ("seed find hits: " ++ name) [h] hits
 
 rsaPrivTmpl :: [(AttributeType, AttributeValue)]
 rsaPrivTmpl =
@@ -662,13 +707,17 @@ casePublicValueReads = do
           _ -> assertFailure "read outputs arity" >> undefined
         Reject rej -> assertFailure ("read rejected: " ++ show (rejCode rej)) >> undefined
         Execute _ _ -> assertFailure "read must not execute" >> undefined
+  -- Public halves read back under bare minimal templates; the
+  -- private half carries an explicit readable mark since absent
+  -- flags report unextractable on private keys.
   (m1, hDh, _) <- doCreate m0 st dhPubTmpl
   vDh <- readValue m1 hDh
   assertEqual "DH pub reads y" (Just (ValBytes dhY)) vDh
   (m2, hDsa, _) <- doCreate m1 st dsaPubTmpl
   vDsa <- readValue m2 hDsa
   assertEqual "DSA pub reads y" (Just (ValBytes dsaY)) vDsa
-  (m3, hPriv, _) <- doCreate m2 st dhPrivTmpl
+  (m3, hPriv, _) <- doCreate m2 st
+    (dhPrivTmpl ++ [(AttrExtractable, ValBool True)])
   vPriv <- readValue m3 hPriv
   assertEqual "DH priv reads DER" (Just (ValBytes dhP8Gold)) vPriv
 
@@ -1675,6 +1724,74 @@ caseMlkemExecutes = withRealEnv $ \env -> do
     EngineOk ss -> pure ss
     EngineFail err -> assertFailure ("imported ML-KEM decaps failed: " ++ show err) >> undefined
   assertEqual "roundtrip secret agrees" ss1 ss2
+
+-- | A sealed ML-DSA private key withholds its seed on read and in
+-- find, under stored sensitive, stored unextractable and flag-less
+-- protection; an open key reads and matches its seed.
+caseMldsaSeedSeals :: IO ()
+caseMldsaSeedSeals = do
+  (oid, _, seed, expanded, _) <- loadMldsaHalves "44"
+  let base = mldsaPrivTmpl oid expanded ++ [(AttrSeed, ValBytes seed)]
+  seedSealedLeg "mldsa/sensitive"
+    (base ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]) seed
+  seedSealedLeg "mldsa/unextractable"
+    (base ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)]) seed
+  seedSealedLeg "mldsa/legacy" base seed
+  seedOpenLeg "mldsa/open"
+    (base ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)]) seed
+
+-- | A sealed ML-KEM private key withholds its seed on read and in
+-- find, under stored sensitive, stored unextractable and flag-less
+-- protection; an open key reads and matches its seed.
+caseMlkemSeedSeals :: IO ()
+caseMlkemSeedSeals = do
+  (oid, _, seed, dk, _) <- loadMlkemHalves "768"
+  let base = mlkemPrivTmpl oid dk ++ [(AttrSeed, ValBytes seed)]
+  seedSealedLeg "mlkem/sensitive"
+    (base ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]) seed
+  seedSealedLeg "mlkem/unextractable"
+    (base ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)]) seed
+  seedSealedLeg "mlkem/legacy" base seed
+  seedOpenLeg "mlkem/open"
+    (base ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)]) seed
+
+loadSlhdsaHalves :: String -> IO (Int, ByteString, ByteString)
+loadSlhdsaHalves tag = do
+  pubDer <- BS.readFile ("tests/fixtures/slhdsa-" ++ tag ++ "-pub.der")
+  privDer <- BS.readFile ("tests/fixtures/slhdsa-" ++ tag ++ "-priv.der")
+  case (slhdsaSpkiFields pubDer, slhdsaPkcs8Fields privDer) of
+    (Just (pubOid, _), Just (privOid, raw))
+      | pubOid == privOid -> case slhdsaCkpOfOid pubOid of
+          Just ckp -> pure (ckp, pubOid, raw)
+          Nothing -> assertFailure ("SLH-DSA fixture set unknown: " ++ tag) >> undefined
+    _ -> assertFailure ("SLH-DSA fixture halves disagree: " ++ tag) >> undefined
+
+slhdsaPrivTmpl :: Word64 -> ByteString -> [(AttributeType, AttributeValue)]
+slhdsaPrivTmpl ckp raw =
+  [ (AttrClass, ValULong ckoPrivateKey)
+  , (AttrKeyType, ValULong ckkSlhDsa)
+  , (AttrToken, ValBool False)
+  , (AttrParameterSet, ValULong ckp)
+  , (AttrValue, ValBytes raw)
+  ]
+
+-- | A sealed SLH-DSA private key withholds its seed on read and in
+-- find, under stored sensitive, stored unextractable and flag-less
+-- protection; an open key reads and matches its seed. The seed is
+-- the first n bytes of the 4n secret, mirroring generation.
+caseSlhdsaSeedSeals :: IO ()
+caseSlhdsaSeedSeals = do
+  (ckp, _, raw) <- loadSlhdsaHalves "sha2-128f"
+  let seed = BS.take (BS.length raw `div` 4) raw
+      base = slhdsaPrivTmpl (fromIntegral ckp) raw ++ [(AttrSeed, ValBytes seed)]
+  assertEqual "slh seed width" 16 (BS.length seed)
+  seedSealedLeg "slhdsa/sensitive"
+    (base ++ [(AttrSensitive, ValBool True), (AttrExtractable, ValBool True)]) seed
+  seedSealedLeg "slhdsa/unextractable"
+    (base ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool False)]) seed
+  seedSealedLeg "slhdsa/legacy" base seed
+  seedOpenLeg "slhdsa/open"
+    (base ++ [(AttrSensitive, ValBool False), (AttrExtractable, ValBool True)]) seed
 
 -- | Montgomery fixtures: CLI-generated X25519/X448 keys (pinned
 -- @openssl genpkey@); the DER goldens are openssl-emitted bytes,
