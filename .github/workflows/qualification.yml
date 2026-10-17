@@ -741,7 +741,8 @@ jobs:
             HASKOKI_DEMO_REVISION="$JOURNEYS_SHA" \
             sh scripts/test-demo-image.sh build 2>&1 \
             | tee "$JOURNEYS_DIR/image-build.log" || JOURNEYS_RC=$?
-          IMG="$(docker image inspect --format '{{.Id}}' "$IMG_TAG")" || IMG=""
+          IMG="$(docker image inspect --format '{{.Id}}' "$IMG_TAG")" \
+            || { echo "image inspect failed for $IMG_TAG"; IMG=""; }
           if [ -n "$IMG" ]; then
             MODULE_RC=0
             docker run --rm --network none \
