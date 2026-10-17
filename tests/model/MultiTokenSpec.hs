@@ -10,7 +10,7 @@ dedicated temp file (never the default store).
 -}
 module MultiTokenSpec (spec) where
 
-import Control.Exception (bracket)
+import Control.Exception (IOException, bracket, try)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (chr, ord)
@@ -24,9 +24,13 @@ import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr, newStablePtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (getTemporaryDirectory, removeFile)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory
+  ( createDirectory
+  , getTemporaryDirectory
+  , removeDirectoryRecursive
+  )
 import System.FilePath ((</>))
-import System.IO.Error (tryIOError)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
@@ -179,6 +183,29 @@ withCatalogInstance :: (StablePtr StdInstance -> IO a) -> IO a
 withCatalogInstance action = do
   cfg <- loadFixtureConfig
   withConfigInstance cfg action
+
+-- | A fresh private directory under the temp root, removed on exit
+-- (concurrent suite instances must never share a store path).
+withPrivateDir :: (FilePath -> IO a) -> IO a
+withPrivateDir = bracket create (\d -> try' (removeDirectoryRecursive d))
+  where
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base </> ("haskoki-multitoken-" ++ show t ++ "-" ++ show n)
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+    try' :: IO () -> IO ()
+    try' act = do
+      _ <- (try act :: IO (Either IOException ()))
+      pure ()
 
 -- | Open one read/write session on the given slot (fails unless OK).
 openSession :: StablePtr StdInstance -> CULong -> IO CULong
@@ -486,11 +513,8 @@ caseSeatBoundRefuses = do
 -- first open and serves all three again after reopen (dedicated
 -- temp store path, never the default store).
 caseSqliteRoundTrip :: IO ()
-caseSqliteRoundTrip = do
-  base <- getTemporaryDirectory
-  let dbPath = base </> "haskoki-multitoken.sqlite"
-  _ <- tryIOError (removeFile dbPath)
-  _ <- tryIOError (removeFile (dbPath ++ ".lock"))
+caseSqliteRoundTrip = withPrivateDir $ \dir -> do
+  let dbPath = dir </> "multitoken.sqlite"
   cfg <- loadFixtureConfig
   let sqliteCfg = cfg
         { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True }
@@ -513,9 +537,6 @@ caseSqliteRoundTrip = do
       assertEqual "reopen three slots" 3 nQuery
     l1 <- readLabel inst (CULong 1)
     assertEqual "reopen slot-1 label" (padded "haskoki-ops") l1
-  _ <- tryIOError (removeFile dbPath)
-  _ <- tryIOError (removeFile (dbPath ++ ".lock"))
-  pure ()
 
 -- | A 3-token store reopened under a home-only
 -- config must NOT serve the stale extra slots with home-fallback
@@ -523,11 +544,8 @@ caseSqliteRoundTrip = do
 -- reopen fails (the served count is captured in the failure
 -- message as the defect evidence).
 caseCatalogShrinkRefused :: IO ()
-caseCatalogShrinkRefused = do
-  base <- getTemporaryDirectory
-  let dbPath = base </> "haskoki-catalog-shrink.sqlite"
-  _ <- tryIOError (removeFile dbPath)
-  _ <- tryIOError (removeFile (dbPath ++ ".lock"))
+caseCatalogShrinkRefused = withPrivateDir $ \dir -> do
+  let dbPath = dir </> "catalog-shrink.sqlite"
   cfg <- loadFixtureConfig
   let sqliteCfg = cfg
         { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True }
@@ -543,10 +561,7 @@ caseCatalogShrinkRefused = do
   inst2 <- openStdInstance homeCfg
   let refused = castStablePtrToPtr inst2 == nullPtr
   if refused
-    then do
-      _ <- tryIOError (removeFile dbPath)
-      _ <- tryIOError (removeFile (dbPath ++ ".lock"))
-      pure ()
+    then pure ()
     else do
       nStale <- alloca $ \(pCount :: Ptr CULong) -> do
         poke pCount (CULong 0)
@@ -554,8 +569,6 @@ caseCatalogShrinkRefused = do
         CULong n <- peek pCount
         pure n
       haskokiStdClose inst2
-      _ <- tryIOError (removeFile dbPath)
-      _ <- tryIOError (removeFile (dbPath ++ ".lock"))
       assertBool ("shrunk-catalog reopen served stale slots: " ++ show nStale)
         False
 
@@ -835,11 +848,8 @@ caseReinitSessionsRefuse =
 -- (0x102). Dedicated temp store path, never the default
 -- store.
 caseReinitLockedSoRecovery :: IO ()
-caseReinitLockedSoRecovery = do
-  base <- getTemporaryDirectory
-  let dbPath = base </> "haskoki-reinit-locked.sqlite"
-  _ <- tryIOError (removeFile dbPath)
-  _ <- tryIOError (removeFile (dbPath ++ ".lock"))
+caseReinitLockedSoRecovery = withPrivateDir $ \dir -> do
+  let dbPath = dir </> "reinit-locked.sqlite"
   cfg <- loadFixtureConfig
   let sqliteCfg = cfg
         { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True }
@@ -872,6 +882,3 @@ caseReinitLockedSoRecovery = do
     assertEqual "user PIN uninitialized" (CULong 0x102) rvUser
     rvClose <- haskokiStdCloseSession inst r0
     assertEqual "session closes" (CULong 0) rvClose
-  _ <- tryIOError (removeFile dbPath)
-  _ <- tryIOError (removeFile (dbPath ++ ".lock"))
-  pure ()
