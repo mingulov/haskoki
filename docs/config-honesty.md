@@ -8,6 +8,9 @@ Each accepted setting is enforced, refused for unsupported values, or
 reserved. Reserved values parse and appear in reports but do not change the
 behavior described below. Unknown keys and sections return `CfgUnknownKey`.
 Invalid values return `CfgInvalid`; configuration errors stop the open.
+The file is read strictly as bytes and decoded explicitly as UTF-8
+regardless of the process locale; undecodable bytes answer
+`CfgInvalid`, never an exception.
 
 ## Accepted settings (44 keys)
 
@@ -56,9 +59,9 @@ Invalid values return `CfgInvalid`; configuration errors stop the open.
 | `sim.token_script` | E | runs in the private local scenario owner at scenario start | `SimBridgeSpec` script-ran | insert/remove slot list, slots 0..0xFFFFFFFF (scenario; runner seating script) |
 | `sim.fault_window_start` | E | seeds the fault window | `SimBridgeSpec` fault windows | seeds the runner fault window (scenario only) |
 | `sim.fault_window_ticks` | E | fault window length | `SimBridgeSpec` fault windows | sizes the runner fault window 0..1000000 (scenario only) |
-| `tokens.labels` | E | catalog seating + served labels | `MultiTokenSpec` labels + `ConfigSpec` catalog validation | label list, at most 16, headed haskoki-demo (native; catalog seating) |
-| `tokens.so_pins` | E | per-slot SO auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` SO per-slot | per-slot SO PIN, 4..32 bytes (native; login auth) |
-| `tokens.user_pins` | E | per-slot user auth; on SQLite it seeds a new token only, and the stored credential row wins after | `MultiTokenSpec` per-slot PINs | per-slot user PIN, 4..32 bytes (native; login auth) |
+| `tokens.labels` | E | catalog seating + served labels; labels must be ASCII (a non-ASCII label refuses the whole config at load with `CfgInvalid`) | `MultiTokenSpec` labels + `ConfigSpec` catalog validation | ASCII label list, at most 16, headed haskoki-demo (native; catalog seating) |
+| `tokens.so_pins` | E | per-slot SO auth; on SQLite it seeds a new token only, and the stored credential row wins after; PINs must be ASCII (a non-ASCII PIN refuses the whole config at load with `CfgInvalid`) | `MultiTokenSpec` SO per-slot | per-slot ASCII SO PIN, 4..32 bytes (native; login auth) |
+| `tokens.user_pins` | E | per-slot user auth; on SQLite it seeds a new token only, and the stored credential row wins after; PINs must be ASCII (a non-ASCII PIN refuses the whole config at load with `CfgInvalid`) | `MultiTokenSpec` per-slot PINs | per-slot ASCII user PIN, 4..32 bytes (native; login auth) |
 | `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity, and the public token serial is that identity in 16 lowercase hex digits | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) | serial is the 16-character TokenId (native TokenInfo, slot-independent); config PINs seed fresh stores only, durable credentials win after |
 
 Sections (9): `storage`, `engine`, `async`, `trace`, `control`,

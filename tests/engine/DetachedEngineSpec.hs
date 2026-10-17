@@ -49,7 +49,7 @@ import Haskoki.FFI.Async
   ( AsyncCtx (..)
   , AsyncData
   , JobHandle
-  , StoreBox
+  , StoreBox (..)
   , asyncLiveHandles
   , haskokiAsyncClose
   , haskokiAsyncComplete
@@ -152,6 +152,7 @@ import Haskoki.Runtime.Lifecycle
   ( Env
   , defaultInitArgs
   , initialize
+  , invalidateSession
   , newEnv
   , publish
   , restoreStoreState
@@ -207,6 +208,7 @@ spec envLock = testGroup "Detached engine"
   , testCase "FFI detach: get_id, close, reopen, join, KAT" (caseFfiDetachRejoin envLock)
   , testCase "FFI detach without a store fails typed" (caseFfiNoStore envLock)
   , testCase "FFI join refusals are typed" (caseFfiJoinRefusals envLock)
+  , testCase "FFI poll failure resolves failed" (caseFfiPollFailed envLock)
   , testCase "caseAsyncJoinBoundary" (caseAsyncJoinBoundary envLock)
   , testCase "caseAsyncReadyJoinCapacity" (caseAsyncReadyJoinCapacity envLock)
   , testCase "caseAsyncOpaqueSurface" (caseAsyncOpaqueSurface envLock)
@@ -1009,6 +1011,59 @@ caseFfiJoinRefusals envLock = do
   assertEqual "retry joins" rvPending rvJoin
   assertEqual "joined live" True (isLiveStable job2)
   closeCtxSlot ctx
+  closeBoxSlot box
+
+-- A joined job that fails on FFI poll resolves failed: the poll
+-- returns the general error and marks the durable record failed, a
+-- join from another context sees failed (not active), and after the
+-- owner's close a later join still sees failed (not canceled).
+caseFfiPollFailed :: MVar () -> IO ()
+caseFfiPollFailed envLock = do
+  box <- haskokiAsyncStoreOpen nullPtr
+  assertEqual "store opens" True (isLiveStable box)
+  ctxA <- withEnvLock envLock (haskokiAsyncOpenOn box)
+  ctxB <- withEnvLock envLock (haskokiAsyncOpenOn box)
+  sessA <- ctxSession ctxA
+  sessB <- ctxSession ctxB
+  rvInitA <- ffiDigestInit ctxA sessA
+  assertEqual "init A ok" rvOK rvInitA
+  rvInitB <- ffiDigestInit ctxB sessB
+  assertEqual "init B ok" rvOK rvInitB
+  (rvStart, job0) <- ffiStartDigest ctxA sessA "abc" 32 1
+  assertEqual "start pending" rvPending rvStart
+  pid <- alloca $ \pidOut -> do
+    rv <- haskokiAsyncGetId ctxA job0 2 pidOut
+    assertEqual "get_id ok" rvOK rv
+    peek pidOut
+  jobA <- alloca $ \hSlot -> alloca $ \needOut -> do
+    poke hSlot nullStable
+    rv <- haskokiAsyncJoin ctxA (CULong pid) 2 sessA 32 hSlot needOut
+    assertEqual "join A pending" rvPending rv
+    peek hSlot
+  cA <- deRefStablePtr ctxA
+  invalidateSession (acEnv cA) (acSession cA)
+  rvPoll <- haskokiAsyncPoll ctxA jobA 2
+  assertEqual "poll fails general" rvGeneral rvPoll
+  rvJoinB <- alloca $ \hSlot -> alloca $ \needOut -> do
+    poke hSlot nullStable
+    haskokiAsyncJoin ctxB (CULong pid) 2 sessB 32 hSlot needOut
+  assertEqual "other context sees failed, not active" rvGeneral rvJoinB
+  boxRec <- deRefStablePtr box
+  jobs <- loadJobs (sbStore boxRec)
+  case [r | r <- jobs, jrPersistentId r == pid] of
+    [rec] -> assertEqual "durable failed" JobFailed (jrState rec)
+    other -> assertFailure ("expected one record, got " ++ show other)
+  closeCtxSlot ctxA
+  ctxC <- withEnvLock envLock (haskokiAsyncOpenOn box)
+  sessC <- ctxSession ctxC
+  rvInitC <- ffiDigestInit ctxC sessC
+  assertEqual "init C ok" rvOK rvInitC
+  rvJoinC <- alloca $ \hSlot -> alloca $ \needOut -> do
+    poke hSlot nullStable
+    haskokiAsyncJoin ctxC (CULong pid) 2 sessC 32 hSlot needOut
+  assertEqual "later join sees failed, not canceled" rvGeneral rvJoinC
+  closeCtxSlot ctxB
+  closeCtxSlot ctxC
   closeBoxSlot box
 
 -- Provider reinit reloads token metadata and token objects from the

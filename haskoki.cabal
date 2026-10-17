@@ -532,6 +532,7 @@ test-suite haskoki-model-tests
     filepath    >= 1.4  && < 1.6,
     haskoki,
     haskoki:haskoki-core,
+    process     >= 1.6  && < 1.7,
     stm         >= 2.5  && < 2.6,
     tasty       >= 1.4  && < 1.6,
     tasty-hunit >= 0.10 && < 0.11,

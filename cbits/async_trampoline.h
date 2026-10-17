@@ -34,7 +34,7 @@
 /* Opaque caller-owned context (a Haskell StablePtr, never dereferenced). */
 typedef void *haskoki_async_ctx_t;
 
-/* Opaque native job token (a Haskell StablePtr, never dereferenced). */
+/* Opaque native job token (a salted table key, never dereferenced). */
 typedef void *haskoki_async_job_t;
 
 /* Opaque process-level store (a Haskell StablePtr, never

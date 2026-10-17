@@ -269,9 +269,13 @@ passes. Client-facing refusal pins beyond the per-client legs above:
   an unavailable length and the caller buffer untouched
   ([certificate-objects.md](certificate-objects.md)).
 - Wrong credentials count down per-role retries to `CKR_PIN_LOCKED`;
-  a second concurrent SQLite owner refuses `C_Initialize`;
-  finalize needs zero open sessions
+  a second concurrent SQLite owner refuses `C_Initialize`
   ([walkthrough](demo-walkthrough.md#token-provisioning-and-state)).
+  `C_Finalize` closes every open session, cancels the PKCS#11
+  surface's attached jobs, retires still-live joined attachments as
+  canceled (best effort; already-terminal ones keep their fate),
+  keeps detached idle records, and never stops the RTS.
+  Caller-owned native async contexts are unaffected.
 - Out-of-range inputs refuse at the planner floor (for example the
   AES-GCM generated-IV shape and off-list tag widths in
   [journey-aead.md](journey-aead.md)); tampered sealed bytes and

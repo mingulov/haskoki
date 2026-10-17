@@ -19,7 +19,9 @@ PKCS#11.
 
 Creation stamps explicit values: a missing class is incomplete,
 a missing key type defaults to the mechanism's key, usage flags
-default to true on the strict key-template path, and the
+default to true on the strict key-template path (except
+CKA_DERIVE, which defaults to false per the PKCS#11 common key
+attributes table), and the
 protection pair stamps per class (non-sensitive and unextractable
 on private and secret keys, non-sensitive and extractable on
 public keys; unwrapped keys stamp extractable). Generated keys
@@ -1841,7 +1843,9 @@ checkKeyTemplate wantClass wantKey tmpl
 -- | Generation-time usage defaults: absent operation flags
 -- default TRUE on the strict key-template path (single/pair
 -- generation and KEM outputs), so minimal templates mint usable
--- keys; explicit values — including FALSE — always win
+-- keys — except @CKA_DERIVE@, which defaults FALSE per the
+-- PKCS#11 common key attributes table (derivation is opt-in);
+-- explicit values — including FALSE — always win
 -- (left-biased union). Defaults follow the object class: public
 -- keys default the public operations (encrypt\/verify\/wrap\/
 -- encapsulate), private and secret keys the full set (a private
@@ -1858,13 +1862,23 @@ checkKeyTemplate wantClass wantKey tmpl
 defaultUsage :: Word64 -> Word64 -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 defaultUsage wantClass wantKey attrs = Map.union attrs defaults
   where
-    defaults = Map.fromList [(t, ValBool True) | t <- usageFlags, t `notElem` forbidden]
+    defaults = Map.fromList (trueDefaults ++ deriveDefault)
+    trueDefaults = [(t, ValBool True) | t <- usageFlags, t `notElem` forbidden]
+    -- CKA_DERIVE defaults FALSE on every key class (the PKCS#11
+    -- default): derivation is opt-in. Forbidden stays absent (a
+    -- stored value, even false, would poison presence-based
+    -- re-validation); non-key classes take no default.
+    deriveDefault
+      | keyClassWanted && AttrDerive `notElem` forbidden = [(AttrDerive, ValBool False)]
+      | otherwise = []
+    keyClassWanted =
+      wantClass == ckoPublicKey || wantClass == ckoPrivateKey || wantClass == ckoSecretKey
     usageFlags
       | wantClass == ckoPublicKey =
           [AttrEncrypt, AttrVerify, AttrWrap, AttrEncapsulate]
       | wantClass == ckoPrivateKey || wantClass == ckoSecretKey =
           [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
-          , AttrWrap, AttrUnwrap, AttrDerive
+          , AttrWrap, AttrUnwrap
           , AttrEncapsulate, AttrDecapsulate
           ]
       | otherwise = []
@@ -2539,9 +2553,10 @@ withPair st mech wantKey pubT privT argsOf =
 -- absent (or explicit-false) stamps false — the oracle's
 -- derive-false leg reads the value back, and only an explicit
 -- false passes (a missing attribute records a deviation).
--- Inspects the RAW template: by tag time 'defaultUsage' has
--- already defaulted the flag true. (Not a forbidden rule: a
--- stored false would poison presence-based re-validation.)
+-- Inspects the RAW template (equivalent to the defaulted map:
+-- an explicit true survives defaulting; absent and false both
+-- stamp false). (Not a forbidden rule: a stored false would
+-- poison presence-based re-validation.)
 kemNoDerive
   :: [(AttributeType, AttributeValue)] -> Map AttributeType AttributeValue
   -> Either KeyDeny (Map AttributeType AttributeValue)

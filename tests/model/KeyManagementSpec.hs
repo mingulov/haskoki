@@ -454,7 +454,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real DSA params generate with readback" caseRealDsaParamgen
   , testCase "Real DSA keypair generates and signs" caseRealDsaKeygen
   , testCase "Real DH keypairs generate and agree" caseRealDhKeygen
-  , testCase "Keygen defaults absent usage flags true" caseKeygenUsageDefaults
+  , testCase "Keygen defaults absent usage flags (derive false)" caseKeygenUsageDefaults
+  , testCase "Generated keys default CKA_DERIVE to false" caseDeriveDefaultsFalse
   , testCase "Real P-384 keypair generates and signs" caseRealEcKeygen384
   , testCase "Real P-521 keypair generates and signs" caseRealEcKeygen521
   , testCase "Real wrap matches SP 800-38A and round-trips" caseRealWrapVector
@@ -2954,7 +2955,9 @@ caseKeygenUsageDefaults = do
   -- Minimal templates (the oracle's DSA leg shape: p/q/g only, empty
   -- private side) mint keys whose absent usage flags read TRUE,
   -- scoped by class: public keys default the public operations,
-  -- private keys the full set, domain parameters none.
+  -- private keys the full set, domain parameters none — except
+  -- CKA_DERIVE, which defaults FALSE per the PKCS#11 common key
+  -- attributes table (derivation is opt-in).
   let minimal =
         [ (AttrClass, ValULong ckoPublicKey)
         , (AttrPrime, ValBytes dsaP)
@@ -2970,16 +2973,21 @@ caseKeygenUsageDefaults = do
       mapM_
         (\t -> assertEqual ("pub skips " ++ show t) Nothing
           (Map.lookup t attrs))
-        [AttrDecrypt, AttrSign, AttrUnwrap, AttrDerive, AttrDecapsulate]
+        [AttrDecrypt, AttrSign, AttrUnwrap, AttrDecapsulate]
+      assertEqual "pub derive defaults false" (Just (ValBool False))
+        (Map.lookup AttrDerive attrs)
     Left deny -> assertFailure ("minimal template must check: " ++ show deny)
   case checkKeyTemplate ckoPrivateKey ckkDsa [(AttrClass, ValULong ckoPrivateKey)] of
-    Right attrs -> mapM_
-      (\t -> assertEqual ("priv default " ++ show t) (Just (ValBool True))
-        (Map.lookup t attrs))
-      [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
-      , AttrWrap, AttrUnwrap, AttrDerive
-      , AttrEncapsulate, AttrDecapsulate
-      ]
+    Right attrs -> do
+      mapM_
+        (\t -> assertEqual ("priv default " ++ show t) (Just (ValBool True))
+          (Map.lookup t attrs))
+        [ AttrEncrypt, AttrDecrypt, AttrSign, AttrVerify
+        , AttrWrap, AttrUnwrap
+        , AttrEncapsulate, AttrDecapsulate
+        ]
+      assertEqual "priv derive defaults false" (Just (ValBool False))
+        (Map.lookup AttrDerive attrs)
     Left deny -> assertFailure ("empty priv template must check: " ++ show deny)
   case checkKeyTemplate ckoDomainParameters ckkDsa
       [(AttrClass, ValULong ckoDomainParameters), (AttrPrimeBits, ValULong 1024)] of
@@ -3019,6 +3027,104 @@ caseKeygenUsageDefaults = do
       assertEqual "decapsulate stays absent" Nothing
         (Map.lookup AttrDecapsulate attrs)
     Left deny -> assertFailure ("minimal AES template must check: " ++ show deny)
+
+caseDeriveDefaultsFalse :: IO ()
+caseDeriveDefaultsFalse = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  -- A secret key generated without CKA_DERIVE reads CK_FALSE
+  -- (the PKCS#11 common key attributes default), stored and
+  -- through the attribute-read plan (visibility + C encoding).
+  (m1, secH) <- genAesKey answer m0 st minimalSecret
+  assertStoredFalse "secret" m1 secH
+  assertReadFalse "secret" m1 st secH
+  -- An EC pair generated without CKA_DERIVE: both halves false.
+  (m2, ecPubH, ecPrivH) <- genEcPair answer m1 st ecPubTmpl ecPrivTmpl
+  assertStoredFalse "ec-pub" m2 ecPubH
+  assertStoredFalse "ec-priv" m2 ecPrivH
+  assertReadFalse "ec-pub" m2 st ecPubH
+  assertReadFalse "ec-priv" m2 st ecPrivH
+  -- An RSA pair likewise.
+  (m3, rsaPubH, rsaPrivH) <- genRsaPair answer m2 st rsaPubTmpl rsaPrivTmpl
+  assertStoredFalse "rsa-pub" m3 rsaPubH
+  assertStoredFalse "rsa-priv" m3 rsaPrivH
+  assertReadFalse "rsa-pub" m3 st rsaPubH
+  assertReadFalse "rsa-priv" m3 st rsaPrivH
+  -- An explicit CKA_DERIVE=TRUE still wins, and the key derives.
+  (m4, expH) <- genAesKey answer m3 st (minimalSecret ++ [(AttrDerive, ValBool True)])
+  Just expOst <- pure (resolveHandle m4 expH)
+  assertEqual "explicit true stored" (Just (ValBool True))
+    (Map.lookup AttrDerive (osAttrs expOst))
+  case planDerive defaultRules m4 st hkdfDeriveMech expH
+      (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "info") [childTmpl 32]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("explicit-derive base must plan: " ++ show other)
+  -- A derive from a key generated without DERIVE refuses with
+  -- CKR_KEY_FUNCTION_NOT_PERMITTED (the resolveBase gate).
+  case planDerive defaultRules m4 st hkdfDeriveMech secH
+      (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "info") [childTmpl 32]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "default-false code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("default-false base must refuse: " ++ show other)
+  -- KEM outputs take the same default: the encaps and decaps
+  -- secrets read false.
+  (m5, kemPubH, kemPrivH) <- genKemPair answer m4 st
+  let ctLen = kemCtLen KemMl768
+  (m6, kemSecH, kemCt) <- case planKemEncaps m5 st mlKemMech kemPubH KemMl768 secretTmpl
+      (IntentBuffer (fromIntegral ctLen)) of
+    KeyEffect pw fx -> do
+      res <- answer m5 fx
+      c <- finishCommit m5 st pw res 1
+      ct <- case pcOutputs c !! 0 of
+        NativeOutput (RegionBytes "ciphertext" _) bs -> pure bs
+        o -> assertFailure ("kem encaps first output is not the ciphertext: " ++ show o) >> undefined
+      h <- handleOf (pcOutputs c !! 1)
+      m' <- expectRight (publishDelta m5 (pcDelta c))
+      pure (m', h, ct)
+    other -> assertFailure ("encaps plan is not an effect: " ++ show other) >> undefined
+  assertStoredFalse "kem-secret" m6 kemSecH
+  assertReadFalse "kem-secret" m6 st kemSecH
+  (m7, kemDecH) <- case planKemDecaps m6 st mlKemMech kemPrivH KemMl768 kemCt secretTmpl of
+    KeyEffect pw fx -> do
+      res <- answer m6 fx
+      c <- finishCommit m6 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m6 (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("decaps plan is not an effect: " ++ show other) >> undefined
+  assertStoredFalse "kem-decaps-secret" m7 kemDecH
+  assertReadFalse "kem-decaps-secret" m7 st kemDecH
+  where
+    minimalSecret =
+      [ (AttrClass, ValULong ckoSecretKey)
+      , (AttrKeyType, ValULong ckkAes)
+      , (AttrValueLen, ValULong 32)
+      , (AttrToken, ValBool False)
+      ]
+    assertStoredFalse tag m h = case resolveHandle m h of
+      Nothing -> assertFailure (tag ++ ": handle unpublished") >> undefined
+      Just ost -> assertEqual (tag ++ " stored false") (Just (ValBool False))
+        (Map.lookup AttrDerive (osAttrs ost))
+    assertReadFalse tag m st0 h = case planGetAttributes m st0 h [AttrDerive] of
+      Immediate c -> case pcOutputs c of
+        [o] -> do
+          assertEqual (tag ++ " read code") CKR_OK (pcCode c)
+          assertEqual (tag ++ " reads CK_FALSE") (Just (ValBool False))
+            (decodeValue AttrDerive (outBytes o))
+        _ -> assertFailure (tag ++ ": read outputs arity") >> undefined
+      Reject rej -> assertFailure (tag ++ ": read rejected: " ++ show (rejCode rej))
+        >> undefined
+      Execute _ _ -> assertFailure (tag ++ ": read must not execute") >> undefined
+    genEcPair ans m st0 pubT privT =
+      case planGenerateKeyPair defaultRules m st0 ecKeyPairGenMech pubT privT of
+        KeyEffect pw fx -> do
+          res <- ans m fx
+          c <- finishCommit m st0 pw res 2
+          h1 <- handleOf (pcOutputs c !! 0)
+          h2 <- handleOf (pcOutputs c !! 1)
+          m' <- expectRight (publishDelta m (pcDelta c))
+          pure (m', h1, h2)
+        other -> assertFailure ("EC plan is not an effect: " ++ show other) >> undefined
 
 caseEcPointStamped :: IO ()
 caseEcPointStamped = do
@@ -5215,6 +5321,7 @@ caseInitFromObject = withSynth $ \answer -> do
     , (AttrToken, ValBool False)
     , (AttrEncrypt, ValBool True)
     , (AttrDecrypt, ValBool False)
+    , (AttrDerive, ValBool True)
     ]
   let env = OpEnv
         { oeRegistry = curatedRegistry
@@ -5236,7 +5343,8 @@ caseInitFromObject = withSynth $ \answer -> do
   let (_, decClaim) = initOperation env emptySessionOps st (mkArgs OpDecrypt [OpDecrypt] False)
   assertEqual "object forbids decrypt" CKR_KEY_FUNCTION_NOT_PERMITTED (ioCode decClaim)
   -- The object policy reads back directly (absent flags defaulted
-  -- true at keygen; the explicit Decrypt=false stays out, as do
+  -- true at keygen, Derive is explicit here since it defaults
+  -- false; the explicit Decrypt=false stays out, as do
   -- the rule-forbidden encapsulate flags on AES secrets).
   Just ost <- pure (resolveHandle m1 keyH)
   assertEqual "policy from object"

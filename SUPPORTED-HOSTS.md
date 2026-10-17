@@ -56,7 +56,7 @@ unverified — a missing C pin alone never makes a row model-only.
 | Capability | Interfaces / mechanisms | Backend | Demonstrated by | Limitation |
 |---|---|---|---|---|
 | Discovery (2.40 + 3.x) | 2.40 table + `C_GetInterfaceList` / `C_GetInterface` serving 3.2, 3.1, 3.0; all `CK_INTERFACE.flags` 0 | in-process | `tests/c/consumer_discovery.c` (`scripts/test-consumers.sh`); `tests/c/layout_*.c` | no fork-safe flag; `-I` shows 2.40 only |
-| Session, login, object lifecycle, provisioning | all four tables; slot 0 `haskoki-demo` default, N slots via `[tokens]` catalog (max 16); `C_InitToken`/`C_InitPIN`/`C_SetPIN` routed | OpenSSL4 native | `consumer_roundtrip` (sessions, objects, login/logout + lockout), `consumer_provisioning` (init/change/lockout/recovery/persistence legs), `consumer_multitoken`, `consumer_certificates` (X.509 legs), `control_events` | in-band provisioning persists per-token credentials on SQLite stores ([Token identity contract](docs/operations-notes.md#token-identity-contract)); in memory mode the change holds for the interval only; finalize needs zero open sessions |
+| Session, login, object lifecycle, provisioning | all four tables; slot 0 `haskoki-demo` default, N slots via `[tokens]` catalog (max 16); `C_InitToken`/`C_InitPIN`/`C_SetPIN` routed | OpenSSL4 native | `consumer_roundtrip` (sessions, objects, login/logout + lockout), `consumer_provisioning` (init/change/lockout/recovery/persistence legs), `consumer_multitoken`, `consumer_certificates` (X.509 legs), `control_events` | in-band provisioning persists per-token credentials on SQLite stores ([Token identity contract](docs/operations-notes.md#token-identity-contract)); in memory mode the change holds for the interval only; finalize closes every open session, cancels the PKCS#11 surface's attached jobs, retires still-live joined attachments as canceled (best effort; already-terminal ones keep their fate), keeps detached idle records, and never stops the RTS; caller-owned native async contexts are unaffected |
 | Digest | SHA-1/256/512 one-shot + multipart; further digest rows per catalog | OpenSSL4 (+ synthetic in suites) | `consumer_roundtrip` (FIPS `abc` bytes), `consumer_streaming` (8/20 MiB multipart KATs), `release_smoke` | multipart streams; further rows real engine-tested in-process (OpenSSL KATs incl. SHA-224/384); C-consumer coverage unverified |
 | Sign, verify | ECDSA, HMAC, ML-DSA, SLH-DSA; sign-recover (raw RSA); dual ops | OpenSSL4 | `consumer_roundtrip` (incl. 2420-byte ML-DSA, 7856-byte SLH-DSA), `dual_routed`, `recover_routed`, `message_routed` (HMAC bytes) | partial: fully buffered under the 16 MiB per-input bound; RSA-1024 refused; further rows real engine-tested in-process; C-consumer coverage unverified |
 | Encrypt, decrypt | AES-CBC/CBC-PAD/ECB, ARIA-CBC; dual ops | OpenSSL4 | `consumer_roundtrip`, `dual_routed`, `message_routed` (AES-CBC bytes) | partial: framed block modes stream multistage updates (16 MiB per-buffer bound on retained + current update); AEAD/asymmetric/CTS/OFB/key-wrap/XTS/RC4 buffer whole (bound effectively cumulative); one-shots buffer; further rows real engine-tested in-process; C-consumer coverage unverified |
@@ -173,10 +173,13 @@ presence.
   / `OPENSSL_clear_free` in `cbits/ossl4_ctx.c`). SQLite blobs
   persist until deleted.
 - GHC RTS lifecycle: the runtime starts once per process image on
-  first need and is never stopped (`C_Finalize` ends the provider
-  interval only); the module is pinned with `-z nodelete`, so
-  `dlclose` never unloads it. Finalize requires zero open sessions
-  (explicit close first). Fork children of a booted process fail
+  first need and is never stopped (`C_Finalize` closes every open
+  session, cancels the PKCS#11 surface's attached jobs, retires
+  still-live joined attachments as canceled (best effort;
+  already-terminal ones keep their fate), keeps detached idle
+  records, and ends the provider interval only); the module is
+  pinned with `-z nodelete`, so
+  `dlclose` never unloads it. Fork children of a booted process fail
   without entering Haskell (see Fork safety above).
 - Synthetic engine is a separate mode: native serving binds
   OpenSSL4 unconditionally (`src/Haskoki/Ctl.hs` native-engine

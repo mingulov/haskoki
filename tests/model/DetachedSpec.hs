@@ -23,6 +23,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, modifyIORef', readIORef, writeIORef)
 import Data.List (nub, sort)
+import qualified Data.Map.Strict as Map
 import Data.Word (Word64)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
@@ -30,8 +31,9 @@ import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
 import OwnershipCounters (assertZero, counted)
 import StormBudget (stormScaleBudget)
-import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
-import Haskoki.Model (Model (..), SessionState (..), lookupSession, lookupTokenAuth)
+import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Operation (CryptoEffect (..), CryptoError (..), CryptoResult (..))
+import Haskoki.Model (Model (..), SessionState (..), lookupObject, lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Codec (encodeInitInput)
 import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Outcome
@@ -43,7 +45,7 @@ import Haskoki.Outcome
   , StateDelta (..)
   )
 import Haskoki.Output (maxOutputBytes)
-import Haskoki.Registry (MechanismId (..))
+import Haskoki.Registry (MechanismId (..), Operation (..))
 import Haskoki.Request
   ( FunctionId (..)
   , OutputIntent (..)
@@ -68,6 +70,7 @@ import Haskoki.Runtime.Async
   , beginDetach
   , cancelJob
   , commitDetachRevoke
+  , completeJob
   , enableAsyncSession
   , isAsyncSession
   , leaseSnapshot
@@ -97,6 +100,7 @@ import Haskoki.Runtime.Detached
   , joinPolicyName
   , markJobOpaque
   , openDetached
+  , pollJoined
   , retireLiveTable
   , retireLiveTableFor
   , setJoinTestHook
@@ -143,8 +147,10 @@ import Haskoki.Session
 import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Types
   ( EngineResourceId (..)
+  , ExternalHandle (..)
   , Generation (..)
   , JobId (..)
+  , ObjectId (..)
   , Outcome (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
@@ -210,6 +216,12 @@ spec = testGroup "Detached jobs"
   , testCase "retiring every owner of a never-joined table leaves no marks" (counted "m5-detached-jobs" "retiring-every-owner-of-a-never-joined-table-leaves-no-marks" (caseRetireAllOwnersLeavesNoMarks))
   , testCase "a detach never resets a raced cross-context join to idle" (counted "m5-detached-jobs" "a-detach-never-resets-a-raced-cross-context-join-to-idle" (caseDetachKeepsRacedJoin))
   , testCase "two contexts: the claim refuses a join parked past the gate" (counted "m5-detached-jobs" "two-contexts-the-claim-refuses-a-join-parked-past-the-gate" (caseTwoContextsClaimAfterGate))
+  , testCase "joined poll failure resolves failed durably" (counted "m5-detached-jobs" "joined-poll-failure-resolves-failed-durably" (caseJoinedPollFailed))
+  , testCase "joined cancel observed via complete resolves canceled" (counted "m5-detached-jobs" "joined-cancel-observed-via-complete-resolves-canceled" (caseJoinedCompleteCanceled))
+  , testCase "re-detach retires the superseded id" (counted "m5-detached-jobs" "re-detach-retires-the-superseded-id" (caseRedetachRetires))
+  , testCase "ambiguous re-detach reconciles present and retires" (counted "m5-detached-jobs" "ambiguous-re-detach-reconciles-present-and-retires" (caseRedetachAmbiguousPresent))
+  , testCase "refused re-detach commit preserves the live job" (counted "m5-detached-jobs" "refused-re-detach-commit-preserves-the-live-job" (caseRedetachCommitRefused))
+  , testCase "joined poll of a terminal job marks the observed fate" (counted "m5-detached-jobs" "joined-poll-of-a-terminal-job-marks-the-observed-fate" (caseJoinedPollTerminalMarks))
   ]
 
 tokHome :: TokenId
@@ -3079,4 +3091,417 @@ caseTwoContextsClaimAfterGate = do
   deliverOnce dcA gen tableA jA
   nRuns <- readIORef runs
   assertEqual "exactly one engine run" 1 nRuns
+  storeClose store
+
+-- ---------------------------------------------------------------------------
+-- Joined failure resolution (poll failure marks failed, complete observes it)
+-- ---------------------------------------------------------------------------
+
+hmacMech :: MechanismId
+hmacMech = MechanismId 0x251
+
+hmacOid :: ObjectId
+hmacOid = ObjectId 21
+
+hmacHandle :: ExternalHandle
+hmacHandle = ExternalHandle 201
+
+cannedSig :: ByteString
+cannedSig = BS.replicate 64 0x51
+
+seedHmacKey :: LiveGen -> IO ()
+seedHmacKey gen = do
+  let attrs = Map.fromList
+        [(AttrClass, ValULong 4), (AttrPrivate, ValBool False)]
+      delta = StateDelta
+        [ DeltaCreateObjectFull hmacOid attrs Nothing slotHome
+        , DeltaBindHandle hmacHandle hmacOid
+        ]
+  pr <- publish (lgEnv gen) delta
+  case pr of
+    Right () -> pure ()
+    Left f -> assertFailure ("hmac seed failed: " ++ show f)
+
+signInit :: LiveGen -> IO ()
+signInit gen = do
+  let sid = ssId (lgSession gen)
+      req = Request Pkcs11_3_2 F_SignInit (Just sid) (Just hmacHandle)
+        (encodeInitInput hmacMech [OpSign] False BS.empty) []
+  m <- snapshotModel (lgEnv gen)
+  case planCall defaultRules m req of
+    Immediate pc -> do
+      pr <- publish (lgEnv gen) (pcDelta pc)
+      case pr of
+        Right () -> pure ()
+        Left f -> assertFailure ("sign-init publish failed: " ++ show f)
+    other -> assertFailure ("sign-init did not plan immediate: " ++ show other)
+
+startSignJob :: LiveGen -> ByteString -> Word64 -> Int -> IO JobId
+startSignJob gen input cap ticks = do
+  m <- snapshotModel (lgEnv gen)
+  let sid = ssId (lgSession gen)
+      req = Request Pkcs11_3_2 F_Sign (Just sid) Nothing input
+        [RegionBytes "async" (IntentBuffer maxOutputBytes)]
+  case planCall defaultRules m req of
+    Execute res eff -> do
+      cw <- case checkedCallWork sid res eff of
+        Right c -> pure c
+        Left mm -> assertFailure ("sign pair must check: " ++ show mm)
+      let jr = JobRequest
+            { jrSession = sid
+            , jrFunction = JobSign
+            , jrWork = WorkCall cw
+            , jrTicks = ticks
+            , jrCapacity = cap
+            }
+      started <- startJob (lgTable gen) jr
+      case started of
+        Right jid -> pure jid
+        Left deny -> assertFailure ("sign start denied: " ++ show deny)
+    other -> assertFailure ("sign did not plan execute: " ++ show other)
+
+-- | A runner that fails when the key is gone: destroying the key
+-- makes the next drive fail with a general error, modeling the
+-- backend refusing without key material.
+keyCheckingRunner :: Env -> IORef Int -> CryptoEffect -> IO CryptoResult
+keyCheckingRunner env ref _fx = do
+  modifyIORef' ref (+ 1)
+  m <- snapshotModel env
+  case lookupObject m hmacOid of
+    Nothing -> pure (GotCryptoError (CryptoBadKey "sign" "key is gone"))
+    Just _ -> pure (GotBytes cannedSig)
+
+signJoin :: Word64 -> SessionId -> JoinRequest
+signJoin pid sid = JoinRequest
+  { jqPid = pid
+  , jqFunction = JobSign
+  , jqSession = sid
+  , jqCapacity = 64
+  }
+
+-- A joined sign job that fails on poll resolves failed: the joined
+-- poll drives the failure and marks the durable record failed, the
+-- joined complete observes the same fate, a join from another context
+-- sees the failed code (not active), and after close plus reopen the
+-- later join still sees failed (not canceled), with no replay.
+caseJoinedPollFailed :: IO ()
+caseJoinedPollFailed = do
+  tc <- mkTwoCtx
+  let gen = tcGen tc
+      store = tcStore tc
+      tableA = lgTable gen
+      tableB = tcTableB tc
+      dcA = tcDcA tc
+      dcB = tcDcB tc
+      sid = ssId (lgSession gen)
+  seedHmacKey gen
+  signInit gen
+  j0 <- startSignJob gen "hello" 64 1
+  DetachOk pid <- detachJob dcA tableA j0 JobSign
+  outA <- joinJob dcA (lgEnv gen) tableA (signJoin pid sid)
+  jA <- case outA of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  pr <- publish (lgEnv gen) (StateDelta [DeltaDestroyObject hmacOid])
+  case pr of
+    Right () -> pure ()
+    Left f -> assertFailure ("destroy failed: " ++ show f)
+  runs <- newIORef 0
+  let run = keyCheckingRunner (lgEnv gen) runs
+  (p2, merr0) <- pollJoined dcA run (lgEnv gen) tableA JobSign jA
+  case p2 of
+    PollTerminal (TermFailed code _) ->
+      assertEqual "poll fails general" CKR_GENERAL_ERROR code
+    other -> assertFailure ("expected poll failure, got " ++ show other)
+  assertEqual "poll mark clean" Nothing merr0
+  (del, _) <- newCapture
+  jc <- completeJoined dcA (lgEnv gen) tableA JobSign jA del (\_ -> pure ())
+  case jcOutcome jc of
+    CompleteAlready (TermFailed code _) ->
+      assertEqual "complete observes failed" CKR_GENERAL_ERROR code
+    other -> assertFailure ("expected already-failed, got " ++ show other)
+  assertEqual "mark clean" Nothing (jcMarkError jc)
+  outB <- joinJob dcB (lgEnv gen) tableB (signJoin pid sid)
+  assertEqual "other context sees failed"
+    (JoinTerminal JobFailed) outB
+  durableState store pid >>= assertEqual "durable failed" JobFailed
+  av <- inspectAttachment dcA pid
+  assertEqual "attachment terminal failed"
+    (Just (AvTerminal JobFailed)) av
+  _ <- retireLiveTable dcA
+  storeB <- reopenWorld (tcWorld tc) store
+  genB <- openLiveGen
+  dcB2 <- mkDetached storeB
+  let sidB = ssId (lgSession genB)
+  again <- joinJob dcB2 (lgEnv genB) (lgTable genB)
+    (JoinRequest pid JobSign sidB 64)
+  assertEqual "later interval sees failed, not canceled"
+    (JoinTerminal JobFailed) again
+  jobs <- loadJobs storeB
+  case [r | r <- jobs, jrPersistentId r == pid] of
+    [rec] -> assertEqual "no replay: still failed" JobFailed (jrState rec)
+    other -> assertFailure ("expected one record, got " ++ show other)
+  storeClose storeB
+
+-- A joined job canceled outside the wrapper, then observed via the
+-- joined complete, resolves canceled durably.
+caseJoinedCompleteCanceled :: IO ()
+caseJoinedCompleteCanceled = do
+  tc <- mkTwoCtx
+  let gen = tcGen tc
+      store = tcStore tc
+      tableA = lgTable gen
+      tableB = tcTableB tc
+      dcA = tcDcA tc
+      dcB = tcDcB tc
+      sid = ssId (lgSession gen)
+  seedHmacKey gen
+  signInit gen
+  j0 <- startSignJob gen "hello" 64 1
+  DetachOk pid <- detachJob dcA tableA j0 JobSign
+  outA <- joinJob dcA (lgEnv gen) tableA (signJoin pid sid)
+  jA <- case outA of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  cout <- cancelJob tableA jA
+  assertEqual "raw cancel wins" CancelOk cout
+  (del, _) <- newCapture
+  jc <- completeJoined dcA (lgEnv gen) tableA JobSign jA del (\_ -> pure ())
+  case jcOutcome jc of
+    CompleteAlready TermCanceled -> pure ()
+    other -> assertFailure ("expected already-canceled, got " ++ show other)
+  assertEqual "mark clean" Nothing (jcMarkError jc)
+  outB <- joinJob dcB (lgEnv gen) tableB (signJoin pid sid)
+  assertEqual "other context sees canceled"
+    (JoinTerminal JobCanceled) outB
+  durableState store pid >>= assertEqual "durable canceled" JobCanceled
+  storeClose store
+
+-- Re-detaching a joined job retires the superseded id in the same
+-- detach: the old id goes terminal canceled durably (recipe bytes
+-- unchanged) and the new id stays idle. After a crash (reopen
+-- without retire) only the new id replays.
+caseRedetachRetires :: IO ()
+caseRedetachRetires = do
+  tc <- mkTwoCtx
+  let gen = tcGen tc
+      store = tcStore tc
+      tableA = lgTable gen
+      tableB = tcTableB tc
+      dcA = tcDcA tc
+      dcB = tcDcB tc
+      sid = ssId (lgSession gen)
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid1 <- detachJob dcA tableA j0 JobDigest
+  assertEqual "first id" 1 pid1
+  outA <- joinJob dcA (lgEnv gen) tableA (digestJoin pid1 sid)
+  jA <- case outA of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  jobsBefore <- loadJobs store
+  bodyBefore <- case [jrBody r | r <- jobsBefore, jrPersistentId r == pid1] of
+    [b] -> pure b
+    other -> assertFailure ("expected one record, got " ++ show other)
+  DetachOk pid2 <- detachJob dcA tableA jA JobDigest
+  assertEqual "second id" 2 pid2
+  av1 <- inspectAttachment dcA pid1
+  assertEqual "superseded id terminal"
+    (Just (AvTerminal JobCanceled)) av1
+  durableState store pid1 >>= assertEqual "superseded durable canceled" JobCanceled
+  jobsAfter <- loadJobs store
+  case [jrBody r | r <- jobsAfter, jrPersistentId r == pid1] of
+    [b] -> assertEqual "recipe bytes unchanged" bodyBefore b
+    other -> assertFailure ("expected one record, got " ++ show other)
+  av2 <- inspectAttachment dcA pid2
+  assertEqual "new id idle" (Just AvIdle) av2
+  durableState store pid2 >>= assertEqual "new durable queued" JobQueued
+  outB1 <- joinJob dcB (lgEnv gen) tableB (digestJoin pid1 sid)
+  assertEqual "other context sees superseded canceled"
+    (JoinTerminal JobCanceled) outB1
+  outA1 <- joinJob dcA (lgEnv gen) tableA (digestJoin pid1 sid)
+  assertEqual "same context sees superseded canceled"
+    (JoinTerminal JobCanceled) outA1
+  outB2 <- joinJob dcB (lgEnv gen) tableB (digestJoin pid2 sid)
+  case outB2 of
+    JoinOk _ -> pure ()
+    other -> assertFailure ("new id must join, got " ++ show other)
+  -- Crash: reopen without retire; only the new id replays.
+  storeC <- reopenWorld (tcWorld tc) store
+  genC <- openLiveGen
+  dcC <- mkDetached storeC
+  let sidC = ssId (lgSession genC)
+  again1 <- joinJob dcC (lgEnv genC) (lgTable genC) (digestJoin pid1 sidC)
+  assertEqual "crashed pid1 stays canceled"
+    (JoinTerminal JobCanceled) again1
+  -- pid2 was joined above (active in the old authority) but the
+  -- crash dropped attachments; durably it is still queued, so it
+  -- replays once in the new interval.
+  jobsC <- loadJobs storeC
+  case [jrState r | r <- jobsC, jrPersistentId r == pid2] of
+    [JobQueued] -> pure ()
+    other -> assertFailure ("pid2 must stay queued, got " ++ show other)
+  again2 <- joinJob dcC (lgEnv genC) (lgTable genC) (digestJoin pid2 sidC)
+  case again2 of
+    JoinOk _ -> pure ()
+    other -> assertFailure ("new id must replay, got " ++ show other)
+  storeClose storeC
+
+-- An ambiguous re-detach that reconciles present retires the
+-- superseded id in the same atomic insert: the one delta carries
+-- both the new record and the old record canceled, so pid1 ends
+-- terminal and durably canceled (recipe bytes unchanged), the new
+-- id stays idle and queued, and the old binding is revoked —
+-- exactly one store commit, with no store I/O between the insert
+-- decision and the revoke.
+caseRedetachAmbiguousPresent :: IO ()
+caseRedetachAmbiguousPresent = do
+  (_world, backing) <- mkWorld
+  gen <- openLiveGen
+  commits <- newIORef ([] :: [StoreDelta])
+  let fake = backing
+        { storeCommit = \delta -> do
+            modifyIORef' commits (++ [delta])
+            res <- storeCommit backing delta
+            case res of
+              Committed -> pure (CommitUnknown (StoreIO "scripted ambiguity"))
+              other -> pure other
+        }
+  dc <- mkDetached fake
+  let table = lgTable gen
+      sid = ssId (lgSession gen)
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid1 <- detachJob dc table j0 JobDigest
+  outA <- joinJob dc (lgEnv gen) table (digestJoin pid1 sid)
+  jA <- case outA of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  jobsBefore <- loadJobs backing
+  bodyBefore <- case [jrBody r | r <- jobsBefore, jrPersistentId r == pid1] of
+    [b] -> pure b
+    other -> assertFailure ("expected one record, got " ++ show other)
+  writeIORef commits []
+  out <- detachJob dc table jA JobDigest
+  pid2 <- case out of
+    DetachOk p -> pure p
+    other -> assertFailure ("expected DetachOk, got " ++ show other)
+  assertBool "ids distinct" (pid1 /= pid2)
+  av1 <- inspectAttachment dc pid1
+  assertEqual "superseded id terminal"
+    (Just (AvTerminal JobCanceled)) av1
+  durableState backing pid1 >>= assertEqual "superseded durable canceled" JobCanceled
+  jobsAfter <- loadJobs backing
+  case [jrBody r | r <- jobsAfter, jrPersistentId r == pid1] of
+    [b] -> assertEqual "recipe bytes unchanged" bodyBefore b
+    other -> assertFailure ("expected one record, got " ++ show other)
+  av2 <- inspectAttachment dc pid2
+  assertEqual "new id idle" (Just AvIdle) av2
+  durableState backing pid2 >>= assertEqual "new durable queued" JobQueued
+  runs <- newIORef 0
+  p <- pollJob (countingRunner runs) (lgEnv gen) table JobDigest jA
+  assertEqual "old binding revoked" PollUnknown p
+  deltas <- readIORef commits
+  assertEqual "one atomic commit" 1 (length deltas)
+  case deltas of
+    [d] -> assertEqual "both records in one delta" 2 (length (sdPutJobs d))
+    _ -> assertFailure "expected exactly one captured delta"
+  storeClose backing
+
+-- A refused re-detach commit leaves everything untouched: the
+-- scripted store refuses the two-record atomic delta, so detach
+-- answers DetachStore with pid1 still active and queued, no orphan
+-- record, and the old handle still live — exactly one commit
+-- attempted.
+caseRedetachCommitRefused :: IO ()
+caseRedetachCommitRefused = do
+  (_world, backing) <- mkWorld
+  gen <- openLiveGen
+  commits <- newIORef ([] :: [StoreDelta])
+  let fake = backing
+        { storeCommit = \delta -> do
+            modifyIORef' commits (++ [delta])
+            if length (sdPutJobs delta) > 1
+              then pure (NotCommitted (StoreIO "scripted refusal"))
+              else storeCommit backing delta
+        }
+  dc <- mkDetached fake
+  let table = lgTable gen
+      sid = ssId (lgSession gen)
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid1 <- detachJob dc table j0 JobDigest
+  outA <- joinJob dc (lgEnv gen) table (digestJoin pid1 sid)
+  jA <- case outA of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  writeIORef commits []
+  out <- detachJob dc table jA JobDigest
+  case out of
+    DetachStore _ -> pure ()
+    other -> assertFailure ("expected DetachStore, got " ++ show other)
+  av1 <- inspectAttachment dc pid1
+  assertEqual "superseded id still active" (Just (AvActive jA)) av1
+  durableState backing pid1 >>= assertEqual "superseded durable still queued" JobQueued
+  jobs <- loadJobs backing
+  assertEqual "no orphan record" 1 (length jobs)
+  runs <- newIORef 0
+  p <- pollJob (countingRunner runs) (lgEnv gen) table JobDigest jA
+  assertEqual "old handle still live" PollReady p
+  deltas <- readIORef commits
+  assertEqual "one commit attempted" 1 (length deltas)
+  storeClose backing
+
+-- A joined poll that observes an already-terminal job marks the
+-- observed fate, not just failures: a job canceled outside the
+-- wrapper (as token removal cancels) resolves canceled when the
+-- joined poll sees it — the FFI frees the handle on a terminal
+-- poll, so the owner has no later chance — and a raw-delivered job
+-- resolves delivered the same way.
+caseJoinedPollTerminalMarks :: IO ()
+caseJoinedPollTerminalMarks = do
+  tc <- mkTwoCtx
+  let gen = tcGen tc
+      store = tcStore tc
+      tableA = lgTable gen
+      tableB = tcTableB tc
+      dcA = tcDcA tc
+      dcB = tcDcB tc
+      sid = ssId (lgSession gen)
+  runs <- newIORef 0
+  -- Canceled outside the wrapper, then observed via a joined poll.
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid <- detachJob dcA tableA j0 JobDigest
+  outA <- joinJob dcA (lgEnv gen) tableA (digestJoin pid sid)
+  jA <- case outA of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  cout <- cancelJob tableA jA
+  assertEqual "raw cancel wins" CancelOk cout
+  (p, merr) <- pollJoined dcA (countingRunner runs) (lgEnv gen) tableA JobDigest jA
+  case p of
+    PollTerminal TermCanceled -> pure ()
+    other -> assertFailure ("expected terminal canceled, got " ++ show other)
+  assertEqual "mark clean" Nothing merr
+  outB <- joinJob dcB (lgEnv gen) tableB (digestJoin pid sid)
+  assertEqual "other context sees canceled"
+    (JoinTerminal JobCanceled) outB
+  durableState store pid >>= assertEqual "durable canceled" JobCanceled
+  -- Delivered outside the wrapper, then observed via a joined poll.
+  j1 <- startDigestJob gen "abc" 32 1
+  DetachOk pid2 <- detachJob dcA tableA j1 JobDigest
+  outA2 <- joinJob dcA (lgEnv gen) tableA (digestJoin pid2 sid)
+  jA2 <- case outA2 of
+    JoinOk j -> pure j
+    other -> assertFailure ("second join failed: " ++ show other)
+  pReady <- pollJob (countingRunner runs) (lgEnv gen) tableA JobDigest jA2
+  assertEqual "drive ready" PollReady pReady
+  (del, _) <- newCapture
+  cout2 <- completeJob (lgEnv gen) tableA JobDigest jA2 del (\_ -> pure ())
+  case cout2 of
+    CompleteDelivered _ -> pure ()
+    other -> assertFailure ("expected delivery, got " ++ show other)
+  (p2, merr2) <- pollJoined dcA (countingRunner runs) (lgEnv gen) tableA JobDigest jA2
+  case p2 of
+    PollTerminal (TermDelivered _) -> pure ()
+    other -> assertFailure ("expected terminal delivered, got " ++ show other)
+  assertEqual "mark clean" Nothing merr2
+  durableState store pid2 >>= assertEqual "durable delivered" JobDelivered
   storeClose store

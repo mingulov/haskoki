@@ -44,11 +44,14 @@ module Haskoki.Runtime.Config
   ) where
 
 import Control.Exception (try, IOException)
-import Data.Char (isDigit, isSpace)
+import qualified Data.ByteString as BS
+import Data.Char (isAscii, isDigit, isSpace)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.List (intercalate, nub)
+import Data.List (find, intercalate, nub)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import System.Environment (lookupEnv)
 
 import Haskoki.Rules (defaultRules)
@@ -464,13 +467,18 @@ parseConfig body = do
       | null sec = key
       | otherwise = sec ++ "." ++ key
 
--- | Load, parse and validate a TOML file.
+-- | Load, parse and validate a TOML file. The file is read
+-- strictly as bytes and decoded explicitly as UTF-8, so the result
+-- never depends on the process locale; undecodable bytes answer
+-- 'CfgInvalid', never an exception.
 loadConfigFile :: FilePath -> IO (Either ConfigError Config)
 loadConfigFile path = do
-  eBody <- try (readFile path) :: IO (Either IOException String)
-  case eBody of
+  eBytes <- try (BS.readFile path) :: IO (Either IOException BS.ByteString)
+  case eBytes of
     Left _ -> pure (Left (CfgMissingFile path))
-    Right body -> pure (parseConfig body)
+    Right bytes -> case TE.decodeUtf8' bytes of
+      Left err -> pure (Left (CfgInvalid ("config file is not valid UTF-8: " ++ show err)))
+      Right text -> pure (parseConfig (T.unpack text))
 
 getInt :: Map TomlKey TomlVal -> TomlKey -> Integer -> Either ConfigError Int
 getInt kvs k def = case Map.lookup k kvs of
@@ -740,6 +748,10 @@ parseTokenCatalog kvs labels soPins userPins
       "tokens.labels[0] must be haskoki-demo (slot 0 stability anchor)")
   | any (\l -> length l > 32) labels = Left (CfgInvalid
       "tokens.labels must fit the 32-byte CK_TOKEN_INFO label field")
+  | Just bad <- find (any (not . isAscii)) labels = Left (CfgInvalid
+      ("tokens catalog label \"" ++ bad
+        ++ "\" contains a non-ASCII character (labels must be ASCII: "
+        ++ "the 32-byte CK_TOKEN_INFO field is filled one byte per Char)"))
   | otherwise = do
       mapM_ checkEntry (zip3 labels soPins userPins)
       pure (zip3 labels soPins userPins)
@@ -764,10 +776,14 @@ parseTokenCatalog kvs labels soPins userPins
       checkRole label "so_pin" so
       checkRole label "user_pin" user
     checkRole :: String -> String -> String -> Either ConfigError ()
-    checkRole label role pin =
-      -- Catalog PINs are ASCII fixture material (Char8-packed at
-      -- login), so character count is the byte length.
-      case checkPinLength policy (length pin) of
+    checkRole label role pin
+      -- Catalog PINs are Char8-packed at login, so non-ASCII is
+      -- refused up front (naming the token and role); past this
+      -- gate, character count is the byte length.
+      | any (not . isAscii) pin = Left (CfgInvalid
+          ("tokens catalog PIN for \"" ++ label ++ "\" (" ++ role
+            ++ ") contains a non-ASCII character (PINs must be ASCII)"))
+      | otherwise = case checkPinLength policy (length pin) of
         Nothing -> pure ()
         Just (PinTooShort got bound) -> Left (CfgInvalid
           ("tokens catalog PIN for \"" ++ label ++ "\" (" ++ role

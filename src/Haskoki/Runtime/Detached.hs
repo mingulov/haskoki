@@ -26,6 +26,8 @@ Detach protocol (design 07, section 6), in order:
    ('storeReserveJobId': the store-wide mark advances durably
    first) and make the record durable ('storeCommit'). The id is
    returned ONLY after the insert and revocation both succeed.
+   Re-detaching a joined job retires its superseded id in the same
+   atomic delta (the old record canceled, recipe bytes unchanged).
 4. Revoke the old binding ('commitDetachRevoke'): the live table
    forgets the job, so no admitted completion can still write
    through the old attachment.
@@ -38,7 +40,10 @@ and auth, and capacity — before attaching new storage. One active
 attachment per persistent job ('joinPolicyName'); delivery-vs-cancel
 arbitration is the job lease, reused, not reimplemented: joined
 jobs complete through 'completeJob' via 'completeJoined', which
-additionally marks the durable record delivered.
+additionally marks the durable record with the observed fate
+(delivered on delivery; failed or canceled when an already-terminal
+job is observed), and poll through 'pollJob' via 'pollJoined',
+which marks the observed terminal fate the same way.
 
 Join claims (concurrency): after validation, a join takes an
 in-progress claim on the persistent id in one STM step — carrying
@@ -92,6 +97,7 @@ module Haskoki.Runtime.Detached
   , JoinedComplete (..)
   , completeJoined
   , cancelJoined
+  , pollJoined
   , retireLiveTable
   , retireLiveTableFor
     -- * Attachments
@@ -168,11 +174,13 @@ import Haskoki.Runtime.Async
   , CancelOutcome (..)
   , CompleteOutcome (..)
   , Delivery (..)
+  , EffectRunner
   , JobFunction (..)
   , JobRequest (..)
   , JobSnapState (..)
   , JobSnapshot
   , LeaseView (..)
+  , PollOutcome (..)
   , StartDeny (..)
   , TerminalState (..)
   , asyncTableId
@@ -183,6 +191,7 @@ import Haskoki.Runtime.Async
   , jobSnapshotFunction
   , jobSnapshotState
   , jobSnapshotWork
+  , pollJob
   , snapshotJob
   , startJob
   , startSeededJob
@@ -784,12 +793,12 @@ detachUnder dc table jid func view = do
             pure DetachTransient
           SnapHeld tag ->
             pure (DetachUnsaveable ("held " ++ tag ++ " has no result record"))
-          SnapPending n -> detachPending dc view snap n
-          SnapReady bs -> detachReady dc view snap bs
+          SnapPending n -> detachPending dc table jid view snap n
+          SnapReady bs -> detachReady dc table jid view snap bs
 
 -- | Detach a pending job: recipe record, durable, then revoked.
-detachPending :: DetachCtx -> LeaseView -> JobSnapshot -> Int -> IO DetachOutcome
-detachPending dc view snap ticks =
+detachPending :: DetachCtx -> AsyncTable -> JobId -> LeaseView -> JobSnapshot -> Int -> IO DetachOutcome
+detachPending dc table jid view snap ticks =
   case recipeFromWork
     (jobSnapshotFunction snap)
     (jobSnapshotWork snap)
@@ -799,13 +808,13 @@ detachPending dc view snap ticks =
       pure (DetachUnsaveable "no detach recipe for this work shape")
     Just recipe -> do
       let (name, params) = encodeRecipe recipe
-      commitDetach dc view JobQueued (JobPending name params)
+      commitDetach dc table jid view JobQueued (JobPending name params)
 
 -- | Detach a ready job: prepared-result record (recipe plus owned
 -- result bytes, so rejoin can replay the reservation AND seed the
 -- held result without re-running the effect), durable, then revoked.
-detachReady :: DetachCtx -> LeaseView -> JobSnapshot -> ByteString -> IO DetachOutcome
-detachReady dc view snap bs =
+detachReady :: DetachCtx -> AsyncTable -> JobId -> LeaseView -> JobSnapshot -> ByteString -> IO DetachOutcome
+detachReady dc table jid view snap bs =
   case recipeFromWork
     (jobSnapshotFunction snap)
     (jobSnapshotWork snap)
@@ -814,7 +823,7 @@ detachReady dc view snap bs =
     Nothing ->
       pure (DetachUnsaveable "no detach recipe for this work shape")
     Just recipe ->
-      commitDetach dc view JobReady
+      commitDetach dc table jid view JobReady
         (JobResult CKR_OK (encodeResultBody recipe bs))
 
 -- | Frame a prepared result: recipe name + recipe params + owned
@@ -837,16 +846,22 @@ decodeResultBody body = do
 
 -- | Reserve the persistent id from the store, commit the record
 -- durably, and on success revoke the old binding and report the
--- id. Reservation and insertion are two durable commits: a
+-- id. When this live job was joined, its superseded id retires in
+-- the SAME atomic delta (the old record canceled, recipe bytes
+-- unchanged): the insert and the retirement land together or not
+-- at all, with no store I/O between the insert decision and the
+-- revoke. Reservation and insertion are two durable commits: a
 -- reservation failure reports before anything is written, and a
--- failed insertion leaves a gap in the id sequence (the burned
--- id is never reused, never re-minted). An ambiguous insert
--- reloads and reconciles: present means the record IS durable
--- (revoke and succeed — the caller asked for durability, which
--- held), absent means nothing was written (abort and report).
+-- failed insertion leaves a gap in the id sequence (the burned id
+-- is never reused, never re-minted). A refused insertion reports
+-- with the old attachment preserved. An ambiguous insert reloads
+-- and reconciles: present means the record IS durable (retire, revoke
+-- and succeed — the caller asked for durability, which held),
+-- absent means nothing was written (abort and report, old
+-- attachment preserved).
 commitDetach
-  :: DetachCtx -> LeaseView -> JobExecState -> JobBody -> IO DetachOutcome
-commitDetach dc view execState body = do
+  :: DetachCtx -> AsyncTable -> JobId -> LeaseView -> JobExecState -> JobBody -> IO DetachOutcome
+commitDetach dc table jid view execState body = do
   eToks <- storeLoadTokens (dcStore dc)
   case eToks of
     Left err ->
@@ -860,30 +875,68 @@ commitDetach dc view execState body = do
           Left err ->
             pure (DetachStore err)
           Right pid -> do
-            let rec = JobRecord
-                  { jrPersistentId = pid
-                  , jrToken = dcToken dc
-                  , jrTokenGeneration = trGeneration trec
-                  , jrFunction = jobFunctionName (jobSnapshotFunction (lvSnapshot view))
-                  , jrState = execState
-                  , jrBody = body
-                  }
-                delta = emptyDelta { sdPutJobs = [rec] }
-            res <- storeCommit (dcStore dc) delta
-            case res of
-              Committed -> do
-                lvCommit view
-                setIdle dc pid
-                pure (DetachOk pid)
-              NotCommitted err ->
+            eSup <- loadSuperseded dc table jid
+            case eSup of
+              Left err ->
                 pure (DetachStore err)
-              CommitUnknown err -> reconcileDetach dc view pid delta err
+              Right mSup -> do
+                let rec = JobRecord
+                      { jrPersistentId = pid
+                      , jrToken = dcToken dc
+                      , jrTokenGeneration = trGeneration trec
+                      , jrFunction = jobFunctionName (jobSnapshotFunction (lvSnapshot view))
+                      , jrState = execState
+                      , jrBody = body
+                      }
+                    puts = case mSup of
+                      Nothing -> [rec]
+                      Just (_, oldRec) -> [rec, oldRec { jrState = JobCanceled }]
+                    delta = emptyDelta { sdPutJobs = puts }
+                res <- storeCommit (dcStore dc) delta
+                case res of
+                  Committed -> do
+                    case mSup of
+                      Nothing -> pure ()
+                      Just (pid1, _) -> setTerminal dc pid1 JobCanceled
+                    lvCommit view
+                    setIdle dc pid
+                    pure (DetachOk pid)
+                  NotCommitted err ->
+                    pure (DetachStore err)
+                  CommitUnknown err ->
+                    reconcileDetach dc view pid (fmap fst mSup) delta err
+
+-- | Resolve the superseded id (when this live job was joined) and
+-- load its record, BEFORE the insert commits, so the insert and the
+-- retirement land in one atomic delta. 'Nothing' when the job was
+-- never joined (a plain first detach). A load failure or a missing
+-- record refuses the detach with the live binding preserved: the
+-- retirement cannot be staged, so nothing is written.
+loadSuperseded
+  :: DetachCtx -> AsyncTable -> JobId
+  -> IO (Either StoreError (Maybe (Word64, JobRecord)))
+loadSuperseded dc table jid = do
+  rev <- tcReverse <$> atomically (readClaims dc)
+  case Map.lookup (asyncTableId table, jid) rev of
+    Nothing -> pure (Right Nothing)
+    Just pid1 -> do
+      eJobs <- storeLoadJobs (dcStore dc)
+      case eJobs of
+        Left err -> pure (Left err)
+        Right jobs -> case [r | r <- jobs, jrPersistentId r == pid1] of
+          [] -> pure (Left (StoreRevisionConflict "superseded job is gone"))
+          (oldRec : _) -> pure (Right (Just (pid1, oldRec)))
 
 -- | Reconcile an ambiguous detach commit against a fresh reload.
+-- The delta carries the insert plus, on a re-detach, the superseded
+-- retirement, and reconciliation requires every put present: on
+-- present both landed, so the superseded id resolves terminal in
+-- memory before the revoke; on absent nothing was written (abort
+-- and report, old attachment preserved).
 reconcileDetach
-  :: DetachCtx -> LeaseView -> Word64 -> StoreDelta -> StoreError
+  :: DetachCtx -> LeaseView -> Word64 -> Maybe Word64 -> StoreDelta -> StoreError
   -> IO DetachOutcome
-reconcileDetach dc view pid delta err = do
+reconcileDetach dc view pid mPid1 delta err = do
   _ <- storeReload (dcStore dc)
   eJobs <- storeLoadJobs (dcStore dc)
   case eJobs of
@@ -891,6 +944,9 @@ reconcileDetach dc view pid delta err = do
       pure (DetachStore err)
     Right jobs -> case reconcileJobsReload delta jobs of
       ReconciledPresent -> do
+        case mPid1 of
+          Nothing -> pure ()
+          Just pid1 -> setTerminal dc pid1 JobCanceled
         lvCommit view
         setIdle dc pid
         pure (DetachOk pid)
@@ -1495,7 +1551,7 @@ joinReservation st = Reservation "async-join"
 -- ---------------------------------------------------------------------------
 
 -- | One joined completion: the async outcome plus the durable-mark
--- error, if the delivered mark failed to commit. The delivery itself
+-- error, if the fate mark failed to commit. The verdict itself
 -- already happened (the job lease decided); a mark error means the
 -- durable record lags the live table, and the in-memory attachment
 -- is terminal regardless so this generation never rejoins.
@@ -1505,8 +1561,9 @@ data JoinedComplete = JoinedComplete
   } deriving (Eq, Show)
 
 -- | Complete a possibly-joined job through the job lease, marking
--- the durable record delivered on delivery. Non-joined jobs pass
--- through untouched (mark clean).
+-- the durable record with the observed fate: delivered on delivery,
+-- failed or canceled when an already-terminal job is observed.
+-- Non-joined jobs pass through untouched (mark clean).
 completeJoined
   :: DetachCtx -> Env -> AsyncTable -> JobFunction -> JobId -> Delivery
   -> (ResourceRelease -> IO ()) -> IO JoinedComplete
@@ -1518,6 +1575,12 @@ completeJoined dc env table func jid del release = do
       pure (JoinedComplete out merr)
     CompleteAlready (TermDelivered _) -> do
       merr <- markResolved dc table jid JobDelivered
+      pure (JoinedComplete out merr)
+    CompleteAlready (TermFailed _ _) -> do
+      merr <- markResolved dc table jid JobFailed
+      pure (JoinedComplete out merr)
+    CompleteAlready TermCanceled -> do
+      merr <- markResolved dc table jid JobCanceled
       pure (JoinedComplete out merr)
     _ -> pure (JoinedComplete out Nothing)
 
@@ -1534,6 +1597,22 @@ cancelJoined dc table jid = do
       merr <- markResolved dc table jid (execStateOf t)
       pure (out, merr)
     CancelUnknown -> pure (out, Nothing)
+
+-- | Poll a possibly-joined job, marking the durable record with
+-- the observed terminal fate whenever this poll observes one (a
+-- driven failure, or an already-terminal job such as one canceled
+-- outside the wrapper). Non-joined jobs pass through untouched
+-- (mark clean).
+pollJoined
+  :: DetachCtx -> EffectRunner -> Env -> AsyncTable -> JobFunction -> JobId
+  -> IO (PollOutcome, Maybe StoreError)
+pollJoined dc run env table func jid = do
+  out <- pollJob run env table func jid
+  case out of
+    PollTerminal t -> do
+      merr <- markResolved dc table jid (execStateOf t)
+      pure (out, merr)
+    _ -> pure (out, Nothing)
 
 -- | Mark a joined live job's durable record resolved, resolving
 -- through the reverse map by the job's own table and job

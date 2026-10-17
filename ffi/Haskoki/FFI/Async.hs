@@ -242,6 +242,7 @@ import Haskoki.Runtime.Detached
   , joinCode
   , joinJob
   , openDetached
+  , pollJoined
   , retireLiveTableFor
   )
 import Haskoki.Runtime.Config (Config, newConfigCell, resolveOnce)
@@ -1801,13 +1802,15 @@ denyCode StartIncompatibleWork = CKR_ARGUMENTS_BAD
 -- | Poll a job: pending while the schedule elapses, OK once ready,
 -- the terminal code when this poll drives the failure. Stale
 -- handles and wrong pollers refuse typed with the job intact.
+-- Joined jobs poll through the detach wrapper so a driven failure
+-- marks the durable record failed.
 haskokiAsyncPoll
   :: StablePtr AsyncCtx -> StablePtr JobHandle -> CULong -> IO CULong
 haskokiAsyncPoll ctx h (CULong func) = withCtx ctx $ \c ->
   withLiveJob c h $ \jid -> case codeJobFunction func of
     Nothing -> pure (rvOf CKR_ARGUMENTS_BAD)
     Just jfunc -> do
-      out <- pollJob (runAsyncEffect c) (acEnv c) (acTable c) jfunc jid
+      out <- pollThrough c jfunc jid
       case out of
         PollPending _ -> pure (rvOf CKR_PENDING)
         PollReady -> pure (rvOf CKR_OK)
@@ -1924,6 +1927,15 @@ cancelThrough :: AsyncCtx -> JobId -> IO CancelOutcome
 cancelThrough c jid = case acDetach c of
   Nothing -> cancelJob (acTable c) jid
   Just dc -> fst <$> cancelJoined dc (acTable c) jid
+
+-- | Poll through the detach wrapper when the context has detach
+-- state, else straight through the attached path. A durable-mark
+-- error cannot change the poll verdict; the attachment is terminal
+-- in memory either way.
+pollThrough :: AsyncCtx -> JobFunction -> JobId -> IO PollOutcome
+pollThrough c jfunc jid = case acDetach c of
+  Nothing -> pollJob (runAsyncEffect c) (acEnv c) (acTable c) jfunc jid
+  Just dc -> fst <$> pollJoined dc (runAsyncEffect c) (acEnv c) (acTable c) jfunc jid
 
 -- ---------------------------------------------------------------------------
 -- Process-level stores and detach entry points

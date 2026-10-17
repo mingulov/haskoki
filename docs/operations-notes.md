@@ -866,11 +866,14 @@ the provider paths (the `mkstemp`/`tmpfile` family is absent from
 `src/`, `ffi/`, `app/`, `cbits/`, `core/`, `tools/`). Ship
 trace-off configs unless tracing is wanted.
 
-Close and lifecycle. `C_Finalize` requires zero open sessions
-(`validateFinalize` in `src/Haskoki/Runtime/Lifecycle.hs`) and ends
+Close and lifecycle. `C_Finalize` closes every open session,
+cancels attached jobs, durably retires joined attachments as
+canceled, keeps detached idle records for a later interval, and ends
 the provider interval without stopping the RTS
 (`cbits/rts_bootstrap.c`); closing the backend releases digest
-contexts and drops the key maps. The provider starts the RTS with
+contexts and drops the key maps. `validateFinalize` in
+`src/Haskoki/Runtime/Lifecycle.hs` governs only the internal
+`Lifecycle.finalize` API, not the shipped `C_Finalize` path. The provider starts the RTS with
 one capability and ignores `GHCRTS` when it starts the RTS itself;
 a process that already runs a GHC RTS keeps its own capability
 count. Unload is pinned (`-z nodelete`
@@ -901,7 +904,7 @@ handle.
 
 | Runtime | Owner | Close obligation | Serialization |
 |---|---|---|---|
-| Lifecycle interval (`Haskoki.Runtime.Lifecycle`) | The instance owns the interval | Finalize ends the interval only; it needs zero open sessions and never stops the RTS | State lock; the module stays pinned (`-z nodelete`) |
+| Lifecycle interval (`Haskoki.Runtime.Lifecycle`) | The instance owns the interval | Finalize closes every open session, cancels attached jobs, durably retires joined attachments as canceled, keeps detached idle records, and never stops the RTS | State lock; the module stays pinned (`-z nodelete`) |
 | Storage handle (`Haskoki.Runtime.Storage` + backends) | The open handle owns token/object rows; SQLite adds a lock file, memory an in-memory ownership token | Close releases the SQLite lock file or the memory ownership token and drops the handle; SQLite sidecars follow the write transaction | Single-writer; commits serialize; quarantine refuses until an authoritative reload clears it |
 | Attached async tables (`Haskoki.Runtime.Async`) | The instance owns tables and retained bytes | Attached terminal tombstones are bounded (4096 records, 64 MiB); the just-committed job is always retained and may transiently exceed the byte bound; owners may reap attached tombstones eagerly with `reapJob`; detached terminal records (`Haskoki.Runtime.Detached`) stay stored; submit admits only checked, outer-coherent work, and fixtures use the named test-only admission | STM; no background reaper |
 | Slot service (`Haskoki.Runtime.SlotEvents`) | The interval owns flags and the hub | Close discards pending flags and wakes undecided waiters with `CKR_CRYPTOKI_NOT_INITIALIZED` | One flag has one consumer; no broadcast |

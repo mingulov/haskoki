@@ -4,6 +4,7 @@
 
 Behaviour changes a caller written against 0.4.0.0 can observe:
 
+- Generated keys and KEM outputs now default `CKA_DERIVE` to false, as PKCS#11 specifies; set it explicitly to derive.
 - Fresh keys report explicit creation history. Generated keys read
   `CKA_LOCAL` true with `CKA_KEY_GEN_MECHANISM` set to the generating
   mechanism; `CKA_ALWAYS_SENSITIVE` reads true when the key was born
@@ -289,6 +290,23 @@ record: symbol separation, sanitizer runs, evidence limits) and
   and `inspectAttachment` report the store handle's shared state for
   the context's token. `retireLiveTable` and `retireLiveTableFor`
   retire only tables the context joined through.
+- Generated keys and KEM outputs now default `CKA_DERIVE` to
+  false, per the PKCS#11 common key attributes table.
+  `C_GenerateKey`, both halves of `C_GenerateKeyPair` and the KEM
+  encapsulate and decapsulate outputs stamp `CKA_DERIVE=false`
+  when the template omits it; in 0.4.0.0 the secret and private
+  halves stamped true (except ML-KEM private halves, already
+  false), so keys whose creators never asked for derivation could
+  still serve as derive bases. Generated public halves now read
+  false where they used to read `CKR_ATTRIBUTE_TYPE_INVALID`.
+  Deriving from such a key now fails with
+  `CKR_KEY_FUNCTION_NOT_PERMITTED`, except
+  `CKM_PUB_KEY_FROM_PRIV_KEY`, which ignores the mark. Set
+  `CKA_DERIVE=true` explicitly in the template to keep deriving.
+  Imported, unwrapped and derived keys are unchanged (an omitted
+  mark already denied derivation there); pub-from-priv outputs
+  copy `CKA_DERIVE` from the base, so outputs of newly generated
+  private keys now read false instead of true.
 
 ### Fixed
 
@@ -372,7 +390,7 @@ record: symbol separation, sanitizer runs, evidence limits) and
   (Store, backend, pointer, registry entry) before reporting NULL, and
   the primary error is kept when a cleanup close also fails. A Store
   whose cleanup closes both failed, and which no caller can receive,
-  is recovered by the next standalone open or close in the process
+  is recovered by the next standalone open or close that reaches acquisition
   instead of staying unreachable with its lock held (`ResidueOwner`
   in `ffi/Haskoki/FFI/Async.hs`).
 - Standalone context close is now cancellable at every blocking wait
@@ -448,6 +466,29 @@ record: symbol separation, sanitizer runs, evidence limits) and
   spurious `CKR_GENERAL_ERROR`. Losing threads now wait for the
   start to complete; fork children still fail safe without waiting.
   0.4.0.0 is affected.
+- A joined detached job that fails on poll now resolves failed in
+  memory and durably. Polling through the async exports marks the
+  observed terminal fate (`failed` when the poll drives a failure,
+  `canceled` when it observes a raw cancellation), and completing an
+  already-failed or already-canceled joined job marks the same fate
+  it observed. A join from another context on the same store then
+  answers the failed code instead of `CKR_OPERATION_ACTIVE`, and
+  after close or finalize a later interval's join still answers the
+  failed code instead of `CKR_FUNCTION_CANCELED`, with no replay once
+  the durable mark commits. 0.4.0.0 is affected.
+- Re-detaching a joined job (`C_AsyncGetID` on a joined handle) now
+  retires the superseded id in the same detach: the old record is
+  marked `canceled` durably with its recipe bytes unchanged and its
+  attachment set terminal, committed in one atomic delta with the new
+  record's insert, so only the new id replays after a crash, and a
+  refused commit leaves the old attachment untouched.
+  0.4.0.0 is affected.
+- The config file is now read strictly as bytes and decoded
+  explicitly as UTF-8, so the result never depends on the process
+  locale. A UTF-8 comment loads and undecodable bytes answer typed
+  `CfgInvalid` instead of throwing; token labels and PINs containing
+  non-ASCII characters are refused at load with `CfgInvalid` naming
+  the token and role. 0.4.0.0 is affected.
 
 ## [0.4.0.0] - Unreleased
 

@@ -14,11 +14,15 @@ this suite mutates @HASKOKI_CONFIG@ process-wide.
 module ConfigHonestySpec (spec) where
 
 import Control.Exception (IOException, bracket, try)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (isInfixOf, isPrefixOf, sort, (\\))
 import GHC.Clock (getMonotonicTimeNSec)
-import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
-import System.FilePath ((</>))
+import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectoryRecursive, removeFile)
+import System.Environment (getEnvironment, getExecutablePath)
+import System.Exit (ExitCode (..))
+import System.FilePath ((</>), takeDirectory)
+import System.Process (CreateProcess (env), proc, readCreateProcessWithExitCode)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -130,6 +134,15 @@ spec = testGroup "Config honesty"
     , testCase "dogfood: all fixtures honest" caseDogfoodFixtures
     , testCase "refusal: dishonest file fails resolve" caseStartupRefusalResolve
     , testCase "refusal: config check rejects dishonesty" caseStartupRefusalCheck
+    ]
+  , testGroup "encoding"
+    [ testCase "utf-8 comment loads" caseUtf8CommentLoads
+    , testCase "utf-8 label is typed in every locale" caseUtf8LabelTyped
+    , testCase "invalid utf-8 gives typed invalid" caseInvalidUtf8Typed
+    , testCase "non-ascii slot-1 label refused" caseNonAsciiLabelRefused
+    , testCase "non-ascii pin refused" caseNonAsciiPinRefused
+    , testCase "ascii catalog loads unchanged" caseAsciiCatalogLoads
+    , testCase "config check accepts utf-8 under C locale" caseConfigCheckCSubprocess
     ]
   , testGroup "audit"
     [ testCase "key table matches the parser catalog" caseKeyTableMatches
@@ -1119,3 +1132,197 @@ caseIdentityRows = do
     ("serial is the 16-character TokenId" `isInfixOf` doc)
   assertBool "PIN authority states durable-first"
     ("durable credentials win" `isInfixOf` doc)
+
+-- ---------------------------------------------------------------------------
+-- Encoding: the config file is UTF-8 regardless of locale
+-- ---------------------------------------------------------------------------
+
+-- | Write exact bytes to a file in a fresh private directory,
+-- load it, and remove the directory: no fixed shared names, so two
+-- suite processes can never collide on one path.
+withBytesFile :: String -> BS.ByteString -> (FilePath -> IO a) -> IO a
+withBytesFile name bytes action = withPrivateDir $ \dir -> do
+  let path = dir </> name
+  BS.writeFile path bytes
+  action path
+
+-- | UTF-8 bytes for "e with acute" (U+00E9): C3 A9.
+eAcute :: BS.ByteString
+eAcute = BS.pack [0xC3, 0xA9]
+
+-- A UTF-8 comment loads: comments carry no validation, so the file
+-- behaves like its ASCII body in every locale.
+caseUtf8CommentLoads :: IO ()
+caseUtf8CommentLoads = withTimeout "utf-8 comment" $ do
+  let body = BS.concat
+        [ BC8.pack "schema_version = 1\n# caf"
+        , eAcute
+        , BC8.pack " comment\n"
+        ]
+  withBytesFile "haskoki-utf8-comment.toml" body $ \path -> do
+    eCfg <- loadConfigFile path
+    case eCfg of
+      Right _ -> pure ()
+      Left err -> assertFailure ("utf-8 comment must load, got: " ++ show err)
+
+-- A UTF-8 label behaves the same in every locale: here the slot-0
+-- anchor fails (the label is not haskoki-demo), so both locales
+-- answer the same typed invalid, never an exception.
+caseUtf8LabelTyped :: IO ()
+caseUtf8LabelTyped = withTimeout "utf-8 label" $ do
+  let body = BS.concat
+        [ BC8.pack "[tokens]\nlabels = [\"haskoki-d"
+        , eAcute
+        , BC8.pack "mo\"]\nso_pins = [\"5678\"]\nuser_pins = [\"1234\"]\n"
+        ]
+  withBytesFile "haskoki-utf8-label.toml" body $ \path -> do
+    eCfg <- loadConfigFile path
+    case eCfg of
+      Left (CfgInvalid _) -> pure ()
+      other -> assertFailure ("utf-8 label must be typed invalid, got: " ++ show other)
+
+-- An undecodable byte gives typed invalid, never an exception, in
+-- every locale.
+caseInvalidUtf8Typed :: IO ()
+caseInvalidUtf8Typed = withTimeout "invalid utf-8" $ do
+  let body = BS.concat
+        [ BC8.pack "schema_version = 1\n# "
+        , BS.pack [0xFF]
+        , BC8.pack "\n"
+        ]
+  withBytesFile "haskoki-invalid-utf8.toml" body $ \path -> do
+    eCfg <- loadConfigFile path
+    case eCfg of
+      Left (CfgInvalid _) -> pure ()
+      other -> assertFailure ("0xFF must be typed invalid, got: " ++ show other)
+
+-- | UTF-8 bytes for "a with diaeresis" (U+00E4): C3 A4.
+aUmlaut :: BS.ByteString
+aUmlaut = BS.pack [0xC3, 0xA4]
+
+-- | UTF-8 bytes for "o with diaeresis" (U+00F6): C3 B6.
+oUmlaut :: BS.ByteString
+oUmlaut = BS.pack [0xC3, 0xB6]
+
+-- A non-ASCII slot-1 label is refused at load: the slot-0 anchor
+-- passes, so only the ASCII gate can answer, naming the token.
+caseNonAsciiLabelRefused :: IO ()
+caseNonAsciiLabelRefused = withTimeout "non-ascii label" $ do
+  let body = BS.concat
+        [ BC8.pack "[tokens]\nlabels = [\"haskoki-demo\", \"Kass"
+        , eAcute
+        , BC8.pack "\"]\nso_pins = [\"5678\", \"6789\"]\nuser_pins = [\"1234\", \"2345\"]\n"
+        ]
+  withBytesFile "haskoki-nonascii-label.toml" body $ \path -> do
+    eCfg <- loadConfigFile path
+    case eCfg of
+      Left (CfgInvalid msg) -> do
+        assertBool "names the token" ("Kass" `isInfixOf` msg)
+        assertBool "says non-ASCII" ("non-ASCII" `isInfixOf` msg)
+      other -> assertFailure ("non-ASCII label must refuse, got: " ++ show other)
+
+-- A non-ASCII PIN is refused at load in both roles, naming the
+-- token and the role. Both PINs are length-valid, so only the ASCII
+-- gate can answer.
+caseNonAsciiPinRefused :: IO ()
+caseNonAsciiPinRefused = withTimeout "non-ascii pin" $ do
+  let mkBody so user = BS.concat
+        [ BC8.pack "[tokens]\nlabels = [\"haskoki-demo\"]\nso_pins = [\""
+        , so
+        , BC8.pack "\"]\nuser_pins = [\""
+        , user
+        , BC8.pack "\"]\n"
+        ]
+      expectRole file role body = withBytesFile file body $ \path -> do
+        eCfg <- loadConfigFile path
+        case eCfg of
+          Left (CfgInvalid msg) -> do
+            assertBool "names the token" ("haskoki-demo" `isInfixOf` msg)
+            assertBool ("names the role " ++ role) (role `isInfixOf` msg)
+          other -> assertFailure ("non-ASCII " ++ role ++ " must refuse, got: " ++ show other)
+  expectRole "haskoki-nonascii-so.toml" "so_pin"
+    (mkBody (BS.concat [BC8.pack "p", aUmlaut, BC8.pack "ss"]) (BC8.pack "1234"))
+  expectRole "haskoki-nonascii-user.toml" "user_pin"
+    (mkBody (BC8.pack "5678") (BS.concat [BC8.pack "w", oUmlaut, BC8.pack "rd"]))
+
+-- An ASCII catalog loads exactly as before: the ASCII gate changes
+-- nothing for ASCII material.
+caseAsciiCatalogLoads :: IO ()
+caseAsciiCatalogLoads = withTimeout "ascii catalog" $ do
+  let body = BC8.pack $ unlines
+        [ "[tokens]"
+        , "labels = [\"haskoki-demo\", \"tok-1\"]"
+        , "so_pins = [\"5678\", \"6789\"]"
+        , "user_pins = [\"1234\", \"2345\"]"
+        ]
+  withBytesFile "haskoki-ascii-catalog.toml" body $ \path -> do
+    eCfg <- loadConfigFile path
+    case eCfg of
+      Right cfg -> assertEqual "catalog entries"
+        [("haskoki-demo", "5678", "1234"), ("tok-1", "6789", "2345")]
+        (tcEntries (cfgTokens cfg))
+      Left err -> assertFailure ("ascii catalog must load, got: " ++ show err)
+
+-- The CLI config path accepts a UTF-8 file in a fresh process
+-- started under LANG=C LC_ALL=C: locale-independent decoding,
+-- pinned outside this process's own locale. The env-plumbing check
+-- proves the C locale actually reached the child (without it a
+-- UTF-8 child locale would pass vacuously).
+caseConfigCheckCSubprocess :: IO ()
+caseConfigCheckCSubprocess = withTimeout "C-locale subprocess" $ withPrivateDir $ \tmp -> do
+  ctl <- resolveCtlBin
+  let file = tmp </> "haskoki-utf8-subprocess.toml"
+  BS.writeFile file $ BS.concat
+    [ BC8.pack "schema_version = 1\n# caf"
+    , eAcute
+    , BC8.pack " comment\n"
+    ]
+  baseEnv <- getEnvironment
+  let childEnv =
+        ("LANG", "C") : ("LC_ALL", "C")
+          : filter (\(k, _) -> k /= "LANG" && k /= "LC_ALL") baseEnv
+      runChild exe args = readCreateProcessWithExitCode
+        ((proc exe args) { env = Just childEnv }) ""
+  (envCode, envOut, _) <- runChild "/usr/bin/env" []
+  assertEqual "env probe exits 0" ExitSuccess envCode
+  assertBool "LANG=C reached the child" ("LANG=C\n" `isInfixOf` envOut)
+  assertBool "LC_ALL=C reached the child" ("LC_ALL=C\n" `isInfixOf` envOut)
+  (code, out, err) <- runChild ctl ["config", "check", "--config", file]
+  assertEqual ("config check exits 0 under C locale: " ++ err) ExitSuccess code
+  assertBool "reports config-ok" ("config-ok" `isInfixOf` out)
+
+-- | The built @haskoki-ctl@ binary, found under the package's
+-- @dist-newstyle/build@ tree (a full build precedes every suite run,
+-- so the binary is present and fresh; absence fails loudly, never
+-- skips).
+resolveCtlBin :: IO FilePath
+resolveCtlBin = do
+  exeDir <- takeDirectory <$> getExecutablePath
+  root <- ascend exeDir
+  found <- search (root </> "dist-newstyle" </> "build") (10 :: Int)
+  case sort found of
+    (p : _) -> pure p
+    [] -> assertFailure
+      "haskoki-ctl binary missing under dist-newstyle/build (run `cabal build all` first)"
+  where
+    ascend dir = do
+      here <- doesFileExist (dir </> "haskoki.cabal")
+      if here
+        then pure dir
+        else let parent = takeDirectory dir
+             in if parent == dir
+                  then assertFailure "haskoki.cabal not found above the test binary"
+                  else ascend parent
+    search _ 0 = pure []
+    search dir depth = do
+      isDir <- doesDirectoryExist dir
+      if not isDir
+        then pure []
+        else do
+          names <- listDirectory dir
+          fmap concat $ mapM (collect dir (depth - 1)) names
+    collect dir depth name = do
+      let p = dir </> name
+      isFile <- doesFileExist p
+      rest <- search p depth
+      pure ([p | isFile && name == "haskoki-ctl"] ++ rest)
