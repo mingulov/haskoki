@@ -320,8 +320,8 @@ int main(int argc, char **argv) {
         "GetInfo identical via legacy and 3.2");
   CHECK(info3.cryptokiVersion.major == 2 && info3.cryptokiVersion.minor == 40,
         "cryptoki version 2.40");
-  CHECK(info3.libraryVersion.major == 0 && info3.libraryVersion.minor == 4,
-        "library version 0.4");
+  CHECK(info3.libraryVersion.major == 0 && info3.libraryVersion.minor == 5,
+        "library version 0.5");
   CHECK(memcmp(info3.manufacturerID, "                                ", 32) !=
             0 &&
             memcmp(info3.libraryDescription,

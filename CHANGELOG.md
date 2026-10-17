@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0.0] - Unreleased
 
 Behaviour changes a caller written against 0.4.0.0 can observe:
 
@@ -219,11 +219,6 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
 - Identity refusal messages no longer say 'in this phase'; they name the
   absence of a relabel or slot-move command.
 - The test-only `storeResetToken` keeps the token's credential row.
-- `C_FindObjects` on a removed session answers
-  `CKR_SESSION_HANDLE_INVALID`; it used to answer
-  `CKR_OPERATION_NOT_INITIALIZED`. The session check now runs before
-  the cursor lookup, and refusals leave the output buffer and count
-  untouched.
 - The provider starts the RTS with one capability and ignores
   `GHCRTS` entirely, when it starts the RTS itself. A `GHCRTS` of
   `-N2` or higher no longer takes effect, and an unsafe option no
@@ -449,7 +444,14 @@ record: symbol separation, sanitizer runs, evidence limits) and
   start to complete; fork children still fail safe without waiting.
   0.4.0.0 is affected.
 
-## [0.4.0.0] - Unreleased
+### Security
+
+- In 0.4.0.0, `CKA_SEED` of sensitive or unextractable ML-DSA, ML-KEM
+  and SLH-DSA private keys was readable via `C_GetAttributeValue` and
+  matchable via `C_FindObjects`; 0.5.0.0 seals it: reads fail with
+  `CKR_ATTRIBUTE_SENSITIVE` and find withholds such keys by seed.
+
+## [0.4.0.0] - 2026-10-15
 
 - Token provisioning lifecycle: `C_InitToken`, `C_InitPIN`, and `C_SetPIN`
   are routed end to end with durable SQLite persistence, catalog-seeded

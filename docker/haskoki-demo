@@ -26,7 +26,7 @@
 # no root-only paths, no HOME writes.
 set -u
 
-VERSION="0.4.0.0"
+VERSION="0.5.0.0"
 BUNDLE_ROOT="/opt/haskoki/dist-release"
 PROXY_DIR="/opt/haskoki/proxy"
 CHECKER="/opt/p11c/bin/pkcs11-check"

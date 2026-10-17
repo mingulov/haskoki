@@ -3,7 +3,7 @@
 You need Docker running on Linux amd64. No Haskell setup or hardware
 token is needed. The [README](../README.md#try-it-with-docker) runs the
 published v0.4.0.0 demo, the latest published release; this guide uses the
-same v0.4.0.0 commands.
+same v0.4.0.0 commands. v0.5.0.0 is not published until its release workflow completes.
 
 ## Choose the image
 
@@ -177,7 +177,7 @@ on that branch. Download and extract the ZIP, then run in that directory:
 
 ```sh
 docker load -i demo-image.tar.gz
-HASKOKI_IMAGE=haskoki-demo:0.4.0.0
+HASKOKI_IMAGE=haskoki-demo:0.5.0.0
 ```
 
 Use the tested artifact, which is available after the demo checks finish.

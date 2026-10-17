@@ -35,14 +35,14 @@ demo-ok: 8/8 verifications hold
 That's the complete first run. No clone, compiler, account, PIN setup, or
 physical token is needed. Reports and disposable keys remain in `out/demo-*/`.
 
-The latest published release is
-[**v0.4.0.0**](https://github.com/mingulov/haskoki/releases/tag/v0.4.0.0)
-(October 15, 2026). It adds token provisioning
-(`C_InitToken`/`C_InitPIN`/`C_SetPIN`), authorized re-initialization, and
-logout-oracle coverage on top of the v0.3.1.0 demo experience. v0.4.0.0 is a bounded release: its
-[limitations](docs/release-notes-0.4.0.0.md#known-limitations-and-v05-deferrals)
+This checkout prepares **v0.5.0.0**, adding the attribute-sensitivity
+model, sealed PQC private seeds, schema-3 stores with a migrate-once
+upgrade path, and an installed client portfolio on top of the v0.4.0.0
+demo experience. Its registry tag is available only after publication;
+the latest published release is v0.4.0.0. v0.5.0.0 is a bounded release: its
+[limitations](docs/release-notes-0.5.0.0.md#known-limitations)
 are stated up front. The
-[hands-on guide](docs/try-it.md) shows how to pin the published image,
+[hands-on guide](docs/try-it.md) shows how to load a tested candidate,
 generate a key with `pkcs11-tool`, and sign your own message.
 
 The demo image includes Haskoki, its runtime and crypto libraries, OpenSC
@@ -85,8 +85,8 @@ PKCS#11 calls on Linux. It is optional and runs separately; an
 | Investigate support or build the project | [Coverage](docs/coverage.md), [results](docs/release-results.md), [developer toolchain](docs/toolchain.md) |
 
 Haskoki exposes PKCS#11 2.40-3.2 interfaces, with 316 behavior-tested
-mechanisms out of 464 catalog entries. On the v0.5 development tree the
-full checker profile retains 18 documented findings (the published
+mechanisms out of 464 catalog entries. The v0.5.0.0 candidate image
+reports 18 documented findings on the full checker profile (the published
 v0.4.0.0 image reports 22); the short smoke profile expects zero. Neither
 number establishes conformance or certification. See the [results and
 limits](docs/release-results.md) before choosing it for an integration.
