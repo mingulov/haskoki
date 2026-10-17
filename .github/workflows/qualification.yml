@@ -106,9 +106,13 @@ jobs:
                 scripts/test-c-mutexes.sh scripts/test-consumers.sh \
                 scripts/test-async-attached.sh scripts/test-async-detached.sh \
                 scripts/test-ossl4-bounds.sh \
-                scripts/test-native-sanitizers.sh; do
+                scripts/test-native-sanitizers.sh \
+                scripts/test-client-journeys.sh; do
               sh -n "$d"
             done
+            # Client journeys: leg-table aggregate controls (build-free).
+            python3 -I tests/journeys/journeys.py --self-test
+            sh scripts/test-client-journeys.sh --self-test
             # The sanitizer harness includes the pinned OpenSSL 4 headers
             # and the runner has no such prefix: it is syntax-checked
             # inside the toolchain image by the toolchain job, never here
@@ -663,6 +667,117 @@ jobs:
             -v "$PWD:/work" -w /work \
             "$HASKOKI_IMAGE" scripts/test-native-sanitizers.sh 2>&1 \
             | tee "$SAN_DIR/native-sanitizers.log"
+      - name: Run installed client journeys
+        # Separate obligation (scripts/driver-inventory.json role
+        # qualification): the portfolio legs against a fresh release
+        # bundle, plus the image profile (module phase inside the
+        # candidate demo image, verifier phase on the runner). The
+        # bundle is built in the toolchain image and staged under the
+        # evidence root; the native fixtures compile on the runner;
+        # the portfolio legs run in a disposable client container
+        # (pinned OpenSC, GnuTLS, JDK, openssl) with the journeys
+        # directory mounted at the same absolute path on both sides,
+        # so each --out below names one directory. Every phase runs
+        # even when an earlier one failed so all verdicts are
+        # recorded; the step exits nonzero when any phase failed.
+        # Runs even when an earlier step failed so its verdict is
+        # recorded. Each run directory is handed back to the runner
+        # user: the containers write as root (portfolio) and as the
+        # image user (image profile), and the runner-side --check
+        # below plus the evidence upload must read every output.
+        if: always() && steps.select.outputs.mode == 'behavioral'
+        run: |
+          set -euo pipefail
+          export HASKOKI_IMAGE=haskoki-dev:ghc-9.10.3
+          JOURNEYS_DIR="$RUNNER_TEMP/qualify-evidence/journeys"
+          JOURNEYS_RC=0
+          mkdir -p "$JOURNEYS_DIR/bundle"
+          chmod a+rwx "$JOURNEYS_DIR" "$JOURNEYS_DIR/bundle"
+          docker run --rm --network host -v "$PWD:/work" -w /work \
+            "$HASKOKI_IMAGE" scripts/make-release.sh 2>&1 \
+            | tee "$JOURNEYS_DIR/make-release.log"
+          VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
+          tar czf "$JOURNEYS_DIR/bundle/haskoki-$VER-linux-x86_64.tar.gz" \
+            -C dist-release "haskoki-$VER"
+          sha256sum "$JOURNEYS_DIR/bundle/"*.tar.gz \
+            | tee "$JOURNEYS_DIR/bundle/SHA256SUMS"
+          sh scripts/test-client-journeys.sh --build-native "$JOURNEYS_DIR/native" 2>&1 \
+            | tee "$JOURNEYS_DIR/build-native.log"
+          # The checkout carries its git directory, so the source
+          # revision and cleanliness are measured on the runner (the
+          # client container has no git): these are the driver's
+          # required caller fallback.
+          JOURNEYS_SHA="$(git rev-parse HEAD)"
+          JOURNEYS_DIRTY=false
+          [ -z "$(git status --porcelain -- tests/journeys scripts/test-client-journeys.sh)" ] \
+            || JOURNEYS_DIRTY=true
+          docker run --rm --network host \
+            -v "$PWD:/src:ro" -v "$JOURNEYS_DIR:$JOURNEYS_DIR" -w /src ubuntu:26.04 sh -ec '
+            set -eu
+            export DEBIAN_FRONTEND=noninteractive
+            SETUP_START=$(date +%s)
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends \
+              opensc=0.27.0~rc1-1 gnutls-bin=3.8.12-2ubuntu1.1 default-jdk-headless=2:1.25-77 \
+              openssl=3.5.5-1ubuntu3.7 python3 libgmp10 libffi8 libnuma1 >/dev/null
+            SETUP_END=$(date +%s)
+            sh scripts/test-client-journeys.sh --profile portfolio \
+              --out '"$RUNNER_TEMP/qualify-evidence/journeys/run"' \
+              --bundle-tar '"$RUNNER_TEMP/qualify-evidence/journeys/bundle/haskoki-$VER-linux-x86_64.tar.gz"' \
+              --native-dir '"$RUNNER_TEMP/qualify-evidence/journeys/native"' \
+              --source-sha '"$JOURNEYS_SHA"' --source-dirty '"$JOURNEYS_DIRTY"' \
+              --client-setup-seconds $((SETUP_END - SETUP_START))' 2>&1 \
+            | tee "$JOURNEYS_DIR/journeys.log" || JOURNEYS_RC=$?
+          if [ -d "$JOURNEYS_DIR/run" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$JOURNEYS_DIR/run"
+          fi
+          # Image profile: build the candidate demo image from the
+          # staged bundle above (same bytes as the portfolio run),
+          # run the module phase inside it (image user, no network),
+          # then the verifier phase in the pinned client container.
+          IMG_TAG="haskoki-demo:$VER-candidate"
+          HASKOKI_DEMO_IMAGE="$IMG_TAG" HASKOKI_DEMO_USE_STAGED=1 \
+            HASKOKI_DEMO_TEST_OUT="$JOURNEYS_DIR/image-out" \
+            HASKOKI_DEMO_REVISION="$JOURNEYS_SHA" \
+            sh scripts/test-demo-image.sh build 2>&1 \
+            | tee "$JOURNEYS_DIR/image-build.log" || JOURNEYS_RC=$?
+          IMG="$(docker image inspect --format '{{.Id}}' "$IMG_TAG")" \
+            || { echo "image inspect failed for $IMG_TAG"; IMG=""; }
+          if [ -n "$IMG" ]; then
+            MODULE_RC=0
+            docker run --rm --network none \
+              -v "$PWD:/src:ro" -v "$JOURNEYS_DIR:$JOURNEYS_DIR" -w /src \
+              --entrypoint sh "$IMG_TAG" -c \
+              'scripts/test-client-journeys.sh --profile image --phase module \
+                --module /opt/haskoki/current/lib/libhaskoki.so \
+                --out '"$RUNNER_TEMP/qualify-evidence/journeys/image-run"' \
+                --native-dir '"$RUNNER_TEMP/qualify-evidence/journeys/native"' \
+                --artifact-image '"$IMG"' --source-sha '"$JOURNEYS_SHA"' \
+                --source-dirty '"$JOURNEYS_DIRTY"'' 2>&1 \
+              | tee "$JOURNEYS_DIR/journeys-image.log" || MODULE_RC=$?
+            if [ -d "$JOURNEYS_DIR/image-run" ]; then
+              sudo chown -R "$(id -u):$(id -g)" "$JOURNEYS_DIR/image-run"
+            fi
+            if [ "$MODULE_RC" -eq 0 ]; then
+              # The verifier pins its client packages, so it runs in the
+              # same pinned client container as the portfolio, never on
+              # the runner host's own OpenSSL.
+              docker run --rm --network host \
+                -v "$PWD:/src:ro" -v "$JOURNEYS_DIR:$JOURNEYS_DIR" -w /src ubuntu:26.04 sh -ec '
+                set -eu
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends \
+                  openssl=3.5.5-1ubuntu3.7 python3 >/dev/null
+                sh scripts/test-client-journeys.sh --profile image --phase verifier \
+                  --out-existing '"$JOURNEYS_DIR/image-run"'' 2>&1 \
+                | tee -a "$JOURNEYS_DIR/journeys-image.log" || JOURNEYS_RC=$?
+              sudo chown -R "$(id -u):$(id -g)" "$JOURNEYS_DIR/image-run"
+            else
+              JOURNEYS_RC=$MODULE_RC
+            fi
+          fi
+          exit "$JOURNEYS_RC"
       - name: Run the build-only fallback manifest
         if: steps.select.outputs.mode == 'buildonly'
         run: |
@@ -770,6 +885,14 @@ jobs:
           set -euo pipefail
           python3 scripts/check-qualification-wiring.py --verify-ownership \
             "$RUNNER_TEMP/qualify-evidence/ownership" --expect-sha "$REQUESTED_REVISION"
+      - name: Verify client journeys
+        if: always()
+        run: |
+          # Post-hoc: recompute the journey aggregate over each run
+          # above (every required leg, markers, verifiers, pins).
+          set -euo pipefail
+          sh scripts/test-client-journeys.sh --check "$RUNNER_TEMP/qualify-evidence/journeys/run" --profile portfolio
+          sh scripts/test-client-journeys.sh --check "$RUNNER_TEMP/qualify-evidence/journeys/image-run" --profile image
       - name: Verify matrix receipt
         if: always()
         env:
@@ -876,6 +999,14 @@ jobs:
           set -euo pipefail
           python3 scripts/check-qualification-wiring.py --verify-ownership \
             evidence-in/qualify-evidence/ownership --expect-sha "$REQUESTED_REVISION"
+      - name: Verify client journeys
+        if: always()
+        run: |
+          # Same aggregate re-check as the qualify job, on the
+          # downloaded artifact.
+          set -euo pipefail
+          sh scripts/test-client-journeys.sh --check evidence-in/qualify-evidence/journeys/run --profile portfolio
+          sh scripts/test-client-journeys.sh --check evidence-in/qualify-evidence/journeys/image-run --profile image
       - name: Upload matrix artifact
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -1,0 +1,28 @@
+# Junction config: native legs (fixture and consumer binaries) of the
+# supported-client portfolio.
+#
+# Fresh SQLite store per run, owned by exactly one process at a time:
+# legs run in strict sequence, never concurrently (single-writer
+# store; a second concurrent open refuses C_Initialize). The
+# same-instance busy leg opens this store through the leg config;
+# the consumer binaries point HASKOKI_CONFIG at their own temp
+# configs instead, so this file only records what the runner
+# provided them.
+#
+# Runner substitution: replace @JOURNEY_DIR@ with the absolute path of
+# a fresh empty directory owned by the run. The runner records the
+# substituted file bytes with the evidence record.
+schema_version = 1
+profile = "demo-maximal"
+
+[storage]
+kind = "sqlite"
+path = "@JOURNEY_DIR@/native-tokens.db"
+
+[engine]
+kind = "openssl"
+allow_synthetic_fallback = false
+private_library_context = true
+
+[trace]
+enabled = false

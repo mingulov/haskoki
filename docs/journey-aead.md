@@ -65,8 +65,16 @@ above count as journey evidence.
 
 ## Evidence
 
-Passing evidence is the consumer scenario's exit 0 plus its `PASS:
-consumer_aead` trailer in the driver log. Every session leg uses
-the `crypto:` prefix, so the parity driver excludes these lines
-from its direct-vs-proxied diff while each mode still asserts
-every leg.
+The `native-aead` leg runs the compiled consumer against the
+installed module with the native junction, in both profiles:
+
+```sh
+consumer_aead $MODULE
+```
+
+It expects exit 0 with `PASS: consumer_aead`. Evidence: pass P+I
+([client-journeys.json](release-results/client-journeys.json)).
+Evidence scope stays native-consumer: a direct C-surface receipt,
+not an independent client. Every session leg uses the `crypto:`
+prefix, so the parity driver excludes these lines from its
+direct-vs-proxied diff while each mode still asserts every leg.

@@ -2,13 +2,14 @@
 # Gate runner: static gates + full cabal test + release evidence,
 # the ONE entry point whose pass means a passing release story.
 #
-# Gate count: 23 static gates —
+# Gate count: 25 static gates —
 # core-boundary, mechanisms, denominators, attributes, ossl4-surface,
 # version, ckr, seed-honesty, plus warnings-zero, docs,
 # fork-stance, test-wiring, test-evidence, test-execution,
 # coverage-boundary,
 # coverage-fresh, release-pivots, loader-norm,
-# history-codes, sealed-callwork, actions-pinned, release-evidence-fixtures
+# history-codes, sealed-callwork, actions-pinned, release-evidence-fixtures,
+# journey-engine, journey-driver
 # and funnel-cwd (wired here) — then a forced `cabal build all`
 # plus `cabal test all` in the pinned toolchain container, then the
 # release-evidence manifest (15 container + 2 host drivers + release
@@ -42,7 +43,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 IMAGE="${HASKOKI_IMAGE:-haskoki-dev:ghc-9.10.3}"
 export HASKOKI_IMAGE="$IMAGE"
-echo "=== static gates (1-22, build-free) ==="
+echo "=== static gates (1-24, build-free) ==="
 python3 scripts/check-core-boundary.py
 python3 scripts/check-mechanisms.py
 python3 scripts/check-denominators.py
@@ -87,6 +88,9 @@ python3 scripts/test-release-evidence.py
 python3 scripts/test-release-nm-gate.py
 # WP03: ownership-matrix driver controls (fake binaries, no build).
 python3 scripts/test-ownership-matrix-controls.py
+# Client journeys: leg-table aggregate controls (build-free).
+python3 -I tests/journeys/journeys.py --self-test
+sh scripts/test-client-journeys.sh --self-test
 echo "=== forced build + cabal test all (pinned container) ==="
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal build all --enable-tests
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all
@@ -100,8 +104,8 @@ echo "=== executed test-tree join (builder context, needs the built suites) ==="
 # directly, and no host runtime/library compatibility is assumed.
 # The join itself stays host-side (pure text over the captures).
 timeout -s KILL 2400 python3 scripts/check-test-execution.py --collect --build-root dist-newstyle --dir test-trees --result pass --docker-image "$IMAGE"
-echo "=== static gate 23 (needs the built tests) ==="
+echo "=== static gate 25 (needs the built tests) ==="
 bash scripts/check-funnel-cwd.sh
 echo "=== release evidence (drivers + install) ==="
 bash scripts/release-evidence.sh
-echo "GATES: all passing (23 gates + cabal test + executed join + release evidence)"
+echo "GATES: all passing (25 gates + cabal test + executed join + release evidence)"

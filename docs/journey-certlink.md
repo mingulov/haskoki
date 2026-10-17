@@ -1,108 +1,130 @@
-# Certificate-linked application journey
+# Journey: certificate-linked key
 
-One persistent certificate/key identity path: generate, link under
-one `CKA_ID`, select by that ID, restart, refuse the wrong
-identity, and finish with a real application reading the linked
-identity. The native half runs in `tests/c/consumer_certlink.c`
-(run by `scripts/test-consumers.sh` in direct mode and by
-`scripts/test-proxy-parity.sh` in both modes); the application half
-is a Java KeyStore plus application-signing leg.
+This journey answers one question per consumer: does the token link
+the right metadata to the right key? The native consumer below is a
+metadata linkage receipt (linkage, never correspondence); the Java
+application journey underneath it is the matched-certificate path,
+where the certificate's key must be the token key.
 
-## Native legs
+## Native consumer (metadata linkage)
 
-The consumer loads the real fixture DER
-(`tests/fixtures/cert-selfsigned.der`, SHA-256 pinned, no embedded
-synthetic bytes), derives subject and serial bytes with its DER
-walker, and works in three initialize intervals of one process.
+`tests/c/consumer_certlink.c` links the self-signed RSA-2048
+fixture certificate (`tests/fixtures/cert-selfsigned.der`, SHA-256
+pinned, no embedded synthetic bytes) to a separately generated EC
+P-256 key through the pinned 3.2 headers: the certificate becomes
+an X.509 certificate object with DER-derived subject and serial
+bytes, the key mints with CKA_ID `{0x01, 0x01}`, and the
+certificate takes that ID after creation. The certificate does not
+belong to the key — nothing here asserts correspondence:
 
-Memory interval — link, readback, and use:
+- The generated private key reports the public half's curve
+  parameters (`CKA_EC_PARAMS` equal on both halves).
+- Find-by-ID returns exactly the three linked handles;
+  find-by-absent-ID returns none; `VALUE` and `SUBJECT` read back
+  the stored bytes; the untyped `CKA_HASH_OF_CERTIFICATE` read
+  refuses with `CKR_ATTRIBUTE_TYPE_INVALID`, an unavailable
+  length, and the caller buffer untouched.
+- The linked key signs an application message and the linked
+  public key verifies it; a tampered message and the wrong public
+  key both refuse with `CKR_SIGNATURE_INVALID`.
+- The same linkage persists as token objects in a SQLite store
+  across a finalize/re-initialize restart, then destroys cleanly.
 
-- The DER becomes an X.509 session certificate object; an EC P-256
-  pair mints with link ID bytes `{0x01, 0x01}` in its keygen
-  templates (the same identity shape the CLI journeys persist);
-  the certificate takes that ID after creation.
-- Find-by-ID returns exactly the three linked handles (order
-  unclaimed; asserted as a set); find-by-absent-ID returns none.
-- `CKA_VALUE` reads back the DER bytes; `CKA_SUBJECT` reads back
-  the derived subject bytes.
-- The untyped `CKA_HASH_OF_CERTIFICATE` read refuses with
-  `CKR_ATTRIBUTE_TYPE_INVALID`, an unavailable length, and the
-  caller buffer untouched.
-- The linked key signs an application message under
-  `CKM_ECDSA_SHA256` and the linked public key verifies it; a
-  tampered message and a distractor public key both refuse with
-  `CKR_SIGNATURE_INVALID`.
+The link-ID bytes `{0x01, 0x01}` deliberately match the CLI
+journeys ([client-portfolio.md](client-portfolio.md)), where
+OpenSC creates the persisted key under `--id 0101` and GnuTLS
+uses it. The memory interval runs identically in direct and
+proxy topologies; the SQLite restart intervals are direct-only
+(the client cannot switch the daemon backend), skipped in proxy
+mode with a loud note.
 
-SQLite intervals — persistence across restart (direct mode only):
+### Contract
 
-- The same linkage persists as token objects, the interval
-  finalizes, and a reopened interval finds the three handles by ID
-  with the certificate bytes intact.
-- The restarted objects destroy cleanly and the linkage then finds
-  nothing.
-- Direct-only because the client cannot switch the proxy daemon's
-  backend and client reattach is not a backend restart — the same
-  root cause as the direct-only `consumer_certificates:restart`
-  leg. Proxy mode skips these legs with a loud note, never
-  silently.
+- Compile with `-Ispec/vendor`. The translation unit includes only
+  the pinned vendor headers, never provider-generated artifacts
+  (enforced by the driver script's independence guard); its
+  SHA-256 and DER walker are translation-unit-local copies.
+- Usage: `consumer_certlink <libhaskoki.so>`. Exit 0 prints
+  `PASS: consumer_certlink (...)`; usage and `dlopen` failures
+  exit 2.
+- Part of `scripts/test-consumers.sh` and
+  `scripts/test-proxy-parity.sh`.
 
-Passing evidence is exit 0 plus the `PASS: consumer_certlink`
-trailer; session legs use the `crypto:` prefix for the parity
-driver, as in [journey-aead.md](journey-aead.md).
+### Evidence
 
-## Supplied-metadata policy
-
-The token stores the `CKA_VALUE` bytes and returns caller-supplied
-subject, issuer, serial, and public-key-info bytes; it does not
-parse DER or check that metadata agrees with the value (see
-[certificate-objects.md](certificate-objects.md)). The journey
-supplies DER-derived subject and serial bytes the way a real client
-would, and the readback legs pin that round trip. Chain building,
-trust decisions, and validity enforcement stay application work.
-
-## Application leg: Java KeyStore plus signing
-
-The plan's certificate-linked application use case is Java
-KeyStore with application signing — chosen over an OpenSSL
-provider journey because the SunPKCS11 lane is already qualified
-(login, keygen, sign) while no provider diagnostics exist, so the
-provider path would add a new integration surface for this
-purpose. Enumeration alone never counts: the leg needs a real
-certificate matched to its key, used by a real application step.
-
-`HASKOKI_CONFIG` points at the substituted
-`tests/journeys/keystore/haskoki-keystore.toml` (SQLite store);
-the SunPKCS11 config from `tests/journeys/sunpkcs11/sunpkcs11.cfg`
-is reused with `@MODULE@` substituted. All commands run with the
-pinned JDK from [client-portfolio.md](client-portfolio.md):
+The portfolio and image legs run the compiled consumer against
+the installed module with the native junction:
 
 ```sh
-# Generate the pair on the token with a self-signed certificate.
-keytool -genkeypair -keystore NONE -storetype PKCS11 \
-  -providerClass sun.security.pkcs11.SunPKCS11 -providerArg run.cfg \
-  -keyalg EC -keysize 256 -alias app-key -dname "CN=journey-app" \
-  -storepass 1234
-# The entry must pair the private key with its certificate chain.
-keytool -list -v -keystore NONE -storetype PKCS11 \
-  -providerClass sun.security.pkcs11.SunPKCS11 -providerArg run.cfg \
-  -storepass 1234 -alias app-key
-# Sign and verify an application archive with the token entry.
-printf 'journey payload' > payload.txt
-jar cf app.jar payload.txt
-jarsigner -keystore NONE -storetype PKCS11 \
-  -providerClass sun.security.pkcs11.SunPKCS11 -providerArg run.cfg \
-  -storepass 1234 app.jar app-key
-jarsigner -verify app.jar
-# The wrong alias must refuse, not sign.
-jarsigner -keystore NONE -storetype PKCS11 \
-  -providerClass sun.security.pkcs11.SunPKCS11 -providerArg run.cfg \
-  -storepass 1234 app.jar no-such-alias
+consumer_certlink $MODULE
 ```
 
-Expected: `genkeypair` exits 0; `list` shows a `PrivateKeyEntry`
-with a certificate chain; `jarsigner` signs and `-verify` reports
-the jar verified; the wrong-alias call fails without touching the
-archive. Status TO-QUALIFY: never attempted. Each command emits a
-[journey evidence record](client-portfolio.md#evidence-record-format)
-(`java-keystore-gen`, `java-keystore-list`, `java-keystore-sign`,
-`java-keystore-verify`, `java-keystore-refuse-alias`).
+Leg `native-certlink-metadata` expects exit 0 with
+`PASS: consumer_certlink` and
+`linked private key reports the curve parameters`. Evidence:
+pass P+I
+([client-journeys.json](release-results/client-journeys.json)).
+
+## Application journey (matched certificate)
+
+The Java KeyStore legs use a certificate whose key IS the token
+key. Setup mints an EC P-256 pair on the token (`app-key`, id
+`0202`), exports its public half, signs a leaf certificate for
+that public key with the journey CA (`CN=journey-app`), writes
+the leaf back as the key's certificate object, and compares the
+certificate SPKI against the token public-key SPKI byte for
+byte. A jar bundles the payload, `jarsigner` signs it through
+SunPKCS11, and two verifiers plus a tamper leg close the loop.
+All legs run against the installed bundle with the keystore
+junction; evidence is pass P unless noted.
+
+| Leg | Shape | Expect |
+| --- | --- | --- |
+| `keystore-create-key` | `pkcs11-tool --keypairgen --key-type EC:prime256v1 --label app-key --id 0202 --usage-sign` | exit 0 |
+| `keystore-export-pubkey` | `--read-object --type pubkey --id 0202 -o out/app-pub.der` | exit 0 |
+| `keystore-issue-cert` | `issue-cert --pub out/app-pub.der --out-dir ca --cn journey-app` | exit 0; `SPKI-MATCH` (the issued leaf carries the token key) |
+| `keystore-write-cert` | `--write-object ca/leaf.der --type cert --id 0202 --label app-key` | exit 0; `ID:         0202` |
+| `keystore-read-cert` | `--read-object --type cert --id 0202 -o out/app-cert.der` | exit 0 |
+| `keystore-spki-match` | `spki-match out/app-cert.der out/app-pub.der` | exit 0; `SPKI-MATCH` |
+| `keystore-make-jar` | `jar cf out/app.jar` over the keystore payload | exit 0 |
+| `java-keystore-list` | `keytool -list` over SunPKCS11 | exit 0; `app-key, PrivateKeyEntry` |
+| `java-keystore-refuse-pin` | `keytool -list -v` with PIN `0000` | exit 1; `CKR_PIN_INCORRECT` through the verbose cause chain |
+| `java-keystore-refuse-token` | `keytool -list -v` against a missing slot | exit 1; `CKR_SLOT_ID_INVALID` through the verbose cause chain |
+| `java-keystore-sign` | `jarsigner -sigalg SHA256withECDSA -signedjar out/app-signed.jar out/app.jar app-key` | exit 0; `jar signed.`; independently verified |
+| `java-keystore-verify` | `jarsigner -verify -verbose -certs out/app-signed.jar` | exit 0; `jar verified.`; `jar is unsigned.` absent |
+| `java-keystore-verify-independent` | `jar-cms-verify --jar out/app-signed.jar --ca ca/ca.pem --sig-dir sig` | exit 0; `CMS Verification successful` |
+| `java-keystore-tamper` | `jar-tamper ... -- jarsigner -verify out/tampered.jar` | `JOURNEY-TAMPER-DETECTED` with `digest error`; `jar verified.` absent |
+| `java-keystore-refuse-alias` | `jarsigner ... -signedjar out/alias.jar out/app.jar no-such-alias` | exit 1; `Certificate chain not found for: no-such-alias`; output jar absent |
+
+### Mismatch control
+
+A second entry checks that a wrong certificate does not pass as matched:
+`keystore-mismatch-create` mints EC P-256 `mismatched-key` (id
+`0303`), `keystore-mismatch-export-pubkey` exports its public
+half, and `keystore-mismatch-write-cert` stores the RSA-2048
+fixture certificate under the same id and label.
+`keystore-mismatch-spki` compares the RSA certificate SPKI
+against the EC public half and refuses with `SPKI-MISMATCH`
+(exit 1). The `java-keystore-refuse-mismatched` leg then attempts
+the full sign path and expects no verified signature (pass P):
+jarsigner refuses the cross-algorithm entry at the sign stage
+with `jarsigner error:
+java.lang.IllegalArgumentException: private key algorithm does
+not match algorithm of public key in end entity certificate (the
+1st in certPath)` (`logs/java-keystore-refuse-mismatched.log:1`),
+so the row pins `JOURNEY-NO-VERIFIED-SIGNATURE stage=sign` plus
+that cause line. The verify stage is unreachable with this
+fixture: jarsigner compares the private-key algorithm against
+the end-entity certificate's public-key algorithm client-side
+before signing, with no `PKCS11Exception` wrapper for the
+provider to influence. See the status note in
+[client-portfolio.md](client-portfolio.md).
+
+### Keytool on-token generation
+
+`keytool -genkeypair` generates an EC P-256 pair with a
+self-signed certificate directly on the token (exit 0).
+`java-keystore-generate` pins that receipt
+(`key pair and self-signed certificate`), and
+`java-keystore-sign-generated` signs a jar with the generated
+entry (`jar signed.`). Both pass in P.

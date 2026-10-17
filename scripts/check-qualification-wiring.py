@@ -12,9 +12,10 @@ Fails (exit 1) when any rule fails:
 * QW-INV-*: `scripts/driver-inventory.json` is the single source of
   truth AND is drift-checked against `scripts/test-*.sh` (the same
   contract `scripts/release-evidence.sh` enforces at runtime): every
-  driver script appears exactly once, roles are container/host/nested,
-  nested drivers name a non-nested parent, and no entry is duplicated,
-  unowned, or parented in a cycle.
+  driver script appears exactly once, roles are
+  container/host/nested/qualification, nested drivers name a
+  non-nested parent, and no entry is duplicated, unowned, or parented
+  in a cycle.
 * QW-OWNER-*: every V4-owned probe is wired into its required
   owner driver on an execution line (a `cc` build, the scenario-list
   construction, or the consumer glob plus a literal binding mention),
@@ -153,6 +154,22 @@ Receipt verifier (judges a real run, build-free):
   include directory first (fail closed), under `set -euo pipefail`,
   never swallowed; static-gates never compiles the harness (the runner
   has no such prefix).
+* QW-LANE-JOURNEYS: the qualify job runs scripts/test-client-journeys.sh
+  in exactly one execution step (a step with a driver line carrying
+  none of --check, --self-test or --build-native), on `if: always()`,
+  under `set -euo pipefail`, never swallowed, installing a bundle
+  tarball (--bundle-tar) for the portfolio profile (--profile
+  portfolio) with its --out under $RUNNER_TEMP/qualify-evidence/journeys.
+  The same step builds the candidate demo image (test-demo-image.sh),
+  runs the image profile's module phase inside it (--profile image
+  --phase module against the installed
+  /opt/haskoki/current/lib/libhaskoki.so, bound with --artifact-image
+  to the built id) and the verifier phase on the runner (--phase
+  verifier --out-existing). Qualify and report each run --check on
+  the journeys run directories, portfolio and image (the runner-temp
+  tree in qualify, the downloaded artifact in report), never
+  swallowed, and static-gates runs both journey self-tests plus sh -n
+  on the driver.
 * QW-SAN-TABLE: the driver's case lists, run loops and negative
   controls equal the expected sets below (build-free drift check).
 
@@ -878,6 +895,93 @@ def check_lane(root, failures):
                 else "evidence-in/qualify-evidence/sanitizer/art")
         if want not in code:
             _add(failures, "QW-LANE-SANVERIFY", f"{job}: sanitizer verifier must read {want}")
+    if QUALIFY_JOB in blocks:
+        # Only execution steps count: a step whose driver lines all
+        # carry --check, --self-test or --build-native is a control
+        # step, not the journey run.
+        jsteps = [st for st in re.split(r"(?m)^      - name:", blocks[QUALIFY_JOB])
+                  if any(JOURNEYS_DRIVER in line and "--check" not in line
+                         and "--self-test" not in line and "--build-native" not in line
+                         for line in _code_lines(st))]
+        if len(jsteps) != 1:
+            _add(failures, "QW-LANE-JOURNEYS",
+                 f"{QUALIFY_JOB} must run {JOURNEYS_DRIVER} in exactly one execution step "
+                 f"(found {len(jsteps)})")
+        else:
+            jst = jsteps[0]
+            code = "\n".join(_code_lines(jst))
+            if "set -euo pipefail" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run under set -euo pipefail "
+                     "(the tee would hide the exit)")
+            if "--bundle-tar" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must install a bundle tarball (--bundle-tar)")
+            if "--profile portfolio" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run the portfolio profile (--profile portfolio)")
+            if not re.search(r"--out\s+['\"]*\$RUNNER_TEMP/qualify-evidence/journeys/", code):
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey --out must be under $RUNNER_TEMP/qualify-evidence/journeys")
+            if not re.search(r"(?m)^        if: always\(\)", jst):
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run on if: always() (record its verdict)")
+            if "continue-on-error" in jst or "|| true" in code or "|| :" in code:
+                _add(failures, "QW-LANE-JOURNEYS", "journey failure is swallowed")
+            if "--profile image" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run the image profile (--profile image)")
+            if "--phase module" not in code \
+                    or "--module /opt/haskoki/current/lib/libhaskoki.so" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run the image module phase inside the candidate "
+                     "image (--phase module "
+                     "--module /opt/haskoki/current/lib/libhaskoki.so)")
+            if "--phase verifier" not in code or "--out-existing" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must run the image verifier phase on the runner "
+                     "(--phase verifier --out-existing)")
+            if "test-demo-image.sh" not in code or "--artifact-image" not in code:
+                _add(failures, "QW-LANE-JOURNEYS",
+                     "journey step must build the candidate image (test-demo-image.sh) "
+                     "and bind the module phase to it (--artifact-image)")
+    for job in (QUALIFY_JOB, REPORT_JOB):
+        if job not in blocks:
+            continue
+        csteps = [st for st in re.split(r"(?m)^      - name:", blocks[job])
+                  if any(JOURNEYS_DRIVER in line and "--check" in line
+                         for line in _code_lines(st))]
+        if len(csteps) != 1:
+            _add(failures, "QW-LANE-JOURNEYS",
+                 f"{job}: need exactly one journey --check step (found {len(csteps)})")
+            continue
+        check_lines = [line for line in _code_lines(csteps[0]) if "--check" in line]
+        code = "\n".join(_code_lines(csteps[0]))
+        want = ("$RUNNER_TEMP/qualify-evidence/journeys/run" if job == QUALIFY_JOB
+                else "evidence-in/qualify-evidence/journeys/run")
+        if not any(want in line for line in check_lines):
+            _add(failures, "QW-LANE-JOURNEYS", f"{job}: journey check must read {want}")
+        want_image = ("$RUNNER_TEMP/qualify-evidence/journeys/image-run"
+                      if job == QUALIFY_JOB
+                      else "evidence-in/qualify-evidence/journeys/image-run")
+        if not any(want_image in line for line in check_lines):
+            _add(failures, "QW-LANE-JOURNEYS",
+                 f"{job}: journey check must read {want_image}")
+        if "|| true" in code or "|| :" in code or "continue-on-error" in csteps[0]:
+            _add(failures, "QW-LANE-JOURNEYS", f"{job}: journey check failure is swallowed")
+    if "static-gates" in blocks:
+        static = blocks["static-gates"]
+        code = "\n".join(_code_lines(static))
+        if "tests/journeys/journeys.py --self-test" not in code:
+            _add(failures, "QW-LANE-JOURNEYS",
+                 "static-gates must run the journey engine self-test")
+        if "test-client-journeys.sh --self-test" not in code:
+            _add(failures, "QW-LANE-JOURNEYS",
+                 "static-gates must run the journey driver self-test")
+        loop = re.search(r"for d in (.*?);\s*do", static, re.S)
+        if loop is None or JOURNEYS_DRIVER not in loop.group(1):
+            _add(failures, "QW-LANE-JOURNEYS",
+                 "static-gates must syntax-check the journey driver (sh -n loop)")
     for name, block in blocks.items():
         if not re.search(r"(?m)^    timeout-minutes:\s*\d+\s*$", block):
             _add(failures, "QW-LANE-TIMEOUT", f"job {name} has no timeout-minutes")
@@ -1263,6 +1367,7 @@ def check_ownership_table(root, failures):
 # ------------------------------------------------------------------
 
 SANITIZER_DRIVER = "scripts/test-native-sanitizers.sh"
+JOURNEYS_DRIVER = "scripts/test-client-journeys.sh"
 SAN_SCHEMA = "haskoki-native-sanitizer-receipt/1"
 SAN_VARIANTS = ("san-hooks", "san-prod", "plain-hooks", "plain-prod")
 SAN_SOURCES = ("cbits/ossl4_ctx.c", "cbits/ossl4_ctx.h", "tests/c/ossl4_sanitize.c",
@@ -2224,6 +2329,61 @@ def self_test():
         _rewrite(root / QUALIFICATION_YML, 'evidence-in/qualify-evidence/sanitizer/art --expect-sha "$REQUESTED_REVISION"',
                  'evidence-in/qualify-evidence/sanitizer/art --expect-sha "$(git rev-parse HEAD)"')
         controls.expect_fail("report sanitizer verifier uses the checkout sha", root, "QW-LANE-SANVERIFY")
+        # Installed client journeys: one execution step, unswallowed,
+        # checked in both jobs, self-tested in static-gates.
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "scripts/test-client-journeys.sh --profile portfolio")
+        controls.expect_fail("drop the journey step", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, 'tee "$JOURNEYS_DIR/journeys.log"',
+                 'tee "$JOURNEYS_DIR/journeys.log" || true')
+        controls.expect_fail("swallow the journey step", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--check "$RUNNER_TEMP/qualify-evidence/journeys/run"',
+                 '--self-test "$RUNNER_TEMP/qualify-evidence/journeys/run"')
+        controls.expect_fail("drop the journey check from qualify", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "--check evidence-in/qualify-evidence/journeys/run",
+                 "--self-test evidence-in/qualify-evidence/journeys/run")
+        controls.expect_fail("drop the journey check from report", root, "QW-LANE-JOURNEYS")
+        # Image profile: the module phase runs inside the candidate
+        # image, the verifier on the runner, and both jobs check the
+        # image run directory.
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "--profile image")
+        controls.expect_fail("drop the image profile from the journey step",
+                             root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "--phase module")
+        controls.expect_fail("drop the image module phase", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "/opt/haskoki/current/lib/libhaskoki.so")
+        controls.expect_fail("drop the in-image module path", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "--phase verifier")
+        controls.expect_fail("drop the image verifier phase", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "test-demo-image.sh build")
+        controls.expect_fail("drop the candidate image build", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "--artifact-image")
+        controls.expect_fail("drop the image-id binding", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, '--check "$RUNNER_TEMP/qualify-evidence/journeys/image-run"',
+                 '--self-test "$RUNNER_TEMP/qualify-evidence/journeys/image-run"')
+        controls.expect_fail("drop the image check from qualify", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / QUALIFICATION_YML, "--check evidence-in/qualify-evidence/journeys/image-run",
+                 "--self-test evidence-in/qualify-evidence/journeys/image-run")
+        controls.expect_fail("drop the image check from report", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _drop_lines(root / QUALIFICATION_YML, "tests/journeys/journeys.py --self-test")
+        controls.expect_fail("drop the journey self-tests from static-gates", root, "QW-LANE-JOURNEYS")
+        root = fresh()
+        _rewrite(root / INVENTORY,
+                 ',\n    {"name": "test-client-journeys.sh", "role": "qualification", "parent": null}',
+                 "")
+        controls.expect_fail("journey driver outside the inventory", root, "QW-INV-UNOWNED")
         # Static drift between the sanitizer driver and the expected sets.
         root = fresh()
         _rewrite(root / SANITIZER_DRIVER, "seam-dsa-hash-raw-ok-shrink\"", "\"")

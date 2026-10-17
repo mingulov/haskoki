@@ -1,28 +1,30 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "haskoki-journey-evidence-record/1",
+  "$id": "haskoki-journey-evidence-record/2",
   "title": "Supported-client journey evidence record",
-  "description": "One CLI journey leg. Follows the product-review results.json shape (name, command, timeout_seconds, classification, env_overrides, log, exit_code, status, elapsed_seconds) extended with journey pins so the qualification matrix consumes it directly. See docs/client-portfolio.md.",
+  "description": "One CLI journey leg against an installed module. Keeps every /1 field; adds source and artifact provenance, split client versions, verification linkage, failure stage, unchanged-output hashes and wall-clock stamps. See docs/client-portfolio.md.",
   "type": "object",
-  "required": ["name", "command", "timeout_seconds", "classification", "env_overrides", "log", "exit_code", "status", "elapsed_seconds", "journey", "client", "module", "config", "expect"],
+  "required": ["name", "command", "timeout_seconds", "classification", "env_overrides", "log", "exit_code", "status", "elapsed_seconds", "journey", "client", "module", "config", "expect", "source", "artifact", "phase", "failure_stage", "verifies", "unchanged", "started_utc_ns", "ended_utc_ns"],
   "properties": {
     "name": {"type": "string", "description": "Leg id, e.g. opensc-create-ec."},
     "command": {"type": "array", "items": {"type": "string"}, "description": "Exact argv; PIN fixture values appear literally."},
     "timeout_seconds": {"type": "integer", "minimum": 1},
-    "classification": {"type": "string", "const": "independent-client"},
+    "classification": {"type": "string", "enum": ["independent-client", "independent-verifier", "native-consumer", "setup"]},
     "env_overrides": {"type": "object", "description": "Runner environment deltas, e.g. HASKOKI_CONFIG and GNUTLS_PIN.", "additionalProperties": {"type": "string"}},
-    "log": {"type": "string", "description": "Captured combined output file name."},
-    "exit_code": {"type": "integer"},
+    "log": {"type": "string", "description": "Captured combined output file name, relative to the run root."},
+    "exit_code": {"type": ["integer", "null"], "description": "Process exit status; null when the leg never produced one (setup or timeout legs), with failure_stage naming the stage."},
     "status": {"type": "string", "enum": ["pass", "fail"], "description": "pass only when the leg met its expect block."},
     "elapsed_seconds": {"type": "number", "minimum": 0},
     "journey": {"type": "string", "description": "Journey doc anchor defining this leg."},
     "client": {
       "type": "object",
-      "required": ["name", "package", "version"],
+      "required": ["name", "package", "package_version", "runtime_version", "compile_target"],
       "properties": {
-        "name": {"type": "string", "enum": ["opensc", "gnutls", "java"]},
-        "package": {"type": "string"},
-        "version": {"type": "string", "description": "Exact pinned version."}
+        "name": {"type": "string", "enum": ["opensc", "gnutls", "java", "openssl", "native", "runner"]},
+        "package": {"type": ["string", "null"]},
+        "package_version": {"type": ["string", "null"], "description": "Installed dpkg version."},
+        "runtime_version": {"type": ["string", "null"], "description": "Observed runtime probe output."},
+        "compile_target": {"type": ["string", "null"], "description": "Java release target, else null."}
       }
     },
     "module": {
@@ -37,7 +39,7 @@
       "type": "object",
       "required": ["file", "sha256"],
       "properties": {
-        "file": {"type": "string", "description": "Substituted junction config path."},
+        "file": {"type": "string", "description": "Substituted junction config path, relative to the run root."},
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
@@ -47,17 +49,50 @@
       "properties": {
         "status": {"type": "string", "enum": ["pass"]},
         "exit": {"type": "integer", "description": "Expected process exit; nonzero for refusal legs."},
-        "markers": {"type": "array", "items": {"type": "string"}, "description": "Output substrings that must appear."}
+        "markers": {"type": "array", "items": {"type": "string"}, "description": "Output substrings that must appear."},
+        "absent_markers": {"type": "array", "items": {"type": "string"}, "description": "Output substrings that must not appear."}
       }
     },
     "expect_refusal": {
       "type": "object",
-      "description": "Present on refusal legs only: the specified refusal.",
-      "required": ["rv", "markers"],
+      "description": "Present on refusal legs only: the specified refusal. At least one of rv or markers must be non-empty; every given item must appear in the log.",
       "properties": {
         "rv": {"type": "string", "description": "Expected CKR name, e.g. CKR_PIN_INCORRECT."},
         "markers": {"type": "array", "items": {"type": "string"}}
       }
-    }
+    },
+    "source": {
+      "type": "object",
+      "required": ["sha", "dirty"],
+      "properties": {
+        "sha": {"type": "string", "description": "Source commit the bundle was built from."},
+        "dirty": {"type": "boolean"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["kind", "haskoki_version", "bundle_sha256", "image_id", "toolchain_record_sha256"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["bundle", "image"]},
+        "haskoki_version": {"type": "string"},
+        "bundle_sha256": {"type": ["string", "null"]},
+        "image_id": {"type": ["string", "null"]},
+        "toolchain_record_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "phase": {"type": "string", "enum": ["module", "verifier"]},
+    "failure_stage": {"type": ["string", "null"], "enum": ["setup", "exit", "marker", "refusal-unreached", "verification", "unchanged", "timeout", "pin", "module", "config", "file", null]},
+    "verifies": {"type": ["string", "null"], "description": "The leg this verifier leg checks, else null."},
+    "unchanged": {
+      "type": ["object", "null"],
+      "required": ["path", "sha256_before", "sha256_after"],
+      "properties": {
+        "path": {"type": "string", "description": "Run-relative path whose bytes must not change during the leg."},
+        "sha256_before": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sha256_after": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "started_utc_ns": {"type": "integer", "minimum": 0},
+    "ended_utc_ns": {"type": "integer", "minimum": 0}
   }
 }

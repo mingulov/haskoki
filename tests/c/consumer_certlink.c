@@ -1,13 +1,19 @@
-/* tests/c/consumer_certlink.c — certificate-linked identity journey.
+/* tests/c/consumer_certlink.c — metadata and CKA_ID linkage of a fixture
+ * certificate to a separately generated key.
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
- * libhaskoki shared module and drives the linked certificate/key
- * identity through the pinned 3.2 headers:
- *   - the real fixture DER (tests/fixtures/cert-selfsigned.der,
- *     SHA-256 pinned, no embedded synthetic bytes) becomes an X.509
- *     certificate object with DER-derived subject and serial bytes;
- *     an EC P-256 pair mints with the same CKA_ID, and the
- *     certificate takes that ID after creation
+ * libhaskoki shared module and drives the linkage of a fixture
+ * certificate to a separately generated key through the pinned 3.2
+ * headers. The certificate (RSA-2048, tests/fixtures/cert-selfsigned.der,
+ * SHA-256 pinned, no embedded synthetic bytes) does not belong to the
+ * key: what these legs prove is metadata round trip plus CKA_ID
+ * linkage, never certificate/key correspondence:
+ *   - the real fixture DER becomes an X.509 certificate object with
+ *     DER-derived subject and serial bytes; an EC P-256 pair mints
+ *     with the same CKA_ID, and the certificate takes that ID after
+ *     creation
+ *   - the generated private key reports the public half's curve
+ *     parameters (CKA_EC_PARAMS equal on both halves)
  *   - find-by-ID returns exactly the three linked handles;
  *     find-by-absent-ID returns none; VALUE and SUBJECT read back
  *     the stored bytes; the untyped CKA_HASH_OF_CERTIFICATE reads
@@ -474,6 +480,22 @@ int main(int argc, char **argv) {
     rv = f->C_GenerateKeyPair(sess, &kgm, pubT, 7, privT, 6, &pub, &priv);
     CHECKC(rv == CKR_OK && pub != 0 && priv != 0 && pub != priv,
            "linked pair mints");
+    {
+      CK_BYTE pbuf[64], pubbuf[64];
+      CK_ATTRIBUTE pra[] = { { CKA_EC_PARAMS, pbuf, sizeof(pbuf) } };
+      CK_ATTRIBUTE pubra[] = { { CKA_EC_PARAMS, pubbuf, sizeof(pubbuf) } };
+      CK_ULONG plen, publen;
+      CK_RV prv;
+      rv = f->C_GetAttributeValue(sess, priv, pra, 1);
+      prv = rv;
+      plen = pra[0].ulValueLen;
+      rv = f->C_GetAttributeValue(sess, pub, pubra, 1);
+      publen = pubra[0].ulValueLen;
+      CHECKC(prv == CKR_OK && rv == CKR_OK && plen == publen &&
+                 plen == sizeof(kP256) && memcmp(pbuf, pubbuf, plen) == 0 &&
+                 memcmp(pbuf, kP256, plen) == 0,
+             "linked private key reports the curve parameters");
+    }
     {
       CK_ATTRIBUTE set[] = {
         { CKA_ID, (CK_VOID_PTR)kLinkId, sizeof(kLinkId) }

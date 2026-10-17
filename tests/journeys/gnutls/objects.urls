@@ -9,3 +9,9 @@ token-url: pkcs11:token=haskoki-demo
 # Enumeration leg (list-all): lists every object under the token URL.
 # Use leg (test-sign): signs with the persisted private key.
 key-url: pkcs11:token=haskoki-demo;object=review-ec;type=private
+# Use leg by id (test-sign): the same key selected by CKA_ID instead
+# of the label; the id bytes 01:01 ride percent-escaped.
+id-url: pkcs11:token=haskoki-demo;id=%01%01;type=private
+# Refusal leg (wrong token): names a token the store does not offer,
+# so p11tool reports no matching objects.
+wrong-token-url: pkcs11:token=no-such-token

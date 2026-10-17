@@ -231,6 +231,12 @@ record: symbol separation, sanitizer runs, evidence limits) and
 
 ### Added
 
+- An installed client portfolio runner executes 61 journey legs
+  against the release bundle (portfolio profile: pinned OpenSC,
+  GnuTLS, JDK and openssl clients in a disposable container) and
+  the candidate demo image (image profile: module phase in-image,
+  verifier phase on the host), recording one evidence record per
+  leg and recomputing every verdict from the records.
 - PIN-change races are now exercised with distinct values: two threads
   racing `A->B` against `A->C` over the public C entry points produce
   one winner, the loser's credential is refused with
@@ -381,6 +387,14 @@ record: symbol separation, sanitizer runs, evidence limits) and
   the cursor lookup, refusals leave the output buffer and count
   untouched; the cursor retires with its session, and a fresh session
   inherits no cursor, still reporting `CKR_OPERATION_NOT_INITIALIZED`.
+- A generated EC private key now carries `CKA_EC_PARAMS`, copied from
+  the public half when the private template omits it. Clients that
+  read the curve from the private key, such as Java's jarsigner
+  through SunPKCS11, no longer fail with
+  `CKR_ATTRIBUTE_TYPE_INVALID` (0x12). A private template naming a
+  different curve than the public half is refused with
+  `CKR_TEMPLATE_INCONSISTENT` before generation; equal values are
+  accepted.
 
 ## [0.4.0.0] - Unreleased
 

@@ -1,4 +1,5 @@
 {
+  "$schema": "haskoki-journey-legs/1",
   "clients": {
     "opensc": {
       "package": "opensc",
@@ -6,24 +7,659 @@
       "runtime_argv": ["dpkg-query", "-W", "-f=${Version}", "opensc"],
       "runtime_version": "0.27.0~rc1-1"
     },
+    "gnutls": {
+      "package": "gnutls-bin",
+      "package_version": "3.8.12-2ubuntu1.1",
+      "runtime_argv": ["p11tool", "--version"],
+      "runtime_version": "p11tool 3.8.12"
+    },
+    "java": {
+      "package": "default-jdk-headless",
+      "package_version": "2:1.25-77",
+      "runtime_argv": ["java", "-version"],
+      "runtime_version": "25.0.4.1",
+      "compile_target": "17"
+    },
     "openssl": {
       "package": "openssl",
       "package_version": "3.5.5-1ubuntu3.7",
       "runtime_argv": ["openssl", "version"],
       "runtime_version": "OpenSSL 3.5.5"
+    },
+    "native": {
+      "package": null,
+      "package_version": null,
+      "runtime_argv": null,
+      "runtime_version": null
+    },
+    "runner": {
+      "package": null,
+      "package_version": null,
+      "runtime_argv": null,
+      "runtime_version": null
     }
   },
   "profiles": {
     "portfolio": {
-      "clients": ["opensc", "openssl"],
+      "description": "Installed bundle plus pinned clients in a disposable client container.",
+      "clients": ["opensc", "gnutls", "java", "openssl", "native", "runner"],
       "phases": ["module", "verifier"]
     },
     "image": {
-      "clients": ["opensc", "openssl"],
+      "description": "Candidate demo image: module phase in the image, verifier phase on the host.",
+      "clients": ["opensc", "openssl", "native", "runner"],
       "phases": ["module", "verifier"]
     }
   },
+  "probes": {
+    "java-token-probe": {
+      "path": "tests/journeys/java/JavaTokenProbe.java",
+      "sha256": "c1c77e8459f1c45de3fae2dcf8279848f206a60fc8379e50480d57d7ec243eb6",
+      "origin_commit": "a96a753c9e80353eed29eacca9bb9bafc0cfecb5",
+      "origin_path": "tests/review/JavaTokenProbe.java",
+      "introduced_by": "8fcb405",
+      "compile": ["javac", "--release", "17", "-d", "@RUN@/java", "@SRC@/tests/journeys/java/JavaTokenProbe.java"],
+      "run": ["java", "--add-modules", "jdk.crypto.cryptoki,jdk.crypto.ec", "-cp", "@RUN@/java", "JavaTokenProbe", "@RUN@/cfg/sunpkcs11.cfg"]
+    }
+  },
   "legs": [
+    {
+      "name": "opensc-connect",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--list-slots"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["haskoki-demo"]},
+      "depends_on": []
+    },
+    {
+      "name": "opensc-enumerate",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--list-objects"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["opensc-connect"]
+    },
+    {
+      "name": "opensc-create-ec",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--keypairgen", "--key-type", "EC:prime256v1", "--label", "review-ec", "--id", "0101", "--usage-sign"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["Key pair generated", "ID:         0101"]},
+      "depends_on": ["opensc-enumerate"]
+    },
+    {
+      "name": "opensc-export-pubkey",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--read-object", "--type", "pubkey", "--id", "0101", "-o", "@RUN@/out/ec-pub.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "files": [{"path": "out/ec-pub.der", "op": "nonempty"}]},
+      "depends_on": ["opensc-create-ec"]
+    },
+    {
+      "name": "opensc-sign",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--sign", "--mechanism", "ECDSA-SHA256", "--id", "0101", "--signature-format", "openssl", "--input-file", "@SRC@/tests/journeys/opensc/message.txt", "--output-file", "@RUN@/out/ec-sig.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "requires_verification": "opensc-verify-independent",
+      "depends_on": ["opensc-create-ec"]
+    },
+    {
+      "name": "opensc-verify-independent",
+      "profiles": ["portfolio", "image"],
+      "phase": "verifier",
+      "client": "openssl",
+      "argv": ["openssl", "dgst", "-sha256", "-verify", "@RUN@/out/ec-pub.der", "-keyform", "DER", "-signature", "@RUN@/out/ec-sig.der", "@SRC@/tests/journeys/opensc/message.txt"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["Verified OK"]},
+      "depends_on": ["opensc-export-pubkey", "opensc-sign"]
+    },
+    {
+      "name": "opensc-tamper-independent",
+      "profiles": ["portfolio", "image"],
+      "phase": "verifier",
+      "client": "openssl",
+      "argv": ["openssl", "dgst", "-sha256", "-verify", "@RUN@/out/ec-pub.der", "-keyform", "DER", "-signature", "@RUN@/out/ec-sig.der", "@SRC@/tests/journeys/opensc/message-changed.txt"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 1, "markers": ["Verification failure"]},
+      "depends_on": ["opensc-export-pubkey", "opensc-sign"]
+    },
+    {
+      "name": "opensc-verify",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--verify", "--mechanism", "ECDSA-SHA256", "--id", "0101", "--signature-format", "openssl", "--input-file", "@SRC@/tests/journeys/opensc/message.txt", "--signature-file", "@RUN@/out/ec-sig.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["Signature is valid"]},
+      "depends_on": ["opensc-sign"]
+    },
+    {
+      "name": "opensc-tamper",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--verify", "--mechanism", "ECDSA-SHA256", "--id", "0101", "--signature-format", "openssl", "--input-file", "@SRC@/tests/journeys/opensc/message-changed.txt", "--signature-file", "@RUN@/out/ec-sig.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 1, "markers": ["Invalid signature"]},
+      "depends_on": ["opensc-sign"]
+    },
+    {
+      "name": "opensc-create-rsa",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--keypairgen", "--key-type", "rsa:2048", "--label", "review-rsa", "--id", "0102", "--usage-decrypt"],
+      "timeout_seconds": 300,
+      "expect": {"exit": 0},
+      "depends_on": ["opensc-enumerate"]
+    },
+    {
+      "name": "opensc-encrypt",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--encrypt", "--mechanism", "RSA-PKCS-OAEP", "--hash-algorithm", "SHA256", "--mgf", "MGF1-SHA256", "--id", "0102", "--input-file", "@SRC@/tests/journeys/opensc/message.txt", "--output-file", "@RUN@/out/rsa.bin"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["opensc-create-rsa"]
+    },
+    {
+      "name": "opensc-decrypt",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "decrypt-staged", "--run", "@RUN@", "--plaintext-src", "@SRC@/tests/journeys/opensc/message.txt", "--plaintext-run", "out/message.txt", "--", "pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--decrypt", "--mechanism", "RSA-PKCS-OAEP", "--hash-algorithm", "SHA256", "--mgf", "MGF1-SHA256", "--id", "0102", "--input-file", "@RUN@/out/rsa.bin", "--output-file", "@RUN@/out/rsa.dec"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["JOURNEY-DECRYPT staged"], "files": [{"path": "out/rsa.dec", "op": "equal", "other": "out/message.txt"}]},
+      "depends_on": ["opensc-encrypt"]
+    },
+    {
+      "name": "opensc-refuse-wrong-pin",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "0000", "--list-objects"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 1},
+      "expect_refusal": {"rv": "CKR_PIN_INCORRECT"},
+      "depends_on": []
+    },
+    {
+      "name": "opensc-enumerate-after-refusal",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--list-objects"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["opensc-refuse-wrong-pin"]
+    },
+    {
+      "name": "opensc-refuse-init-token-store-owned",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "store-owned-refusal", "--module", "@MODULE@", "--native", "@NATIVE@", "--run", "@RUN@", "--", "pkcs11-tool", "--module", "@MODULE@", "--init-token", "--label", "haskoki-demo", "--so-pin", "5678"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["FIXTURE hold released", "JOURNEY-STORE-OWNED-REFUSED"]},
+      "expect_refusal": {"rv": "CKR_GENERAL_ERROR", "markers": ["C_Initialize failed"]},
+      "unchanged": "stores/opensc/shared-tokens.db",
+      "depends_on": ["opensc-enumerate-after-refusal"]
+    },
+    {
+      "name": "opensc-connect-after-owner",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "opensc",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--list-slots"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["opensc-refuse-init-token-store-owned"]
+    },
+    {
+      "name": "native-init-token-session-exists",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "native",
+      "store": "native",
+      "argv": ["@NATIVE@/token_fixture", "@MODULE@", "init-busy"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["FIXTURE init-busy unchanged"]},
+      "expect_refusal": {"rv": "CKR_SESSION_EXISTS"},
+      "depends_on": []
+    },
+    {
+      "name": "native-aead",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "native",
+      "store": "native",
+      "argv": ["@NATIVE@/consumer_aead", "@MODULE@"],
+      "cwd": "@SRC@",
+      "timeout_seconds": 300,
+      "expect": {"exit": 0, "markers": ["PASS: consumer_aead"]},
+      "depends_on": []
+    },
+    {
+      "name": "native-certlink-metadata",
+      "profiles": ["portfolio", "image"],
+      "phase": "module",
+      "client": "native",
+      "store": "native",
+      "argv": ["@NATIVE@/consumer_certlink", "@MODULE@"],
+      "cwd": "@SRC@",
+      "timeout_seconds": 300,
+      "expect": {"exit": 0, "markers": ["PASS: consumer_certlink", "linked private key reports the curve parameters"]},
+      "depends_on": []
+    },
+    {
+      "name": "gnutls-discovery",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "gnutls",
+      "store": "opensc",
+      "argv": ["p11tool", "--provider", "@MODULE@", "--batch", "--list-tokens"],
+      "env": {"GNUTLS_PIN": "1234"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["token=haskoki-demo"]},
+      "depends_on": ["opensc-connect"]
+    },
+    {
+      "name": "gnutls-list-key",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "gnutls",
+      "store": "opensc",
+      "argv": ["p11tool", "--provider", "@MODULE@", "--batch", "--login", "--list-all", "pkcs11:token=haskoki-demo"],
+      "env": {"GNUTLS_PIN": "1234"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["review-ec"]},
+      "depends_on": ["opensc-create-ec"]
+    },
+    {
+      "name": "gnutls-test-sign",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "gnutls",
+      "store": "opensc",
+      "argv": ["p11tool", "--provider", "@MODULE@", "--batch", "--login", "--test-sign", "--hash", "SHA256", "pkcs11:token=haskoki-demo;object=review-ec;type=private"],
+      "env": {"GNUTLS_PIN": "1234"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["Signing using ECDSA-SHA256... ok", "Verifying against private key parameters... ok", "Verifying against public key in the token... ok"]},
+      "verification": "in-leg",
+      "verification_marker": "Verifying against public key in the token... ok",
+      "depends_on": ["opensc-create-ec"]
+    },
+    {
+      "name": "gnutls-test-sign-by-id",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "gnutls",
+      "store": "opensc",
+      "argv": ["p11tool", "--provider", "@MODULE@", "--batch", "--login", "--test-sign", "--hash", "SHA256", "pkcs11:token=haskoki-demo;id=%01%01;type=private"],
+      "env": {"GNUTLS_PIN": "1234"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["Signing using ECDSA-SHA256... ok", "Verifying against private key parameters... ok", "Verifying against public key in the token... ok"]},
+      "verification": "in-leg",
+      "verification_marker": "Verifying against public key in the token... ok",
+      "depends_on": ["opensc-create-ec"]
+    },
+    {
+      "name": "gnutls-refuse-wrong-pin",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "gnutls",
+      "store": "opensc",
+      "argv": ["p11tool", "--provider", "@MODULE@", "--batch", "--login", "--list-all", "pkcs11:token=haskoki-demo"],
+      "env": {"GNUTLS_PIN": "0000"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 1},
+      "expect_refusal": {"markers": ["*** Wrong PIN has been provided!"]},
+      "depends_on": []
+    },
+    {
+      "name": "gnutls-list-after-refusal",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "gnutls",
+      "store": "opensc",
+      "argv": ["p11tool", "--provider", "@MODULE@", "--batch", "--login", "--list-all", "pkcs11:token=haskoki-demo"],
+      "env": {"GNUTLS_PIN": "1234"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["gnutls-refuse-wrong-pin"]
+    },
+    {
+      "name": "gnutls-refuse-unknown-url",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "gnutls",
+      "store": "opensc",
+      "argv": ["p11tool", "--provider", "@MODULE@", "--batch", "--login", "--test-sign", "--hash", "SHA256", "pkcs11:token=haskoki-demo;object=no-such-key;type=private"],
+      "env": {"GNUTLS_PIN": "1234"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 1, "absent_markers": ["Signing using"]},
+      "expect_refusal": {"markers": ["Cannot import private key: The requested data were not available."]},
+      "depends_on": ["opensc-create-ec"]
+    },
+    {
+      "name": "gnutls-refuse-wrong-token",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "gnutls",
+      "store": "opensc",
+      "argv": ["p11tool", "--provider", "@MODULE@", "--batch", "--login", "--list-all", "pkcs11:token=no-such-token"],
+      "env": {"GNUTLS_PIN": "1234"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 2},
+      "expect_refusal": {"markers": ["No matching objects found"]},
+      "depends_on": []
+    },
+    {
+      "name": "java-probe-compile",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "classification": "setup",
+      "argv": ["javac", "--release", "17", "-d", "@RUN@/java", "@SRC@/tests/journeys/java/JavaTokenProbe.java"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": []
+    },
+    {
+      "name": "java-connect-sign",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "sunpkcs11",
+      "argv": ["java", "--add-modules", "jdk.crypto.cryptoki,jdk.crypto.ec", "-cp", "@RUN@/java", "JavaTokenProbe", "@RUN@/cfg/sunpkcs11.cfg"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["JAVA-PROBE SETUP_OK", "JAVA-PROBE LOGIN_OK", "JAVA-PROBE KEYGEN_OK", "JAVA-PROBE SIGN_OK", "JAVA-PROBE VERIFY_OK", "JAVA-PROBE TAMPER_REJECTED", "JAVA-PROBE LOGOUT_OK", "JAVA-PROBE PASS"]},
+      "verification": "in-leg",
+      "verification_marker": "JAVA-PROBE VERIFY_OK",
+      "depends_on": ["java-probe-compile"]
+    },
+    {
+      "name": "java-refuse-wrong-pin",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "sunpkcs11",
+      "argv": ["java", "--add-modules", "jdk.crypto.cryptoki,jdk.crypto.ec", "-cp", "@RUN@/java", "JavaTokenProbe", "@RUN@/cfg/sunpkcs11.cfg"],
+      "env": {"HSK_REVIEW_USER_PIN": "0000"},
+      "timeout_seconds": 120,
+      "expect": {"exit": 1, "markers": ["JAVA-PROBE OPERATION_FAIL stage=login"]},
+      "expect_refusal": {"markers": ["message=CKR_PIN_INCORRECT"]},
+      "depends_on": ["java-probe-compile"]
+    },
+    {
+      "name": "keystore-create-key",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "keystore",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--keypairgen", "--key-type", "EC:prime256v1", "--label", "app-key", "--id", "0202", "--usage-sign"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": []
+    },
+    {
+      "name": "keystore-export-pubkey",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "keystore",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--read-object", "--type", "pubkey", "--id", "0202", "-o", "@RUN@/out/app-pub.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["keystore-create-key"]
+    },
+    {
+      "name": "keystore-issue-cert",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "openssl",
+      "classification": "setup",
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "issue-cert", "--pub", "@RUN@/out/app-pub.der", "--out-dir", "@RUN@/ca", "--cn", "journey-app"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["SPKI-MATCH"]},
+      "depends_on": ["keystore-export-pubkey"]
+    },
+    {
+      "name": "keystore-write-cert",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "keystore",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--write-object", "@RUN@/ca/leaf.der", "--type", "cert", "--id", "0202", "--label", "app-key"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["ID:         0202"]},
+      "depends_on": ["keystore-issue-cert"]
+    },
+    {
+      "name": "keystore-read-cert",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "keystore",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--read-object", "--type", "cert", "--id", "0202", "-o", "@RUN@/out/app-cert.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["keystore-write-cert"]
+    },
+    {
+      "name": "keystore-spki-match",
+      "profiles": ["portfolio"],
+      "phase": "verifier",
+      "client": "openssl",
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "spki-match", "@RUN@/out/app-cert.der", "@RUN@/out/app-pub.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["SPKI-MATCH"]},
+      "depends_on": ["keystore-read-cert", "keystore-export-pubkey"]
+    },
+    {
+      "name": "java-keystore-refuse-pin",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["keytool", "-list", "-v", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "0000"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 1},
+      "expect_refusal": {"rv": "CKR_PIN_INCORRECT", "markers": ["keytool error: java.io.IOException: load failed", "Caused by: sun.security.pkcs11.wrapper.PKCS11Exception: CKR_PIN_INCORRECT"]},
+      "depends_on": []
+    },
+    {
+      "name": "java-keystore-list",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["keytool", "-list", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["app-key, PrivateKeyEntry"]},
+      "depends_on": ["keystore-write-cert"]
+    },
+    {
+      "name": "java-keystore-refuse-token",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["keytool", "-list", "-v", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-wrong-slot.cfg", "-storepass", "1234"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 1},
+      "expect_refusal": {"rv": "CKR_SLOT_ID_INVALID", "markers": ["keytool error: java.security.ProviderException: Initialization failed", "Caused by: sun.security.pkcs11.wrapper.PKCS11Exception: CKR_SLOT_ID_INVALID"]},
+      "depends_on": []
+    },
+    {
+      "name": "keystore-make-jar",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "classification": "setup",
+      "argv": ["jar", "cf", "@RUN@/out/app.jar", "-C", "@SRC@/tests/journeys/keystore", "payload.txt"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": []
+    },
+    {
+      "name": "java-keystore-sign",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["jarsigner", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234", "-sigalg", "SHA256withECDSA", "-signedjar", "@RUN@/out/app-signed.jar", "@RUN@/out/app.jar", "app-key"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["jar signed."]},
+      "requires_verification": "java-keystore-verify-independent",
+      "depends_on": ["keystore-make-jar", "keystore-write-cert"]
+    },
+    {
+      "name": "java-keystore-verify",
+      "profiles": ["portfolio"],
+      "phase": "verifier",
+      "client": "java",
+      "argv": ["jarsigner", "-verify", "-verbose", "-certs", "@RUN@/out/app-signed.jar"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["jar verified."], "absent_markers": ["jar is unsigned."]},
+      "depends_on": ["java-keystore-sign"]
+    },
+    {
+      "name": "java-keystore-verify-independent",
+      "profiles": ["portfolio"],
+      "phase": "verifier",
+      "client": "openssl",
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "jar-cms-verify", "--run", "@RUN@", "--jar", "out/app-signed.jar", "--ca", "ca/ca.pem", "--sig-dir", "sig"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["CMS Verification successful", "JOURNEY-JAR-INDEPENDENT-VERIFIED"]},
+      "depends_on": ["java-keystore-sign", "keystore-issue-cert"]
+    },
+    {
+      "name": "java-keystore-tamper",
+      "profiles": ["portfolio"],
+      "phase": "verifier",
+      "client": "java",
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "jar-tamper", "--run", "@RUN@", "--payload-dir", "@SRC@/tests/journeys/keystore/changed", "--signed", "out/app-signed.jar", "--tampered", "out/tampered.jar", "--", "jarsigner", "-verify", "@RUN@/out/tampered.jar"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["JOURNEY-TAMPER-DETECTED", "digest error"], "absent_markers": ["jar verified."]},
+      "depends_on": ["java-keystore-sign"]
+    },
+    {
+      "name": "java-keystore-refuse-alias",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["jarsigner", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234", "-signedjar", "@RUN@/out/alias.jar", "@RUN@/out/app.jar", "no-such-alias"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 1, "markers": ["Certificate chain not found for: no-such-alias"], "files": [{"path": "out/alias.jar", "op": "absent"}]},
+      "unchanged": "out/app.jar",
+      "depends_on": ["keystore-make-jar"]
+    },
+    {
+      "name": "keystore-mismatch-create",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "keystore",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--keypairgen", "--key-type", "EC:prime256v1", "--label", "mismatched-key", "--id", "0303", "--usage-sign"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": []
+    },
+    {
+      "name": "keystore-mismatch-export-pubkey",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "keystore",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--read-object", "--type", "pubkey", "--id", "0303", "-o", "@RUN@/out/mismatch-pub.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["keystore-mismatch-create"]
+    },
+    {
+      "name": "keystore-mismatch-write-cert",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "opensc",
+      "store": "keystore",
+      "argv": ["pkcs11-tool", "--module", "@MODULE@", "--login", "--pin", "1234", "--write-object", "@SRC@/tests/fixtures/cert-selfsigned.der", "--type", "cert", "--id", "0303", "--label", "mismatched-key"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "depends_on": ["keystore-mismatch-create"]
+    },
+    {
+      "name": "keystore-mismatch-spki",
+      "profiles": ["portfolio"],
+      "phase": "verifier",
+      "client": "openssl",
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "spki-match", "@SRC@/tests/fixtures/cert-selfsigned.der", "@RUN@/out/mismatch-pub.der"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 1},
+      "expect_refusal": {"markers": ["SPKI-MISMATCH"]},
+      "depends_on": ["keystore-mismatch-export-pubkey"]
+    },
+    {
+      "name": "java-keystore-refuse-mismatched",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["python3", "@SRC@/tests/journeys/journeys.py", "mismatch-refusal", "--run", "@RUN@", "--signed", "out/mismatch.jar", "--ca", "ca/ca.pem", "--sig-dir", "sigm", "--", "jarsigner", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234", "-sigalg", "SHA256withECDSA", "-signedjar", "@RUN@/out/mismatch.jar", "@RUN@/out/app.jar", "mismatched-key"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0},
+      "expect_refusal": {"markers": ["JOURNEY-NO-VERIFIED-SIGNATURE stage=sign", "private key algorithm does not match algorithm of public key"]},
+      "depends_on": ["keystore-mismatch-write-cert", "keystore-make-jar"]
+    },
+    {
+      "name": "java-keystore-generate",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["keytool", "-genkeypair", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234", "-alias", "keytool-generated", "-keyalg", "EC", "-groupname", "secp256r1", "-dname", "CN=keytool-generated"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["key pair and self-signed certificate"]},
+      "depends_on": []
+    },
+    {
+      "name": "java-keystore-sign-generated",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["jarsigner", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234", "-sigalg", "SHA256withECDSA", "-signedjar", "@RUN@/out/keytool-app.jar", "@RUN@/out/app.jar", "keytool-generated"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["jar signed."]},
+      "depends_on": ["java-keystore-generate", "keystore-make-jar"]
+    },
     {
       "name": "opensc-provision-init-token",
       "profiles": ["portfolio", "image"],
