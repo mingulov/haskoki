@@ -308,8 +308,10 @@ record: symbol separation, sanitizer runs, evidence limits) and
   Capability tables are now fully evaluated before they are published,
   which covers that backend-open instance only; a second instance
   through the store commit path is now known too. The provider no
-  longer runs with more than one capability at all (see below): it
-  starts the RTS with one capability and ignores `GHCRTS` entirely.
+  longer starts the RTS with more than one capability (see below):
+  when it starts the RTS itself, it pins one capability and
+  ignores `GHCRTS` entirely. A process that already runs a GHC RTS
+  keeps its own capability count.
   0.4.0.0 is affected (earlier releases not checked); until upgrading,
   run with a single capability.
 - Store lock and guard file descriptors are now opened with
@@ -434,14 +436,18 @@ record: symbol separation, sanitizer runs, evidence limits) and
   longer aborts the host during startup either. A process that
   already runs a GHC RTS keeps its own capability count (later
   inits are ignored), so that kind of host keeps its #27272
-  exposure. The serving surface is serialized on the C state lock,
-  so one capability costs nothing.
+  exposure. The PKCS#11 surface is serialized on the C state lock,
+  so one capability costs nothing there; native callers share the
+  single capability unserialized.
 - Concurrent first calls through the native API (`haskoki_async_*`,
   `haskoki_crypto_*`) could kill the host process: threads that lost
   the RTS-start race entered Haskell before `hs_init` finished
-  (`newBoundTask: RTS is not initialised`). Losing threads now wait
-  for the start to complete; fork children still fail safe without
-  waiting.
+  (`newBoundTask: RTS is not initialised`). A `C_Initialize` racing
+  a first native call was exposed as well: it could enter Haskell
+  early, or read the still-unclaimed boot PID and fail with a
+  spurious `CKR_GENERAL_ERROR`. Losing threads now wait for the
+  start to complete; fork children still fail safe without waiting.
+  0.4.0.0 is affected.
 
 ## [0.4.0.0] - Unreleased
 

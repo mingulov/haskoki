@@ -3,8 +3,10 @@
  * Owns exactly two things:
  *   1. the process-lifetime hs_init policy: the RTS is started at most
  *      once per process, with library-owned argv, on the first
- *      C_Initialize that needs Haskell entry. The provider pins one
- *      capability and ignores GHCRTS (see haskoki_rts_ensure); and
+ *      provider call (C_Initialize or a native export) that needs
+ *      Haskell entry. When it starts the RTS itself, the provider
+ *      pins one capability and ignores GHCRTS
+ *      (see haskoki_rts_ensure); and
  *   2. the boot-PID record used to refuse fork children before they can
  *      enter inherited Haskell state (03 §6: post-init fork without
  *      exec is unsupported).
@@ -56,7 +58,7 @@ static char **g_rts_argv_ptr = g_rts_argv;
 
 /* Ensure the RTS is running in this process. Returns 0 on success, -1
  * if the calling process is a fork child of the boot process (must not
- * enter inherited Haskell state) or if called before any recording.
+ * enter inherited Haskell state).
  *
  * The provider pins one capability and ignores GHCRTS
  * (rts_opts_enabled = RtsOptsIgnoreAll) when it starts the RTS
@@ -67,8 +69,9 @@ static char **g_rts_argv_ptr = g_rts_argv;
  * through ordinary concurrent opens; and an unsafe GHCRTS option
  * used to abort the host inside startup. A process that already
  * runs a GHC RTS keeps its own capability count (hs_init_ghc
- * ignores later inits). The serving surface is serialized on the C
- * state lock, so one capability costs nothing.
+ * ignores later inits). The PKCS#11 surface is serialized on the C
+ * state lock, so one capability costs nothing there; native callers
+ * share the single capability unserialized.
  *
  * Concurrent first calls (the unlocked native exports reach this
  * without any lock): the winner of the boot-PID swap runs hs_init_ghc
@@ -91,12 +94,12 @@ static char **g_rts_argv_ptr = g_rts_argv;
  * Haskell state was inherited); after ready, and mid-init while the
  * winner thread does not exist in the child, the child observes a
  * foreign boot PID and returns -1 instead of blocking forever. The
- * mid-init fork is not covered by a deterministic test — ordering a
- * fork inside another thread's hs_init_ghc from outside is inherently
- * racy — so the argument above is the evidence for that case.
+ * mid-init fork is covered deterministically: the midfork probe
+ * interposes hs_init_ghc to park the winner inside init while the
+ * child must refuse (see below).
  * Covered by tests/c/consumer_rts_caps.c,
- * tests/c/rts_caps_probe.c and tests/c/consumer_rts_race.c
- * (scripts/test-consumers.sh). */
+ * tests/c/rts_caps_probe.c, tests/c/consumer_rts_race.c and
+ * tests/c/consumer_rts_midfork.c (scripts/test-consumers.sh). */
 int haskoki_rts_ensure(void) {
   int expected = 0;
   pid_t self = getpid();
