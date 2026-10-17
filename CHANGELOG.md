@@ -400,6 +400,14 @@ record: symbol separation, sanitizer runs, evidence limits) and
   returns (the public `y`), instead of the stored SPKI bytes. A
   search with a read-back value used to miss; a search with the raw
   stored bytes no longer hits. Stored bytes are unchanged.
+- `C_FindObjects` with a `CKA_EC_PARAMS` template now matches EC
+  public keys derived via `CKM_PUB_KEY_FROM_PRIV_KEY` (which store
+  the curve OID) by the read-back value, like generated keys. A
+  search with the OID used to miss the derived key; stored bytes
+  are unchanged and the C ABI still returns the OID.
+- `C_CopyObject` repeating the read-back DSA or DH public `y` in
+  `CKA_VALUE` is accepted as a no-op and keeps the stored SPKI
+  bytes; a different value is still refused.
 
 ## [0.4.0.0] - Unreleased
 
