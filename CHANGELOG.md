@@ -13,19 +13,28 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   both history rows false, while derived keys conjoin the child flags
   with the source history. Secret keys produced by KEM encapsulate and
   decapsulate read `CKA_LOCAL` false with both history rows false and
-  an unavailable `CKA_KEY_GEN_MECHANISM`. Previously every fresh key
-  read local false with false history and an unavailable mechanism.
+  an unavailable `CKA_KEY_GEN_MECHANISM`. In 0.4.0.0 these four
+  attributes were unmapped: reads failed with
+  `CKR_ATTRIBUTE_TYPE_INVALID`. Keys generated from a password
+  (`CKM_PKCS5_PBKD2` and the PBE mechanisms) stamp the same rows per
+  the spec; their values can be recomputed off-token from the
+  password, so their history flags do not prove the value never
+  existed elsewhere.
 - `C_UnwrapKey` with a template that omits `CKA_EXTRACTABLE` now yields
-  an extractable key (PKCS#11 v3.2 section 5.18.4); it used to yield an
-  unextractable one. Reads of `CKA_EXTRACTABLE` on such keys flip
-  false to true, and wrapping them no longer fails.
+  an extractable key (PKCS#11 v3.2 section 5.18.4). In 0.4.0.0 the
+  flag stayed absent: reads of `CKA_EXTRACTABLE` failed with
+  `CKR_ATTRIBUTE_TYPE_INVALID`, the value read back in clear, and
+  wrapping the key failed. Now the flag reads true and wrapping works.
 - `C_DeriveKey` with a template that omits `CKA_SENSITIVE` or
-  `CKA_EXTRACTABLE` now inherits the source values; they used to read
-  false. Derived children of extractable bases are now extractable.
+  `CKA_EXTRACTABLE` now inherits the source values. In 0.4.0.0 omitted
+  flags stayed absent, and reads failed with
+  `CKR_ATTRIBUTE_TYPE_INVALID`. Derived children of extractable bases
+  are now extractable.
 - `C_CopyObject` refuses history attributes (`CKA_ALWAYS_SENSITIVE`,
   `CKA_NEVER_EXTRACTABLE`, `CKA_LOCAL`, `CKA_KEY_GEN_MECHANISM`) in the
-  template unconditionally, even when the value matches the source;
-  same-value history overrides on copies used to slip through as no-ops.
+  template unconditionally, even when the value matches the source.
+  In 0.4.0.0 these attributes were unmapped, so no copy template
+  could name them.
 
 - `CKM_AES_GMAC` no longer advertises `CKF_MESSAGE_SIGN` or
   `CKF_MESSAGE_VERIFY`: PKCS#11 defines no message-API parameter shape

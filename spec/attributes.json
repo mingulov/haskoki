@@ -780,7 +780,7 @@
         "CKO_SECRET_KEY"
       ],
       "canonical_name": "CKA_LOCAL",
-      "notes": "Reviewed: boolean creation-history row (PKCS#11 v3.2 Table 26); stamped true on generated keys and false on imported, unwrapped, derived and KEM-output keys; caller templates may not set it.",
+      "notes": "Reviewed: boolean creation-history row (PKCS#11 v3.2 Table 26); stamped true on generated keys and false on imported, unwrapped, derived and KEM-output keys; caller templates may not set it. Password-derived keys (PBE, PBKDF2 generation) stamp the same rows per the spec, but their values can be recomputed off-token from the password, so the flags do not prove the value never existed elsewhere.",
       "numeric_id": "0x00000163",
       "source_refs": [
         {
