@@ -2451,7 +2451,7 @@ caseCommitReclaimsWithoutRead = do
   -- would force a lazy prune and conceal the violation. Await
   -- the clear with a BOUNDED wait (at most 'maxOracleRounds'
   -- major GCs, churning between rounds to recycle dead
-  -- submit-phase frames): transient GC lag clears within a
+  -- submit-phase frames): dead-root retention clears within a
   -- round or two, while a table that retained the payload —
   -- the violation — never clears, so the oracle observes only
   -- table reachability without masking a leak.
@@ -2496,11 +2496,12 @@ churnDeadRoots = deep (0 :: Int) >> pure ()
 
 -- | Rounds of (major GC + read) the eviction oracle waits for
 -- the evicted payload's weak pointer to clear. Transient roots —
--- dead submit-phase frames the churn recycles, and parallel-GC
--- weak-processing lag — clear within a round or two; a table
--- that retained the payload (the violation this case guards)
--- never clears, so the bound keeps the oracle exact instead of
--- masking a leak.
+-- dead submit-phase stack slots the churn recycles, which can
+-- hold the key past a major GC (weak processing itself runs
+-- synchronously inside the collection) — clear within a round
+-- or two; a table that retained the payload (the violation this
+-- case guards) never clears, so the bound keeps the oracle
+-- exact instead of masking a leak.
 maxOracleRounds :: Int
 maxOracleRounds = 8
 
