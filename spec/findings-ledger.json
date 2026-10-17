@@ -4201,6 +4201,21 @@
    "test": "tests/model/DecodedRequestSpec.hs::unwrap double-fault (handle) code",
    "receipt": "core/Haskoki/Operation/KeyManagement.hs::withWrappingKey",
    "checker_pin": "n/a (not a checker case)"
+  },
+  {
+   "id": "todo:join-terminal-heal-order",
+   "kind": "todo",
+   "dimension": "todo",
+   "source": "0.5.0.0 review note: the detached-join attachment gate heals terminal records before the function and token checks (attachmentGate in src/Haskoki/Runtime/Detached.hs)",
+   "input": "join-terminal-heal-order",
+   "expected": "explicit disposition",
+   "observed": "recorded; see target",
+   "owner": "none",
+   "decision": "historical",
+   "target": "Ruled benign, no change: the heal short-circuit only decides which typed refusal an invalid request receives (terminal fate versus wrong-function, stale-generation or auth refusals); every outcome stays a refusal -- nothing is admitted, delivered or resurrected, the terminal outcome carries only the execution-state enum, and the terminal mark is an idempotent memory-only cache fill. Existence probing is unauthenticated by design (unknown ids report unknown). Reordering would add a store read and a new store-failure mode to the terminal short-circuit. Terminal-stays-terminal stays pinned by the detached rejoin cases.",
+   "test": "tests/model/DetachedSpec.hs::caseJoinAfterDelivered",
+   "receipt": "src/Haskoki/Runtime/Detached.hs::attachmentGate",
+   "checker_pin": "n/a (not a checker case)"
   }
  ],
  "retired": [

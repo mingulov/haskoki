@@ -91,6 +91,8 @@ TODO_IDS = [
     "todo:reserved-config-knobs", "todo:auth-wrap-functions",
     # target gaps found after the v0.5 provider fixes
     "todo:xor-derive-des-parity", "todo:wrap-unwrap-kem-key-handle-code",
+    # release-gate review notes ruled without a code change
+    "todo:join-terminal-heal-order",
 ]
 
 
