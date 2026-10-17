@@ -832,7 +832,7 @@
         "CKO_SECRET_KEY"
       ],
       "canonical_name": "CKA_KEY_GEN_MECHANISM",
-      "notes": "Reviewed: ulong creation-history row (PKCS#11 v3.2 Table 26); stamped with the generating mechanism on generated keys and unavailable elsewhere; caller templates may not set it.",
+      "notes": "Reviewed: ulong creation-history row (PKCS#11 v3.2 Table 26); stamped with the generating mechanism on generated keys and their copies; unavailable elsewhere; caller templates may not set it.",
       "numeric_id": "0x00000166",
       "source_refs": [
         {
