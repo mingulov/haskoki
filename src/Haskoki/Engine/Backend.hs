@@ -914,8 +914,10 @@ data BackendCaps = BackendCaps
 -- and every thread needing the literal deadlocks. Capability
 -- records are shared by every concurrent open and every capability
 -- reader, so a record that is published holds no thunk for two
--- threads to race on. Hosts are exposed only with at least 2 RTS
--- capabilities.
+-- threads to race on. The provider pins one RTS capability and
+-- ignores GHCRTS, so hosts no longer reach multi-capability mode;
+-- the forcing stays because the test suites run multi-capability
+-- and a published record must hold no raceable thunk regardless.
 --
 -- Every 'String' and 'Int' reachable from 'BackendCaps' is forced
 -- here: names, the cipher, AEAD, MAC, signature, curve and KDF name

@@ -22,6 +22,13 @@
 #                       full-byte agreement, size-query liveness, an
 #                       independent sha256("abc") oracle, cross-worker
 #                       distinctness, and session conservation
+#   consumer_rts_caps   capability-count legs against the built module:
+#                       GHCRTS=-N4 and unsafe GHCRTS=-A8m must both
+#                       yield one capability with the host surviving
+#   rts_caps_probe      same GHCRTS legs against rts_bootstrap.c
+#                       compiled from source with its test-only
+#                       capability-count accessor (explicit wiring
+#                       below; not a consumer_*.c scenario)
 #
 # Usage:
 #   scripts/test-consumers.sh             # build scenarios, run all (must PASS)
@@ -30,7 +37,9 @@
 # and every bogus value fails fast before the build):
 #   HASKOKI_QUAL_ONLY=<basename>  run only the scenario whose basename
 #                                 (minus .c) matches exactly, e.g.
-#                                 consumer_multithread or async_routed
+#                                 consumer_multithread, async_routed,
+#                                 or rts_caps_probe (the bootstrap
+#                                 probe; scenarios are skipped then)
 #   HASKOKI_WIDTH_LEG=64          compile every scenario with
 #                                 -DHASKOKI_WIDTH_LEG=64 (the 64-bit cell)
 # Probe legs pass through untouched (the probes read them):
@@ -77,9 +86,15 @@ SCEN_LIST=$(
   done | LC_ALL=C sort -u
 )
 [ -n "$SCEN_LIST" ] || fail "consumer scenario list empty"
-if [ -n "${HASKOKI_QUAL_ONLY:-}" ]; then
+RUN_PROBE=1
+if [ "${HASKOKI_QUAL_ONLY:-}" = "rts_caps_probe" ]; then
+  SCEN_LIST=""
+  echo "scenario filter: rts_caps_probe (RTS bootstrap probe only)"
+elif [ -n "${HASKOKI_QUAL_ONLY:-}" ]; then
   # Scenario filter: exact basename match (minus .c), validated
   # before the build so a bogus hint fails fast without a toolchain.
+  # The bootstrap probe is skipped under a scenario filter.
+  RUN_PROBE=0
   QUAL_HIT=""
   for scen in $SCEN_LIST; do
     if [ "$(basename "$scen" .c)" = "$HASKOKI_QUAL_ONLY" ]; then
@@ -167,6 +182,57 @@ fi
 for scen in $SCEN_LIST; do
   run_scenario "$scen"
 done
+
+# RTS bootstrap probe: compiles cbits/rts_bootstrap.c from source with
+# the test-only capability-count accessor (the shipped module never
+# defines the macro) and drives its init code under hostile GHCRTS
+# values. Needs the threaded RTS link; skipped under a scenario
+# filter unless the filter names this probe.
+if [ "$RUN_PROBE" = "1" ]; then
+  [ -f tests/c/rts_caps_probe.c ] || fail "RTS bootstrap probe missing"
+  PROBE_BIN="$TMPD/rts_caps_probe"
+  command -v ghc >/dev/null 2>&1 || fail "ghc not found (the RTS probe needs ghc --print-libdir)"
+  GHC_LIBDIR=$(ghc --print-libdir) || fail "ghc --print-libdir failed"
+  RTS_ARCHDIR=""
+  RTS_ARCH_COUNT=0
+  for d in "$GHC_LIBDIR"/x86_64-linux-ghc-*; do
+    [ -d "$d" ] || continue
+    RTS_ARCHDIR="$d"
+    RTS_ARCH_COUNT=$((RTS_ARCH_COUNT + 1))
+  done
+  [ "$RTS_ARCH_COUNT" -eq 1 ] || fail "expected exactly one GHC arch dir under $GHC_LIBDIR, found $RTS_ARCH_COUNT"
+  RTS_INCDIR=""
+  RTS_INC_COUNT=0
+  for d in "$RTS_ARCHDIR"/rts-*/include; do
+    [ -d "$d" ] || continue
+    RTS_INCDIR="$d"
+    RTS_INC_COUNT=$((RTS_INC_COUNT + 1))
+  done
+  [ "$RTS_INC_COUNT" -eq 1 ] || fail "expected exactly one RTS include dir under $RTS_ARCHDIR, found $RTS_INC_COUNT"
+  # Linked with ghc -no-hs-main (a C main): only ghc knows the
+  # RTS/base library closure a plain cc link cannot satisfy. The
+  # startup under test is still rts_bootstrap.c's own init call.
+  # shellcheck disable=SC2086
+  if ! ghc -no-hs-main -threaded \
+      -I"$RTS_INCDIR" \
+      -optc-DHSK_OSSL4_TEST_HOOKS \
+      -optc-std=c11 -optc-O2 -optc-g -optc-Wall -optc-Wextra -optc-Werror \
+      -optl-Wl,-rpath,"$RTS_ARCHDIR" \
+      -odir "$TMPD" -hidir "$TMPD" \
+      -o "$PROBE_BIN" tests/c/rts_caps_probe.c cbits/rts_bootstrap.c \
+      -lpthread -ldl; then
+    echo "FAIL: rts_caps_probe did not compile"
+    FAILURES="$FAILURES rts_caps_probe(compile)"
+  else
+    echo "scenario compiled: $PROBE_BIN (bootstrap: cbits/rts_bootstrap.c)"
+    ec=0; "$PROBE_BIN" || ec=$?
+    echo "child exit: rts_caps_probe $ec"
+    if [ "$ec" -ne 0 ]; then
+      echo "FAIL: rts_caps_probe reported failures"
+      FAILURES="$FAILURES rts_caps_probe(exit $ec)"
+    fi
+  fi
+fi
 
 [ -z "$FAILURES" ] || fail "consumer failures:$FAILURES"
 

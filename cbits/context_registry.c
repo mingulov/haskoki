@@ -162,6 +162,48 @@ haskoki_ctx_retire(void *key) {
   pthread_mutex_unlock(&g_mu);
 }
 
+/* Park one root (a context pointer's own root) on its entry's
+ * reclaim queue, to be freed once the entry holds no borrow. Same
+ * one-locked-step discipline as every other call; aborts when the
+ * queue cannot grow, like any other displacement. */
+__attribute__((visibility("hidden"))) void
+haskoki_ctx_enqueue_free(void *key, void *root) {
+  struct ctx_entry *e;
+  if (key == NULL || root == NULL)
+    return;
+  pthread_mutex_lock(&g_mu);
+  e = find_or_append(key);
+  queue_dead(e, root);
+  pthread_mutex_unlock(&g_mu);
+}
+
+/* Read one entry's state (mirroring the lookup codes: 0 absent or
+ * hook-only, 1 owned, 2 borrowed, 3 retired), borrow count and
+ * queued-root count in one locked step. Acquires nothing and moves
+ * nothing; TEST-ONLY. */
+__attribute__((visibility("hidden"))) int
+haskoki_ctx_inspect(void *key, unsigned *refs_out, unsigned *queued_out) {
+  struct ctx_entry *e;
+  int state = CTX_HOOK_ONLY;
+  unsigned refs = 0;
+  unsigned queued = 0;
+  if (key != NULL) {
+    pthread_mutex_lock(&g_mu);
+    e = find_entry(key);
+    if (e != NULL && e->state != CTX_HOOK_ONLY) {
+      state = e->state;
+      refs = e->refs;
+      queued = (unsigned)e->dead_len;
+    }
+    pthread_mutex_unlock(&g_mu);
+  }
+  if (refs_out != NULL)
+    *refs_out = refs;
+  if (queued_out != NULL)
+    *queued_out = queued;
+  return state;
+}
+
 __attribute__((visibility("hidden"))) int
 haskoki_ctx_lookup_acquire(void *key, void **table_out) {
   struct ctx_entry *e;

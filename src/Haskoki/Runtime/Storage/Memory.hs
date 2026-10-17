@@ -38,7 +38,7 @@ import Control.Concurrent.MVar
   , tryTakeMVar
   , withMVar
   )
-import Control.Exception (bracket_, mask_, onException, throwIO, uninterruptibleMask_)
+import Control.Exception (bracket_, evaluate, mask_, onException, throwIO, uninterruptibleMask_)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (nub, sortOn)
 import Data.Unique (Unique, newUnique)
@@ -54,6 +54,7 @@ import Haskoki.Runtime.Storage
   , FaultInjector (..)
   , FaultPoint (..)
   , HandleState (..)
+  , JobBody (..)
   , JobRecord (..)
   , LoadedState (..)
   , ObjectPut (..)
@@ -91,6 +92,7 @@ import Haskoki.Runtime.Storage
   , storeClosed
   , zeroStats
   )
+import Haskoki.Session (TokenAuth (..))
 import Haskoki.Types (Generation (..), ObjectId (..), Revision, TokenId (..))
 
 -- | The durable state behind one memory store identity.
@@ -495,6 +497,7 @@ protocolLocked world limits inj qVar sVar delta0 = do
                   pure result
                 else do
                   let applied = applyDelta st delta
+                  evaluate (forceWorldState applied)
                   putMVar (mwState world) applied
                   ambiguous <- fiFire inj FaultAmbiguousCommit
                   result <-
@@ -681,6 +684,36 @@ effectiveDelta applied delta =
 -- not replaced) fold into the job-id mark, so a legacy store
 -- whose mark never advanced still cannot re-mint them once the
 -- records are gone.
+-- | Fully evaluate a committed state: every map spine, every
+-- record and every nested string. Runs before the state is stored
+-- in the world's MVar, so no thread ever evaluates another
+-- thread's shared commit thunk (a space leak, and a concurrent
+-- first-evaluation candidate for GHC #27272). Follows the
+-- 'forceCaps' precedent in "Haskoki.Engine.Backend": records are
+-- strict-fielded, so one 'seq' per value forces every immediate
+-- field, and the strings (the only lazy spines below the records)
+-- fold fully. ByteStrings are strict and the remaining leaves are
+-- scalars or nullary constructors, so WHNF covers them.
+forceWorldState :: WorldState -> ()
+forceWorldState (WorldState toks objs jobs meta creds) =
+  Map.foldr (\t r -> tok t `seq` r) () toks
+    `seq` Map.foldr (\o r -> obj o `seq` r) () objs
+    `seq` Map.foldr (\j r -> job j `seq` r) () jobs
+    `seq` Map.foldrWithKey (\k v r -> str k `seq` str v `seq` r) () meta
+    `seq` Map.foldr (\c r -> c `seq` r) () creds
+  where
+    str :: String -> ()
+    str = foldr seq ()
+    tok t = t `seq` str (trLabel t) `seq` auth (trAuth t)
+    auth a = a `seq` case taPrincipal a of
+      Nothing -> ()
+      Just p -> str p
+    obj o = o `seq` str (orMaterialEncoding o)
+      `seq` Map.foldrWithKey (\k v r -> k `seq` v `seq` r) () (orAttrs o)
+    job j = j `seq` str (jrFunction j) `seq` jbody (jrBody j)
+    jbody (JobPending name _) = str name
+    jbody (JobResult code _) = code `seq` ()
+
 applyDelta :: WorldState -> StoreDelta -> WorldState
 applyDelta st delta =
   let toks1 = foldr Map.delete (wsTokens st) (sdDropTokens delta)

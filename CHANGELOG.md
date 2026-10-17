@@ -300,8 +300,11 @@ record: symbol separation, sanitizer runs, evidence limits) and
   same lazy capability table, and a GHC runtime bug (GHC #27272, seen
   on 9.10.3, 9.12.4 and 9.14.1) could leave a string literal's
   black hole without an owner, blocking every thread that needed it.
-  Capability tables are now fully evaluated before they are published.
-  The default of 1 capability is not exposed.
+  Capability tables are now fully evaluated before they are published,
+  which covers that backend-open instance only; a second instance
+  through the store commit path is now known too. The provider no
+  longer runs with more than one capability at all (see below): it
+  starts the RTS with one capability and ignores `GHCRTS` entirely.
   0.4.0.0 is affected (earlier releases not checked); until upgrading,
   run with a single capability or serialize the first open.
 - Store lock and guard file descriptors are now opened with
@@ -408,6 +411,23 @@ record: symbol separation, sanitizer runs, evidence limits) and
 - `C_CopyObject` repeating the read-back DSA or DH public `y` in
   `CKA_VALUE` is accepted as a no-op and keeps the stored SPKI
   bytes; a different value is still refused.
+- Closing a session (or the instance, or rolling back a failed open)
+  freed the session's borrowed async view at once, while a native
+  async call admitted on that view could still be dereferencing it:
+  a use-after-free when a stale caller landed on the view. The view
+  is now retired first and its pointer freed only after the entry's
+  borrow count drains, through the registry's reclamation queue;
+  callers dereference the pointer before releasing the lookup borrow.
+- The provider now pins one RTS capability and ignores `GHCRTS`
+  entirely: hosts that set it observe no effect. With two or more
+  capabilities, two host threads first-evaluating the same constant
+  table could orphan a string-literal black hole and hang the whole
+  host process (GHC #27272, seen on 9.10.3, 9.12.4 and 9.14.1),
+  reachable through ordinary concurrent opens; fixing constants site
+  by site cannot be shown complete, so the provider no longer runs
+  multi-capability at all. An unsafe `GHCRTS` option no longer aborts
+  the host during startup either. The serving surface is serialized
+  on the C state lock, so one capability costs nothing.
 
 ## [0.4.0.0] - Unreleased
 

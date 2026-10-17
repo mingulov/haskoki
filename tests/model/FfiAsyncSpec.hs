@@ -33,7 +33,7 @@ parallel; the engine suite has no environment writers, so its
 crypto probes are race-free.
 -}
 {-# LANGUAGE OverloadedStrings #-}
-module FfiAsyncSpec (spec) where
+module FfiAsyncSpec (spec, commitPathWarmup) where
 
 import Control.Concurrent
   ( MVar
@@ -41,19 +41,18 @@ import Control.Concurrent
   , forkIO
   , killThread
   , newEmptyMVar
-  , newMVar
   , putMVar
   , takeMVar
   , threadDelay
   , tryPutMVar
   , tryTakeMVar
-  , withMVar
   )
 import Control.Exception
   ( AsyncException (..)
   , IOException
   , SomeException
   , bracket
+  , bracket_
   , finally
   , fromException
   , mask_
@@ -62,13 +61,14 @@ import Control.Exception
   )
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import qualified Data.Map as Map
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Set as Set
 import Data.Word (Word64)
 import Foreign.C.String (withCString)
 import Foreign.C.Types (CInt (..), CLong (..), CULong (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, wordPtrToPtr)
+import Foreign.Ptr (Ptr, castPtr, nullFunPtr, nullPtr, wordPtrToPtr)
 import Foreign.StablePtr
   ( StablePtr
   , castPtrToStablePtr
@@ -87,7 +87,7 @@ import System.Directory
   )
 import System.FilePath ((</>))
 import System.Timeout (timeout)
-import Test.Tasty (TestTree, testGroup, withResource)
+import Test.Tasty (TestTree, inOrderTestGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import qualified Haskoki.Engine.Backend as B
@@ -111,6 +111,7 @@ import Haskoki.FFI.Async
   , asyncCloseCtx
   , asyncLiveHandles
   , ctxAcquireBorrowTest
+  , ctxInspectEntryTest
   , ctxPendingReclaims
   , ctxReclaimStats
   , ctxReleaseBorrowTest
@@ -140,7 +141,16 @@ import Haskoki.FFI.Async
   , StoreBox (..)
   , submitTransfer
   )
-import Haskoki.FFI.Standard (StdInstance, haskokiStdClose, openStdInstance)
+import Haskoki.FFI.Standard
+  ( SessionOpenPoint (..)
+  , StdInstance (..)
+  , haskokiStdClose
+  , haskokiStdCloseSession
+  , haskokiStdOpenSession
+  , haskokiStdOpenSessionWithNotifyWithKey
+  , openStdInstance
+  , stdRvOf
+  )
 import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Model (Model (..))
 import Haskoki.Operation (CryptoEffect (..), CryptoResult (..))
@@ -254,98 +264,101 @@ import Haskoki.Types
   , JobId (..)
   , Outcome (..)
   , Pkcs11Version (..)
-  , ReturnCode (CKR_ARGUMENTS_BAD)
+  , ReturnCode (CKR_ARGUMENTS_BAD, CKR_GENERAL_ERROR, CKR_OK)
   , SessionId (..)
   , SlotId (..)
   , TokenId (..)
   )
 
--- | Run one case under the acquisition serial lock (see 'spec'):
--- the whole body, including its fixture threads, runs alone.
-serialCounted :: IO (MVar ()) -> String -> String -> IO a -> IO a
-serialCounted getLock c t act = do
-  lock <- getLock
-  withMVar lock (\_ -> counted c t act)
-
 spec :: TestTree
--- Every case in this group runs alone under one process-wide lock
--- ('withResource' shares it; the 'MVar' serializes). The RTS
--- reuses freed 'StablePtr' values, so two parallel cases can
--- observe the same pointer bits: a caller parked before its lookup
--- can be admitted to a new owner that registered those bits live
--- (wrong refusal code), a borrower census can count a foreign
--- caller, fixture teardown that retires and frees without the
--- close-path drain can free under another case's admitted caller
--- (use-after-free). Serializing also removes the concurrent
--- first-evaluation races that coincided with the commit-path
--- BlackHole hangs. None of these is a product defect — production
--- callers never share pointer values across owners this way — but
--- the suite must not depend on racy isolation either. Serializing
--- the group (fixtures allocate and free per case; every case holds
--- the lock for its whole body) removes cross-case pointer-value
--- reuse entirely. Do not lift this lock without re-proving every
--- tombstone, census, reclaim and hang assertion under parallel
--- execution.
-spec = withResource (newMVar ()) (const (pure ())) $ \getLock ->
-  testGroup "FFI acquisition"
-  [ testCase "std open succeeds then closes" (serialCounted getLock "m3-ffi-acquisition" "std-open-succeeds-then-closes" (caseStdSuccess))
-  , testCase "std open bad sqlite path is NULL" (serialCounted getLock "m3-ffi-acquisition" "std-open-bad-sqlite-path-is-null" (caseStdBadSqlite))
-  , testCase "std open zero slots is NULL" (serialCounted getLock "m3-ffi-acquisition" "std-open-zero-slots-is-null" (caseStdZeroSlots))
-  , testCase "std open oversize catalog is NULL" (serialCounted getLock "m3-ffi-acquisition" "std-open-oversize-catalog-is-null" (caseStdOversize))
-  , testCase "std failed open does not poison the next" (serialCounted getLock "m3-ffi-acquisition" "std-failed-open-does-not-poison-the-next" (caseStdNonPoison))
-  , testCase "std async kill aborts the open (none swallowed)" (serialCounted getLock "m3-ffi-acquisition" "std-async-kill-aborts-the-open-none-swallowed" (caseStdAsyncSlow))
-  , testCase "close-one keeps the other context live" (serialCounted getLock "m3-ffi-acquisition" "close-one-keeps-the-other-context-live" (caseCloseOneKeepsOther))
-  , testCase "close waits for an entered caller" (serialCounted getLock "m3-ffi-acquisition" "close-waits-for-an-entered-caller" (caseCloseWaitsForEntered))
-  , testCase "admitted calls run; close retires the gate" (serialCounted getLock "m3-ffi-acquisition" "admitted-calls-run-close-retires-the-gate" (caseAdmittedCallsRun))
-  , testCase "kill in the submit transfer cancels the fresh job" (serialCounted getLock "m3-ffi-acquisition" "kill-in-the-submit-transfer-cancels-the-fresh-job" (caseSubmitKillCancelsFresh))
-  , testCase "submit under a key function refuses without allocating" (serialCounted getLock "m3-ffi-acquisition" "submit-under-a-key-function-refuses-without-allocating" caseSubmitKeyFunctionRefuses)
-  , testCase "kill in the join handoff cancels the fresh join" (serialCounted getLock "m3-ffi-acquisition" "kill-in-the-join-handoff-cancels-the-fresh-join" (caseHandoffKillCancelsJoin))
-  , testCase "join handoff publishes a live handle" (serialCounted getLock "m3-ffi-acquisition" "join-handoff-publishes-a-live-handle" (caseHandoffPublishes))
-  , testCase "kill after join commit cancels before publish" (serialCounted getLock "m3-ffi-acquisition" "kill-after-join-commit-cancels-before-publish" (caseJoinAcquireKillAfterCommit))
-  , testCase "join acquire publishes a live handle" (serialCounted getLock "m3-ffi-acquisition" "join-acquire-publishes-a-live-handle" (caseJoinAcquirePublishes))
-  , testCase "killed close releases; retry completes teardown" (serialCounted getLock "m3-ffi-acquisition" "killed-close-releases-retry-completes-teardown" (caseCloseKillRetryCompletes))
-  , testCase "concurrent entry races close cleanly" (serialCounted getLock "m3-ffi-acquisition" "concurrent-entry-races-close-cleanly" (caseEnterCloseRace))
-  , testCase "borrowed start works" (serialCounted getLock "m3-ffi-acquisition" "borrowed-start-works" (caseBorrowedStart))
-  , testCase "owned close hands its index to a borrowed view" (serialCounted getLock "m3-ffi-acquisition" "owned-close-hands-its-index-to-a-borrowed-view" (caseOwnedToBorrowedReuse))
-  , testCase "caller parked pre-lookup meets the tombstone" (serialCounted getLock "m3-ffi-acquisition" "caller-parked-pre-lookup-meets-the-tombstone" (caseEnterBarrierCloseTombstones))
-  , testCase "retire clears the entry hook" (serialCounted getLock "m3-ffi-acquisition" "retire-clears-the-entry-hook" (caseRetireClearsHook))
-  , testCase "registry roots reclaim across churn" (serialCounted getLock "m3-ffi-acquisition" "registry-roots-reclaim-across-churn" (caseRegistryRootsReclaim))
-  , testCase "stacked displacements preserve every root" (serialCounted getLock "m3-ffi-acquisition" "stacked-displacements-preserve-every-root" (caseReclaimOverlappingReuse))
-  , testCase "kill during acquire rolls back and nulls" (serialCounted getLock "m3-ffi-acquisition" "kill-during-acquire-rolls-back-and-nulls" (caseJoinAcquireKillDuringAcquire))
-  , testGroup "standalone ownership"
-      [ testCase "store box killed after store open closes the store" (serialCounted getLock "m3-standalone-ownership" "store-box-killed-after-store-open-closes-the-store" (caseBoxKilledAfterStoreOpen))
-      , testCase "store box killed after token setup closes the store" (serialCounted getLock "m3-standalone-ownership" "store-box-killed-after-token-setup-closes-the-store" (caseBoxKilledAfterTokenSetup))
-      , testCase "store box killed during token load closes the store" (serialCounted getLock "m3-standalone-ownership" "store-box-killed-during-token-load-closes-the-store" (caseBoxKilledDuringTokenLoad))
-      , testCase "sqlite store box killed after token setup releases its lock" (serialCounted getLock "m3-standalone-ownership" "sqlite-store-box-killed-after-token-setup-releases-its-lock" (caseSqliteBoxKilledAfterTokenSetup))
-      , testCase "context killed after backend open closes the backend" (serialCounted getLock "m3-standalone-ownership" "context-killed-after-backend-open-closes-the-backend" (caseCtxKilledAfterBackendOpen))
-      , testCase "context killed after session open closes the backend" (serialCounted getLock "m3-standalone-ownership" "context-killed-after-session-open-closes-the-backend" (caseCtxKilledAfterSessionOpen))
-      , testCase "context killed after pointer allocation frees it unregistered" (serialCounted getLock "m3-standalone-ownership" "context-killed-after-pointer-allocation-frees-it-unregistered" (caseCtxKilledAfterCtxAlloc))
-      , testCase "store-bound context killed after reload leaves the box usable" (serialCounted getLock "m3-standalone-ownership" "store-bound-context-killed-after-reload-leaves-the-box-usable" (caseStoreBoundKilledAfterReload))
-      , testCase "export store open residue is recovered by the next open" (serialCounted getLock "m3-standalone-ownership" "export-store-open-residue-is-recovered-by-the-next-open" (caseExportResidueRecoveredByNextOpen))
-      , testCase "closer killed in the store wait stays closing and retries" (serialCounted getLock "m3-standalone-ownership" "closer-killed-in-the-store-wait-stays-closing-and-retries" (caseCloserKilledInStoreWait))
-      , testCase "closer killed in a job lease wait cancels once on retry" (serialCounted getLock "m3-standalone-ownership" "closer-killed-in-a-job-lease-wait-cancels-once-on-retry" (caseCloserKilledInLeaseWait))
-      , testCase "closer killed in the backend gate wait frees the env once on retry" (serialCounted getLock "m3-standalone-ownership" "closer-killed-in-the-backend-gate-wait-frees-the-env-once-on-retry" (caseCloserKilledInBackendGateWait))
-      , testCase "store failure in retirement still closes and keeps the record joinable" (serialCounted getLock "m3-standalone-ownership" "store-failure-in-retirement-still-closes-and-keeps-the-record-joinable" (caseStoreFailureInRetirement))
-      , testCase "table close phases move only forward after teardown starts" (serialCounted getLock "m3-standalone-ownership" "table-close-phases-move-only-forward-after-teardown-starts" (caseTableClosePhasesMoveOnlyForward))
-      , testCase "unknown registry key refuses without admission" (serialCounted getLock "m3-standalone-ownership" "unknown-registry-key-refuses-without-admission" (caseUnknownKeyRefusesWithoutAdmission))
-      , testCase "hook-only registry key refuses after its hook" (serialCounted getLock "m3-standalone-ownership" "hook-only-registry-key-refuses-after-its-hook" (caseHookOnlyRefusesAfterHook))
-      , testCase "close of an unknown key nulls the slot only" (serialCounted getLock "m3-standalone-ownership" "close-of-an-unknown-key-nulls-the-slot-only" (caseCloseUnknownNullsSlotOnly))
-      , testCase "close with a throwing retire resumes on retry" (serialCounted getLock "m3-standalone-ownership" "close-with-a-throwing-retire-resumes-on-retry" (caseCloseTailThrowResumesOnRetry))
-      , testCase "close with a throwing free resumes on retry" (serialCounted getLock "m3-standalone-ownership" "close-with-a-throwing-free-resumes-on-retry" (caseCloseTailFreeThrowResumesOnRetry))
-      , testCase "store throw in retirement still closes and keeps the record joinable" (serialCounted getLock "m3-standalone-ownership" "store-throw-in-retirement-still-closes-and-keeps-the-record-joinable" (caseStoreThrowInRetirementStillCloses))
-      , testCase "commit throw reports only the uncommitted rows" (serialCounted getLock "m3-standalone-ownership" "commit-throw-reports-only-the-uncommitted-rows" (caseCommitThrowReportsOnlyUncommitted))
-      , testCase "value-level close killed in a lease wait resumes" (serialCounted getLock "m3-standalone-ownership" "value-level-close-killed-in-a-lease-wait-resumes" (caseValueCloseKilledInLeaseWaitResumes))
-      , testCase "block wait rejects other block reasons" (serialCounted getLock "m3-standalone-ownership" "block-wait-rejects-other-block-reasons" (caseBlockWaitRejectsOtherReasons))
-      , testCase "null slot and null pointer closes are silent" (serialCounted getLock "m3-standalone-ownership" "null-slot-and-null-pointer-closes-are-silent" (caseNullClosesAreSilent))
-      , testCase "repeated context close frees and retires once" (serialCounted getLock "m3-standalone-ownership" "repeated-context-close-frees-and-retires-once" (caseRepeatedCloseFreesOnce))
-      , testCase "failed store close keeps the box slot until a retry succeeds" (serialCounted getLock "m3-standalone-ownership" "failed-store-close-keeps-the-box-slot-until-a-retry-succeeds" (caseFailedStoreCloseKeepsBoxSlot))
-      , testCase "store box close killed in the lock wait keeps the box" (serialCounted getLock "m3-standalone-ownership" "store-box-close-killed-in-the-lock-wait-keeps-the-box" (caseBoxCloseKilledInLockWaitKeepsBox))
-      , testCase "box close step parks before the transfer" (serialCounted getLock "m3-standalone-ownership" "box-close-step-parks-before-the-transfer" (caseBoxCloseStepParksBeforeTransfer))
-      , testCase "context close step parks before the transfer" (serialCounted getLock "m3-standalone-ownership" "context-close-step-parks-before-the-transfer" (caseCtxCloseStepParksBeforeTransfer))
-      , testCase "interrupted residue retry puts back every entry" (serialCounted getLock "m3-standalone-ownership" "interrupted-residue-retry-puts-back-every-entry" (caseResidueRetryInterruptedPutsBack))
-      , testCase "standalone churn leaves no orphan roots or native envs" (serialCounted getLock "m3-standalone-ownership" "standalone-churn-leaves-no-orphan-roots-or-native-envs" (caseStandaloneChurnLeavesNoOrphans))
-      , testCase "joined cleanup lets the same store reopen" (serialCounted getLock "m3-standalone-ownership" "joined-cleanup-lets-the-same-store-reopen" (caseJoinedCleanupReopensSameStore))
-      , testCase "joined cleanup lets the same sqlite store reopen" (serialCounted getLock "m3-standalone-ownership" "joined-cleanup-lets-the-same-sqlite-store-reopen" (caseJoinedCleanupReopensSameSqliteStore))
+-- Every case in this group runs alone, one at a time, under tasty's
+-- 'inOrderTestGroup' (no lock value: the scheduler orders the
+-- cases, so no worker idles holding one and wait time never counts
+-- against a case's timeout; the dependency-group variant would
+-- shield earlier cases from '-p' filtering and break the
+-- ownership-matrix patterns, so this group uses the variant whose
+-- filtering matches 'testGroup'). The RTS reuses freed 'StablePtr'
+-- values, so
+-- two parallel cases could observe the same pointer bits: a caller
+-- parked before its lookup admitted to a new owner that registered
+-- those bits live (wrong refusal code), a borrower census counting
+-- a foreign caller, and fixture teardown that retires and frees
+-- without the close-path drain freeing under another case's
+-- admitted caller (use-after-free). Sequencing also removes the
+-- concurrent first-evaluation races that coincided with the
+-- commit-path BlackHole hangs. Two of those shapes were product
+-- defects, fixed alongside: borrowed-view closes now defer their
+-- free behind the entry's borrow count, and the provider pins one
+-- RTS capability. The 'counted' wrapper on each case is unchanged
+-- (child thread, labels, ownership counters). Sequencing covers
+-- this group only: keys stay safe across groups because each case
+-- holds its keys allocated through its assertions
+-- (pin-while-allocated) and no other group parks callers or holds
+-- test borrows. Do not parallelize this group without re-proving
+-- every tombstone, census, reclaim and hang assertion under
+-- parallel execution.
+spec = inOrderTestGroup "FFI acquisition"
+  [ testCase "std open succeeds then closes" (counted "m3-ffi-acquisition" "std-open-succeeds-then-closes" (caseStdSuccess))
+  , testCase "std open bad sqlite path is NULL" (counted "m3-ffi-acquisition" "std-open-bad-sqlite-path-is-null" (caseStdBadSqlite))
+  , testCase "std open zero slots is NULL" (counted "m3-ffi-acquisition" "std-open-zero-slots-is-null" (caseStdZeroSlots))
+  , testCase "std open oversize catalog is NULL" (counted "m3-ffi-acquisition" "std-open-oversize-catalog-is-null" (caseStdOversize))
+  , testCase "std failed open does not poison the next" (counted "m3-ffi-acquisition" "std-failed-open-does-not-poison-the-next" (caseStdNonPoison))
+  , testCase "std async kill aborts the open (none swallowed)" (counted "m3-ffi-acquisition" "std-async-kill-aborts-the-open-none-swallowed" (caseStdAsyncSlow))
+  , testCase "close-one keeps the other context live" (counted "m3-ffi-acquisition" "close-one-keeps-the-other-context-live" (caseCloseOneKeepsOther))
+  , testCase "close waits for an entered caller" (counted "m3-ffi-acquisition" "close-waits-for-an-entered-caller" (caseCloseWaitsForEntered))
+  , testCase "admitted calls run; close retires the gate" (counted "m3-ffi-acquisition" "admitted-calls-run-close-retires-the-gate" (caseAdmittedCallsRun))
+  , testCase "kill in the submit transfer cancels the fresh job" (counted "m3-ffi-acquisition" "kill-in-the-submit-transfer-cancels-the-fresh-job" (caseSubmitKillCancelsFresh))
+  , testCase "submit under a key function refuses without allocating" (counted "m3-ffi-acquisition" "submit-under-a-key-function-refuses-without-allocating" caseSubmitKeyFunctionRefuses)
+  , testCase "kill in the join handoff cancels the fresh join" (counted "m3-ffi-acquisition" "kill-in-the-join-handoff-cancels-the-fresh-join" (caseHandoffKillCancelsJoin))
+  , testCase "join handoff publishes a live handle" (counted "m3-ffi-acquisition" "join-handoff-publishes-a-live-handle" (caseHandoffPublishes))
+  , testCase "kill after join commit cancels before publish" (counted "m3-ffi-acquisition" "kill-after-join-commit-cancels-before-publish" (caseJoinAcquireKillAfterCommit))
+  , testCase "join acquire publishes a live handle" (counted "m3-ffi-acquisition" "join-acquire-publishes-a-live-handle" (caseJoinAcquirePublishes))
+  , testCase "killed close releases; retry completes teardown" (counted "m3-ffi-acquisition" "killed-close-releases-retry-completes-teardown" (caseCloseKillRetryCompletes))
+  , testCase "concurrent entry races close cleanly" (counted "m3-ffi-acquisition" "concurrent-entry-races-close-cleanly" (caseEnterCloseRace))
+  , testCase "borrowed start works" (counted "m3-ffi-acquisition" "borrowed-start-works" (caseBorrowedStart))
+  , testCase "owned close hands its index to a borrowed view" (counted "m3-ffi-acquisition" "owned-close-hands-its-index-to-a-borrowed-view" (caseOwnedToBorrowedReuse))
+  , testCase "caller parked pre-lookup meets the tombstone" (counted "m3-ffi-acquisition" "caller-parked-pre-lookup-meets-the-tombstone" (caseEnterBarrierCloseTombstones))
+  , testCase "retire clears the entry hook" (counted "m3-ffi-acquisition" "retire-clears-the-entry-hook" (caseRetireClearsHook))
+  , testCase "registry roots reclaim across churn" (counted "m3-ffi-acquisition" "registry-roots-reclaim-across-churn" (caseRegistryRootsReclaim))
+  , testCase "stacked displacements preserve every root" (counted "m3-ffi-acquisition" "stacked-displacements-preserve-every-root" (caseReclaimOverlappingReuse))
+  , testCase "kill during acquire rolls back and nulls" (counted "m3-ffi-acquisition" "kill-during-acquire-rolls-back-and-nulls" (caseJoinAcquireKillDuringAcquire))
+  , testCase "session close defers the borrowed view free" (counted "m3-ffi-acquisition" "session-close-defers-the-borrowed-view-free" (caseSessionCloseDefersViewFree))
+  , testCase "instance close defers the borrowed view free" (counted "m3-ffi-acquisition" "instance-close-defers-the-borrowed-view-free" (caseInstanceCloseDefersViewFree))
+  , testCase "open rollback defers the borrowed view free" (counted "m3-ffi-acquisition" "open-rollback-defers-the-borrowed-view-free" (caseOpenRollbackDefersViewFree))
+  , inOrderTestGroup "standalone ownership"
+      [ testCase "store box killed after store open closes the store" (counted "m3-standalone-ownership" "store-box-killed-after-store-open-closes-the-store" (caseBoxKilledAfterStoreOpen))
+      , testCase "store box killed after token setup closes the store" (counted "m3-standalone-ownership" "store-box-killed-after-token-setup-closes-the-store" (caseBoxKilledAfterTokenSetup))
+      , testCase "store box killed during token load closes the store" (counted "m3-standalone-ownership" "store-box-killed-during-token-load-closes-the-store" (caseBoxKilledDuringTokenLoad))
+      , testCase "sqlite store box killed after token setup releases its lock" (counted "m3-standalone-ownership" "sqlite-store-box-killed-after-token-setup-releases-its-lock" (caseSqliteBoxKilledAfterTokenSetup))
+      , testCase "context killed after backend open closes the backend" (counted "m3-standalone-ownership" "context-killed-after-backend-open-closes-the-backend" (caseCtxKilledAfterBackendOpen))
+      , testCase "context killed after session open closes the backend" (counted "m3-standalone-ownership" "context-killed-after-session-open-closes-the-backend" (caseCtxKilledAfterSessionOpen))
+      , testCase "context killed after pointer allocation frees it unregistered" (counted "m3-standalone-ownership" "context-killed-after-pointer-allocation-frees-it-unregistered" (caseCtxKilledAfterCtxAlloc))
+      , testCase "store-bound context killed after reload leaves the box usable" (counted "m3-standalone-ownership" "store-bound-context-killed-after-reload-leaves-the-box-usable" (caseStoreBoundKilledAfterReload))
+      , testCase "export store open residue is recovered by the next open" (counted "m3-standalone-ownership" "export-store-open-residue-is-recovered-by-the-next-open" (caseExportResidueRecoveredByNextOpen))
+      , testCase "closer killed in the store wait stays closing and retries" (counted "m3-standalone-ownership" "closer-killed-in-the-store-wait-stays-closing-and-retries" (caseCloserKilledInStoreWait))
+      , testCase "closer killed in a job lease wait cancels once on retry" (counted "m3-standalone-ownership" "closer-killed-in-a-job-lease-wait-cancels-once-on-retry" (caseCloserKilledInLeaseWait))
+      , testCase "closer killed in the backend gate wait frees the env once on retry" (counted "m3-standalone-ownership" "closer-killed-in-the-backend-gate-wait-frees-the-env-once-on-retry" (caseCloserKilledInBackendGateWait))
+      , testCase "store failure in retirement still closes and keeps the record joinable" (counted "m3-standalone-ownership" "store-failure-in-retirement-still-closes-and-keeps-the-record-joinable" (caseStoreFailureInRetirement))
+      , testCase "table close phases move only forward after teardown starts" (counted "m3-standalone-ownership" "table-close-phases-move-only-forward-after-teardown-starts" (caseTableClosePhasesMoveOnlyForward))
+      , testCase "unknown registry key refuses without admission" (counted "m3-standalone-ownership" "unknown-registry-key-refuses-without-admission" (caseUnknownKeyRefusesWithoutAdmission))
+      , testCase "hook-only registry key refuses after its hook" (counted "m3-standalone-ownership" "hook-only-registry-key-refuses-after-its-hook" (caseHookOnlyRefusesAfterHook))
+      , testCase "close of an unknown key nulls the slot only" (counted "m3-standalone-ownership" "close-of-an-unknown-key-nulls-the-slot-only" (caseCloseUnknownNullsSlotOnly))
+      , testCase "close with a throwing retire resumes on retry" (counted "m3-standalone-ownership" "close-with-a-throwing-retire-resumes-on-retry" (caseCloseTailThrowResumesOnRetry))
+      , testCase "close with a throwing free resumes on retry" (counted "m3-standalone-ownership" "close-with-a-throwing-free-resumes-on-retry" (caseCloseTailFreeThrowResumesOnRetry))
+      , testCase "store throw in retirement still closes and keeps the record joinable" (counted "m3-standalone-ownership" "store-throw-in-retirement-still-closes-and-keeps-the-record-joinable" (caseStoreThrowInRetirementStillCloses))
+      , testCase "commit throw reports only the uncommitted rows" (counted "m3-standalone-ownership" "commit-throw-reports-only-the-uncommitted-rows" (caseCommitThrowReportsOnlyUncommitted))
+      , testCase "value-level close killed in a lease wait resumes" (counted "m3-standalone-ownership" "value-level-close-killed-in-a-lease-wait-resumes" (caseValueCloseKilledInLeaseWaitResumes))
+      , testCase "block wait rejects other block reasons" (counted "m3-standalone-ownership" "block-wait-rejects-other-block-reasons" (caseBlockWaitRejectsOtherReasons))
+      , testCase "null slot and null pointer closes are silent" (counted "m3-standalone-ownership" "null-slot-and-null-pointer-closes-are-silent" (caseNullClosesAreSilent))
+      , testCase "repeated context close frees and retires once" (counted "m3-standalone-ownership" "repeated-context-close-frees-and-retires-once" (caseRepeatedCloseFreesOnce))
+      , testCase "failed store close keeps the box slot until a retry succeeds" (counted "m3-standalone-ownership" "failed-store-close-keeps-the-box-slot-until-a-retry-succeeds" (caseFailedStoreCloseKeepsBoxSlot))
+      , testCase "store box close killed in the lock wait keeps the box" (counted "m3-standalone-ownership" "store-box-close-killed-in-the-lock-wait-keeps-the-box" (caseBoxCloseKilledInLockWaitKeepsBox))
+      , testCase "box close step parks before the transfer" (counted "m3-standalone-ownership" "box-close-step-parks-before-the-transfer" (caseBoxCloseStepParksBeforeTransfer))
+      , testCase "context close step parks before the transfer" (counted "m3-standalone-ownership" "context-close-step-parks-before-the-transfer" (caseCtxCloseStepParksBeforeTransfer))
+      , testCase "interrupted residue retry puts back every entry" (counted "m3-standalone-ownership" "interrupted-residue-retry-puts-back-every-entry" (caseResidueRetryInterruptedPutsBack))
+      , testCase "standalone churn leaves no orphan roots or native envs" (counted "m3-standalone-ownership" "standalone-churn-leaves-no-orphan-roots-or-native-envs" (caseStandaloneChurnLeavesNoOrphans))
+      , testCase "joined cleanup lets the same store reopen" (counted "m3-standalone-ownership" "joined-cleanup-lets-the-same-store-reopen" (caseJoinedCleanupReopensSameStore))
+      , testCase "joined cleanup lets the same sqlite store reopen" (counted "m3-standalone-ownership" "joined-cleanup-lets-the-same-sqlite-store-reopen" (caseJoinedCleanupReopensSameSqliteStore))
       ]
   ]
 
@@ -469,6 +482,16 @@ countingRunner ref _fx = do
   pure (GotBytes cannedFfiDigest)
 
 -- | A memory store with the home token record seated (generation 0).
+-- | GHC #27272 warm-up MITIGATION (not a fix), run once by the
+-- model suite's 'Main' before tasty forks any worker: one
+-- seat-token commit, single-threaded, so the commit-path constants
+-- are values before any two workers can first-evaluate them
+-- together (the orphaned-black-hole hang of the known upstream
+-- runtime bug GHC #27272). This lowers the hang rate; it does not
+-- fix the upstream bug.
+commitPathWarmup :: IO ()
+commitPathWarmup = mkFfiStore >> pure ()
+
 mkFfiStore :: IO Store
 mkFfiStore = do
   world <- newMemoryWorld
@@ -1432,7 +1455,12 @@ caseOwnedToBorrowedReuse = do
 -- dereferences the freed pointer. Before tombstones, a caller
 -- resuming after the close fell through to a dereference of the
 -- freed pointer. The hook is scoped to this pointer and reset
--- under 'finally', so parallel tests never observe it.
+-- under 'finally', so parallel tests never observe it. The close
+-- runs over an acquisition that defers its pointer free into
+-- 'freedRef': the value stays allocated (hence unreusable by any
+-- other group) until the assertion completes, then frees whatever
+-- the outcome — the pin-while-allocated shape of
+-- 'caseOwnedToBorrowedReuse'.
 caseEnterBarrierCloseTombstones :: IO ()
 caseEnterBarrierCloseTombstones = do
   _store <- mkFfiStore
@@ -1445,6 +1473,8 @@ caseEnterBarrierCloseTombstones = do
     entered <- newEmptyMVar
     proceed <- newEmptyMVar
     done <- newEmptyMVar
+    freedRef <- newIORef []
+    let acq = asyncAcquisition { aaFreeCtxPtr = \fp -> modifyIORef' freedRef (fp :) }
     setEnterTestHook sp (Just (putMVar entered () >> takeMVar proceed))
     (do
       _ <- forkIO $ do
@@ -1454,7 +1484,7 @@ caseEnterBarrierCloseTombstones = do
       case mEntered of
         Nothing -> assertFailure "caller never parked pre-lookup"
         Just () -> pure ()
-      haskokiAsyncClose pSlot
+      closeCtxSlotWith acq pSlot
       after <- peek pSlot
       assertBool "close completed under the parked caller" (isNull after)
       gateMid <- inspectTableGate (acTable ctx)
@@ -1467,7 +1497,7 @@ caseEnterBarrierCloseTombstones = do
       case r of
         Right rv -> assertEqual "parked caller refused by tombstone" rvGeneral rv
         Left e -> assertFailure ("caller failed: " ++ show e)
-      ) `finally` setEnterTestHook sp Nothing
+      ) `finally` (readIORef freedRef >>= mapM_ freeStablePtr >> setEnterTestHook sp Nothing)
 
 -- | Retiring clears the entry hook in the same step as the
 -- tombstone: arm a hook, retire, then re-register the same
@@ -1496,6 +1526,82 @@ caseRetireClearsHook = do
   retireCtx sp
   freeStablePtr sp
   awaitNoPendingReclaims
+
+-- | Open a live Standard session on the default config and return
+-- the instance, the session handle and the installed borrowed-view
+-- key. The caller owns the instance and closes it.
+openStdSessionView :: IO (StablePtr StdInstance, CULong, StablePtr AsyncCtx)
+openStdSessionView = do
+  inst <- openStdInstance defaultConfig
+  assertBool "instance opened" (castStablePtrToPtr inst /= nullPtr)
+  h <- alloca $ \pSession -> do
+    haskokiStdOpenSession inst 0 0 pSession
+      >>= assertEqual "session opened" (stdRvOf CKR_OK)
+    peek pSession
+  views <- deRefStablePtr inst >>= readIORef . siAsyncViews
+  case Map.lookup (SessionId (fromIntegral h)) views of
+    Nothing -> assertFailure "borrowed view installed"
+    Just view -> pure (inst, h, view)
+
+-- | Session close retires the borrowed view but defers its pointer
+-- free behind the entry's borrow count: with a borrow held across
+-- the close, the retired entry keeps both roots (the displaced
+-- table and the view pointer itself) queued until the release.
+caseSessionCloseDefersViewFree :: IO ()
+caseSessionCloseDefersViewFree =
+  bracket openStdSessionView (\(inst, _, _) -> haskokiStdClose inst) $
+    \(inst, h, view) -> do
+      bracket_ (ctxAcquireBorrowTest view) (ctxReleaseBorrowTest view) $ do
+        setup <- ctxInspectEntryTest view
+        assertEqual "view live under the held borrow" (2, 1, 0) setup
+        haskokiStdCloseSession inst h
+          >>= assertEqual "session closed" (stdRvOf CKR_OK)
+        mid <- ctxInspectEntryTest view
+        assertEqual "retired view keeps its roots queued under the borrow"
+          (3, 1, 2) mid
+      awaitNoPendingReclaims
+
+-- | Instance close releases every session view the same way: the
+-- retired entry keeps both roots queued while a borrow stands.
+caseInstanceCloseDefersViewFree :: IO ()
+caseInstanceCloseDefersViewFree = do
+  (inst, _, view) <- openStdSessionView
+  bracket_ (ctxAcquireBorrowTest view) (ctxReleaseBorrowTest view) $ do
+    setup <- ctxInspectEntryTest view
+    assertEqual "view live under the held borrow" (2, 1, 0) setup
+    haskokiStdClose inst
+    mid <- ctxInspectEntryTest view
+    assertEqual "retired view keeps its roots queued under the borrow"
+      (3, 1, 2) mid
+  awaitNoPendingReclaims
+
+-- | The open-session rollback releases its never-installed view the
+-- same way: the seam observer holds a borrow on the view key, the
+-- injected fault runs the rollback, and the retired entry keeps
+-- both roots queued until the release.
+caseOpenRollbackDefersViewFree :: IO ()
+caseOpenRollbackDefersViewFree = do
+  inst <- openStdInstance defaultConfig
+  assertBool "instance opened" (castStablePtrToPtr inst /= nullPtr)
+  keyRef <- newIORef Nothing
+  let observe BeforeBorrowedViewInstall (Just view) = do
+        writeIORef keyRef (Just view)
+        ctxAcquireBorrowTest view
+        ioError (userError "injected rollback")
+      observe _ _ = pure ()
+  flip finally (haskokiStdClose inst) $ alloca $ \pSession -> do
+    haskokiStdOpenSessionWithNotifyWithKey observe inst 0 0 0 nullPtr nullFunPtr pSession
+      >>= assertEqual "injected open fault fenced" (stdRvOf CKR_GENERAL_ERROR)
+    mView <- readIORef keyRef
+    view <- case mView of
+      Nothing -> assertFailure "seam reached the view-install point"
+      Just v -> pure v
+    (do
+      mid <- ctxInspectEntryTest view
+      assertEqual "rolled-back view keeps its roots queued under the borrow"
+        (3, 1, 2) mid
+      ) `finally` ctxReleaseBorrowTest view
+    awaitNoPendingReclaims
 
 -- | Poll the C reclamation backlog to quiescence (bounded):
 -- borrows span adjacent lines only, so a live backlog drains

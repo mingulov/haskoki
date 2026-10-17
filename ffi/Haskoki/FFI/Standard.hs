@@ -83,6 +83,7 @@ module Haskoki.FFI.Standard
   , SessionOpenPoint (..)
   , haskokiStdOpenSessionWithNotify
   , haskokiStdOpenSessionWithNotifyWith
+  , haskokiStdOpenSessionWithNotifyWithKey
   , haskokiStdClose
   , withStdCtx
   , stdRvOf
@@ -315,7 +316,7 @@ import Haskoki.FFI.Async
   , haskokiAsyncStart
   , jobFunctionCode
   , registerBorrowedCtx
-  , retireCtx
+  , releaseBorrowedView
   )
 import Haskoki.FFI.Decode (decodeInputBytes)
 import Haskoki.FFI.Encode
@@ -1252,11 +1253,13 @@ freeStdAsyncView :: StdInstance -> SessionId -> IO ()
 freeStdAsyncView inst sid = mask_ $ do
   view <- atomicModifyIORef' (siAsyncViews inst) $ \views ->
     (Map.delete sid views, Map.lookup sid views)
-  -- Retire strictly before free, mirroring the owned slot-close:
-  -- a caller resuming after the release meets the tombstone and
-  -- refuses instead of dereferencing a freed pointer, and the next
-  -- owner of a recycled index re-registers over it.
-  forM_ view $ \sp -> retireCtx sp >> freeStablePtr sp
+  -- Retire strictly before free, and defer the free behind the
+  -- entry's borrow count: a caller resuming after the release
+  -- meets the tombstone and refuses instead of dereferencing a
+  -- freed pointer, a caller admitted before it holds its borrow
+  -- across its dereference, and the next owner of a recycled
+  -- index re-registers over the tombstone.
+  forM_ view releaseBorrowedView
 
 -- ---------------------------------------------------------------------------
 -- Template frames (pure)
@@ -2407,7 +2410,19 @@ haskokiStdOpenSessionWithNotify = haskokiStdOpenSessionWithNotifyWith (const (pu
 haskokiStdOpenSessionWithNotifyWith
   :: (SessionOpenPoint -> IO ()) -> StablePtr StdInstance -> CULong -> CULong -> CULong
   -> Ptr () -> FunPtr NativeNotify -> Ptr CULong -> IO CULong
-haskokiStdOpenSessionWithNotifyWith observe ctx slot (CULong ro) (CULong async) application callback phSession =
+haskokiStdOpenSessionWithNotifyWith observe =
+  haskokiStdOpenSessionWithNotifyWithKey (\point _key -> observe point)
+
+-- | TEST-ONLY key-carrying seam over the same open: the observer
+-- also receives the borrowed view's key at the two view-install
+-- points ('Just' there, 'Nothing' elsewhere), so a test can hold
+-- the view's entry across the rollback the seam injects. The
+-- plain seam above ignores the key and behaves identically.
+haskokiStdOpenSessionWithNotifyWithKey
+  :: (SessionOpenPoint -> Maybe (StablePtr AsyncCtx) -> IO ())
+  -> StablePtr StdInstance -> CULong -> CULong -> CULong
+  -> Ptr () -> FunPtr NativeNotify -> Ptr CULong -> IO CULong
+haskokiStdOpenSessionWithNotifyWithKey observe ctx slot (CULong ro) (CULong async) application callback phSession =
   withLiveStdCtx ctx $ \inst ->
     if phSession == nullPtr
       then pure ckrArgsBad
@@ -2445,27 +2460,28 @@ haskokiStdOpenSessionWithNotifyWith observe ctx slot (CULong ro) (CULong async) 
                     -- Rollback only removes its map entry; it never frees twice.
                     -- The view registers borrowed (admit-only, no teardown
                     -- authority) with its allocation, before it can escape;
-                    -- every error path retires before it frees, so a recycled
+                    -- every error path retires before it frees, and defers
+                    -- the free behind the entry's borrow count, so a recycled
                     -- index never carries a stale entry into its next owner.
                     bracketOnError
                       (do view <- newStablePtr (AsyncCtx (siEnv inst) (siBackend inst)
                                 sid (siAsyncTable inst) live detached)
                           registerBorrowedCtx view (siAsyncTable inst)
                           pure view)
-                      (\view -> retireCtx view >> freeStablePtr view) $ \view ->
+                      releaseBorrowedView $ \view ->
                       (do
                         views <- readIORef (siAsyncViews inst)
                         installed <- evaluate (Map.insert sid view views)
-                        observe BeforeModelAdmission
+                        observe BeforeModelAdmission Nothing
                         pr <- publishCommit inst pc
                         either (ioError . userError . show) pure pr
-                        observe AfterModelAdmission
-                        observe BeforeNotifyRegistration
+                        observe AfterModelAdmission Nothing
+                        observe BeforeNotifyRegistration Nothing
                         registerSessionNotify inst sid (SessionNotify callback application)
-                        observe AfterNotifyRegistration
-                        observe BeforeBorrowedViewInstall
+                        observe AfterNotifyRegistration Nothing
+                        observe BeforeBorrowedViewInstall (Just view)
                         writeIORef (siAsyncViews inst) installed
-                        observe AfterBorrowedViewInstall
+                        observe AfterBorrowedViewInstall (Just view)
                         -- No interruptible/test hook remains after async enable.
                         when (async /= 0) (enableAsyncSession (siAsyncTable inst) sid)
                         poke phSession (CULong (fromIntegral (unSessionId sid)))
