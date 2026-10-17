@@ -15,10 +15,15 @@
  * scripts/test-loader.sh greps the built objects for the symbol.
  */
 
+/* Feature-test: nanosleep and struct timespec need POSIX.1-2008
+ * visibility under a strict -std=c11 build. */
+#define _POSIX_C_SOURCE 200809L
+
 #include <sched.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <HsFFI.h>
@@ -69,10 +74,16 @@ static char **g_rts_argv_ptr = g_rts_argv;
  * without any lock): the winner of the boot-PID swap runs hs_init_ghc
  * and then publishes g_rts_ready; a loser in the boot process waits
  * for that flag before it returns, so no thread enters Haskell before
- * the RTS exists. The wait is sched_yield on one acquire load — pure
- * atomics, so there is no mutex or condition variable whose copied
- * state a fork child could inherit wedged — and it always ends
- * because the winner is alive in the same process.
+ * the RTS exists. The wait spins on one acquire load (sched_yield
+ * briefly, then 100-microsecond nanosleep slices), so a slow start
+ * does not burn a CPU; it uses no mutex or condition variable,
+ * keeping the first-call path free of lock lifecycle and failure
+ * modes of its own. The wait ends when the winner finishes its
+ * single hs_init_ghc (milliseconds, measured) — except when the
+ * winner itself cannot run: a higher-priority SCHED_FIFO/RR loser
+ * sharing the winner's CPU (sched_yield never yields to a lower
+ * priority), a signal handler on the winner thread that re-enters
+ * this call, or a cancellation of the winner thread inside init.
  *
  * Fork children fail safe (-1) without waiting: the PID check runs
  * before the wait, so a child forked at any point refuses. Before the
@@ -109,9 +120,20 @@ int haskoki_rts_ensure(void) {
      * waiting, so the child can never block forever. */
     return -1;
   }
-  /* Same process: wait until hs_init_ghc has returned. */
-  while (!atomic_load_explicit(&g_rts_ready, memory_order_acquire)) {
-    sched_yield();
+  /* Same process: wait until hs_init_ghc has returned. Yield
+   * briefly, then sleep in short slices so a slow start does not
+   * burn a CPU. */
+  {
+    int spins = 0;
+    const struct timespec slice = { 0, 100000 };
+    while (!atomic_load_explicit(&g_rts_ready, memory_order_acquire)) {
+      if (spins < 100) {
+        spins++;
+        sched_yield();
+      } else {
+        nanosleep(&slice, NULL);
+      }
+    }
   }
   return 0;
 }
