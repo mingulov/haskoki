@@ -639,6 +639,28 @@
       "depends_on": ["keystore-mismatch-write-cert", "keystore-make-jar"]
     },
     {
+      "name": "java-keystore-generate",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["keytool", "-genkeypair", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234", "-alias", "keytool-generated", "-keyalg", "EC", "-groupname", "secp256r1", "-dname", "CN=keytool-generated"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["key pair and self-signed certificate"]},
+      "depends_on": []
+    },
+    {
+      "name": "java-keystore-sign-generated",
+      "profiles": ["portfolio"],
+      "phase": "module",
+      "client": "java",
+      "store": "keystore",
+      "argv": ["jarsigner", "-keystore", "NONE", "-storetype", "PKCS11", "-providerClass", "sun.security.pkcs11.SunPKCS11", "-providerArg", "@RUN@/cfg/sunpkcs11-keystore.cfg", "-storepass", "1234", "-sigalg", "SHA256withECDSA", "-signedjar", "@RUN@/out/keytool-app.jar", "@RUN@/out/app.jar", "keytool-generated"],
+      "timeout_seconds": 120,
+      "expect": {"exit": 0, "markers": ["jar signed."]},
+      "depends_on": ["java-keystore-generate", "keystore-make-jar"]
+    },
+    {
       "name": "opensc-provision-init-token",
       "profiles": ["portfolio", "image"],
       "phase": "module",
