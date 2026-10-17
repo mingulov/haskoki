@@ -411,10 +411,11 @@ isNullStable p = castStablePtrToPtr p == nullPtr
 -- null check, the registry admission, and the dereference run
 -- masked as one entry step (no interruptible operation inside, so
 -- no kill can split them), and the admitted borrower holds its
--- count across the whole call — close claims the gate and waits
--- the count out before it drains or frees anything. Null,
--- unknown, and retired contexts refuse identically, before
--- touching any state.
+-- count across the whole call — an owned close claims the gate
+-- and waits the count out before it drains or frees anything
+-- (borrowed views never claim the table; their release parks the
+-- pointer on the reclaim queue instead). Null, unknown, and
+-- retired contexts refuse identically, before touching any state.
 withCtx :: StablePtr AsyncCtx -> (AsyncCtx -> IO CULong) -> IO CULong
 withCtx ctx k = guarded $ mask $ \restore -> do
   mC <- enterCtx ctx
@@ -643,11 +644,12 @@ registerBorrowedCtx sp table = mask_ $ do
 -- tombstone that refuses without dereferencing, and the entry's
 -- test hook (if any) clears in the same step. The winning
 -- slot-close calls this after teardown and before it frees the
--- pointer, and borrowed-view release calls this before it frees
--- the view: retire strictly before free, so a caller resuming
--- after the close — even one that passed its null check before
--- it — meets the tombstone and refuses instead of dereferencing
--- a freed pointer.
+-- pointer; borrowed-view release retires through
+-- 'releaseBorrowedView' instead, which calls @c_ctxRetire@
+-- itself and defers the free behind the borrow count. Retire
+-- strictly before free, so a caller resuming after the close —
+-- even one that passed its null check before it — meets the
+-- tombstone and refuses instead of dereferencing a freed pointer.
 retireCtx :: StablePtr AsyncCtx -> IO ()
 retireCtx sp = mask_ $ do
   c_ctxRetire (ctxKey sp)

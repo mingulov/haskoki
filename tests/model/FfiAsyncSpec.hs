@@ -297,9 +297,9 @@ spec :: TestTree
 -- RTS capability. The 'counted' wrapper on each case is unchanged
 -- (child thread, labels, ownership counters). Sequencing covers
 -- this group only: keys stay safe across groups because each case
--- holds its keys allocated through its assertions
--- (pin-while-allocated) and no other group parks callers or holds
--- test borrows. Do not parallelize this group without re-proving
+-- pins its keys through its assertions (pin-while-allocated), or
+-- accepts both codes under reuse, and no other group parks callers
+-- or holds test borrows. Do not parallelize this group without re-proving
 -- every tombstone, census, reclaim and hang assertion under
 -- parallel execution.
 spec = inOrderTestGroup "FFI acquisition"
@@ -483,7 +483,6 @@ countingRunner ref _fx = do
   modifyIORef' ref (+ 1)
   pure (GotBytes cannedFfiDigest)
 
--- | A memory store with the home token record seated (generation 0).
 -- | GHC #27272 warm-up MITIGATION (not a fix), run once by the
 -- model suite's 'Main' before tasty forks any worker: one
 -- seat-token commit, single-threaded, so the commit-path constants
@@ -494,6 +493,7 @@ countingRunner ref _fx = do
 commitPathWarmup :: IO ()
 commitPathWarmup = mkFfiStore >> pure ()
 
+-- | A memory store with the home token record seated (generation 0).
 mkFfiStore :: IO Store
 mkFfiStore = do
   world <- newMemoryWorld

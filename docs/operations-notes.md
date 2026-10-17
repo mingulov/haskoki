@@ -870,7 +870,10 @@ Close and lifecycle. `C_Finalize` requires zero open sessions
 (`validateFinalize` in `src/Haskoki/Runtime/Lifecycle.hs`) and ends
 the provider interval without stopping the RTS
 (`cbits/rts_bootstrap.c`); closing the backend releases digest
-contexts and drops the key maps. Unload is pinned (`-z nodelete`
+contexts and drops the key maps. The provider starts the RTS with
+one capability and ignores `GHCRTS` when it starts the RTS itself;
+a process that already runs a GHC RTS keeps its own capability
+count. Unload is pinned (`-z nodelete`
 in `haskoki.cabal`), and fork children of a booted process fail
 without entering Haskell. Async terminal tombstones have per-table
 retention limits of 4096 records and 64 MiB; commits evict the oldest

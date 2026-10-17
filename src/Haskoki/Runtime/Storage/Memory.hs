@@ -673,27 +673,25 @@ effectiveDelta applied delta =
       , Just v <- [Map.lookup k (wsMeta applied)]
       ]
 
--- | Pure delta application (shared shape with the SQLite backend's
--- statement plan). Dropping a token removes its owned objects,
--- jobs, and credential, matching the SQLite @ON DELETE CASCADE@;
--- an ordinary same-id token put preserves them. Drops (with
--- cascade) apply before puts, so a drop/recreate pair cannot
--- resurrect children. Duplicate credential puts resolve
--- first-wins (the token-row precedent).
--- Pids present before the commit but absent after it (deleted,
--- not replaced) fold into the job-id mark, so a legacy store
--- whose mark never advanced still cannot re-mint them once the
--- records are gone.
--- | Fully evaluate a committed state: every map spine, every
--- record and every nested string. Runs before the state is stored
--- in the world's MVar, so no thread ever evaluates another
--- thread's shared commit thunk (a space leak, and a concurrent
--- first-evaluation candidate for GHC #27272). Follows the
--- 'forceCaps' precedent in "Haskoki.Engine.Backend": records are
--- strict-fielded, so one 'seq' per value forces every immediate
--- field, and the strings (the only lazy spines below the records)
--- fold fully. ByteStrings are strict and the remaining leaves are
--- scalars or nullary constructors, so WHNF covers them.
+-- | Force a committed state before it is stored in the world's
+-- MVar, so no thread evaluates another thread's shared commit
+-- thunk (a space leak, and a concurrent first-evaluation
+-- candidate for GHC #27272). Depth, per map: every map spine
+-- fully (the folds match each node); every record to WHNF, which
+-- evaluates each strict field to WHNF; and the lazy string spines
+-- below the records fully — the token label, the auth principal,
+-- the material encoding, the job function name, the pending
+-- recipe name, and every meta key and value. The remaining cells
+-- stop at WHNF: the auth login (always 'Nothing': the commit
+-- boundary scrubs it), the attribute-map keys and values, the SO
+-- PIN, and the 'Just' payloads of the key type, the material
+-- bytes, and the user PIN. The nullary leaves
+-- ('JobExecState', 'ReturnCode', 'AttributeType', the
+-- 'ActiveLogin' cases) and the strict scalar fields are complete
+-- at WHNF, and 'ByteString' has no lazy spine below WHNF, so a
+-- below-WHNF thunk can remain only inside those three 'Just'
+-- payloads. Cost: O(state) per commit — the walk re-folds the
+-- strings of records earlier commits already forced.
 forceWorldState :: WorldState -> ()
 forceWorldState (WorldState toks objs jobs meta creds) =
   Map.foldr (\t r -> tok t `seq` r) () toks
@@ -714,6 +712,17 @@ forceWorldState (WorldState toks objs jobs meta creds) =
     jbody (JobPending name _) = str name
     jbody (JobResult code _) = code `seq` ()
 
+-- | Pure delta application (shared shape with the SQLite backend's
+-- statement plan). Dropping a token removes its owned objects,
+-- jobs, and credential, matching the SQLite @ON DELETE CASCADE@;
+-- an ordinary same-id token put preserves them. Drops (with
+-- cascade) apply before puts, so a drop/recreate pair cannot
+-- resurrect children. Duplicate credential puts resolve
+-- first-wins (the token-row precedent).
+-- Pids present before the commit but absent after it (deleted,
+-- not replaced) fold into the job-id mark, so a legacy store
+-- whose mark never advanced still cannot re-mint them once the
+-- records are gone.
 applyDelta :: WorldState -> StoreDelta -> WorldState
 applyDelta st delta =
   let toks1 = foldr Map.delete (wsTokens st) (sdDropTokens delta)

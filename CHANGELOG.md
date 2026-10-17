@@ -224,6 +224,11 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   `CKR_OPERATION_NOT_INITIALIZED`. The session check now runs before
   the cursor lookup, and refusals leave the output buffer and count
   untouched.
+- The provider starts the RTS with one capability and ignores
+  `GHCRTS` entirely, when it starts the RTS itself. A `GHCRTS` of
+  `-N2` or higher no longer takes effect, and an unsafe option no
+  longer aborts the host during startup. A process that already
+  runs a GHC RTS keeps its own capability count.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and
@@ -306,7 +311,7 @@ record: symbol separation, sanitizer runs, evidence limits) and
   longer runs with more than one capability at all (see below): it
   starts the RTS with one capability and ignores `GHCRTS` entirely.
   0.4.0.0 is affected (earlier releases not checked); until upgrading,
-  run with a single capability or serialize the first open.
+  run with a single capability.
 - Store lock and guard file descriptors are now opened with
   `O_CLOEXEC` atomically. A child process started while a store was
   being opened could inherit the descriptor and keep the store locked
@@ -419,15 +424,24 @@ record: symbol separation, sanitizer runs, evidence limits) and
   borrow count drains, through the registry's reclamation queue;
   callers dereference the pointer before releasing the lookup borrow.
 - The provider now pins one RTS capability and ignores `GHCRTS`
-  entirely: hosts that set it observe no effect. With two or more
+  entirely, when it starts the RTS itself. With two or more
   capabilities, two host threads first-evaluating the same constant
   table could orphan a string-literal black hole and hang the whole
   host process (GHC #27272, seen on 9.10.3, 9.12.4 and 9.14.1),
   reachable through ordinary concurrent opens; fixing constants site
-  by site cannot be shown complete, so the provider no longer runs
-  multi-capability at all. An unsafe `GHCRTS` option no longer aborts
-  the host during startup either. The serving surface is serialized
-  on the C state lock, so one capability costs nothing.
+  by site cannot be shown complete, so the provider no longer starts
+  the RTS multi-capability at all. An unsafe `GHCRTS` option no
+  longer aborts the host during startup either. A process that
+  already runs a GHC RTS keeps its own capability count (later
+  inits are ignored), so that kind of host keeps its #27272
+  exposure. The serving surface is serialized on the C state lock,
+  so one capability costs nothing.
+- Concurrent first calls through the native API (`haskoki_async_*`,
+  `haskoki_crypto_*`) could kill the host process: threads that lost
+  the RTS-start race entered Haskell before `hs_init` finished
+  (`newBoundTask: RTS is not initialised`). Losing threads now wait
+  for the start to complete; fork children still fail safe without
+  waiting.
 
 ## [0.4.0.0] - Unreleased
 

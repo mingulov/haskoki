@@ -54,14 +54,16 @@ static char **g_rts_argv_ptr = g_rts_argv;
  * enter inherited Haskell state) or if called before any recording.
  *
  * The provider pins one capability and ignores GHCRTS
- * (rts_opts_enabled = RtsOptsIgnoreAll): with two or more
- * capabilities, two host threads first-evaluating the same constant
- * table can orphan a string-literal black hole and hang the whole
- * host process (GHC #27272, seen on 9.10.3, 9.12.4 and 9.14.1),
- * reachable here through ordinary concurrent opens; and an unsafe
- * GHCRTS option used to abort the host inside startup. The serving
- * surface is serialized on the C state lock, so one capability
- * costs nothing. Hosts that set GHCRTS observe no effect from it.
+ * (rts_opts_enabled = RtsOptsIgnoreAll) when it starts the RTS
+ * itself: with two or more capabilities, two host threads
+ * first-evaluating the same constant table can orphan a
+ * string-literal black hole and hang the whole host process (GHC
+ * #27272, seen on 9.10.3, 9.12.4 and 9.14.1), reachable here
+ * through ordinary concurrent opens; and an unsafe GHCRTS option
+ * used to abort the host inside startup. A process that already
+ * runs a GHC RTS keeps its own capability count (hs_init_ghc
+ * ignores later inits). The serving surface is serialized on the C
+ * state lock, so one capability costs nothing.
  *
  * Concurrent first calls (the unlocked native exports reach this
  * without any lock): the winner of the boot-PID swap runs hs_init_ghc
@@ -135,10 +137,9 @@ int haskoki_c_entry_ok(void) {
  * shipped module runs. The shipped module never defines the macro,
  * so the symbol is absent there (pinned by
  * scripts/make-release.sh --check-hooks-only). The global is the
- * threaded RTS's own export (rts/Threads.h declares it uint32_t;
- * that header needs full RTS context, so the TU declares it
- * directly and the probe link fails closed if it ever moves). */
-extern uint32_t n_capabilities;
+ * threaded RTS's own export, declared by <rts/Threads.h>
+ * (included via <Rts.h> above); the probe build fails closed if
+ * it ever moves. */
 uint32_t haskoki_rts_capabilities_test_hook(void) {
   return n_capabilities;
 }
