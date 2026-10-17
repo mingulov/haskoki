@@ -5,19 +5,20 @@
 
 On 'openSQLiteStore' the backend takes single-writer ownership via
 an O_EXCL sidecar lock file (@\<db\>.lock@) carrying the owner's
-pid: a second opener whose owner is alive fails explicitly with
-'StoreSecondWriter', and a lock whose owner is dead (a crashed
-previous run; detected via @\/proc@) is taken over without touching
-any data. SQLite-level locking alone would not keep two provider
-caches coherent, so the file lock — not the database — is the
-ownership arbiter.
+pid: the kernel flock is the authority — a stale lock with no
+holder (the same pid, a live pid, an unknowable pid, an
+unparsable pid, an empty file, or a dead pid from a crashed run)
+is taken over without touching any data, and a held lock refuses
+explicitly with 'StoreSecondWriter'. SQLite-level locking alone
+would not keep two provider caches coherent, so the file lock —
+not the database — is the ownership arbiter.
 
-Ownership is fail-closed and kernel-backed: when owner liveness is
-unknowable (@\/proc@ unreadable, masked, or partially hidden) the
-second opener is refused with 'StoreSecondWriter' rather than risk
-a state fork, and every owner holds an exclusive non-blocking
-@flock(2)@ on a held-open lock fd for the lock's lifetime, so a
-live-but-hidden owner still refuses takeovers. Exclusion is
+Ownership is fail-closed and kernel-backed: a truly unreadable
+lock, and an unknowable @\/proc@ verdict with the kernel lock
+held, refuse with 'StoreSecondWriter' rather than risk a state
+fork, and every owner holds an exclusive non-blocking @flock(2)@
+on a held-open lock fd for the lock's lifetime, so a live owner
+still refuses takeovers. Exclusion is
 anchored to the database identity as well as the sidecar (a second
 held-open @flock(2)@, on the database file itself), so deleting
 the lock path cannot fork a live owner via a replacement lock;
@@ -32,8 +33,9 @@ explicit @haskoki-ctl store migrate@ moves a store to version 3. A foreign or
 garbage file is rejected with a diagnosis and left byte-identical.
 
 SQLite configuration (design 08, section 6): foreign keys on, a
-bounded 5s busy timeout, rollback-journal mode, ordinary durable
-(FULL) synchronization. WAL is not used; no unsafe journal\/sync
+bounded 5s busy timeout, rollback-journal mode, extra durable
+(EXTRA) synchronization, so a commit followed closely by a power
+loss stays committed. WAL is not used; no unsafe journal\/sync
 mode is ever selected. Every commit runs as one @BEGIN IMMEDIATE@
 transaction, so multi-object deltas are all-or-nothing.
 
@@ -75,11 +77,14 @@ module Haskoki.Runtime.Storage.SQLite
   , readFileCloexec
   , OwnedStoreFile
   , ownedPath
+  , ownedDbMatches
   , withOwnedStoreFile
+  , withOwnedStoreFileKeep
   , clearColdJournalOwned
   , SQLiteMigration (..)
   , MigrationHooks (..)
   , noMigrationHooks
+  , MigrateTxnError (..)
   , migrateOwned
   ) where
 
@@ -410,6 +415,33 @@ readLockBytes p = bracket (openFd p ReadOnly guardFlags) closeFd $ \fd -> do
   bs <- fdRead fd 64
   if BS.elem 10 bs then pure bs else ioError (userError ("lock file has no pid line: " ++ p))
 
+-- | Why a lock read failed: an empty file (a crash between create
+-- and pid write, or a power loss leaving a zero-length file), a
+-- small readable file without a pid line (complete contents, so
+-- unparsable rather than unreadable), or truly unreadable
+-- (permission denied, oversized without a line in the first 64
+-- bytes, or a race). Only the first two consult the kernel flock;
+-- the last fails closed without it, preserving the oversized and
+-- permission-denied refusals.
+data LockReadFailure = LockEmpty | LockSmallUnparsable | LockUnreadable deriving (Eq, Show)
+
+-- | Classify a 'readLockBytes' failure from the file size and a
+-- bounded re-read. Runs only on the failure path; the re-read is
+-- capped by the size check, so it cannot be swamped.
+classifyLockReadFailure :: FilePath -> IO LockReadFailure
+classifyLockReadFailure p = do
+  eSt <- tryIOError (getFileStatus p)
+  case eSt of
+    Left _ -> pure LockUnreadable
+    Right st
+      | fileSize st == 0 -> pure LockEmpty
+      | fileSize st > 64 -> pure LockUnreadable
+      | otherwise -> do
+          eFull <- tryIOError (readFileCloexec p)
+          pure (case eFull of
+            Right full | not (BS.elem 10 full) -> LockSmallUnparsable
+            _ -> LockUnreadable)
+
 -- | lstat without following the final component and without opening:
 -- missing files report 'Nothing' (callers keep their create/absent
 -- paths); present files report their status for a regular-file
@@ -436,13 +468,13 @@ requireRegularStore path = do
     _ -> Right ()
 
 -- | Take single-writer ownership via an O_EXCL sidecar lock carrying
--- our pid. An existing lock owned by a live pid fails explicitly;
--- a lock whose owner liveness is unknowable fails closed; a lock
--- owned by a dead pid (a crashed run) is taken over after the
--- kernel lock confirms no live holder, within a bounded number of
--- retries. Taking over never touches the database bytes. Success
--- returns the held-open flocked lock fd, which the caller keeps for
--- the lock's lifetime.
+-- our pid. An existing lock is taken over when the kernel flock
+-- confirms no live holder — the same pid, a live pid, an
+-- unknowable pid, an unparsable pid, an empty file, or a dead pid
+-- (a crashed run) — within a bounded number of retries; a held
+-- kernel lock refuses explicitly. Taking over never touches the
+-- database bytes. Success returns the held-open flocked lock fd,
+-- which the caller keeps for the lock's lifetime.
 --
 -- Acquisition runs fully masked: it performs only fast,
 -- non-blocking syscalls, so deferring async exceptions cannot wedge
@@ -491,10 +523,13 @@ claimFresh dbPath lockPath procRoot attempts fd pid = do
       _ <- tryIOError (fdWrite fd (show pid ++ "\n")) `onException` closeQuietFd fd
       pure (Right fd)
 
--- | Diagnose an existing lock: same-process, live peer, and
--- unknowable-liveness owner (all fail), dead owner (take over after
--- the kernel lock confirms), or unreadable (fail safe). Owner pids
--- compare as text, avoiding any orphan 'Read' instances.
+-- | Diagnose an existing lock: the kernel flock is the authority
+-- for the same pid, a live pid, an unknowable pid, an unparsable
+-- pid, and an empty file — a free lock is taken over and the pid
+-- rewritten, a held lock refuses with the @\/proc@ verdict kept
+-- only for the message text. A dead pid takes over as before, and
+-- a truly unreadable lock fails safe. Owner pids compare as text,
+-- avoiding any orphan 'Read' instances.
 inspectLock :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
 inspectLock dbPath lockPath procRoot pid attempts = do
   eSt <- tryIOError (getSymbolicLinkStatus lockPath)
@@ -504,24 +539,32 @@ inspectLock dbPath lockPath procRoot pid attempts = do
     _ -> do
       eContent <- tryIOError (BC8.unpack <$> readLockBytes lockPath)
       case eContent of
-        Left _ -> pure (Left (StoreSecondWriter ("store is locked and the owner is unreadable: " ++ lockPath)))
+        Left _ -> do
+          failure <- classifyLockReadFailure lockPath
+          case failure of
+            LockEmpty -> takeOver ("store is locked and the lock file is empty: " ++ lockPath)
+            LockSmallUnparsable -> takeOver ("store is locked by an unknown owner: " ++ lockPath)
+            LockUnreadable -> pure (Left (StoreSecondWriter
+              ("store is locked and the owner is unreadable: " ++ lockPath)))
         Right content -> inspectContent content
   where
+    takeOver heldMsg = confirmTakeoverWithReason dbPath lockPath procRoot pid attempts heldMsg
     inspectContent content = case reads content of
       [(ownerN, _) :: (Int, String)] | show ownerN == show pid ->
-        pure (Left (StoreSecondWriter ("store is already open in this process: " ++ dbPath)))
+        takeOver ("store is already open in this process: " ++ dbPath)
       [(ownerN, _) :: (Int, String)] -> do
         live <- pidLiveness procRoot ownerN
         case live of
-          PidAlive -> pure (Left (StoreSecondWriter ("store is already open by pid " ++ show ownerN ++ ": " ++ dbPath)))
-          PidUnknown -> pure (Left (StoreSecondWriter ("store is locked by pid " ++ show ownerN
-            ++ " but owner liveness is unknowable (/proc unreadable); refusing second writer: " ++ dbPath)))
+          PidAlive -> takeOver ("store is already open by pid " ++ show ownerN ++ ": " ++ dbPath)
+          PidUnknown -> takeOver ("store is locked by pid " ++ show ownerN
+            ++ " but owner liveness is unknowable (/proc unreadable); refusing second writer: " ++ dbPath)
           PidDead -> confirmTakeover dbPath lockPath procRoot pid attempts
-      _ -> pure (Left (StoreSecondWriter ("store is locked by an unknown owner: " ++ lockPath)))
+      _ -> takeOver ("store is locked by an unknown owner: " ++ lockPath)
 
 -- | Owner-liveness verdict: alive, provably dead (sufficient
 -- death evidence), or unknowable (anything else: masked,
--- unreadable, or partially hidden proc). Unknowable fails closed.
+-- unreadable, or partially hidden proc). Unknowable fails closed
+-- while the kernel lock is held; a free lock is taken over.
 data PidLiveness = PidAlive | PidDead | PidUnknown deriving (Eq, Show)
 
 -- | One @\/proc@ entry probe: present, cleanly absent (@ENOENT@),
@@ -620,7 +663,19 @@ pidIsDead pid = do
 -- flocked fd returned, so deleting the path cannot grant a second
 -- writer while the new owner lives.
 confirmTakeover :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> IO (Either StoreError Fd)
-confirmTakeover dbPath lockPath procRoot pid attempts = do
+confirmTakeover dbPath lockPath procRoot pid attempts =
+  confirmTakeoverWithReason dbPath lockPath procRoot pid attempts
+    ("store lock is held by a live owner (kernel lock held on "
+      ++ lockPath ++ "); refusing second writer: " ++ dbPath)
+
+-- | Like 'confirmTakeover', but a held kernel lock refuses with the
+-- caller's reason (the @\/proc@ verdict for the message text) rather
+-- than the generic kernel-held line. A free lock is taken over
+-- identically: the pid is rewritten and the flocked fd returned. A
+-- genuine second open in the same process still refuses, because
+-- flock is per open file description.
+confirmTakeoverWithReason :: FilePath -> FilePath -> FilePath -> ProcessID -> Int -> String -> IO (Either StoreError Fd)
+confirmTakeoverWithReason dbPath lockPath procRoot pid attempts heldMsg = do
   eFd <- tryIOError (openFd lockPath ReadWrite guardFlags)
   case eFd of
     Left e
@@ -641,8 +696,7 @@ confirmTakeover dbPath lockPath procRoot pid attempts = do
           if not locked
             then do
               closeQuietFd fd
-              pure (Left (StoreSecondWriter ("store lock is held by a live owner (kernel lock held on "
-                ++ lockPath ++ "); refusing second writer: " ++ dbPath)))
+              pure (Left (StoreSecondWriter heldMsg))
             else do
               same <- sameFile fd lockPath `onException` closeQuietFd fd
               if not same
@@ -868,7 +922,7 @@ configure db = do
     pragmaStatements =
       [ "PRAGMA foreign_keys = ON"
       , "PRAGMA journal_mode = DELETE"
-      , "PRAGMA synchronous = FULL"
+      , "PRAGMA synchronous = EXTRA"
       , "PRAGMA busy_timeout = 5000"
       ]
 
@@ -881,7 +935,7 @@ verifyPragmas db = do
   eFk <- queryRows db "PRAGMA foreign_keys" []
   case (eJournal, eSync, eFk) of
     (Right [[S.SQLText mode]], Right [[S.SQLInteger n]], Right [[S.SQLInteger fk]])
-      | T.toLower mode == "delete" && n == 2 && fk == 1 -> pure (Right ())
+      | T.toLower mode == "delete" && n == 3 && fk == 1 -> pure (Right ())
       | otherwise -> pure (Left (StoreIO ("sqlite pragmas not honored: journal=" ++ show mode ++ " sync=" ++ show n ++ " fk=" ++ show fk)))
     (Left err, _, _) -> pure (Left err)
     (_, Left err, _) -> pure (Left err)
@@ -2313,9 +2367,9 @@ data StoreSnapshot = StoreSnapshot
 
 -- | Whether some owner holds the store.
 data OwnerState
-  = OwnerAbsent        -- ^ no sidecar lock; kernel lock free
+  = OwnerAbsent        -- ^ no live holder; kernel lock free (sidecar absent or stale but unclaimed)
   | OwnerStale !Int    -- ^ sidecar names a dead pid; kernel lock free (left in place)
-  | OwnerLive !String  -- ^ live, unknowable or kernel-held owner (fail closed): the reason
+  | OwnerLive !String  -- ^ kernel-held, truly unreadable, or unknowable-with-held-lock owner: the reason
   deriving (Eq, Show)
 
 fileIdentity :: FileStatus -> FileIdentity
@@ -2588,42 +2642,56 @@ readStoreSnapshotWith blockedBy path = do
                   (length jobs) (sort (map crToken creds)) (sort meta))
 
 -- | Whether some owner holds the store, without taking anything: the
--- sidecar pid ('pidLiveness', fail closed on unknowable), then a
--- shared non-blocking kernel lock on a read-only database fd,
--- released at once. Never creates, removes or rewrites a lock.
+-- kernel flock is the authority for the same pid, a live pid, an
+-- unknowable pid, an unparsable pid, and an empty file — a free
+-- database kernel lock reports offline, a held one reports live
+-- with the @\/proc@ verdict kept only for the message text. A dead
+-- pid reports stale as before. Never creates, removes or rewrites
+-- a lock.
 probeOwner :: FilePath -> IO OwnerState
 probeOwner path = do
   procRoot <- procRootFromEnv
   me <- getProcessID
   let lockPath = path ++ ".lock"
   eLock <- tryIOError (getSymbolicLinkStatus lockPath)
-  sidecar <- case eLock of
-    Left e | isDoesNotExistError e -> pure (Right Nothing)
-           | otherwise -> pure (Left "the lock file cannot be examined")
-    Right st | not (isRegularFile st) -> pure (Left "the lock file is not a regular file")
+  case eLock of
+    Left e | isDoesNotExistError e -> checkKernel Nothing
+           | otherwise -> pure (OwnerLive "the lock file cannot be examined")
+    Right st | not (isRegularFile st) -> pure (OwnerLive "the lock file is not a regular file")
     Right _ -> do
       eContent <- tryIOError (readLockBytes lockPath)
       case eContent of
-        Left _ -> pure (Left "the lock file is unreadable")
+        Left _ -> do
+          failure <- classifyLockReadFailure lockPath
+          case failure of
+            LockEmpty -> checkKernelWithReason "the lock file is empty"
+            LockSmallUnparsable -> checkKernelWithReason "the lock file names no pid"
+            LockUnreadable -> pure (OwnerLive "the lock file is unreadable")
         Right content -> case reads (BC8.unpack content) of
           [(n, _) :: (Int, String)]
-            | n == fromIntegral me -> pure (Left "this process holds the store")
+            | n == fromIntegral me -> checkKernelWithReason "this process holds the store"
             | otherwise -> do
                 live <- pidLiveness procRoot n
-                pure $ case live of
-                  PidAlive -> Left ("pid " ++ show n ++ " holds the lock")
-                  PidUnknown -> Left ("pid " ++ show n ++ " holds the lock; its liveness is unknowable")
-                  PidDead -> Right (Just n)
-          _ -> pure (Left "the lock file names no pid")
-  case sidecar of
-    Left why -> pure (OwnerLive why)
-    Right stale -> do
+                case live of
+                  PidAlive -> checkKernelWithReason ("pid " ++ show n ++ " holds the lock")
+                  PidUnknown -> checkKernelWithReason
+                    ("pid " ++ show n ++ " holds the lock; its liveness is unknowable")
+                  PidDead -> checkKernel (Just n)
+          _ -> checkKernelWithReason "the lock file names no pid"
+  where
+    checkKernel stale = do
       held <- kernelLockHeld path
       pure $ case (held, stale) of
         (Left why, _) -> OwnerLive why
         (Right True, _) -> OwnerLive "the database kernel lock is held"
         (Right False, Nothing) -> OwnerAbsent
         (Right False, Just n) -> OwnerStale n
+    checkKernelWithReason reason = do
+      held <- kernelLockHeld path
+      pure $ case held of
+        Left why -> OwnerLive why
+        Right True -> OwnerLive reason
+        Right False -> OwnerAbsent
 
 -- | Try a SHARED non-blocking flock on a read-only fd and drop it at
 -- once. A missing file has no holder; any other failure to probe is a
@@ -2694,7 +2762,20 @@ noMigrationHooks = MigrationHooks (\_ -> pure ()) (\_ -> pure ())
 -- live owner is refused ('StoreSecondWriter'). The sidecar is the
 -- only file created, and it is removed on release.
 withOwnedStoreFile :: FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
-withOwnedStoreFile path act = mask $ \restore -> do
+withOwnedStoreFile = withOwnedRelease True
+
+-- | Like 'withOwnedStoreFile', but the post-body release only closes
+-- the sidecar descriptor and never unlinks the sidecar: the body
+-- owns sidecar removal instead. Releases before the body runs still
+-- remove a sidecar this call created or took over. Used by reset,
+-- where a failed database removal must leave the sidecar in place.
+withOwnedStoreFileKeep :: FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
+withOwnedStoreFileKeep = withOwnedRelease False
+
+-- | 'True' unlinks our sidecar on the post-body release (the body
+-- may already have done so); 'False' only closes it.
+withOwnedRelease :: Bool -> FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
+withOwnedRelease unlinkOnRelease path act = mask $ \restore -> do
   eSt <- lstatOpt path
   case eSt of
     Right Nothing -> pure (Left (StoreIO ("no store file at " ++ path)))
@@ -2721,10 +2802,17 @@ withOwnedStoreFile path act = mask $ \restore -> do
               case eGuard of
                 Left err -> releaseQuiet lockFd lockPath >> pure (Left err)
                 Right dbFd -> do
-                  let release = closeQuietFd dbFd >> releaseQuiet lockFd lockPath
-                  r <- restore (act (OwnedStoreFile path dbFd)) `onException` release
-                  release
+                  let releaseBody
+                        | unlinkOnRelease = closeQuietFd dbFd >> releaseQuiet lockFd lockPath
+                        | otherwise = closeQuietFd dbFd >> closeQuietFd lockFd
+                  r <- restore (act (OwnedStoreFile path dbFd)) `onException` releaseBody
+                  releaseBody
                   pure (Right r)
+
+-- | True when the store path still names the guarded database
+-- inode: a removal must only unlink what the guard holds.
+ownedDbMatches :: OwnedStoreFile -> IO Bool
+ownedDbMatches o = sameFile (osfDbFd o) (osfPath o)
 
 -- | Remove a cold rollback journal inside the caller's ownership
 -- window (the sidecar plus the database kernel guard are already
@@ -2802,21 +2890,33 @@ syncParentDir p = bracket (openFd (parentDir p) ReadOnly guardFlags) closeFd fil
       [_] -> "/"
       (_ : rest) -> reverse rest
 
+-- | How a migration transaction failed: the setup or the body
+-- failed and rolled back, leaving the store as it was — or the
+-- COMMIT failed with an unknown outcome (the store may already be
+-- at the new schema; the operator must run @store check@ before
+-- retrying). Preflight renders the two cases separately.
+data MigrateTxnError
+  = MigrateTxnUnchanged !StoreError
+  | MigrateTxnCommitUnknown !StoreError
+  deriving (Eq, Show)
+
 -- | Migrate an owned store to 'sqliteSchemaVersion' in ONE
 -- transaction: re-read the marker (it must still be 'smFrom'),
 -- create the credentials table for version 1, INSERT every frozen
 -- row (never replacing: an existing row aborts everything), and
--- advance the marker unless the store is already current. Any
--- failure rolls back and leaves the file as it was; an exception
--- rolls back, closes and re-throws.
-migrateOwned :: OwnedStoreFile -> SQLiteMigration -> MigrationHooks -> IO (Either StoreError ())
+-- advance the marker unless the store is already current. A body
+-- failure rolls back and leaves the file as it was; a COMMIT
+-- failure is judged from the native autocommit state and the
+-- journal, and an unknown outcome is reported distinctly, never
+-- as unchanged. An exception rolls back, closes and re-throws.
+migrateOwned :: OwnedStoreFile -> SQLiteMigration -> MigrationHooks -> IO (Either MigrateTxnError ())
 migrateOwned owned mig hooks = mask $ \restore -> do
   let path = osfPath owned
   same <- sameFile (osfDbFd owned) path
-  if not same then pure (Left (StoreIO ("store database replaced while owned: " ++ path))) else do
+  if not same then pure (Left (MigrateTxnUnchanged (StoreIO ("store database replaced while owned: " ++ path)))) else do
     eDb <- trySQLite (S.open (T.pack path))
     case eDb of
-      Left err -> pure (Left err)
+      Left err -> pure (Left (MigrateTxnUnchanged err))
       Right db -> do
         r <- restore (txn db path) `onException` (rollbackQuiet db >> closeQuiet db)
         closeQuiet db
@@ -2825,22 +2925,38 @@ migrateOwned owned mig hooks = mask $ \restore -> do
     txn db path = do
       eCfg <- configure db
       case eCfg of
-        Left err -> pure (Left err)
+        Left err -> pure (Left (MigrateTxnUnchanged err))
         Right () -> do
           eBegin <- trySQLite (S.exec db "BEGIN IMMEDIATE")
           case eBegin of
-            Left err -> pure (Left err)
+            Left err -> pure (Left (MigrateTxnUnchanged err))
             Right () -> do
               mgAfterBegin hooks db
               eBody <- body db path
               case eBody of
-                Left err -> rollbackQuiet db >> pure (Left err)
+                Left err -> rollbackQuiet db >> pure (Left (MigrateTxnUnchanged err))
                 Right () -> do
                   mgBeforeCommit hooks db
                   eCommit <- trySQLite (S.exec db "COMMIT")
                   case eCommit of
-                    Left err -> rollbackQuiet db >> pure (Left err)
+                    Left err -> commitFailed db path err
                     Right () -> pure (Right ())
+    -- A failed COMMIT may have landed, rolled back, or left a hot
+    -- journal: only a still-active transaction that rolls back
+    -- clean with no journal proves unchanged. Anything else —
+    -- including an already-ended transaction — is unknown and
+    -- must not claim the store was unchanged.
+    commitFailed db path err = do
+      ended <- getAutoCommit db
+      if ended
+        then pure (Left (MigrateTxnCommitUnknown err))
+        else do
+          eRb <- trySQLite (S.exec db "ROLLBACK")
+          endedNow <- getAutoCommit db
+          cls <- classifyJournal path
+          case (eRb, endedNow, cls) of
+            (Right (), True, JournalAbsent) -> pure (Left (MigrateTxnUnchanged err))
+            _ -> pure (Left (MigrateTxnCommitUnknown err))
     body db path = do
       eVer <- queryRows db "SELECT value FROM store_meta WHERE key = 'schema_version'" []
       case eVer of

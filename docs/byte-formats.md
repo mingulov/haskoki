@@ -157,22 +157,40 @@ in `BytesSpec`).
 
 ## 5. SQLite store bytes (`spec/storage-schema.sql`, `src/Haskoki/Runtime/Storage*`)
 
-Schema (format version 1, `PRAGMA foreign_keys = ON`,
-`journal_mode = DELETE`, `synchronous = FULL`, `busy_timeout =
-5000`): `store_meta` (key/value incl. `schema_version = 1`),
+Schema (format version 3, `PRAGMA foreign_keys = ON`,
+`journal_mode = DELETE`, `synchronous = EXTRA`, `busy_timeout =
+5000`): `store_meta` (key/value incl. `schema_version = 3`),
 `tokens` (id, 8-byte `slot_key`/`generation_key` blobs, token
 `record_json`, `format_version = 1`), `objects` (id, token ref,
 8-byte `class_key`, nullable 8-byte `key_type_key`,
 `attributes_json`, `material_encoding`, nullable `material_blob`,
 positive `revision`, `format_version = 1`), `detached_jobs`
 (8-byte persistent id, token ref + generation key, function name,
-execution state enum, `record_json`, `format_version = 1`); plus
+execution state enum, `record_json`, `format_version = 1`),
+`credentials` (token ref, `record_json` carrying base64
+`so_pin`/`user_pin`, `format_version = 1`); plus
 `objects_by_token` and `jobs_by_token` indexes. Full-width
 unsigned quantities travel as 8-byte blobs or fixed hex text,
 never as blind SQLite signed-integer casts. The Haskell backend
 issues the same statements (`SQLite.hs` schema literals); the
 `.sql` file is the readable reference, and the schema-shape pin
 proves they agree.
+
+History: version 1 has no `credentials` table; version 2 adds it
+with in-band rows; version 3 freezes catalog PINs at migrate
+(rowless tokens gain rows from the catalog, existing in-band rows
+are kept byte-exact). Versions 1 and 2 refuse at open as
+migration-required without writing a byte; only the explicit
+`haskoki-ctl store migrate` moves them to 3. A wrong/future
+`schema_version` is rejected without rewriting the database.
+
+The store holds the current PINs in recoverable form: each
+`credentials` row carries base64 `so_pin` and, when set, `user_pin`
+(`user_pin` is nullable) with no hashing. Every `store migrate`
+backup copies the pre-migration store bytes, so it holds those same
+rows — a schema-1 backup has no `credentials` table yet, and a
+token without a row has no PINs in the backup either; backups are
+written 0600 and must be protected like the store itself.
 
 JSON docs (canonical renderer: objects sort keys, no
 whitespace): attribute values encode as JSON booleans (flags),

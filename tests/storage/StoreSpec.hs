@@ -373,6 +373,11 @@ spec = testGroup "store contract"
       -- lock via the real /proc, so it joins the same chain.
       , after AllFinish "/lock naming pid 0 is takeable without probing/" $
           testCase "death after reservation leaves a gap, never reuse" testReserveDeathGap
+      -- Stale-lock takeover consults the real /proc for pid 1 and
+      -- the opener's own pid, so it joins the same chain after
+      -- every proc-root mutator.
+      , after AllFinish "/death after reservation leaves a gap, never reuse/" $
+          testStaleLockTakeoverServing
       ]
   , testGroup "token identity parsing"
       [ testCase "pinned token_ids parse and project" casePinnedIdsParse
@@ -1995,6 +2000,102 @@ heldFlockRefuses =
     s2 <- either (\e -> assertFailure ("held: takeover after release failed: " ++ show e)) pure e2
     storeClose s2
 
+-- | Stale-lock takeover through the serving open, one case per
+-- lock content: a lock naming the opener's own pid, a live pid
+-- (1), an empty file, garbage with or without a trailing newline,
+-- or NUL bytes is taken over when no fd holds the kernel flock,
+-- and refused while another fd holds it. A genuine second open in
+-- the same process still refuses: flock is per open file
+-- description, so the second open's takeover attempt meets the
+-- first open's held lock.
+testStaleLockTakeoverServing :: TestTree
+testStaleLockTakeoverServing = testGroup "stale locks take over when no holder keeps them; second open still refuses"
+  [ testCase "own pid, free lock is taken over" $
+      withOwnPid (\content -> testFree "own-pid" content)
+  , testCase "own pid, held lock still refuses" $
+      withOwnPid (\content -> testHeld "own-pid" content "already open in this process")
+  , testCase "pid-1, free lock is taken over" $ testFree "pid-1" "1\n"
+  , testCase "pid-1, held lock still refuses" $ testHeld "pid-1" "1\n" "already open by pid 1"
+  , testCase "empty, free lock is taken over" $ testFree "empty" ""
+  , testCase "empty, held lock still refuses" $ testHeld "empty" "" "empty"
+  , testCase "garbage with newline, free lock is taken over" $ testFree "garbage-nl" "garbage\n"
+  , testCase "garbage with newline, held lock still refuses" $ testHeld "garbage-nl" "garbage\n" "unknown owner"
+  , testCase "garbage without newline, free lock is taken over" $ testFree "garbage" "garbage"
+  , testCase "garbage without newline, held lock still refuses" $ testHeld "garbage" "garbage" "unknown owner"
+  , testCase "NUL bytes, free lock is taken over" $ testFree "nuls" "\0\0\0\0\0"
+  , testCase "NUL bytes, held lock still refuses" $ testHeld "nuls" "\0\0\0\0\0" "unknown owner"
+  , testCase "second open in the same process still refuses" testGenuineSecondOpen
+  ]
+  where
+    withOwnPid act = do
+      me <- getProcessID
+      act (show me ++ "\n")
+    testFree tag content =
+      bracket (makeTempDir ("haskoki-storage-takeover-" ++ tag)) removeDirectoryRecursive $ \dir -> do
+        let path = dir </> "store.db"
+        e0 <- openSQLiteStore path
+        s0 <- either (\e -> assertFailure (tag ++ " seed open: " ++ show e)) pure e0
+        _ <- seedStore s0
+        storeClose s0
+        writeFile (path ++ ".lock") content
+        e1 <- openSQLiteStore path
+        s1 <- either (\e -> assertFailure (tag ++ " takeover failed (stale lock not taken): " ++ show e)) pure e1
+        mine <- getProcessID
+        lockContent <- readFile (path ++ ".lock")
+        assertEqual (tag ++ ": lock re-owned by taker") (show mine ++ "\n") lockContent
+        eLoaded <- storeLoadTokens s1
+        loaded <- either (\e -> assertFailure (tag ++ " load after takeover: " ++ show e)) pure eLoaded
+        assertEqual (tag ++ ": seeded token survives takeover") 1 (length loaded)
+        storeClose s1
+    testHeld tag content expectHeld =
+      bracket (makeTempDir ("haskoki-storage-held-" ++ tag)) removeDirectoryRecursive $ \dir -> do
+        let path = dir </> "store.db"
+        e0 <- openSQLiteStore path
+        s0 <- either (\e -> assertFailure (tag ++ " seed open: " ++ show e)) pure e0
+        storeClose s0
+        writeFile (path ++ ".lock") content
+        bracket (openFd (path ++ ".lock") ReadOnly defaultFileFlags) closeFd $ \holderFd -> do
+          held <- testTryFlock holderFd
+          assertBool (tag ++ ": test holder took the kernel lock") held
+          e1 <- openSQLiteStore path
+          case e1 of
+            Right s1 -> do
+              storeClose s1
+              assertFailure (tag ++ ": takeover succeeded despite held kernel lock (state fork)")
+            Left (StoreSecondWriter msg) -> do
+              assertBool (tag ++ ": held refusal names " ++ expectHeld ++ ", got: " ++ msg)
+                (expectHeld `isInfixOf` msg)
+              when (tag == "empty") $
+                assertBool ("empty held must not say unreadable, got: " ++ msg)
+                  (not ("unreadable" `isInfixOf` msg))
+            Left other -> assertFailure (tag ++ ": wrong error for held lock: " ++ show other)
+        e2 <- openSQLiteStore path
+        s2 <- either (\e -> assertFailure (tag ++ ": takeover after release failed: " ++ show e)) pure e2
+        storeClose s2
+    testGenuineSecondOpen =
+      bracket (makeTempDir "haskoki-storage-second-open") removeDirectoryRecursive $ \dir -> do
+        let path = dir </> "store.db"
+        e0 <- openSQLiteStore path
+        s0 <- either (\e -> assertFailure ("second-open seed: " ++ show e)) pure e0
+        e1 <- openSQLiteStore path
+        case e1 of
+          Right s1 -> do
+            storeClose s1
+            storeClose s0
+            assertFailure "second open in the same process succeeded (state fork)"
+          Left (StoreSecondWriter msg) ->
+            assertBool ("second open refusal names same process, got: " ++ msg)
+              ("already open in this process" `isInfixOf` msg)
+          Left other -> do
+            storeClose s0
+            assertFailure ("second open wrong error: " ++ show other)
+        r <- storeCommit s0 emptyDelta
+        assertEqual "first owner keeps serving" Committed r
+        storeClose s0
+        e2 <- openSQLiteStore path
+        s2 <- either (\e -> assertFailure ("reopen after close: " ++ show e)) pure e2
+        storeClose s2
+
 -- | Fail-closed guard: with @\/proc@ masked (via @HASKOKI_PROC_ROOT@,
 -- deterministically empty), a second open against a live owner in
 -- ANOTHER process is refused with the unknowable-liveness
@@ -2443,9 +2544,10 @@ testCloseKeepsReplacement =
         "replacement-marker\n" content
 
 -- | Probe-error guard: a @\/proc@ root the opener cannot read
--- (@EACCES@) fails closed with a clean 'StoreSecondWriter', never
--- an uncaught 'IOException' — even when the named owner is dead
--- (death cannot be proven, so no takeover).
+-- (@EACCES@) defers to the kernel lock — a held lock fails closed
+-- with a clean 'StoreSecondWriter' (never an uncaught
+-- 'IOException'), while a free lock is taken over (no holder to
+-- fork with, even though death cannot be proven).
 testProcUnreadableRefuses :: IO ()
 testProcUnreadableRefuses =
   bracket (makeTempDir "haskoki-storage-noproc") removeDirectoryRecursive $ \dir ->
@@ -2458,16 +2560,27 @@ testProcUnreadableRefuses =
       writeFile (path ++ ".lock") (show deadPid ++ "\n")
       withFileMode denied 0o000 $
         withProcRoot denied $ do
-          e1 <- openSQLiteStore path
-          case e1 of
-            Right s1 -> do
-              storeClose s1
-              assertFailure "noproc: takeover succeeded with liveness unknowable (state fork)"
-            Left (StoreSecondWriter msg) ->
-              assertBool ("noproc: expected unknowable-liveness refusal, got: " ++ msg)
-                ("unknowable" `isInfixOf` msg)
-            Left other ->
-              assertFailure ("noproc: wrong error for unreadable proc: " ++ show other)
+          bracket (openFd (path ++ ".lock") ReadOnly defaultFileFlags) closeFd $ \holderFd -> do
+            held <- testTryFlock holderFd
+            assertBool "noproc: test holder took the kernel lock" held
+            e1 <- openSQLiteStore path
+            case e1 of
+              Right s1 -> do
+                storeClose s1
+                assertFailure "noproc: takeover succeeded with liveness unknowable and the lock held (state fork)"
+              Left (StoreSecondWriter msg) ->
+                assertBool ("noproc: expected unknowable-liveness refusal, got: " ++ msg)
+                  ("unknowable" `isInfixOf` msg)
+              Left other ->
+                assertFailure ("noproc: wrong error for unreadable proc: " ++ show other)
+          e2 <- openSQLiteStore path
+          s2 <- either (\e -> assertFailure ("noproc: takeover with free lock failed: " ++ show e)) pure e2
+          me <- getProcessID
+          readFile (path ++ ".lock") >>= assertEqual "noproc: lock re-owned" (show me ++ "\n")
+          storeClose s2
+          e3 <- openSQLiteStore path
+          s3 <- either (\e -> assertFailure ("noproc: reopen after close: " ++ show e)) pure e3
+          storeClose s3
 
 -- | Partial-mask guard: a @\/proc@ view that shows @self@ but
 -- hides our own pid, or whose owner entry ERRORS on stat (a

@@ -26,7 +26,7 @@
 -- CHECK constraint).
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = DELETE;
-PRAGMA synchronous = FULL;
+PRAGMA synchronous = EXTRA;
 PRAGMA busy_timeout = 5000;
 
 CREATE TABLE store_meta (

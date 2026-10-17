@@ -12,7 +12,7 @@ import qualified Data.Map.Strict as Map
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, bracket, onException, throwIO, try)
-import Control.Monad (forever)
+import Control.Monad (forever, when)
 import Data.Bits ((.&.))
 import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, stripPrefix)
@@ -26,6 +26,7 @@ import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath ((</>))
 import System.Posix.Files (createNamedPipe, createSymbolicLink, fileMode, fileSize, getFileStatus, modificationTime)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
+import System.Posix.Process (getProcessID)
 import System.Posix.Signals (sigKILL, signalProcess)
 import System.IO (IOMode (AppendMode), hClose, openFile)
 import System.IO.Error (fullErrorType, mkIOError)
@@ -47,10 +48,10 @@ import Haskoki.Runtime.Storage.Preflight
   ( MigrateError (..), MigrateHooks (..), MigrateOutcome (..), MigrationOp (..), MigrationReceipt (..)
   , PlanVerdict (..), PreflightRefusal (..), StoreOpenPlan (..)
   , backupCandidates, checkStoreOpen, configSelectsStore, migrateStore, migrateStoreWith
-  , noMigrateHooks, planVerdict, renderMigrateError, renderPlan, renderReceipt, renderStoreRefusal
+  , noMigrateHooks, planVerdict, renderMigrateError, renderMigrateErrorAfterClear, renderPlan, renderReceipt, renderStoreRefusal
   , sha256Hex )
 import Haskoki.Runtime.Storage.SQLite
-  (MigrationHooks (..), OwnerState (..), SQLiteMigration (..), StoreSnapshot (..), migrateOwned, noMigrationHooks, openSQLiteStore, probeOwner, readStoreSnapshot, withOwnedStoreFile)
+  (MigrateTxnError (..), MigrationHooks (..), OwnerState (..), SQLiteMigration (..), StoreSnapshot (..), migrateOwned, noMigrationHooks, openSQLiteStore, probeOwner, readStoreSnapshot, withOwnedStoreFile)
 
 import StoreFixtures
 
@@ -89,6 +90,8 @@ spec = testGroup "Store preflight"
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
           testCase "owner probe: stale lock reported and left in place" caseProbeStaleLeftInPlace
       , testCase "owner probe: unreadable lock is live" caseProbeUnreadableLive
+      , after AllFinish "/death after reservation leaves a gap, never reuse/" $
+          caseProbeStaleTakeover
       ]
   , testGroup "plan"
       [ testCase "v0.4.0.0 plan: freeze the rowless token, move to 3" casePlanV04
@@ -108,6 +111,8 @@ spec = testGroup "Store preflight"
       , testCase "store-full has its own refusal tag" caseStoreFullTag
       , testCase "the redaction check matches PINs at digit boundaries" caseNoPinsDigitBoundary
       , testCase "refusal prose names no relabel command and no phase" caseRefusalProse
+      , after AllFinish "/death after reservation leaves a gap, never reuse/" $
+          caseCheckStaleTakeover
       ]
   , testGroup "owned migration"
       [ testCase "schema 1 migrates: table, rows, marker; nothing else moves" caseOwnedMigratesV1
@@ -118,6 +123,7 @@ spec = testGroup "Store preflight"
       , testCase "a moved schema marker aborts unchanged" caseOwnedSchemaMoved
       , testCase "a crash before commit rolls back and releases ownership" caseOwnedCrashRollsBack
       , testCase "a full disk rolls back unchanged" caseOwnedFullDisk
+      , testCase "the migration connection runs with synchronous EXTRA" caseOwnedPinsSynchronousExtra
       , testCase "ownership is refused while an owner is live" caseOwnedRefusesLive
       , testCase "ownership never creates a store file" caseOwnedNeverCreates
       ]
@@ -159,10 +165,14 @@ spec = testGroup "Store preflight"
       , testCase "the link fallback never overwrites a taken receipt name" caseMigrateReceiptLinkFallbackNeverOverwrites
       , testCase "any other link failure stays a receipt failure" caseMigrateReceiptLinkOtherFails
       , testCase "a failed transaction keeps the store and the backup" caseMigrateTxnFailureKeepsStore
+      , testCase "a COMMIT blocked by a reader rolls back unchanged" caseMigrateCommitBusyRollsBack
       , testCase "appended catalog tokens are left to the next open" caseMigrateLeavesSeedsToOpen
       , testCase "naming: candidate backup names" caseBackupCandidates
       , testCase "migrate errors render tags and paths, never PINs" caseMigrateErrorRender
       , testCase "a foreign sidecar refusal names moving both files aside" caseForeignSidecarRemedy
+      , after AllFinish "/death after reservation leaves a gap, never reuse/" $
+          caseMigrateStaleTakeover
+      , testCase "a COMMIT failure never claims the store was unchanged" caseMigrateCommitFailureHonest
       ]
   , testGroup "recovery"
       [ after AllFinish "/death after reservation leaves a gap, never reuse/" $
@@ -496,6 +506,171 @@ caseProbeUnreadableLive = withScratch "probe" $ \dir -> do
         OwnerLive _ -> pure ()
         other -> assertFailure ("unreadable lock not live: " ++ show other)
 
+-- | The kernel flock is the authority for stale sidecars, one
+-- case per lock content: a lock naming the probing process
+-- itself, a live pid (1), an empty file, garbage with or without
+-- a trailing newline, or NUL bytes reports exactly offline when
+-- the database kernel lock is free, and live while another fd
+-- holds it. An empty held lock reports empty, never unreadable.
+caseProbeStaleTakeover :: TestTree
+caseProbeStaleTakeover = testGroup "owner probe: stale locks are offline when no holder keeps them"
+  [ testCase "own pid, free reports offline" $
+      withOwnPid (\content -> testFree "own-pid" content)
+  , testCase "own pid, held reports live" $
+      withOwnPid (\content -> testHeld "own-pid" content "this process holds the store")
+  , testCase "pid-1, free reports offline" $ testFree "pid-1" "1\n"
+  , testCase "pid-1, held reports live" $ testHeld "pid-1" "1\n" "pid 1 holds the lock"
+  , testCase "empty, free reports offline" $ testFree "empty" ""
+  , testCase "empty, held reports live" $ testHeld "empty" "" "empty"
+  , testCase "garbage with newline, free reports offline" $ testFree "garbage-nl" "garbage\n"
+  , testCase "garbage with newline, held reports live" $ testHeld "garbage-nl" "garbage\n" "names no pid"
+  , testCase "garbage without newline, free reports offline" $ testFree "garbage" "garbage"
+  , testCase "garbage without newline, held reports live" $ testHeld "garbage" "garbage" "names no pid"
+  , testCase "NUL bytes, free reports offline" $ testFree "nuls" "\0\0\0\0\0"
+  , testCase "NUL bytes, held reports live" $ testHeld "nuls" "\0\0\0\0\0" "names no pid"
+  ]
+  where
+    withOwnPid act = do
+      me <- getProcessID
+      act (show me ++ "\n")
+    testFree tag content = withScratch ("probe-" ++ tag) $ \dir -> do
+      let store = dir </> "store.db"
+      makeSchemaStore 3 store [] []
+      writeFile (store ++ ".lock") content
+      before <- BS.readFile (store ++ ".lock")
+      p <- probeOwner store
+      assertEqual (tag ++ ": stale lock offline with no holder") OwnerAbsent p
+      BS.readFile (store ++ ".lock") >>= assertEqual (tag ++ ": probe left the lock in place") before
+    testHeld tag content expectHeld = withScratch ("probe-held-" ++ tag) $ \dir -> do
+      let store = dir </> "store.db"
+      makeSchemaStore 3 store [] []
+      writeFile (store ++ ".lock") content
+      bracket (openFd store ReadOnly defaultFileFlags) closeFd $ \fd -> do
+        rc <- c_flockT (fromIntegral fd) 2
+        assertEqual (tag ++ ": test holds the db lock") 0 rc
+        p <- probeOwner store
+        case p of
+          OwnerLive why -> do
+            assertBool (tag ++ ": held refusal names " ++ expectHeld ++ ", got: " ++ why)
+              (expectHeld `isInfixOf` why)
+            when (tag == "empty") $
+              assertBool ("empty held must not say unreadable, got: " ++ why)
+                (not ("unreadable" `isInfixOf` why))
+          other -> assertFailure (tag ++ ": held lock not live: " ++ show other)
+      p2 <- probeOwner store
+      assertEqual (tag ++ ": offline after the holder released") OwnerAbsent p2
+
+-- | Store check takes over the same stale sidecars, one case
+-- per lock content: with no holder the v0.4 plan is
+-- migration-required, while a held database kernel lock refuses
+-- as live. Empty held reports empty, never unreadable.
+caseCheckStaleTakeover :: TestTree
+caseCheckStaleTakeover = testGroup "check takes over stale locks when no holder keeps them"
+  [ testCase "own pid, free plans migration" $
+      withOwnPid (\content -> testFree "own-pid" content)
+  , testCase "own pid, held refuses live" $
+      withOwnPid (\content -> testHeld "own-pid" content "this process holds the store")
+  , testCase "pid-1, free plans migration" $ testFree "pid-1" "1\n"
+  , testCase "pid-1, held refuses live" $ testHeld "pid-1" "1\n" "pid 1 holds the lock"
+  , testCase "empty, free plans migration" $ testFree "empty" ""
+  , testCase "empty, held refuses live" $ testHeld "empty" "" "empty"
+  , testCase "garbage, free plans migration" $ testFree "garbage" "garbage\n"
+  , testCase "garbage, held refuses live" $ testHeld "garbage" "garbage\n" "names no pid"
+  ]
+  where
+    withOwnPid act = do
+      me <- getProcessID
+      act (show me ++ "\n")
+    testFree tag content = withScratch ("check-" ++ tag) $ \dir -> do
+      (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+      cfg <- loadConfigOrFail cfgPath
+      writeFile (store ++ ".lock") content
+      r <- checkStoreOpen store cfg
+      plan <- either (\e -> assertFailure (tag ++ ": stale lock refused the check: " ++ show e)) pure r
+      assertEqual (tag ++ ": migration still planned") VerdictMigrationRequired (planVerdict plan)
+    testHeld tag content expectHeld = withScratch ("check-held-" ++ tag) $ \dir -> do
+      (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+      cfg <- loadConfigOrFail cfgPath
+      writeFile (store ++ ".lock") content
+      bracket (openFd store ReadOnly defaultFileFlags) closeFd $ \fd -> do
+        rc <- c_flockT (fromIntegral fd) 2
+        assertEqual (tag ++ ": test holds the db lock") 0 rc
+        r <- checkStoreOpen store cfg
+        case r of
+          Left (StoreSecondWriter m) -> do
+            assertBool (tag ++ ": says in use") ("in use" `isInfixOf` m)
+            assertBool (tag ++ ": names " ++ expectHeld ++ ", got: " ++ m) (expectHeld `isInfixOf` m)
+            when (tag == "empty") $
+              assertBool ("empty held must not say unreadable, got: " ++ m)
+                (not ("unreadable" `isInfixOf` m))
+          other -> assertFailure (tag ++ ": held lock not refused: " ++ show (fmap sopPath other))
+      r2 <- checkStoreOpen store cfg
+      plan <- either (\e -> assertFailure (tag ++ ": still refused after release: " ++ show e)) pure r2
+      assertEqual (tag ++ ": migration planned after release") VerdictMigrationRequired (planVerdict plan)
+
+-- | Store migrate takes over the same stale sidecars, one case
+-- per lock content: with no holder the v0.4 store migrates, while
+-- a held database kernel lock refuses as live before any write.
+-- Empty held reports empty, never unreadable.
+caseMigrateStaleTakeover :: TestTree
+caseMigrateStaleTakeover = testGroup "migrate takes over stale locks when no holder keeps them"
+  [ testCase "own pid, free migrates" $
+      withOwnPid (\content -> testFree "own-pid" content)
+  , testCase "own pid, held refuses without writing" $
+      withOwnPid (\content -> testHeld "own-pid" content "this process holds the store")
+  , testCase "pid-1, free migrates" $ testFree "pid-1" "1\n"
+  , testCase "pid-1, held refuses without writing" $ testHeld "pid-1" "1\n" "pid 1 holds the lock"
+  , testCase "empty, free migrates" $ testFree "empty" ""
+  , testCase "empty, held refuses without writing" $ testHeld "empty" "" "empty"
+  , testCase "garbage, free migrates" $ testFree "garbage" "garbage\n"
+  , testCase "garbage, held refuses without writing" $ testHeld "garbage" "garbage\n" "names no pid"
+  ]
+  where
+    withOwnPid act = do
+      me <- getProcessID
+      act (show me ++ "\n")
+    testFree tag content = withScratch ("migrate-" ++ tag) $ \dir -> do
+      (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+      let backups = dir </> "backups"
+      createDirectory backups
+      cfg <- loadConfigOrFail cfgPath
+      writeFile (store ++ ".lock") content
+      r <- migrateStoreWith fixedClock store cfg backups
+      case r of
+        Right (Migrated rc) -> assertEqual (tag ++ ": migrated from 2") 2 (mrFrom rc)
+        other -> assertFailure (tag ++ ": stale lock refused the migration: " ++ show other)
+      lockLeft <- doesFileExist (store ++ ".lock")
+      assertBool (tag ++ ": ownership released") (not lockLeft)
+    testHeld tag content expectHeld = withScratch ("migrate-held-" ++ tag) $ \dir -> do
+      (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+      let backups = dir </> "backups"
+      createDirectory backups
+      cfg <- loadConfigOrFail cfgPath
+      dbBefore <- BS.readFile store
+      writeFile (store ++ ".lock") content
+      lockBefore <- BS.readFile (store ++ ".lock")
+      bracket (openFd store ReadOnly defaultFileFlags) closeFd $ \fd -> do
+        rc <- c_flockT (fromIntegral fd) 2
+        assertEqual (tag ++ ": test holds the db lock") 0 rc
+        r <- migrateStoreWith fixedClock store cfg backups
+        case r of
+          Left (MigrateStore (StoreSecondWriter m)) -> do
+            assertBool (tag ++ ": says in use") ("in use" `isInfixOf` m)
+            assertBool (tag ++ ": names " ++ expectHeld ++ ", got: " ++ m) (expectHeld `isInfixOf` m)
+            when (tag == "empty") $
+              assertBool ("empty held must not say unreadable, got: " ++ m)
+                (not ("unreadable" `isInfixOf` m))
+          other -> assertFailure (tag ++ ": held lock not refused: " ++ show other)
+      BS.readFile store >>= assertEqual (tag ++ ": db untouched by held refusal") dbBefore
+      BS.readFile (store ++ ".lock") >>= assertEqual (tag ++ ": stale lock left in place") lockBefore
+      listBackups backups >>= assertEqual (tag ++ ": no backup") []
+      r2 <- migrateStoreWith fixedClock store cfg backups
+      case r2 of
+        Right (Migrated rc) -> assertEqual (tag ++ ": migrated after release") 2 (mrFrom rc)
+        other -> assertFailure (tag ++ ": still refused after release: " ++ show other)
+      lockLeft <- doesFileExist (store ++ ".lock")
+      assertBool (tag ++ ": ownership released") (not lockLeft)
+
 fixturePlan :: String -> FilePath -> IO (FilePath, FilePath, StoreOpenPlan)
 fixturePlan tag dir = do
   (store, cfgPath) <- copyReleasedFixture tag dir
@@ -724,7 +899,13 @@ frozen =
 runOwned :: FilePath -> SQLiteMigration -> MigrationHooks -> IO (Either StoreError ())
 runOwned store mig hooks = do
   r <- withOwnedStoreFile store (\o -> migrateOwned o mig hooks)
-  pure (either Left id r)
+  pure $ case r of
+    Left e -> Left e
+    Right (Left te) -> Left (txnStoreError te)
+    Right (Right ()) -> Right ()
+  where
+    txnStoreError (MigrateTxnUnchanged e) = e
+    txnStoreError (MigrateTxnCommitUnknown e) = e
 
 caseOwnedMigratesV1 :: IO ()
 caseOwnedMigratesV1 = withScratch "owned" $ \dir -> do
@@ -836,6 +1017,16 @@ caseOwnedFullDisk = withScratch "owned" $ \dir -> do
     Left (StoreFull _) -> pure ()
     other -> assertFailure ("wrong result: " ++ show other)
   assertUnchanged "full disk" before store
+
+caseOwnedPinsSynchronousExtra :: IO ()
+caseOwnedPinsSynchronousExtra = withScratch "owned" $ \dir -> do
+  let store = dir </> "store.db"
+  makeSchemaStore 1 store v1Tokens []
+  seen <- newIORef (0 :: Int)
+  let capture = noMigrationHooks { mgAfterBegin = \db ->
+        pragmaInt db "PRAGMA synchronous" >>= writeIORef seen }
+  runOwned store (SQLiteMigration 1 frozen) capture >>= assertEqual "migrated" (Right ())
+  readIORef seen >>= assertEqual "synchronous is EXTRA (3)" 3
 
 caseOwnedRefusesLive :: IO ()
 caseOwnedRefusesLive = withScratch "owned" $ \dir -> do
@@ -1777,6 +1968,76 @@ caseMigrateTxnFailureKeepsStore = withScratch "migrate" $ \dir -> do
     Right (Migrated rc) -> assertBool "a new backup name" (mrBackup rc /= bak)
     other -> assertFailure ("retry: " ++ show other)
 
+-- | A COMMIT failure with the transaction still active rolls back
+-- and reports unchanged, never the unknown-outcome error: a second
+-- connection holds a read transaction while the writer's busy
+-- timeout is zeroed before COMMIT, so COMMIT reports busy with the
+-- transaction open.
+caseMigrateCommitBusyRollsBack :: IO ()
+caseMigrateCommitBusyRollsBack = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  before <- captureState store
+  bracket (S.open (T.pack store)) S.close $ \reader -> do
+    S.exec reader "BEGIN"
+    S.exec reader "SELECT value FROM store_meta"
+    let impatient = fixedClock { mhSQLite = noMigrationHooks { mgBeforeCommit = \db ->
+          S.exec db "PRAGMA busy_timeout = 0" } }
+    r <- migrateStoreWith impatient store cfg backups
+    case r of
+      Left err@(MigrateTxnFailed _ _) -> do
+        let (tag, detail) = renderMigrateError err
+        assertEqual "tag" "migrate-failed" tag
+        assertBool "says rolled back" ("rolled back" `isInfixOf` detail)
+        assertBool "says unchanged" ("was not changed" `isInfixOf` detail)
+        assertBool "no unknown outcome" (not ("outcome is unknown" `isInfixOf` detail))
+        assertBool "backup kept" ("Backup kept at" `isInfixOf` detail)
+      other -> assertFailure ("wrong result: " ++ show other)
+    assertUnchanged "blocked COMMIT" before store
+
+-- | A COMMIT failure (here an early COMMIT through the
+-- before-commit seam, so the outer COMMIT has no transaction and
+-- the store moved) never claims the store was unchanged: both
+-- renderers say the COMMIT failed with an unknown outcome, name
+-- running store check, and keep the backup. The error is the
+-- dedicated unknown-outcome constructor, matched by pattern, under
+-- its own tag.
+caseMigrateCommitFailureHonest :: IO ()
+caseMigrateCommitFailureHonest = withScratch "migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.3.1.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  cfg <- loadConfigOrFail cfgPath
+  before <- captureState store
+  let commitEarly = fixedClock { mhSQLite = noMigrationHooks { mgBeforeCommit = \db -> S.exec db "COMMIT" } }
+  r <- migrateStoreWith commitEarly store cfg backups
+  case r of
+    Left err@(MigrateCommitUnknown _ _) -> do
+      let (tag, detail) = renderMigrateError err
+          (_, detailAfter) = renderMigrateErrorAfterClear err
+      assertEqual "tag" "migrate-commit-unknown" tag
+      mapM_ (\(ctx, d) -> do
+        assertBool (ctx ++ ": says COMMIT failed") ("COMMIT failed" `isInfixOf` d)
+        assertBool (ctx ++ ": says outcome unknown") ("outcome is unknown" `isInfixOf` d)
+        assertBool (ctx ++ ": says store may be at schema 3") ("may already be at schema 3" `isInfixOf` d)
+        assertBool (ctx ++ ": says run check") ("store check" `isInfixOf` d)
+        assertBool (ctx ++ ": backup kept") ("Backup kept at" `isInfixOf` d)
+        assertBool (ctx ++ ": no did-not-commit claim") (not ("did not commit" `isInfixOf` d))
+        assertBool (ctx ++ ": no unchanged claim") (not ("was not changed" `isInfixOf` d))
+        assertBool (ctx ++ ": no unchanged word") (not ("unchanged" `isInfixOf` d))
+        ) [("plain", detail), ("after-clear", detailAfter)]
+      assertBool "after-clear names the clearing" ("cold journal was removed" `isInfixOf` detailAfter)
+      moved <- captureState store
+      assertBool "store moved (early commit landed)" (ssBytes before /= ssBytes moved)
+      names <- listBackups backups
+      case filter (not . (".receipt" `isSuffixOf`)) names of
+        [b] -> BS.readFile (backups </> b) >>= \bytes ->
+          assertBool "backup kept and complete" (bytes == ssBytes before)
+        bs -> assertFailure ("expected one backup, got: " ++ show bs)
+    other -> assertFailure ("wrong result: " ++ show other)
+
 caseMigrateLeavesSeedsToOpen :: IO ()
 caseMigrateLeavesSeedsToOpen = withScratch "migrate" $ \dir -> do
   (store, _) <- copyReleasedFixture "v0.4.0.0" dir
@@ -1820,6 +2081,7 @@ caseMigrateErrorRender = do
         , (MigrateBackupExists bak, "migrate-backup-exists")
         , (MigrateBackupFailed "cannot write", "migrate-backup-failed")
         , (MigrateTxnFailed bak (StoreFull "disk full"), "migrate-failed")
+        , (MigrateCommitUnknown bak (StoreIO "cannot commit: database is locked"), "migrate-commit-unknown")
         , (MigrateVerifyFailed bak "schema marker not advanced", "migrate-verify-failed")
         , (MigrateReceiptFailed bak "disk full", "migrate-receipt-failed")
         ]
@@ -1829,7 +2091,14 @@ caseMigrateErrorRender = do
           assertNoPins ("render of " ++ show err) detail
           assertNoPins "show" (show err)) cases
   mapM_ (\err -> assertBool ("names the backup: " ++ show err) (bak `isInfixOf` snd (renderMigrateError err)))
-    [MigrateTxnFailed bak (StoreFull "disk full"), MigrateVerifyFailed bak "x", MigrateReceiptFailed bak "x"]
+    [MigrateTxnFailed bak (StoreFull "disk full"), MigrateCommitUnknown bak (StoreIO "x"), MigrateVerifyFailed bak "x", MigrateReceiptFailed bak "x"]
+  let unknownDetail = snd (renderMigrateError (MigrateCommitUnknown bak (StoreIO "x")))
+  assertBool "unknown says COMMIT failed" ("COMMIT failed" `isInfixOf` unknownDetail)
+  assertBool "unknown says outcome unknown" ("outcome is unknown" `isInfixOf` unknownDetail)
+  assertBool "unknown names schema 3" ("may already be at schema 3" `isInfixOf` unknownDetail)
+  assertBool "unknown never says did not commit" (not ("did not commit" `isInfixOf` unknownDetail))
+  assertBool "unknown never says was not changed" (not ("was not changed" `isInfixOf` unknownDetail))
+  assertBool "unknown never says unchanged" (not ("unchanged" `isInfixOf` unknownDetail))
 
 -- The foreign-sidecar refusal never sends the operator to the
 -- serving open (whose checkpoint would merge the WAL): it names

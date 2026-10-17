@@ -33,9 +33,12 @@ the help text says so.
 -}
 module Haskoki.Ctl
   ( CtlExit (..)
+  , ResetHooks (..)
   , ctlHelp
   , isLifecycleGated
   , lifecycleExempt
+  , noResetHooks
+  , resetStoreWith
   , runCtl
   ) where
 
@@ -54,7 +57,8 @@ import Text.Read (readMaybe)
 import Haskoki.Ctl.Store (storeCheckCommand, storeMigrateCommand)
 import Haskoki.Runtime.Async (newAsyncTable)
 import Haskoki.Runtime.Config
-import Haskoki.Runtime.Storage.SQLite (resolveStorePath, resolveStorePathTracked)
+import Haskoki.Runtime.Storage (StoreError (..))
+import Haskoki.Runtime.Storage.SQLite (ownedDbMatches, resolveStorePath, resolveStorePathTracked, withOwnedStoreFileKeep)
 import Haskoki.Runtime.Control
   ( Json (..)
   , Scenario (..)
@@ -954,32 +958,67 @@ readCounts path = do
 -- next start refuses until the target is recreated or the link
 -- removed. The success report keeps its stdout line and says so on
 -- stderr; a plain reset stays silent there.
+-- | Test seams of 'resetStoreWith'. 'noResetHooks' is production.
+data ResetHooks = ResetHooks
+  { rhBeforeRemove :: IO ()
+    -- ^ after ownership is taken, before the database removal
+  }
+
+noResetHooks :: ResetHooks
+noResetHooks = ResetHooks { rhBeforeRemove = pure () }
+
 resetStore :: FilePath -> Bool -> IO CtlExit
-resetStore path0 confirmed = do
+resetStore = resetStoreWith noResetHooks
+
+resetStoreWith :: ResetHooks -> FilePath -> Bool -> IO CtlExit
+resetStoreWith hooks path0 confirmed = do
   (path, sawFinalLink) <- resolveStorePathTracked path0
   exists <- fileExist path
   if not exists
     then pure (CtlExit 1 "" ("store-missing: " ++ path ++ "\n"))
-    else do
-      lock <- readLockState path
-      case lock of
-        LockLive pid ->
-          pure (CtlExit 1 ""
-            ("reset-refused: store is live (pid " ++ show pid ++ " holds the lock)\n"))
-        _ | not confirmed ->
-              pure (CtlExit 1 "" "reset-refused: pass --confirm-demo-reset to reset an offline demo store\n")
-            | otherwise -> do
-                _ <- tryIOError (removeLink path)
-                _ <- tryIOError (removeLink (path ++ ".lock"))
-                stillThere <- fileExist path
-                -- Only a link at the store's own final component
-                -- dangles after its target is removed; a symlinked
-                -- ancestor directory is intact, and the next open
-                -- through it recreates the store.
-                let danglingNote
-                      | sawFinalLink = "reset-dangling-link: " ++ path0 ++ " now dangles;"
-                          ++ " the next start refuses until the target is recreated or the link removed\n"
-                      | otherwise = ""
-                if stillThere
-                  then pure (CtlExit 1 "" ("reset-failed: cannot remove " ++ path ++ "\n"))
-                  else pure (CtlExit 0 ("reset: " ++ path ++ " removed (offline)\n") danglingNote)
+    else if not confirmed
+      then pure (CtlExit 1 "" "reset-refused: pass --confirm-demo-reset to reset an offline demo store\n")
+      else do
+        -- Both removals run while the sidecar and database kernel
+        -- locks are held, so a racing opener is refused until both
+        -- files are gone, after which it starts a fresh store; a
+        -- stale lock with no holder is taken over, like the open
+        -- and migrate paths.
+        eReset <- withOwnedStoreFileKeep path $ \o -> do
+          rhBeforeRemove hooks
+          -- No opener can create the database while the guard is
+          -- held, so absence here is conclusive. The sidecar is
+          -- unlinked only after the database is confirmed gone, and
+          -- never when the path no longer names the guarded inode;
+          -- the release keeps the sidecar, so a failure below leaves
+          -- it in place.
+          same <- ownedDbMatches o
+          if not same
+            then pure (CtlExit 1 "" ("reset-failed: store database replaced during reset: " ++ path ++ "\n"))
+            else do
+              eDb <- tryIOError (removeLink path)
+              case eDb of
+                Left e -> pure (CtlExit 1 "" ("reset-failed: cannot remove " ++ path ++ ": " ++ show e ++ "\n"))
+                Right () -> do
+                  stillThere <- fileExist path
+                  -- Only a link at the store's own final component
+                  -- dangles after its target is removed; a symlinked
+                  -- ancestor directory is intact, and the next open
+                  -- through it recreates the store.
+                  if stillThere
+                    then pure (CtlExit 1 "" ("reset-failed: cannot remove " ++ path ++ "\n"))
+                    else do
+                      _ <- tryIOError (removeLink (path ++ ".lock"))
+                      let danglingNote
+                            | sawFinalLink = "reset-dangling-link: " ++ path0 ++ " now dangles;"
+                                ++ " the next start refuses until the target is recreated or the link removed\n"
+                            | otherwise = ""
+                      pure (CtlExit 0 ("reset: " ++ path ++ " removed (offline)\n") danglingNote)
+        pure $ case eReset of
+          Left (StoreSecondWriter msg) ->
+            CtlExit 1 "" ("reset-refused: store is live (" ++ msg ++ ")\n")
+          Left (StoreIO msg) ->
+            CtlExit 1 "" ("reset-refused: cannot confirm the store is offline (" ++ msg ++ ")\n")
+          Left err ->
+            CtlExit 1 "" ("reset-refused: cannot confirm the store is offline (" ++ show err ++ ")\n")
+          Right exit -> exit

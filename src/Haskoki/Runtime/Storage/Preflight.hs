@@ -63,7 +63,7 @@ import Haskoki.Runtime.Storage
   ( CredentialRecord (..), IdentityRefusal (..), ReconcilePlan (..), StoreError (..), TokenRecord (..)
   , reconcileIdentities, renderIdentityRefusal, tokensWithoutCredentials )
 import Haskoki.Runtime.Storage.SQLite
-  ( MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
+  ( MigrateTxnError (..), MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
   , clearColdJournalOwned, guardFlags, migrateOwned, noMigrationHooks, pidIsDead, probeOwner, readFileCloexec
   , readStoreSnapshot, readStoreSnapshotAllowCold, requireRegularStore, resolveStorePath, sqliteSchemaVersion
   , withOwnedStoreFile )
@@ -358,8 +358,10 @@ data MigrateOutcome = MigrateNotNeeded | Migrated !MigrationReceipt deriving (Eq
 
 -- | Why a migration did not complete. Every constructor before
 -- 'MigrateTxnFailed' is a refusal that wrote nothing to the store or
--- the backup directory. A stored rowless token without a catalog
--- credential is reported as the identity refusal it is
+-- the backup directory; 'MigrateTxnFailed' rolled back unchanged,
+-- while 'MigrateCommitUnknown' may already have committed (run
+-- @store check@ before retrying). A stored rowless token without a
+-- catalog credential is reported as the identity refusal it is
 -- ('RefuseStoredUnconfigured').
 data MigrateError
   = MigrateConfig !PreflightRefusal
@@ -369,7 +371,8 @@ data MigrateError
   | MigrateStoreChanged
   | MigrateBackupExists !FilePath
   | MigrateBackupFailed !String
-  | MigrateTxnFailed !FilePath !StoreError       -- ^ backup path; store rolled back, unchanged
+  | MigrateTxnFailed !FilePath !StoreError       -- ^ backup path; the body failed and rolled back unchanged
+  | MigrateCommitUnknown !FilePath !StoreError   -- ^ backup path; COMMIT failed, outcome unknown (run check)
   | MigrateVerifyFailed !FilePath !String        -- ^ committed; post-check failed
   | MigrateReceiptFailed !FilePath !String       -- ^ committed; receipt not written
   deriving (Eq, Show)
@@ -465,7 +468,8 @@ migrateResolved hooks path cfg backupDir = do
             mhAfterBackup hooks
             eTx <- migrateOwned o (SQLiteMigration (sopSchema plan) freeze) (mhSQLite hooks)
             case eTx of
-              Left err -> pure (Left (MigrateTxnFailed bak err))
+              Left (MigrateTxnUnchanged err) -> pure (Left (MigrateTxnFailed bak err))
+              Left (MigrateTxnCommitUnknown err) -> pure (Left (MigrateCommitUnknown bak err))
               Right () ->
                 verifyMigrated plan bak >>? \() -> do
                   done <- mhClock hooks
@@ -757,6 +761,8 @@ renderMigrateError e = case e of
   MigrateBackupFailed why -> ("migrate-backup-failed", why ++ "; the store was not changed")
   MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction rolled back ("
     ++ snd (renderStoreRefusal se) ++ "); the store was not changed. Backup kept at " ++ bak)
+  MigrateCommitUnknown bak se -> ("migrate-commit-unknown", "the migration COMMIT failed and its outcome is unknown ("
+    ++ snd (renderStoreRefusal se) ++ "); the store may already be at schema 3 -- run store check before retrying. Backup kept at " ++ bak)
   MigrateVerifyFailed bak why -> ("migrate-verify-failed", "the migration committed but its "
     ++ "read-back failed: " ++ why ++ ". Stop the rollout; restore from " ++ bak
     ++ " (docs/operations-notes.md, Upgrade, backup and recovery)")
@@ -778,5 +784,9 @@ renderMigrateErrorAfterClear e = case e of
   MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction rolled back ("
     ++ snd (renderStoreRefusal se)
     ++ "); the store database was not changed (a cold journal was removed; see above). Backup kept at "
+    ++ bak)
+  MigrateCommitUnknown bak se -> ("migrate-commit-unknown", "the migration COMMIT failed and its outcome is unknown ("
+    ++ snd (renderStoreRefusal se)
+    ++ "); the store may already be at schema 3 -- run store check before retrying (a cold journal was removed; see above). Backup kept at "
     ++ bak)
   _ -> renderMigrateError e

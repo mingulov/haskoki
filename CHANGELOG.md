@@ -489,6 +489,26 @@ record: symbol separation, sanitizer runs, evidence limits) and
   `CfgInvalid` instead of throwing; token labels and PINs containing
   non-ASCII characters are refused at load with `CfgInvalid` naming
   the token and role. 0.4.0.0 is affected.
+- A stale store lock with no holder is now taken over instead of
+  refusing the store forever. A `<store>.lock` naming the opener's
+  own pid, a live pid, an empty file, or garbage used to refuse with
+  `store-live`/`CKR_GENERAL_ERROR` even when no process held the
+  store; the kernel flock is now the authority, so a free lock is
+  taken over and the pid rewritten, while a held lock still refuses.
+  An unknowable `/proc` with a free kernel lock now takes over too,
+  where it used to fail closed. 0.4.0.0 is affected, including the
+  container case where a killed main process leaves `1` in the lock
+  and every restart as pid 1 fails.
+- SQLite now uses `PRAGMA synchronous = EXTRA` instead of `FULL`,
+  so the last commit — including lockout-counter increments — stays
+  committed across a power loss closely following the commit, at the
+  cost of one directory fsync per commit.
+- `haskoki-ctl store reset` removes the store and its lock only
+  while holding both the sidecar and database kernel locks: it
+  refuses a live store even when its lock was removed by hand, a
+  starting service can no longer race it, and a stale lock with no
+  holder (pid 1 after a container kill, empty, garbage) is taken
+  over and reset like open and migrate.
 
 ## [0.4.0.0] - Unreleased
 

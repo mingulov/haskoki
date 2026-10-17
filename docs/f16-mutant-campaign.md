@@ -7,7 +7,7 @@ This was a bounded manual sensitivity check, not exhaustive mutation coverage.
 | Deliberate change | Check that detected it |
 | --- | --- |
 | Let an SO session see user-private objects | [ObjectSpec](../tests/model/ObjectSpec.hs): SO visibility refusal |
-| Allow SQLite lock takeover when owner liveness is unknown | [StoreSpec](../tests/storage/StoreSpec.hs): masked/unreadable owner cases |
+| Allow SQLite lock takeover when owner liveness is unknown (run against the pre-0.5.0.0 fail-closed rule) | [StoreSpec](../tests/storage/StoreSpec.hs): masked/unreadable owner cases |
 | Disable terminal-job retention eviction | [AsyncSpec](../tests/model/AsyncSpec.hs): count and byte retention bounds |
 | Advertise unsupported AES-GCM message flags | [MessageFlagBatterySpec](../tests/model/MessageFlagBatterySpec.hs): route/flag correspondence |
 | Disconnect PBKD2 from native derivation | [consumer_derive_f10.c](../tests/c/consumer_derive_f10.c): PBKD2 derive calls |

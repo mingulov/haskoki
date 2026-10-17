@@ -24,7 +24,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.StablePtr (castStablePtrToPtr)
 import Foreign.Storable (poke)
-import System.Directory (createDirectory, createDirectoryIfMissing, doesFileExist, listDirectory, removeFile)
+import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeFile, renameFile)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
@@ -37,7 +37,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import Haskoki.Ctl (CtlExit (..), ctlHelp, runCtl)
+import Haskoki.Ctl (CtlExit (..), ResetHooks (..), ctlHelp, noResetHooks, resetStoreWith, runCtl)
 import Haskoki.Ctl.Store (renderCheckUnexpectedFailure, renderUnexpectedFailure, storeCheckCommand, storeMigrateCommandWith)
 import Haskoki.Runtime.Storage.Preflight (MigrateHooks (..), backupCandidates, noMigrateHooks)
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
@@ -54,6 +54,12 @@ spec :: TestTree
 spec = testGroup "Store commands"
   [ testCase "inspect reads an offline store" caseInspect
   , testCase "reset refuses a live store" caseResetLive
+  , testCase "reset refuses a kernel-held store whose lock was removed" caseResetRefusesKernelHeld
+  , testCase "reset takes over a stale pid-1 lock with no holder" caseResetStalePid1
+  , testCase "reset takes over a stale empty lock with no holder" caseResetStaleEmpty
+  , testCase "reset takes over a stale garbage lock with no holder" caseResetStaleGarbage
+  , testCase "reset: a replaced database fails and keeps the sidecar" caseResetDbReplacedKeepsSidecar
+  , testCase "reset: a denied database removal fails and keeps the sidecar" caseResetDbRemoveDeniedKeepsSidecar
   , testCase "reset needs the confirm flag" caseResetConfirm
   , testCase "reset clears an offline store with the flag" caseResetOffline
   , testCase "check: a current store is ok (exit 0)" caseCheckOk
@@ -106,6 +112,7 @@ spec = testGroup "Store commands"
   , testCase "check: an unexpected failure is a fixed tagged line with the type only" caseCheckUnexpectedTagged
   , testCase "migrate: an interrupt after planning is exit 130, never migrate-failed" caseMigrateInterrupt130
   , testCase "migrate: a sync failure after planning keeps a tag distinct from migrate-failed" caseMigrateSyncFailureDistinctTag
+  , testCase "migrate: an unknown COMMIT outcome uses the migrate-commit-unknown tag" caseMigrateCommitUnknownTag
   , testCase "migrate: a non-interrupt async exception is rethrown, not reported" caseMigrateAsyncRethrown
   , testCase "check: an interrupt is exit 130, never store-unreadable" caseCheckInterrupt130
   , testCase "check: a relative path through an absolute symlink reaches the target" caseCheckRelativeThroughAbsoluteLink
@@ -171,6 +178,87 @@ caseResetLive = withStoreFile $ \dir -> do
       assertBool "names the lock" ("live" `elem` words (ceOut r ++ ceErr r))
       stillThere <- doesFileExist db
       assertBool "live db untouched" stillThere
+
+-- | Reset refuses a live store even after its sidecar lock is
+-- removed by hand: the database kernel guard is still held, so the
+-- store is live although /proc sees no pid.
+caseResetRefusesKernelHeld :: IO ()
+caseResetRefusesKernelHeld = withStoreFile $ \dir -> do
+  let db = dir </> "live.sqlite"
+  eSt <- openSQLiteStore db
+  case eSt of
+    Left err -> fail ("open failed: " ++ show err)
+    Right st -> do
+      removeLink (db ++ ".lock")
+      r <- runCtl ["store", "reset", "--path", db, "--confirm-demo-reset"]
+      storeClose st
+      assertBool "kernel-held store refused" (ceCode r /= 0)
+      assertBool "names reset-refused" ("reset-refused:" `isPrefixOf` ceErr r)
+      stillThere <- doesFileExist db
+      assertBool "live db untouched" stillThere
+
+-- | Reset takes over a stale lock with no holder, like the open
+-- and migrate paths: a pid-1 sidecar left by a killed container, an
+-- empty file, or garbage refuses nothing once the kernel lock is
+-- free, and both the store and the sidecar are removed.
+caseResetStalePid1 :: IO ()
+caseResetStalePid1 = caseResetStaleLock "1\n"
+
+caseResetStaleEmpty :: IO ()
+caseResetStaleEmpty = caseResetStaleLock ""
+
+caseResetStaleGarbage :: IO ()
+caseResetStaleGarbage = caseResetStaleLock "garbage\n"
+
+caseResetStaleLock :: String -> IO ()
+caseResetStaleLock content = withScratch "store-ctl" $ \dir -> do
+  db <- seedDb dir
+  writeFile (db ++ ".lock") content
+  r <- runCtl ["store", "reset", "--path", db, "--confirm-demo-reset"]
+  assertEqual "stale lock resets" 0 (ceCode r)
+  gone <- doesFileExist db
+  assertBool "db removed" (not gone)
+  lockGone <- doesFileExist (db ++ ".lock")
+  assertBool "stale lock removed" (not lockGone)
+
+-- | A database swapped for a stranger file after ownership is taken
+-- is not removed: reset fails, the sidecar stays in place, and the
+-- stranger file is untouched. The hook performs the swap inside the
+-- owned window, deterministically.
+caseResetDbReplacedKeepsSidecar :: IO ()
+caseResetDbReplacedKeepsSidecar = withScratch "store-ctl" $ \dir -> do
+  db <- seedDb dir
+  writeFile (db ++ ".lock") "1\n"
+  origBytes <- BS.readFile db
+  let swapped = db ++ ".orig"
+      hooks = ResetHooks { rhBeforeRemove = renameFile db swapped >> createDirectory db }
+  r <- resetStoreWith hooks db True
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "failed tag" ("reset-failed:" `isPrefixOf` ceErr r)
+  lockStillThere <- doesFileExist (db ++ ".lock")
+  assertBool "sidecar kept" lockStillThere
+  strangerThere <- doesDirectoryExist db
+  assertBool "stranger directory untouched" strangerThere
+  BS.readFile swapped >>= assertEqual "original bytes kept" origBytes
+  assertBool "names the replacement" ("replaced during reset" `isInfixOf` ceErr r)
+
+-- | A database removal the filesystem denies fails the reset and
+-- keeps the sidecar in place, with the reason in the report.
+caseResetDbRemoveDeniedKeepsSidecar :: IO ()
+caseResetDbRemoveDeniedKeepsSidecar = withScratch "store-ctl" $ \dir -> do
+  db <- seedDb dir
+  writeFile (db ++ ".lock") "1\n"
+  euid <- getEffectiveUserID
+  if euid == 0
+    then putStrLn "skipped the denied database removal: mode 0555 does not deny root"
+    else withFileMode dir 0o555 $ do
+      r <- resetStoreWith noResetHooks db True
+      assertEqual "exit 1" 1 (ceCode r)
+      assertBool "failed tag with reason" (("reset-failed: cannot remove " ++ db ++ ": ") `isPrefixOf` ceErr r)
+      lockStillThere <- doesFileExist (db ++ ".lock")
+      assertBool "sidecar kept" lockStillThere
+      dbStillThere <- doesFileExist db
+      assertBool "database kept" dbStillThere
 
 caseResetConfirm :: IO ()
 caseResetConfirm = withStoreFile $ \dir -> do
@@ -1035,6 +1123,25 @@ caseMigrateSyncFailureDistinctTag = withScratch "ctl-migrate" $ \dir -> do
   assertEqual "exit 1" 1 code
   assertBool "distinct tag" ("migrate-unexpected:" `isPrefixOf` err)
   assertBool "not migrate-failed" (not ("migrate-failed:" `isPrefixOf` err))
+
+-- An unknown COMMIT outcome reaches the operator under its own
+-- tag: the store may already be at schema 3, so the rolled-back
+-- tag (which promises the store was not changed) must not appear.
+caseMigrateCommitUnknownTag :: IO ()
+caseMigrateCommitUnknownTag = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.3.1.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  let commitEarly = noMigrateHooks
+        { mhSQLite = noMigrationHooks { mgBeforeCommit = \db -> S.exec db "COMMIT" } }
+  (code, _, err) <- storeMigrateCommandWith commitEarly
+    ["--path", store, "--config", cfgPath, "--backup-dir", backups]
+  assertEqual "exit 1" 1 code
+  assertBool "distinct unknown-outcome tag" ("migrate-commit-unknown:" `isPrefixOf` err)
+  assertBool "no unchanged claim" (not ("was not changed" `isInfixOf` err))
+  assertBool "says COMMIT failed" ("COMMIT failed" `isInfixOf` err)
+  assertBool "says outcome unknown" ("outcome is unknown" `isInfixOf` err)
+  assertBool "backup kept" ("Backup kept at" `isInfixOf` err)
 
 -- An async exception that is not an interrupt propagates out of the
 -- migrate command instead of being reported as a store outcome. The

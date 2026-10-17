@@ -7,14 +7,14 @@ Regenerate the norm from a forced build (run from the repo root):
   rm -rf dist-newstyle
   timeout -s KILL 600 docker run --rm --network host -v "$PWD:/work" \\
     -w /work haskoki-dev:ghc-9.10.3 \\
-    cabal build all --enable-tests > /tmp/forced.log 2>&1
+    cabal build all --enable-tests --enable-benchmarks > /tmp/forced.log 2>&1
   grep "warning: \\[GHC-" /tmp/forced.log \\
     | sed -E 's/:[0-9]+:[0-9]+: warning:/  warning:/' | sort \\
     > spec/warnings-norm.txt
 
 CI enforces the zero norm from its clean build: the `haskell` job
 builds from a fresh checkout (only the cabal store is cached, never
-dist-newstyle), tees the `cabal build all --enable-tests` output and
+dist-newstyle), tees the `cabal build all --enable-tests --enable-benchmarks` output and
 fails the job when it contains `warning: [GHC-`.
 
 The 32 pre-existing test warnings were paid down to zero at

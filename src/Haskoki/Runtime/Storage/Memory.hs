@@ -398,7 +398,7 @@ reserveLocked world inj qVar sVar = do
             let old = Map.lookup jobIdCounterKey (wsMeta wst)
                 reserved =
                   wst { wsMeta = Map.insert jobIdCounterKey advanced (wsMeta wst) }
-            evaluate (forceWorldState reserved)
+            evaluate (forceWorldState reserved) `onException` putMVar (mwState world) wst
             putMVar (mwState world) reserved
             ambiguous <- fiFire inj FaultAmbiguousCommit
             (classification, ePid) <-
@@ -499,7 +499,7 @@ protocolLocked world limits inj qVar sVar delta0 = do
                   pure result
                 else do
                   let applied = applyDelta st delta
-                  evaluate (forceWorldState applied)
+                  evaluate (forceWorldState applied) `onException` putMVar (mwState world) st
                   putMVar (mwState world) applied
                   ambiguous <- fiFire inj FaultAmbiguousCommit
                   result <-

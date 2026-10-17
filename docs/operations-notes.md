@@ -417,7 +417,8 @@ The first check prints the plan and exits 1 with
 second check prints `verdict: ok` and exits 0. Then
 create the real backup directory, run the same two commands on `$STORE`
 with `$CONFIG` and `--backup-dir /srv/haskoki-backups`, and start the
-service.
+service. The rehearsal copy holds the same recoverable PINs as the
+store; delete `/tmp/rehearsal` afterwards.
 
 `--config` must name the same store as `--path`: a config written for
 another file is refused as `config-mismatch`. That is why the rehearsal
@@ -442,7 +443,7 @@ Tags: `store-migration-required`, `store-identity-refused`, `store-live`,
 `check-interrupted`,
 `config-invalid`, `config-mismatch`, `migrate-unsafe-backup-dir`,
 `migrate-store-changed`, `migrate-backup-exists`, `migrate-backup-failed`,
-`migrate-failed`, `migrate-unexpected`, `migrate-interrupted`,
+`migrate-commit-unknown`, `migrate-failed`, `migrate-unexpected`, `migrate-interrupted`,
 `migrate-verify-failed`, `migrate-receipt-failed`.
 Output and receipts name token ids (as 16 hex digits, the same text as the
 token serial), labels, versions, paths and reasons. They never print a PIN
@@ -450,19 +451,38 @@ or key byte (`caseCheckNoPins`, `caseMigrateCliNoPins` in
 `tests/storage/StoreCtlSpec.hs`).
 
 `store check` never writes: it opens the database read-only, never
-creates or removes `<store>.lock`, and refuses a store a live process
-holds (`caseCheckLive`, `caseSnapshotReadOnlyDir`).
+creates or removes `<store>.lock`, and refuses with `store-live`
+when the database kernel lock is held, when the database cannot be
+probed, or when the sidecar is truly unreadable, not a regular
+file, or cannot be examined; a stale sidecar with no holder — the
+opener's own pid, a live pid such as container pid 1 after a kill,
+an empty file, or garbage — reports offline and is taken over on
+open or migrate (`caseCheckLive`, `caseSnapshotReadOnlyDir`,
+`caseProbeStaleTakeover`, `caseCheckStaleTakeover`,
+`caseMigrateStaleTakeover`).
 
 `store inspect` is the other read-only reader: it reports lock state plus
 table counts over a `SELECT`-only connection and never creates the sidecar
 (`inspectStore` in `src/Haskoki/Ctl.hs`, `caseInspect` in
 `tests/storage/StoreCtlSpec.hs`). The two disagree on liveness by design:
 `store inspect` judges the sidecar pid through `/proc` only
-(`readLockState`), while `store check` also probes the database kernel
-lock (`probeOwner` in `src/Haskoki/Runtime/Storage/SQLite.hs`), so a store
+(`readLockState`), while `store check` uses the kernel flock as the
+authority (`probeOwner` in `src/Haskoki/Runtime/Storage/SQLite.hs`), so a store
 whose kernel lock is held but whose sidecar is absent reports `offline`
 under `inspect` and `store-live` under `check` (see `casePlanLiveOwner`
-in `tests/storage/PreflightSpec.hs`).
+in `tests/storage/PreflightSpec.hs`), and a stale sidecar naming a live
+pid with no holder reports `live` under `inspect` but `offline` under
+`check`.
+
+A stale lock with no holder needs no manual step: the next open or
+migrate takes it over and rewrites the pid. Only a truly unreadable
+sidecar (permission denied, or a file far beyond a pid line without
+one) still refuses without consulting the kernel; then, as root,
+confirm nothing holds the store with
+`flock -n <store> true && flock -n <store>.lock true` (exit 0 means
+no holder) or `fuser <store> <store>.lock` (exit 0 means a holder
+exists, exit 1 means no holder), and remove `<store>.lock` before
+retrying.
 
 When `store migrate` cannot create the `<store>.lock` sidecar at all
 (a read-only directory or mount, no space), it reports
@@ -471,7 +491,15 @@ error — never `store-live`, since no owner holds the store
 (`caseCheckNeverOwns` in `tests/storage/PreflightSpec.hs`).
 
 `store reset --confirm-demo-reset` removes an offline store and its
-`<store>.lock` sidecar, refusing a live store; the next open through
+`<store>.lock` sidecar, refusing a live store. Both removals run
+while the sidecar and database kernel locks are held, so a racing
+opener is refused until both files are gone, after which it starts
+a fresh store; a stale pid-1, empty or garbage
+lock with no holder is taken over and reset instead of refused, and
+a database that cannot be probed refuses without claiming the store
+is live (`caseResetStalePid1`, `caseResetStaleEmpty`,
+`caseResetStaleGarbage`, `caseResetRefusesKernelHeld` in
+`tests/storage/StoreCtlSpec.hs`). The next open through
 the reset path recreates a fresh store. Through a store symlink it
 removes the link's target instead and leaves the link itself in
 place, so the link dangles and the next start refuses rather than
@@ -562,7 +590,10 @@ If the transaction fails (for example, a full disk), it rolls back; the
 store is unchanged, the backup stays, and no receipt is written
 (`caseMigrateTxnFailureKeepsStore`). Free the space and run migrate
 again; it writes a new backup. The backup directory needs room for one
-copy of the store.
+copy of the store. If migrate reports that the COMMIT outcome is unknown,
+the store may already be at schema 3, so run `store check` before
+retrying; the backup stays and no receipt is written
+(`caseMigrateCommitFailureHonest` in `tests/storage/PreflightSpec.hs`).
 
 ### Interrupted migration
 
@@ -848,14 +879,21 @@ with no uniform running-time guarantee. The
 persisted token row carries the login/attempt/lockout counters
 (`TokenAuth` in `core/Haskoki/Session.hs`); wrong guesses count
 down per-role retries to `CKR_PIN_LOCKED`. Catalog PINs are
-example-grade fixtures.
+example-grade fixtures. The SQLite store holds the current PINs in
+recoverable form (base64 `so_pin`/`user_pin` in each `credentials`
+row, with no hashing), and every `store migrate` backup copies
+those bytes; backups are written 0600 and both must be protected
+like the store itself.
 
 Trace and store files. The provider writes the trace file (`{pid}`
 expansion, append-only, best-effort;
 `ffi/Haskoki/FFI/Instance.hs`) and, in SQLite mode, the store file
 plus its sidecars: a `<db>.lock` ownership file carrying the owner
-pid (created `O_EXCL` at open, removed on close, taken over after
-a dead owner) and, under the configured rollback-journal mode
+pid (created `O_EXCL` at open, removed on close, taken over when no
+process holds it — the kernel flock is the authority, so a stale
+sidecar naming a live pid, the opener's own pid, an empty file, or
+garbage is taken over and the pid rewritten, while a held lock
+refuses) and, under the configured rollback-journal mode
 (`PRAGMA journal_mode = DELETE`), a transient `<db>-journal` file
 that SQLite holds for the duration of a write transaction and
 removes on commit
