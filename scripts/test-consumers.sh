@@ -25,6 +25,11 @@
 #   consumer_rts_caps   capability-count legs against the built module:
 #                       GHCRTS=-N4 and unsafe GHCRTS=-A8m must both
 #                       yield one capability with the host surviving
+#   consumer_rts_race   concurrent first-call race against the built
+#                       module: 8 barrier-released threads make their
+#                       first native call (haskoki_async_open) at once,
+#                       in each of 20 fresh processes; every call must
+#                       return a context
 #   rts_caps_probe      same GHCRTS legs against rts_bootstrap.c
 #                       compiled from source with its test-only
 #                       capability-count accessor (explicit wiring

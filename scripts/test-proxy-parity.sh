@@ -170,14 +170,15 @@ SCEN_LIST=$(
   || fail "notifications polling consumer must occur exactly once"
 # Group P owns consumer_policy_metadata (per-scenario configs); the
 # generic group-R list excludes it, and the guard below fails if both
-# groups would run it. consumer_rts_caps is likewise excluded from
-# the generic list: it asserts process-local RTS bootstrap state
-# (capability count under GHCRTS), and under the proxy topology the
-# module runs in the daemon process, not the consumer's, so its
-# assertions have no proxied meaning. Its direct leg runs in the
-# explicit block after group R and must pass; there is no upstream
-# proxy issue to cite, so it is not a DIRECT_ONLY entry.
-RUN_LIST=$(printf '%s\n' "$SCEN_LIST" | grep -vx 'tests/c/consumer_policy_metadata.c' | grep -vx 'tests/c/consumer_rts_caps.c')
+# groups would run it. consumer_rts_caps and consumer_rts_race are
+# likewise excluded from the generic list: they assert process-local
+# RTS bootstrap state (capability count under GHCRTS; the concurrent
+# first-call start race), and under the proxy topology the module
+# runs in the daemon process, not the consumer's, so their
+# assertions have no proxied meaning. Their direct legs run in the
+# explicit blocks after group R and must pass; there is no upstream
+# proxy issue to cite, so neither is a DIRECT_ONLY entry.
+RUN_LIST=$(printf '%s\n' "$SCEN_LIST" | grep -vx 'tests/c/consumer_policy_metadata.c' | grep -vx 'tests/c/consumer_rts_caps.c' | grep -vx 'tests/c/consumer_rts_race.c')
 POLICY_SCEN=tests/c/consumer_policy_metadata.c
 [ -f "$POLICY_SCEN" ] || fail "policy consumer missing"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "$POLICY_SCEN")" -eq 1 ] \
@@ -190,6 +191,12 @@ RTS_CAPS_SCEN=tests/c/consumer_rts_caps.c
   || fail "rts caps consumer must occur exactly once"
 [ "$(printf '%s\n' "$RUN_LIST" | grep -cx "$RTS_CAPS_SCEN")" -eq 0 ] \
   || fail "consumer_rts_caps must not run in both the generic list and its direct-only block"
+RTS_RACE_SCEN=tests/c/consumer_rts_race.c
+[ -f "$RTS_RACE_SCEN" ] || fail "rts race consumer missing"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "$RTS_RACE_SCEN")" -eq 1 ] \
+  || fail "rts race consumer must occur exactly once"
+[ "$(printf '%s\n' "$RUN_LIST" | grep -cx "$RTS_RACE_SCEN")" -eq 0 ] \
+  || fail "consumer_rts_race must not run in both the generic list and its direct-only block"
 for scen in $SCEN_LIST; do
   if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
     fail "consumer independence violated: $scen"
@@ -1150,6 +1157,24 @@ if [ "$ec" -ne 0 ]; then
 fi
 echo "DIRECT-ONLY: consumer_rts_caps (process-local RTS bootstrap; no proxied leg)"
 archive_logs "$TMPD/consumer_rts_caps.direct.log"
+fi
+
+# consumer_rts_race, direct-only (see the RUN_LIST exclusion above):
+# the direct leg runs against the built module and must pass. No
+# daemon is involved (nothing is transported) and no transcript
+# diff applies.
+if group_on R; then
+echo "--- parity-direct-only: consumer_rts_race"
+echo "child argv: env -u HASKOKI_CONSUMER_TOPOLOGY $TMPD/consumer_rts_race $SO"
+ec=0; env -u HASKOKI_CONSUMER_TOPOLOGY "$TMPD/consumer_rts_race" "$SO" \
+  >"$TMPD/consumer_rts_race.direct.log" 2>&1 || ec=$?
+echo "direct exit: consumer_rts_race $ec"
+if [ "$ec" -ne 0 ]; then
+  echo "--- direct log:"; cat "$TMPD/consumer_rts_race.direct.log"
+  fail "consumer_rts_race FAILED direct"
+fi
+echo "DIRECT-ONLY: consumer_rts_race (process-local RTS bootstrap; no proxied leg)"
+archive_logs "$TMPD/consumer_rts_race.direct.log"
 fi
 
 # Group C: the certificate scenario only, once per storage mode, each

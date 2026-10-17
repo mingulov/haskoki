@@ -15,6 +15,7 @@
  * scripts/test-loader.sh greps the built objects for the symbol.
  */
 
+#include <sched.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <sys/types.h>
@@ -33,9 +34,13 @@
  * symbol check keeps matching only real references. */
 #define hs_exit DO_NOT_STOP_THE_RTS__C_Finalize_ENDS_THE_INTERVAL_ONLY
 
-/* Set once, when the RTS is started in this process image. */
-static atomic_int g_rts_started = ATOMIC_VAR_INIT(0);
+/* Boot claim (0 = never claimed; a userspace PID is never 0) and the
+ * start-complete flag. The PID itself is the claim word, published by
+ * a single compare-and-swap, so a loser can never observe "started"
+ * without the boot PID; the flag goes up with release ordering after
+ * hs_init_ghc returns (see haskoki_rts_ensure). */
 static atomic_int g_boot_pid = ATOMIC_VAR_INIT(0);
+static atomic_int g_rts_ready = ATOMIC_VAR_INIT(0);
 
 /* Library-owned RTS argv: the host command line is never parsed or
  * rewritten (03 §5). No custom RTS flags: one capability is already
@@ -57,36 +62,69 @@ static char **g_rts_argv_ptr = g_rts_argv;
  * GHCRTS option used to abort the host inside startup. The serving
  * surface is serialized on the C state lock, so one capability
  * costs nothing. Hosts that set GHCRTS observe no effect from it.
- * Covered by tests/c/consumer_rts_caps.c and
- * tests/c/rts_caps_probe.c (scripts/test-consumers.sh). */
+ *
+ * Concurrent first calls (the unlocked native exports reach this
+ * without any lock): the winner of the boot-PID swap runs hs_init_ghc
+ * and then publishes g_rts_ready; a loser in the boot process waits
+ * for that flag before it returns, so no thread enters Haskell before
+ * the RTS exists. The wait is sched_yield on one acquire load — pure
+ * atomics, so there is no mutex or condition variable whose copied
+ * state a fork child could inherit wedged — and it always ends
+ * because the winner is alive in the same process.
+ *
+ * Fork children fail safe (-1) without waiting: the PID check runs
+ * before the wait, so a child forked at any point refuses. Before the
+ * claim the child's own swap succeeds and it starts its own RTS (no
+ * Haskell state was inherited); after ready, and mid-init while the
+ * winner thread does not exist in the child, the child observes a
+ * foreign boot PID and returns -1 instead of blocking forever. The
+ * mid-init fork is not covered by a deterministic test — ordering a
+ * fork inside another thread's hs_init_ghc from outside is inherently
+ * racy — so the argument above is the evidence for that case.
+ * Covered by tests/c/consumer_rts_caps.c,
+ * tests/c/rts_caps_probe.c and tests/c/consumer_rts_race.c
+ * (scripts/test-consumers.sh). */
 int haskoki_rts_ensure(void) {
   int expected = 0;
   pid_t self = getpid();
-  if (atomic_compare_exchange_strong(&g_rts_started, &expected, 1)) {
+  if (atomic_compare_exchange_strong_explicit(
+          &g_boot_pid, &expected, (int)self, memory_order_acq_rel,
+          memory_order_acquire)) {
     /* First caller in this process image: start the RTS. */
     RtsConfig conf;
-    atomic_store(&g_boot_pid, (int)self);
     conf = defaultRtsConfig;
     conf.rts_opts_enabled = RtsOptsIgnoreAll;
     hs_init_ghc(&g_rts_argc, &g_rts_argv_ptr, conf);
+    atomic_store_explicit(&g_rts_ready, 1, memory_order_release);
     return 0;
   }
-  /* RTS already started in this image: only the boot process may enter. */
-  if ((pid_t)atomic_load(&g_boot_pid) != self) {
+  /* A failed swap stores the observed boot PID in `expected`: the
+   * claim word is never 0 here, so no thread in the boot process can
+   * misread it as foreign. */
+  if ((pid_t)expected != self) {
+    /* Fork child of the boot process (possibly forked mid-init,
+     * where the winner thread does not exist): refuse without
+     * waiting, so the child can never block forever. */
     return -1;
+  }
+  /* Same process: wait until hs_init_ghc has returned. */
+  while (!atomic_load_explicit(&g_rts_ready, memory_order_acquire)) {
+    sched_yield();
   }
   return 0;
 }
 
-/* True (1) when no fork-child situation applies: either the RTS never
- * started (pure discovery), or this PID is the boot PID. Stateful
- * C-served calls gate on this so a fork child fails safe even when it
- * never touches Haskell. */
+/* True (1) when no fork-child situation applies: either the RTS start
+ * was never claimed (pure discovery), or this PID is the boot PID.
+ * The claim word never changes once published, so this stays stable
+ * across the init window. Stateful C-served calls gate on this so a
+ * fork child fails safe even when it never touches Haskell. */
 int haskoki_c_entry_ok(void) {
-  if (!atomic_load(&g_rts_started)) {
+  int boot = atomic_load_explicit(&g_boot_pid, memory_order_acquire);
+  if (boot == 0) {
     return 1;
   }
-  return (pid_t)atomic_load(&g_boot_pid) == getpid();
+  return (pid_t)boot == getpid();
 }
 
 #ifdef HSK_OSSL4_TEST_HOOKS
