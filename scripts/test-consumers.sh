@@ -31,15 +31,14 @@
 #                       in each of 20 fresh processes; every call must
 #                       return a context, and a post-init fork child
 #                       must refuse the native surface
-#   consumer_rts_midfork
-#                       deterministic mid-init fork probe against the
+#   rts_midfork_probe   deterministic mid-init fork probe against the
 #                       built module: interposed hs_init_ghc parks the
 #                       winning thread inside init while a mid-init
 #                       fork child must refuse every surface and a
 #                       loser thread must keep waiting (explicit
-#                       wiring below, like rts_caps_probe: it needs
-#                       the RTS headers and -rdynamic, so the generic
-#                       scenario build cannot take it)
+#                       wiring below; not a consumer_*.c scenario: it
+#                       needs the RTS headers and -rdynamic, so the
+#                       generic scenario build cannot take it)
 #   rts_caps_probe      same GHCRTS legs against rts_bootstrap.c
 #                       compiled from source with its test-only
 #                       capability-count accessor (explicit wiring
@@ -53,7 +52,7 @@
 #   HASKOKI_QUAL_ONLY=<basename>  run only the scenario whose basename
 #                                 (minus .c) matches exactly, e.g.
 #                                 consumer_multithread, async_routed,
-#                                 rts_caps_probe, or consumer_rts_midfork
+#                                 rts_caps_probe, or rts_midfork_probe
 #                                 (each probe skips the scenarios then)
 #   HASKOKI_WIDTH_LEG=64          compile every scenario with
 #                                 -DHASKOKI_WIDTH_LEG=64 (the 64-bit cell)
@@ -95,13 +94,10 @@ fi
 [ -f tests/c/consumer_certificates.c ] || fail "certificates consumer missing"
 [ -f tests/c/consumer_notifications_poll.c ] || fail "notifications polling consumer missing"
 [ -f tests/c/consumer_multithread.c ] || fail "multithread consumer missing"
-# consumer_rts_midfork is excluded from the generic list: it needs
-# the RTS headers and -rdynamic, so the explicit block below builds
-# it the way rts_caps_probe is built.
 SCEN_LIST=$(
   for scen in tests/c/consumer_*.c tests/c/message_routed.c tests/c/async_routed.c tests/c/notifications_routed.c tests/c/consumer_certificates.c; do
     [ -f "$scen" ] && printf '%s\n' "$scen"
-  done | LC_ALL=C sort -u | grep -vx 'tests/c/consumer_rts_midfork.c'
+  done | LC_ALL=C sort -u
 )
 [ -n "$SCEN_LIST" ] || fail "consumer scenario list empty"
 RUN_PROBE=1
@@ -110,10 +106,10 @@ if [ "${HASKOKI_QUAL_ONLY:-}" = "rts_caps_probe" ]; then
   SCEN_LIST=""
   RUN_MIDFORK=0
   echo "scenario filter: rts_caps_probe (RTS bootstrap probe only)"
-elif [ "${HASKOKI_QUAL_ONLY:-}" = "consumer_rts_midfork" ]; then
+elif [ "${HASKOKI_QUAL_ONLY:-}" = "rts_midfork_probe" ]; then
   SCEN_LIST=""
   RUN_PROBE=0
-  echo "scenario filter: consumer_rts_midfork (RTS mid-init fork probe only)"
+  echo "scenario filter: rts_midfork_probe (RTS mid-init fork probe only)"
 elif [ -n "${HASKOKI_QUAL_ONLY:-}" ]; then
   # Scenario filter: exact basename match (minus .c), validated
   # before the build so a bogus hint fails fast without a toolchain.
@@ -270,24 +266,24 @@ fi
 # the real init is reached through the dlopen'd module); skipped
 # under a scenario filter unless the filter names this probe.
 if [ "$RUN_MIDFORK" = "1" ]; then
-  [ -f tests/c/consumer_rts_midfork.c ] || fail "RTS mid-init fork probe missing"
-  MIDFORK_BIN="$TMPD/consumer_rts_midfork"
+  [ -f tests/c/rts_midfork_probe.c ] || fail "RTS mid-init fork probe missing"
+  MIDFORK_BIN="$TMPD/rts_midfork_probe"
   # shellcheck disable=SC2086
   if ! cc -std=c11 -O2 -g -Wall -Wextra -Werror \
       -Ispec/vendor \
       -I"$RTS_INCDIR" \
       -rdynamic \
       $WIDTH_FLAGS \
-      -o "$MIDFORK_BIN" tests/c/consumer_rts_midfork.c -ldl -lpthread; then
-    echo "FAIL: consumer_rts_midfork did not compile"
-    FAILURES="$FAILURES consumer_rts_midfork(compile)"
+      -o "$MIDFORK_BIN" tests/c/rts_midfork_probe.c -ldl -lpthread; then
+    echo "FAIL: rts_midfork_probe did not compile"
+    FAILURES="$FAILURES rts_midfork_probe(compile)"
   else
     echo "scenario compiled: $MIDFORK_BIN (headers: spec/vendor + RTS)"
     ec=0; "$MIDFORK_BIN" "$SO" || ec=$?
-    echo "child exit: consumer_rts_midfork $ec"
+    echo "child exit: rts_midfork_probe $ec"
     if [ "$ec" -ne 0 ]; then
-      echo "FAIL: consumer_rts_midfork reported failures"
-      FAILURES="$FAILURES consumer_rts_midfork(exit $ec)"
+      echo "FAIL: rts_midfork_probe reported failures"
+      FAILURES="$FAILURES rts_midfork_probe(exit $ec)"
     fi
   fi
 fi

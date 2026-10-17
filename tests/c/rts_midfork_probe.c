@@ -1,4 +1,4 @@
-/* tests/c/consumer_rts_midfork.c — deterministic mid-init fork probe.
+/* tests/c/rts_midfork_probe.c — deterministic mid-init fork probe.
  *
  * The unlocked native exports reach haskoki_rts_ensure without any
  * lock. The thread that wins the boot-PID swap starts the RTS with
@@ -24,7 +24,7 @@
  * child carries a 10s one, and the winner-parked poll gives up
  * after 5000 tries.
  *
- * Usage: consumer_rts_midfork <module.so>
+ * Usage: rts_midfork_probe <module.so>
  */
 #define _GNU_SOURCE
 

@@ -99,7 +99,7 @@ static char **g_rts_argv_ptr = g_rts_argv;
  * child must refuse (see below).
  * Covered by tests/c/consumer_rts_caps.c,
  * tests/c/rts_caps_probe.c, tests/c/consumer_rts_race.c and
- * tests/c/consumer_rts_midfork.c (scripts/test-consumers.sh). */
+ * tests/c/rts_midfork_probe.c (scripts/test-consumers.sh). */
 int haskoki_rts_ensure(void) {
   int expected = 0;
   pid_t self = getpid();

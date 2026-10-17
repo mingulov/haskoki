@@ -170,16 +170,17 @@ SCEN_LIST=$(
   || fail "notifications polling consumer must occur exactly once"
 # Group P owns consumer_policy_metadata (per-scenario configs); the
 # generic group-R list excludes it, and the guard below fails if both
-# groups would run it. consumer_rts_caps, consumer_rts_race and
-# consumer_rts_midfork are likewise excluded from the generic list:
-# they assert process-local RTS bootstrap state (capability count
-# under GHCRTS; the concurrent first-call start race; the mid-init
-# fork refusal), and under the proxy topology the module runs in
-# the daemon process, not the consumer's, so their assertions have
-# no proxied meaning. Their direct legs run in the explicit blocks
-# after group R and must pass; there is no upstream proxy issue to
-# cite, so none is a DIRECT_ONLY entry.
-RUN_LIST=$(printf '%s\n' "$SCEN_LIST" | grep -vx 'tests/c/consumer_policy_metadata.c' | grep -vx 'tests/c/consumer_rts_caps.c' | grep -vx 'tests/c/consumer_rts_race.c' | grep -vx 'tests/c/consumer_rts_midfork.c')
+# groups would run it. consumer_rts_caps and consumer_rts_race are
+# likewise excluded from the generic list, and rts_midfork_probe
+# lives outside the consumer glob entirely: they assert
+# process-local RTS bootstrap state (capability count under GHCRTS;
+# the concurrent first-call start race; the mid-init fork refusal),
+# and under the proxy topology the module runs in the daemon
+# process, not the consumer's, so their assertions have no proxied
+# meaning. Their direct legs run in the explicit blocks after group
+# R and must pass; there is no upstream proxy issue to cite, so
+# none is a DIRECT_ONLY entry.
+RUN_LIST=$(printf '%s\n' "$SCEN_LIST" | grep -vx 'tests/c/consumer_policy_metadata.c' | grep -vx 'tests/c/consumer_rts_caps.c' | grep -vx 'tests/c/consumer_rts_race.c')
 POLICY_SCEN=tests/c/consumer_policy_metadata.c
 [ -f "$POLICY_SCEN" ] || fail "policy consumer missing"
 [ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "$POLICY_SCEN")" -eq 1 ] \
@@ -198,17 +199,20 @@ RTS_RACE_SCEN=tests/c/consumer_rts_race.c
   || fail "rts race consumer must occur exactly once"
 [ "$(printf '%s\n' "$RUN_LIST" | grep -cx "$RTS_RACE_SCEN")" -eq 0 ] \
   || fail "consumer_rts_race must not run in both the generic list and its direct-only block"
-RTS_MIDFORK_SCEN=tests/c/consumer_rts_midfork.c
-[ -f "$RTS_MIDFORK_SCEN" ] || fail "rts midfork consumer missing"
-[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "$RTS_MIDFORK_SCEN")" -eq 1 ] \
-  || fail "rts midfork consumer must occur exactly once"
+RTS_MIDFORK_SCEN=tests/c/rts_midfork_probe.c
+[ -f "$RTS_MIDFORK_SCEN" ] || fail "rts midfork probe missing"
+[ "$(printf '%s\n' "$SCEN_LIST" | grep -cx "$RTS_MIDFORK_SCEN")" -eq 0 ] \
+  || fail "rts midfork probe must stay outside the consumer glob"
 [ "$(printf '%s\n' "$RUN_LIST" | grep -cx "$RTS_MIDFORK_SCEN")" -eq 0 ] \
-  || fail "consumer_rts_midfork must not run in both the generic list and its direct-only block"
+  || fail "rts_midfork_probe must not run in both the generic list and its direct-only block"
 for scen in $SCEN_LIST; do
   if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$scen"; then
     fail "consumer independence violated: $scen"
   fi
 done
+if grep -nE 'abi_generated|abi_stubs|abi-inventory' "$RTS_MIDFORK_SCEN"; then
+  fail "consumer independence violated: $RTS_MIDFORK_SCEN"
+fi
 
 # Direct-only scenarios: the pinned proxy cannot transport these calls, so
 # the direct leg runs and must pass while the proxied leg and transcript
@@ -581,7 +585,7 @@ rts_incdir_parity() {
 
 compile_scenario() {
   base=$(basename "$1" .c)
-  if [ "$base" = "consumer_rts_midfork" ]; then
+  if [ "$base" = "rts_midfork_probe" ]; then
     rts_incdir_parity
     cc -std=c11 -O2 -g -Wall -Wextra -Werror \
       -Ispec/vendor \
@@ -601,6 +605,9 @@ compile_scenario() {
 for scen in $SCEN_LIST; do
   compile_scenario "$scen"
 done
+# The midfork probe lives outside the consumer glob, so it is
+# compiled explicitly (its direct-only block below must pass).
+compile_scenario "$RTS_MIDFORK_SCEN"
 
 # Start one daemon per group/mode (backend = our module under the given
 # config). Each start keeps the 30s readiness gate; cleanup stops the
@@ -1219,22 +1226,22 @@ echo "DIRECT-ONLY: consumer_rts_race (process-local RTS bootstrap; no proxied le
 archive_logs "$TMPD/consumer_rts_race.direct.log"
 fi
 
-# consumer_rts_midfork, direct-only (see the RUN_LIST exclusion above):
-# the direct leg runs against the built module and must pass. No
-# daemon is involved (nothing is transported) and no transcript
-# diff applies.
+# rts_midfork_probe, direct-only (outside the consumer glob;
+# compiled explicitly above): the direct leg runs against the
+# built module and must pass. No daemon is involved (nothing is
+# transported) and no transcript diff applies.
 if group_on R; then
-echo "--- parity-direct-only: consumer_rts_midfork"
-echo "child argv: env -u HASKOKI_CONSUMER_TOPOLOGY $TMPD/consumer_rts_midfork $SO"
-ec=0; env -u HASKOKI_CONSUMER_TOPOLOGY "$TMPD/consumer_rts_midfork" "$SO" \
-  >"$TMPD/consumer_rts_midfork.direct.log" 2>&1 || ec=$?
-echo "direct exit: consumer_rts_midfork $ec"
+echo "--- parity-direct-only: rts_midfork_probe"
+echo "child argv: env -u HASKOKI_CONSUMER_TOPOLOGY $TMPD/rts_midfork_probe $SO"
+ec=0; env -u HASKOKI_CONSUMER_TOPOLOGY "$TMPD/rts_midfork_probe" "$SO" \
+  >"$TMPD/rts_midfork_probe.direct.log" 2>&1 || ec=$?
+echo "direct exit: rts_midfork_probe $ec"
 if [ "$ec" -ne 0 ]; then
-  echo "--- direct log:"; cat "$TMPD/consumer_rts_midfork.direct.log"
-  fail "consumer_rts_midfork FAILED direct"
+  echo "--- direct log:"; cat "$TMPD/rts_midfork_probe.direct.log"
+  fail "rts_midfork_probe FAILED direct"
 fi
-echo "DIRECT-ONLY: consumer_rts_midfork (process-local RTS bootstrap; no proxied leg)"
-archive_logs "$TMPD/consumer_rts_midfork.direct.log"
+echo "DIRECT-ONLY: rts_midfork_probe (process-local RTS bootstrap; no proxied leg)"
+archive_logs "$TMPD/rts_midfork_probe.direct.log"
 fi
 
 # Group C: the certificate scenario only, once per storage mode, each
