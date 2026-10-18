@@ -31,7 +31,11 @@ loading a downloaded native bundle on your own host. For a first run, use
 - libcrypto is STATICALLY linked from the pinned OpenSSL 4.0.2
   build (`/opt/openssl-4.0.2`, `libcrypto.a`); no system libcrypto
   is used, required, or interposable. `ldd` shows no
-  `libcrypto`/`libssl` (gated in `make-release.sh`).
+  `libcrypto`/`libssl` (gated in `make-release.sh`). The bundle
+  also carries OpenSSL's legacy provider
+  (`lib/ossl-modules/legacy.so`, with a bundled `libcrypto.so.4`
+  alongside it when the provider module binds one), loaded at open:
+  the open fails without the provider files, so keep `lib/` intact.
 
 ## Release capability table
 
@@ -136,12 +140,12 @@ presence.
 - `haskoki-ctl scenario run` interprets scenarios against an owned
   in-memory model; it never controls another live process.
 - Trace files: tracing is off by default; `[trace] enabled = true`
-  turns it on, writing `./haskoki-<pid>.jsonl` in the host
-  process's working directory, or the configured path
-  (`HASKOKI_TRACE` overrides the path). Events append without
-  rotation (best-effort; failures counted, never thrown). PINs,
-  key material and message bodies render redacted (kind + length
-  only).
+  turns it on, writing one JSON record per control-plane call to
+  `./haskoki-<pid>.jsonl` in the host process's working directory,
+  or the configured path (`HASKOKI_TRACE` overrides the path only;
+  it does not enable tracing). Events append without rotation
+  (best-effort; failures counted, never thrown). PINs, key material
+  and message bodies render redacted (kind + length only).
 - Key storage has no encryption-at-rest: the SQLite store keeps
   token rows and object rows (attributes plus `material_blob` key
   bytes) as plain JSON/blobs (schema in
@@ -150,9 +154,11 @@ presence.
   never stored; handles are minted by the live model on reload.
   The store path is explicit in config (SQLite without a path
   refuses the open) and single-writer (a second concurrent open
-  refuses `C_Initialize`). Stores from v0.4 and earlier need one
-  `haskoki-ctl store migrate` (schema 3); see docs/operations-notes.md,
-  Upgrade, backup and recovery.
+  refuses `C_Initialize`). The store database and its `.lock` file
+  are created mode 0600; a trace file takes the umask default.
+  Stores from v0.4 and earlier need one `haskoki-ctl store migrate`
+  (schema 3); see docs/operations-notes.md, Upgrade, backup and
+  recovery.
 - PINs start at their configured values (`haskoki-demo` user `1234`,
   SO `5678`; catalog PINs come from the TOML file in plaintext) and
   move in-band after that (`C_InitToken` / `C_InitPIN` / `C_SetPIN`,

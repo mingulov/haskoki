@@ -1,4 +1,4 @@
-# Haskoki 0.3.0.0 - first public release
+# Haskoki 0.3.0.0 - first tagged release (not announced)
 
 Published October 9, 2026 from `c49aa45f543522746380eda2a08d9f71b839b4ea`.
 The [release workflow](https://github.com/mingulov/haskoki/actions/runs/37961585654)

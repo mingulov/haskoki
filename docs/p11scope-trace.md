@@ -15,9 +15,10 @@ A full checker run provides a longer observation window than the short
 demo. Keep its reports in a host directory:
 
 ```sh
+# HASKOKI_IMAGE is selected in Try Haskoki.
 mkdir -p out
 docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:v0.3.0.0 \
+  -v "$PWD/out:/out" "$HASKOKI_IMAGE" \
   check --mode direct --profile full
 ```
 

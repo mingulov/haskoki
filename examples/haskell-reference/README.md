@@ -54,7 +54,7 @@ cabal run exe:logout-journey
 The program prints each stage and checks every expectation as it goes;
 any violated expectation ends it with a nonzero exit, so the run is
 itself the check. (Wired as an `executable` stanza rather than an
-`example` stanza: the pinned cabal-install 3.18 cannot plan or
+`example` stanza: the pinned cabal-install 3.12.1.0 cannot plan or
 address `example` components, so only an executable is buildable.)
 
 ## What the run shows

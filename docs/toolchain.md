@@ -123,6 +123,7 @@ index before building:
 
 ```sh
 HASKOKI_CLIENT_VERSION=$(grep -m1 '^version:' client/haskoki-client.cabal | awk '{print $2}')
+mkdir -p /tmp/sdist-client
 tar -xzf "dist-newstyle/sdist/haskoki-client-$HASKOKI_CLIENT_VERSION.tar.gz" -C /tmp/sdist-client
 cd "/tmp/sdist-client/haskoki-client-$HASKOKI_CLIENT_VERSION"
 printf 'packages: .\nallow-newer: all\n' > cabal.project

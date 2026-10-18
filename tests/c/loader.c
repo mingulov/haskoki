@@ -686,9 +686,9 @@ static void case_a02(CK_FUNCTION_LIST_PTR p11) {
   EXPECT_TRUE(info.cryptokiVersion.major == p11->version.major &&
                   info.cryptokiVersion.minor == p11->version.minor,
               "info/table version agree");
-  /* libraryVersion tracks the package (0.4), distinct from cryptoki 2.40. */
-  EXPECT_TRUE(info.libraryVersion.major == 0 && info.libraryVersion.minor == 4,
-              "libraryVersion == 0.4");
+  /* libraryVersion tracks the package (0.5), distinct from cryptoki 2.40. */
+  EXPECT_TRUE(info.libraryVersion.major == 0 && info.libraryVersion.minor == 5,
+              "libraryVersion == 0.5");
   EXPECT_TRUE(
       memcmp(info.manufacturerID, "haskoki", 7) == 0, "manufacturer prefix");
   EXPECT_TRUE(

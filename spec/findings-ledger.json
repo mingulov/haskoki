@@ -282,7 +282,7 @@
    "observed": "CKR_KEY_FUNCTION_NOT_PERMITTED from derive in the direct and proxy lanes: the checker generates X9.42 pairs without CKA_DERIVE=TRUE and Haskoki follows PKCS#11 3.2 Table 26 (default false)",
    "owner": "checker",
    "decision": "checker-fix",
-   "target": "checker relies on a non-spec CKA_DERIVE default for X9.42 key pairs; Haskoki follows PKCS#11 3.2 Table 26; stays in the frozen shared set while the pin is unchanged",
+   "target": "checker relies on a non-spec CKA_DERIVE default for X9.42 key pairs; Haskoki follows PKCS#11 3.2 Table 26; stays in the frozen shared set while the pin is unchanged; filed upstream as https://github.com/mingulov/pkcs11-check/issues/62",
    "test": "tests/c/consumer_x942_derive.c::positive legs (both parties derive the same AES key)",
    "receipt": "none: triage evidence is the checker run outputs (findings.txt, report.jsonl), kept outside the repo under ws/evidence/v050-checker-refreeze",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
@@ -297,7 +297,7 @@
    "observed": "CKR_KEY_FUNCTION_NOT_PERMITTED from derive in the direct and proxy lanes: the checker generates X9.42 pairs without CKA_DERIVE=TRUE and Haskoki follows PKCS#11 3.2 Table 26 (default false)",
    "owner": "checker",
    "decision": "checker-fix",
-   "target": "checker relies on a non-spec CKA_DERIVE default for X9.42 key pairs; Haskoki follows PKCS#11 3.2 Table 26; stays in the frozen shared set while the pin is unchanged",
+   "target": "checker relies on a non-spec CKA_DERIVE default for X9.42 key pairs; Haskoki follows PKCS#11 3.2 Table 26; stays in the frozen shared set while the pin is unchanged; filed upstream as https://github.com/mingulov/pkcs11-check/issues/62",
    "test": "tests/c/consumer_x942_derive.c::derived-key AES-ECB round-trip leg",
    "receipt": "none: triage evidence is the checker run outputs (findings.txt, report.jsonl), kept outside the repo under ws/evidence/v050-checker-refreeze",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"
@@ -312,7 +312,7 @@
    "observed": "CKR_KEY_FUNCTION_NOT_PERMITTED from derive in the direct and proxy lanes: the checker generates X9.42 pairs without CKA_DERIVE=TRUE and Haskoki follows PKCS#11 3.2 Table 26 (default false)",
    "owner": "checker",
    "decision": "checker-fix",
-   "target": "checker relies on a non-spec CKA_DERIVE default for X9.42 key pairs; Haskoki follows PKCS#11 3.2 Table 26; stays in the frozen shared set while the pin is unchanged",
+   "target": "checker relies on a non-spec CKA_DERIVE default for X9.42 key pairs; Haskoki follows PKCS#11 3.2 Table 26; stays in the frozen shared set while the pin is unchanged; filed upstream as https://github.com/mingulov/pkcs11-check/issues/62",
    "test": "tests/c/consumer_x942_derive.c::different-exchange leg (third exchange differs)",
    "receipt": "none: triage evidence is the checker run outputs (findings.txt, report.jsonl), kept outside the repo under ws/evidence/v050-checker-refreeze",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)"

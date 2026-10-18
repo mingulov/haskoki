@@ -20,7 +20,7 @@ The public repository begins with
 | October 2-3 | Further mechanism routes and native-boundary review | Worked through buffer handling, ownership, and refusal cases. |
 | October 4-6 | Demo, coverage publication, checker profiles, and proxy qualification | Prepared repeatable examples and recorded the remaining differences. |
 | October 7-8 | Security fixes, dependency and CI checks, release packaging | Reduced the demo's full-checker findings from 27 to 22 and tested the artifacts. |
-| October 9 | First public release, v0.3.0.0 | Published the native bundle, source archive, checksums, reports, and Docker image. |
+| October 9 | First tagged release (not announced), v0.3.0.0 | Published the native bundle, source archive, checksums, reports, and Docker image. |
 | v0.3.1.0 preparation | Shorter onboarding, a prepared shell, pkcs11-tool examples, and p11-kit remoting | Makes a first demo easier to run and understand; publication is a separate step. |
 
 The [coverage](coverage.md) and [results](release-results.md) pages give

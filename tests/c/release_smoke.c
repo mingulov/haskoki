@@ -158,8 +158,8 @@ int main(int argc, char **argv) {
   memset(&info, 0, sizeof(info));
   rv = f->C_GetInfo(&info);
   CHECK(rv == CKR_OK && info.libraryVersion.major == 0 &&
-            info.libraryVersion.minor == 4,
-        "C_GetInfo reports lib 0.4");
+            info.libraryVersion.minor == 5,
+        "C_GetInfo reports lib 0.5");
   n = 8;
   rv = f->C_GetSlotList(0, slots, &n);
   CHECK(rv == CKR_OK && n == 1, "one slot enumerated");

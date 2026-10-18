@@ -230,7 +230,8 @@ record: type:u64le len:u64le value:len
 The C packer `haskoki_std_pack_template` in
 [standard_surface.c](../cbits/standard_surface.c) copies attribute values
 into a flat allocation. It rejects a NULL array/value with nonzero count/
-length, more than 64 attributes, values past 16 MiB, and oversized frames.
+length, more than 64 attributes, values past 16 MiB, and oversized frames
+(the Haskell decoder re-bounds values to 4 MiB; see below).
 
 `parseTemplateFrame` and `readFrame` in
 [Standard.hs](../ffi/Haskoki/FFI/Standard.hs) recheck the frame. They require

@@ -86,7 +86,7 @@ neither is a Haskell provider facade: native callers load
 `libhaskoki.so` through the versioned C function tables (`cbits/` +
 `ffi/`), and Haskell callers inside this repository use the pure
 request/outcome contracts (`planCall`, `finishEffect`,
-`publishDelta`). The 30 library modules below are developer
+`publishDelta`). The 32 library modules below are developer
 interfaces; their names and shapes may change, and nothing here
 promises a stable Haskell provider API. The private `haskoki-core`
 component is not the package public API at all.
@@ -99,6 +99,7 @@ component is not the package public API at all.
 | `Haskoki.Engine.OpenSSL4` | Native backend over the pinned static libcrypto | Internal | Same as above | Same as above |
 | `Haskoki.Engine.Synthetic` | Labeled fake bytes for engine suites and scenario runs | Test-only; absent from the foreign library | None served | None served |
 | `Haskoki.Ctl` | Control tool and scenario-runner surface | Internal; absent from the foreign library | Owns its in-memory model only | One command at a time |
+| `Haskoki.Ctl.Store` | `store check` / `store migrate` CLI: argument parsing, exit codes, redacted text | Internal; absent from the foreign library | Owns nothing (renders `Preflight` verdicts; config errors report kind and line only, never the message body) | One command at a time |
 | `Haskoki.FFI.Standard`, `Haskoki.FFI.Instance` | Serving entries: admission, async delivery, instance lifecycle | Internal | The instance owns sessions, jobs, and stores; callers own native buffers per the entry contract | Entries serialize on the C state lock except the documented lock-free waits; callbacks hold that lock as their lease |
 | `Haskoki.FFI.Async`, `Haskoki.FFI.Exports` | Private proof APIs: standalone caller-owned async contexts/stores and routed-crypto contexts | Internal (standalone proof contexts; serving instead borrows `AsyncCtx` views sharing its backend/table) | The caller owns each standalone context and closes it explicitly (`haskoki_hs_async_close`, `haskoki_hs_async_store_close`, `haskoki_hs_crypto_close`); the store box outlives contexts opened on it; callers close every context on a box (and join their calls) before closing the box; a Store no caller can receive is recovered by the next standalone open or close that reaches acquisition, and until then its lock stays held | Direct Haskell calls take no C state lock; `AsyncCtx` carries its table and leases; context close is cancellable at every blocking wait but the bounded SQLite busy waits inside FFI calls — a close canceled in the borrower wait reopens the context, while one canceled past it stays owned by its slot in a closing state that admits nothing and the next close resumes it; a failed or canceled box close keeps its slot until a retry closes the Store; borrowed `AsyncCtx` views are internal (installed/retired under the C state lock); an admitted caller runs outside that lock; raw `AsyncTable` methods take no context admission, so callers serialize use with destruction; `CryptoCtx` has no retirement lease, so callers must not use it after close |
 | `Haskoki.FFI.Decode`, `Haskoki.FFI.Encode`, `Haskoki.FFI.NativeParams`, `Haskoki.FFI.MessageParams`, `Haskoki.FFI.KeyOutputs`, `Haskoki.FFI.Notify` | Marshalling, parameter frames, callback plumbing | Internal (`KeyOutputs` absent from the foreign library) | Borrowed views; no retained state | Same lock discipline as the serving entries |
@@ -107,6 +108,7 @@ component is not the package public API at all.
 | `Haskoki.Runtime.Async` | Attached job tables | Internal | The instance owns tables and retained bytes | STM coordination; attached terminal tombstones bounded (4096 records, 64 MiB); the just-committed job is always retained; no background reaper |
 | `Haskoki.Runtime.Detached` | Persistent async records | Internal | The store owns terminal records | Detached terminal records stay stored; separate from attached-table retention. Attachment claims go through the store handle's shared claim authority (per token): detach contexts are views over it, so one persistent id has at most one live binding across every context on the handle, and a context retires only the tables it joined through |
 | `Haskoki.Runtime.Storage`, `Haskoki.Runtime.Storage.Memory`, `Haskoki.Runtime.Storage.SQLite` | Store interface and its two backends | Internal | The store handle owns token/object rows; single-writer. Each open handle also owns one detached-job claim authority, which lives only in this process, is never saved to disk, and starts empty on reopen | Commits serialize; quarantine refuses until an authoritative reload clears it |
+| `Haskoki.Runtime.Storage.Preflight` | Offline store preflight and explicit migration: read-only diagnosis, owned migration, redacted renderings | Internal; absent from the foreign library | The migration owns the store file while it runs (verified backup + receipt); the serving open never imports this module | Single-writer; one migration at a time |
 | `Haskoki.Runtime.SlotEvents` | Public slot-flag service | Internal | The interval owns the slot service | One flag has one consumer; close discards flags and wakes waiters |
 | `Haskoki.Runtime.Events` | Private edge-queue proofs | Internal | The queue owns pending events and the finalized flag | Finalize only marks finalized; waits drain queued events before reporting it |
 | `Haskoki.Runtime.Control` | Serving presence controls (`token.insert`/`token.remove`) | Internal | Mutations publish through the model | Runs under the state lock with the retirement order in `docs/operations-notes.md` |
@@ -149,7 +151,7 @@ itself (`pcPersist` performed by storage) is a runtime step the
 program names but does not perform. Build and run with
 `cabal build exe:logout-journey` and `cabal run exe:logout-journey`;
 any violated expectation exits nonzero, so the run is the check.
-(Wired as an `executable` stanza: the pinned cabal-install 3.18
+(Wired as an `executable` stanza: the pinned cabal-install 3.12.1.0
 plans no `example` component.)
 
 ### Independent policy oracle
@@ -206,20 +208,22 @@ The [B3 inventory](b3-docs-inventory.md) lists the module sets read from
 
 | Set | Count | Source |
 |---|---|---:|
-| Main library `exposed-modules` | 30 | `haskoki.cabal:161-191` |
-| Main library `other-modules` | 2 | `Haskoki.FFI.OpenSSL4.Raw`, `Haskoki.Runtime.Attach` |
+| Main library `exposed-modules` | 30 | `haskoki.cabal:160-190` |
+| Main library `other-modules` | 1 | `Haskoki.FFI.OpenSSL4.Raw` |
 | `haskoki-core` (`private` component) | 67 | `haskoki.cabal:81-148` |
-| Foreign library `other-modules` | 27 | `haskoki.cabal:250-277` |
+| Foreign library `other-modules` | 25 | `haskoki.cabal:244-269` |
 
 Two facts from that survey matter here: the `Haskoki.PKCS11` facade
 (`initialize`, `finalize`, `getInfo`, `getSlotList`) always answers
-`CKR_GENERAL_ERROR` and is not the serving path, and 6 library-exposed
+`CKR_GENERAL_ERROR` and is not the serving path, and 7 library-exposed
 modules are absent from the foreign library while flib-only
 `Haskoki.FFI.Types` has zero in-tree importers. See gaps D1 and D4 in the
 inventory for the H3 follow-ups. Freshness: at this tree the library
-still exposes 30 modules and the foreign library bundles 27 (it now
-also carries `Haskoki.FFI.MessageParams` and `Haskoki.Runtime.Attach`),
-while `haskoki-core` grew to 68 with `Haskoki.CallWork`; the facade
+exposes 32 modules (adds `Haskoki.Ctl.Store` and
+`Haskoki.Runtime.Storage.Preflight`), the foreign library bundles 27
+(adds `Haskoki.FFI.MessageParams` and `Haskoki.Runtime.Attach`), and
+`haskoki-core` holds 68 with `Haskoki.CallWork`, so 8 library-exposed
+modules are absent from the foreign library; the facade
 names are now deprecated (see `src/Haskoki/PKCS11.hs`) and the
 supported-path answer to D4 is the Public Haskell surface section
 above.

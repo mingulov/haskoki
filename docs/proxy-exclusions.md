@@ -6,7 +6,9 @@ pkcs11-proxy-ng pair (daemon plus client shim). It normalizes and diffs
 the two transcripts, and any difference fails the run. A consumer, leg
 or version listed in the driver's `DIRECT_ONLY` table skips the proxied
 run. Every entry names the upstream proxy issue that keeps it there.
-This page records the dated evidence for each remaining entry.
+This page records the dated evidence for each remaining entry. Receipt
+paths below name files in the development workspace; they are not
+shipped with the release, so re-run the re-probe to re-check them.
 
 Pinned pair (`/opt/pkcs11-proxy-ng`, proxy commit `1ed7cc15`, v0.2.2):
 

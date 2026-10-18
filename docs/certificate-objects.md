@@ -27,9 +27,11 @@ parsing, trust decisions, or chain validation must perform those separately.
 
 ## Mutation and trust
 
-Copies inherit immutable certificate fields. Trying to override any member
-of `certImmutable` returns `CKR_TEMPLATE_INCONSISTENT`, including TRUSTED
-and security-officer copies. Setting immutable fields returns
+Copies inherit immutable certificate fields. Copy or set of any
+`certImmutable` member returns `CKR_ATTRIBUTE_READ_ONLY` (0.4.0.0
+returned `CKR_TEMPLATE_INCONSISTENT` on copy); naming `CKA_TRUSTED` in
+a certificate copy template fails even for the security officer and even
+for the same value. Setting immutable fields returns
 `CKR_ATTRIBUTE_READ_ONLY`, with two TRUSTED exceptions: any login may set
 `false`; only the security officer may set `true`. The
 `caseCertImmutableMatrix` and `caseTrustedBoundary` tests cover these rules.

@@ -40,8 +40,8 @@ resource handling still needed their own tests.
 from outside its own suites. Client calls exposed mistakes in templates,
 errors, and advertised capabilities. An incorrectly advertised AES-GCM
 message capability was withdrawn, for example. Release hardening reduced
-the full demo-checker finding set from 27 to 22; the remaining findings
-are [documented](release-results.md).
+the full demo-checker finding set from 27 to 22, and later work moved it
+to 21; the remaining findings are [documented](release-results.md).
 
 Direct loading also brought the whole GHC runtime and its shared
 libraries into a third-party application's process: a substantial
@@ -66,9 +66,10 @@ Muse Code and Codex agents helped implement and review the project.
 Model tests, properties, C clients, and external checks exercised different
 parts of it. Packaging became part of the work too: a relocatable native
 bundle, a source archive built outside the checkout, and a Docker image
-with the runtime and client tools included. The first public release,
+with the runtime and client tools included. The first tagged release,
 [v0.3.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.3.0.0),
-was published on October 9. v0.3.1.0 improves onboarding and hands-on examples.
+was published on October 9 but never announced. v0.3.1.0 improves
+onboarding and hands-on examples.
 
 Recorded development calls through October 8 account for about **13.24
 billion input-plus-output tokens**; **97.9% of input was cached**, mostly

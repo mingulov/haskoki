@@ -7,7 +7,7 @@
 # builds a second bundle from source.
 #
 #   Build (from repo root; the driver stages first — see above):
-#     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.4.0.0 .
+#     docker build -f docker/Dockerfile.demo -t haskoki-demo:0.5.0.0 .
 #   The proxy pin accepts ONLY the qualified commit SHA: any other
 #   --build-arg PROXY_COMMIT fails the proxy stage (fail closed,
 #   FINAL-35). Re-pins go through the reviewed requalification gate
@@ -15,8 +15,8 @@
 #
 #   Run (runtime scenarios run --network none; the proxy stays on
 #   loopback, which needs no external network):
-#     docker run --rm -v "$PWD/out:/out" haskoki-demo:0.4.0.0 demo
-#     docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.4.0.0 \
+#     docker run --rm -v "$PWD/out:/out" haskoki-demo:0.5.0.0 demo
+#     docker run --rm --network none -v "$PWD/out:/out" haskoki-demo:0.5.0.0 \
 #       check --mode direct --profile smoke
 #
 # Stages: proxy (pinned Rust recipe from
@@ -41,7 +41,7 @@
 # The image never contains its own final digest. CREATED is the commit
 # time of REVISION (reproducible, not the build's wall clock); without it
 # the runtime stage would inherit the base image's own created label.
-ARG VERSION=0.4.0.0
+ARG VERSION=0.5.0.0
 ARG REVISION=unknown
 ARG CREATED=unknown
 ARG SOURCE=https://github.com/mingulov/haskoki

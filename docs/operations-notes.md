@@ -191,7 +191,14 @@ polling and direct rich-notification tests have separate scopes in the
 
 Memory and SQLite stores serialize commits, validate limits and expected
 revisions, then perform the masked durable section. SQLite uses one
-`BEGIN IMMEDIATE` transaction. The implementations are in
+`BEGIN IMMEDIATE` transaction. Every connection sets
+`PRAGMA synchronous = EXTRA` and verifies it reads back as set
+(`configure`/`verifyPragmas` in
+[SQLite.hs](../src/Haskoki/Runtime/Storage/SQLite.hs)), so the last
+commit stays committed across a power loss closely following it, at the
+cost of one directory fsync per commit; removing a cold journal at open
+likewise syncs the store directory after the unlink (`syncParentDir`).
+The implementations are in
 [Memory.hs](../src/Haskoki/Runtime/Storage/Memory.hs) and
 [SQLite.hs](../src/Haskoki/Runtime/Storage/SQLite.hs).
 
@@ -887,9 +894,11 @@ like the store itself.
 
 Trace and store files. Tracing is off by default; `[trace]
 enabled = true` turns it on, and the provider then writes the
-trace file (`./haskoki-<pid>.jsonl` in the host process's working
+trace file, one JSON record per control-plane call
+(`./haskoki-<pid>.jsonl` in the host process's working
 directory, or the configured path; `HASKOKI_TRACE` overrides the
-path; `{pid}` expansion, append-only without rotation,
+path only and does not enable tracing; `{pid}` expansion,
+append-only without rotation,
 best-effort; `ffi/Haskoki/FFI/Instance.hs`) and, in SQLite mode,
 the store file
 plus its sidecars: a `<db>.lock` ownership file carrying the owner
@@ -908,10 +917,12 @@ the provider paths (the `mkstemp`/`tmpfile` family is absent from
 `src/`, `ffi/`, `app/`, `cbits/`, `core/`, `tools/`).
 
 Close and lifecycle. `C_Finalize` closes every open session,
-cancels attached jobs, durably retires joined attachments as
-canceled, keeps detached idle records for a later interval, and ends
-the provider interval without stopping the RTS
-(`cbits/rts_bootstrap.c`); closing the backend releases digest
+cancels the PKCS#11 surface's attached jobs, retires still-live
+joined attachments as canceled (best effort; already-terminal ones
+keep their fate), keeps detached idle records for a later interval,
+and ends the provider interval without stopping the RTS
+(`cbits/rts_bootstrap.c`); caller-owned native async contexts are
+unaffected; closing the backend releases digest
 contexts and drops the key maps. `validateFinalize` in
 `src/Haskoki/Runtime/Lifecycle.hs` governs only the internal
 `Lifecycle.finalize` API, not the shipped `C_Finalize` path. The provider starts the RTS with
@@ -945,14 +956,14 @@ handle.
 
 | Runtime | Owner | Close obligation | Serialization |
 |---|---|---|---|
-| Lifecycle interval (`Haskoki.Runtime.Lifecycle`) | The instance owns the interval | Finalize closes every open session, cancels attached jobs, durably retires joined attachments as canceled, keeps detached idle records, and never stops the RTS | State lock; the module stays pinned (`-z nodelete`) |
+| Lifecycle interval (`Haskoki.Runtime.Lifecycle`) | The instance owns the interval | Finalize closes every open session, cancels the PKCS#11 surface's attached jobs, retires still-live joined attachments as canceled (best effort; already-terminal ones keep their fate), keeps detached idle records, and never stops the RTS; caller-owned native async contexts are unaffected | State lock; the module stays pinned (`-z nodelete`) |
 | Storage handle (`Haskoki.Runtime.Storage` + backends) | The open handle owns token/object rows; SQLite adds a lock file, memory an in-memory ownership token | Close releases the SQLite lock file or the memory ownership token and drops the handle; SQLite sidecars follow the write transaction | Single-writer; commits serialize; quarantine refuses until an authoritative reload clears it |
 | Attached async tables (`Haskoki.Runtime.Async`) | The instance owns tables and retained bytes | Attached terminal tombstones are bounded (4096 records, 64 MiB); the just-committed job is always retained and may transiently exceed the byte bound; owners may reap attached tombstones eagerly with `reapJob`; detached terminal records (`Haskoki.Runtime.Detached`) stay stored; submit admits only checked, outer-coherent work, and fixtures use the named test-only admission | STM; no background reaper |
 | Slot service (`Haskoki.Runtime.SlotEvents`) | The interval owns flags and the hub | Close discards pending flags and wakes undecided waiters with `CKR_CRYPTOKI_NOT_INITIALIZED` | One flag has one consumer; no broadcast |
 | Serving backend (`Haskoki.Engine.OpenSSL4`) | The instance binds one backend for serving | Close releases digest contexts and drops the key maps | Backend operations hold the exclusive environment gate (environment-then-registry order), atomic with close; digest contexts are borrowed under the registry lock while used |
 | Trace queue (`Haskoki.Runtime.Trace`) | The `Tracer` owns a bounded STM queue with drop/failure counters; the sink is caller-supplied | Drains write queued lines through the sink; failures counted, never thrown; the serving sink appends per line | Queue operations are STM; concurrent drains share the sink with no ordering across drains |
 | FFI entries (`Haskoki.FFI.Standard`) | Entries borrow the instance; callers own native buffers per the entry contract | Session close, close-all, removal, and finalize retire associations without callbacks | State lock, except blocking waits which park in STM without it; callbacks hold the lock as their lease |
-| Standalone proof APIs (`Haskoki.FFI.Async`, `Haskoki.FFI.Exports`) | The caller owns each standalone context and its store box (serving instead borrows `AsyncCtx` views sharing its backend/table, with no teardown authority); close every context on a box (and join their calls) before closing the box; a Store no caller can receive is recovered by the next standalone open or close in the process, and until then its lock stays held | Explicit close per context (`haskoki_hs_async_close`, `haskoki_hs_async_store_close`, `haskoki_hs_crypto_close`); the store box outlives contexts opened on it; a failed or canceled close keeps its slot — a close canceled in the borrower wait reopens the context, while one canceled past it stays owned by its slot in a closing state that admits nothing and the next close resumes it, and a box close keeps its slot until a retry closes the Store | Direct Haskell calls take no C state lock; `AsyncCtx` carries its table and leases; context close is cancellable at every blocking wait but the bounded SQLite busy waits inside FFI calls, and resumable through the slot; borrowed views are internal (installed/retired under the C state lock); an admitted caller runs outside that lock; raw `AsyncTable` methods take no context admission, so callers serialize use with destruction; `CryptoCtx` has no retirement lease, so callers must not use it after close |
+| Standalone proof APIs (`Haskoki.FFI.Async`, `Haskoki.FFI.Exports`) | The caller owns each standalone context and its store box (serving instead borrows `AsyncCtx` views sharing its backend/table, with no teardown authority); close every context on a box (and join their calls) before closing the box; a Store no caller can receive is recovered by the next standalone open or close that reaches acquisition, and until then its lock stays held | Explicit close per context (`haskoki_hs_async_close`, `haskoki_hs_async_store_close`, `haskoki_hs_crypto_close`); the store box outlives contexts opened on it; a failed or canceled close keeps its slot — a close canceled in the borrower wait reopens the context, while one canceled past it stays owned by its slot in a closing state that admits nothing and the next close resumes it, and a box close keeps its slot until a retry closes the Store | Direct Haskell calls take no C state lock; `AsyncCtx` carries its table and leases; context close is cancellable at every blocking wait but the bounded SQLite busy waits inside FFI calls, and resumable through the slot; borrowed views are internal (installed/retired under the C state lock); an admitted caller runs outside that lock; raw `AsyncTable` methods take no context admission, so callers serialize use with destruction; `CryptoCtx` has no retirement lease, so callers must not use it after close |
 
 ## Stub and contract inventory (B3)
 

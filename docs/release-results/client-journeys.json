@@ -1,18 +1,18 @@
 {
   "$schema": "haskoki-client-journeys/1",
   "portfolio": {
-    "run": "final-r8b/portfolio",
+    "run": "v050-prep/portfolio",
     "source": {
-      "sha": "9a47a48c142ecbe85f89d19cff5182ef565a4a89",
+      "sha": "f22687fb24eedfbf09b0b3188a399ac1e64223cb",
       "dirty": false,
       "dirty_basis": "caller"
     },
     "artifact": {
       "kind": "bundle",
-      "haskoki_version": "0.4.0.0",
-      "bundle_sha256": "3866d83202d80e5cb9f42c1162f22393bce8f4775ddf7946cd90d088866aa124",
+      "haskoki_version": "0.5.0.0",
+      "bundle_sha256": "013a2df0927253077cde6c8ae08465ae1630a2e72547c82fdc4b3007edf5672a",
       "image_id": null,
-      "toolchain_record_sha256": "468c9b10d78b4f3880a135e9341e9e91c76ece45c535e312f3d93d8d6e0f31a2"
+      "toolchain_record_sha256": "ca8513a53ca8c7c69f302c75f9c7ef2a68fcf8ae6b71c327b4ca04b589096415"
     },
     "aggregate": "pass",
     "required": 61,
@@ -22,14 +22,14 @@
       "module",
       "verifier"
     ],
-    "module_sha256": "10f2a81bfed478f8d10a7c0ff49ca65c95add020c46ad2e5e9b2ccb81f33b6d1",
+    "module_sha256": "22b71f2d76ba8d5a59a1c10b14bbf79abc175b983b6ab0a2a6fc6768f2cb325e",
     "module_sha256_stable": true,
     "first_verified_signature": {
       "leg": "opensc-sign",
-      "seconds": 2.039966289,
+      "seconds": 2.290653145,
       "t0_basis": "bundle-extract"
     },
-    "client_setup_seconds": 48.0,
+    "client_setup_seconds": 60.0,
     "client_setup_seconds_basis": "caller",
     "versions": {
       "opensc": {
@@ -55,18 +55,18 @@
     }
   },
   "image": {
-    "run": "final-r8b/image",
+    "run": "v050-prep/image",
     "source": {
-      "sha": "9a47a48c142ecbe85f89d19cff5182ef565a4a89",
+      "sha": "f22687fb24eedfbf09b0b3188a399ac1e64223cb",
       "dirty": false,
       "dirty_basis": "caller"
     },
     "artifact": {
       "kind": "image",
-      "haskoki_version": "0.4.0.0",
+      "haskoki_version": "0.5.0.0",
       "bundle_sha256": null,
-      "image_id": "sha256:738217d9f1e66fa3568a47f050d49bd40931e348674794d95561b0e1509894ed",
-      "toolchain_record_sha256": "468c9b10d78b4f3880a135e9341e9e91c76ece45c535e312f3d93d8d6e0f31a2"
+      "image_id": "sha256:5472a767e35bb4661be42f0416960768e235482d8be943b747db44aedb31451f",
+      "toolchain_record_sha256": "ca8513a53ca8c7c69f302c75f9c7ef2a68fcf8ae6b71c327b4ca04b589096415"
     },
     "aggregate": "pass",
     "required": 28,
@@ -76,11 +76,11 @@
       "module",
       "verifier"
     ],
-    "module_sha256": "10f2a81bfed478f8d10a7c0ff49ca65c95add020c46ad2e5e9b2ccb81f33b6d1",
+    "module_sha256": "22b71f2d76ba8d5a59a1c10b14bbf79abc175b983b6ab0a2a6fc6768f2cb325e",
     "module_sha256_stable": true,
     "first_verified_signature": {
       "leg": "opensc-sign",
-      "seconds": 0.720430293,
+      "seconds": 0.979462256,
       "t0_basis": "module-phase-start"
     },
     "client_setup_seconds": null,

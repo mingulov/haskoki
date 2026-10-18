@@ -52,17 +52,21 @@ show two ways to move it to another process.
 ### Upgrading a v0.4 token store
 
 A store written by v0.4 or earlier needs one migration to schema 3 before
-v0.5 serves it. Rehearse on a copy first (see Upgrade, backup and recovery
-in [operations-notes.md](operations-notes.md#upgrade-backup-and-recovery)):
+v0.5 serves it. The `store check` and `store migrate` commands below need
+the v0.5 bundle: the published v0.4.0.0 bundle has `store inspect` and
+`store reset` only, so until v0.5.0.0 is published run this block from a
+candidate bundle built from this checkout. Rehearse on a copy first (see
+Upgrade, backup and recovery in
+[operations-notes.md](operations-notes.md#upgrade-backup-and-recovery)):
 
 ```sh
 mkdir -p /tmp/rehearsal /tmp/rehearsal/backups
 cp "$PWD/token.sqlite" /tmp/rehearsal/token.sqlite
 sed "s#^path = .*#path = \"/tmp/rehearsal/token.sqlite\"#" "$PWD/backend.toml" > /tmp/rehearsal/backend.toml
-haskoki-ctl store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehearsal/backend.toml
-haskoki-ctl store migrate --path /tmp/rehearsal/token.sqlite \
+"$HASKOKI_BUNDLE/bin/haskoki-ctl" store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehearsal/backend.toml
+"$HASKOKI_BUNDLE/bin/haskoki-ctl" store migrate --path /tmp/rehearsal/token.sqlite \
   --config /tmp/rehearsal/backend.toml --backup-dir /tmp/rehearsal/backups
-haskoki-ctl store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehearsal/backend.toml
+"$HASKOKI_BUNDLE/bin/haskoki-ctl" store check --path /tmp/rehearsal/token.sqlite --config /tmp/rehearsal/backend.toml
 ```
 
 ## Token provisioning and state
@@ -83,8 +87,9 @@ PIN, with the old PIN as the authentication, so no login is required;
 read-only sessions refuse). New PINs keep the 4..32 policy; a refused call
 changes nothing. Changed PINs persist across restarts; a relabel takes
 effect at once, and the next open refuses until the catalog entry carries
-the new label; `haskoki-ctl store check --path token.sqlite --config
-backend.toml` names the token and both labels. Slot 0 keeps
+the new label; `"$HASKOKI_BUNDLE/bin/haskoki-ctl" store check --path
+token.sqlite --config backend.toml` names the token and both labels.
+Slot 0 keeps
 `haskoki-demo`: the catalog
 anchors slot 0 to that label, so slot-0 relabels refuse in-band and only
 other slots relabel.
@@ -101,8 +106,10 @@ and attempt/lockout state; session objects are transient, and a reopened
 session is always public: the login itself is never restored, so a second
 process observes the same lockout through its own `C_Login` return codes
 but never inherits an authenticated session. Both store types use
-unencrypted key material. Stop clients before removing or replacing a
-store. SQLite refuses a second concurrent owner.
+unencrypted key material. The store database and its `.lock` file are
+created mode 0600; a trace file takes the umask default. Stop clients
+before removing or replacing a store. SQLite refuses a second
+concurrent owner.
 
 Recovery: a locked-out user recovers through the SO — an SO login plus
 `C_InitPIN` sets a fresh user PIN, clears the lock, and resets the counter.
@@ -209,7 +216,7 @@ The 16 MiB bound also applies to one-shot input, message inner buffering,
 and fully buffered cipher modes. Framed block modes (CBC/ECB/CFB/CTR and
 DES equivalents) emit the releasable prefix per update and retain the suffix.
 AEAD, asymmetric, CTS, OFB, key-wrap, XTS, and RC4 accumulate input instead.
-The proxy imposes its separate default 4 MiB request limit.
+The proxy imposes its own separate request limit.
 
 ## Random and seed semantics
 
@@ -231,8 +238,8 @@ contract, not byte equality.
 `compare` runs the full checker profile in both modes. It intentionally
 exits 1 for documented findings. The shipped classifier checks the frozen
 exclusions and shared findings; it must exit 0 when those sets match. The
-published v0.4.0.0 image checks 83 exclusions and 22 shared findings; the
-v0.5 development tree re-freezes them to 61 and 18.
+v0.5.0.0 candidate checks 61 exclusions and 21 shared findings; the
+published v0.4.0.0 image checks 83 and 22.
 From your host terminal, with the image selected in [Try Haskoki](try-it.md#choose-the-image):
 
 ```sh

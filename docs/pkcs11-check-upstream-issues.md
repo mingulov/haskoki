@@ -52,6 +52,20 @@ oracle, and an AES key is refused with `CKR_KEY_TYPE_INCONSISTENT`
 [BLAKE2B message-API wrong-key-type helper,
 #53](https://github.com/mingulov/pkcs11-check/issues/53).
 
+**X9.42 DH derive tests assume `CKA_DERIVE` defaults to true.**
+`test_x942_dh.py::TestX942DHDerive::{test_derive_shared_secret,
+test_derived_key_encrypts, test_different_exchanges_produce_different_secrets}`
+(3 cases) fail with `CKR_KEY_FUNCTION_NOT_PERMITTED` from derive: the X9.42
+key-pair setup generates its pairs without `CKA_DERIVE=TRUE`, while Haskoki
+follows PKCS#11 3.2 Table 26 (new keys default false). Five X9.42 negative
+tests stopped reaching parameter validation for the same reason. The ECDH
+and PKCS#3 DH derive tests still pass, so only the X9.42 setup path is
+affected. Suggested correction: set `CKA_DERIVE=TRUE` on the private half
+the X9.42 tests derive with. Haskoki pins the parameter refusals natively
+with a derive-capable base (`tests/c/consumer_x942_derive.c`). Filed
+upstream as [X9.42 DH derive tests assume CKA_DERIVE defaults to true,
+#62](https://github.com/mingulov/pkcs11-check/issues/62).
+
 ## Public issue reports
 
 | Report | What the test needed to distinguish |
@@ -85,7 +99,7 @@ operation. Earlier CBC message recipes omitted IVs (P11C-013), and RSA
 recover recipes omitted `CKA_SIGN_RECOVER`/`CKA_VERIFY_RECOVER` permissions
 (P11C-014). The latter CBC/recover findings left the demo baseline when
 the checker recipes were corrected. They are not part of the current
-18-finding set.
+21-finding set.
 
 For current provider limitations and transport exclusions, use the
 [qualification reference](pkcs11-oracle-triage.md) and

@@ -3,7 +3,7 @@
 You need Docker running on Linux amd64. No Haskell setup or hardware
 token is needed. The [README](../README.md#try-it-with-docker) runs the
 published v0.4.0.0 demo, the latest published release; this guide uses the
-same v0.4.0.0 commands.
+same v0.4.0.0 commands. v0.5.0.0 is not published until its release workflow completes.
 
 ## Choose the image
 
@@ -91,6 +91,12 @@ docker run --rm -it --network none --user "$(id -u):$(id -g)" \
   "$HASKOKI_IMAGE" shell
 ```
 
+A session saved by an older image needs a one-time
+`haskoki-ctl store migrate` with the matching newer bundle before the
+newer image serves it (see [Upgrading a v0.4 token
+store](demo-walkthrough.md#upgrading-a-v04-token-store)); otherwise the
+open refuses with no slot listed.
+
 The store contains disposable private keys in plaintext. Stop its clients
 before reusing it. Keep one key pair in this introductory exercise: some
 OpenSC operations select the first matching key. Start a new shell for a
@@ -177,7 +183,7 @@ on that branch. Download and extract the ZIP, then run in that directory:
 
 ```sh
 docker load -i demo-image.tar.gz
-HASKOKI_IMAGE=haskoki-demo:0.4.0.0
+HASKOKI_IMAGE=haskoki-demo:0.5.0.0
 ```
 
 Use the tested artifact, which is available after the demo checks finish.
@@ -195,9 +201,10 @@ Downloading Actions artifacts requires a GitHub login.
 - **Output permission denied:** create `out` yourself and use the UID/GID
   arguments shown above. A read-only mount cannot hold reports.
 - **Attribute warnings:** OpenSC may report `CKR_ATTRIBUTE_TYPE_INVALID`
-  while inspecting `VERIFY_RECOVER` or `ALWAYS_AUTHENTICATE`. These are
-  current attribute-reporting limitations; key generation and signature
-  verification must still succeed. `DERIVE` reads on every key object.
+  while inspecting `VERIFY_RECOVER`, `SIGN_RECOVER`, or
+  `ALWAYS_AUTHENTICATE`. These are current attribute-reporting
+  limitations; key generation and signature verification must still
+  succeed. `DERIVE` reads on every key object.
 - **A command reports findings:** exit 1 means a check failed; exit 2 means
   invalid arguments or setup trouble. Keep the report and logs. A shell
   command returns that tool's own exit code.

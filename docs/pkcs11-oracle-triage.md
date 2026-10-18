@@ -30,13 +30,13 @@ Then run from the repository root with that environment:
 ```sh
 # Adjust the path to your extracted bundle.
 export PKCS11_CHECK='uv run --project pkcs11-check pkcs11-check'
-scripts/ci-pkcs11-lane.sh fast "$PWD/haskoki-0.3.0.0" fast-results.json
+scripts/ci-pkcs11-lane.sh fast "$PWD/haskoki-<version>" fast-results.json
 
 # Optional larger-vector run; fetching needs network access and disk space.
 mkdir -p vectors
 uv run --project pkcs11-check pkcs11-check fetch-data all --data-dir "$PWD/vectors"
 PKCS11_CHECK_DATA_DIR="$PWD/vectors" \
-  scripts/ci-pkcs11-lane.sh kat "$PWD/haskoki-0.3.0.0" kat-results.json
+  scripts/ci-pkcs11-lane.sh kat "$PWD/haskoki-<version>" kat-results.json
 ```
 
 Use a directory owned by this vector download: fetching replaces its
@@ -46,12 +46,13 @@ pin differs from the image's checker pin; keep their results separate.
 
 ## Current demo findings
 
-The frozen full profile has 18 findings shared by direct and proxy modes (v0.5 re-freeze; the GMAC and HOTP message-init findings of earlier baselines are resolved):
+The frozen full profile has 21 findings shared by direct and proxy modes (v0.5 re-freeze plus the derive-default delta; the GMAC and HOTP message-init findings of earlier baselines are resolved):
 
 | Family | Count | Interpretation |
 | --- | ---: | --- |
 | BLAKE2B key type | 16 | Checker defect. Its wrong-key test uses a generic-secret key, but PKCS#11 3.1 sections 6.33.3 to 6.36.3 list "generic secret or CKK_BLAKE2B_n_HMAC" for these mechanisms, so Haskoki correctly accepts it. A native leg pins the acceptance and the refusal of a key type outside the list ([upstream report](pkcs11-check-upstream-issues.md#pending-upstream-reports)) |
 | Async child results | 2 | A checker child passes a ctypes character buffer where its declared binding expects unsigned bytes; it fails before the module call |
+| X9.42 derive default | 3 | Checker assumption. It generates X9.42 pairs without `CKA_DERIVE=TRUE`, while Haskoki follows PKCS#11 3.2 Table 26 (new keys default false). A native consumer pins the parameter refusals with a derive-capable base ([upstream report](pkcs11-check-upstream-issues.md#pending-upstream-reports)) |
 
 The AES-GCM and AES-GMAC message flags were withdrawn because those routes
 have no normative message-parameter shape. HOTP also advertises no message

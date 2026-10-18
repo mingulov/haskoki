@@ -35,7 +35,7 @@ regardless of the process locale; undecodable bytes answer
 | `async.pending_polls` | E | scenario runner pending count (same scope note) | `ConfigHonestySpec` polls scenario | scenario runner pending count (scenario; native async never reads it) |
 | `async.persist_detached` | D | reserved: detached records always commit; durability follows `storage.kind` | `ConfigHonestySpec` parses + `reserved-async` line | reserved; detached records always commit (native store; durability follows storage.kind) |
 | `trace.enabled` | E | off by default; `[trace] enabled = true` opts in (`fileSink` no-op arm) | `ConfigHonestySpec` disabled-writes-nothing | off default, on/off file sink arm (native; runner sink always discards) |
-| `trace.path` | E | `fileSink` append target (`{pid}` expands); `HASKOKI_TRACE` overrides it | `ConfigHonestySpec` path writes file | append target, {pid} expands, HASKOKI_TRACE overrides the path (native; runner sink always discards) |
+| `trace.path` | E | `fileSink` append target (`{pid}` expands); `HASKOKI_TRACE` overrides the path only, never enables tracing | `ConfigHonestySpec` path writes file | append target, {pid} expands, HASKOKI_TRACE overrides the path only and does not enable tracing (native; runner sink always discards) |
 | `trace.redact_secrets` | R | always redacted; `false` refused | `ConfigHonestySpec` redact refusal | true only (both; Show instances and renderer always redact) |
 | `trace.queue_limit` | E | tracer queue bound (`max 8`) | `ConfigHonestySpec` queue bound | tracer queue bound, max 8 floor, no range check (both; native sink and runner tracer) |
 | `control.enabled` | R | control plane always on; `false` refused | `ConfigHonestySpec` enabled refusal | true only (native control plane; always on) |

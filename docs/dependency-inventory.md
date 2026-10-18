@@ -1,7 +1,9 @@
 # Dependency and license inventory
 
-For v0.3.1.0, and unchanged in v0.4.0.0, the runtime also installs the distribution's `p11-kit` and
-`p11-kit-modules` packages for server/client remoting. Their license texts
+For v0.3.1.0, and unchanged in v0.4.0.0 and v0.5.0.0,
+the runtime also installs the distribution's `p11-kit` and
+`p11-kit-modules` packages for server/client remoting.
+Their license texts
 are included under `/usr/share/doc/p11-kit*/copyright`; installed versions
 are recorded in `/opt/haskoki/image-tools.txt`. The detailed tables below
 are the historical 0.3.0.0 inventory, not a freshly measured package list

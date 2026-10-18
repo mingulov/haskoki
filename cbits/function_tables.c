@@ -721,9 +721,9 @@ static CK_RV on_GetInfo(CK_INFO_PTR pInfo) {
   tmp.flags = 0;
   memset(tmp.libraryDescription, ' ', sizeof(tmp.libraryDescription));
   memcpy(tmp.libraryDescription, kDesc, sizeof(kDesc) - 1);
-  /* libraryVersion tracks the shipped package (0.4.x at 0.4.0). */
+  /* libraryVersion tracks the shipped package (0.5.x at 0.5.0). */
   tmp.libraryVersion.major = 0;
-  tmp.libraryVersion.minor = 4;
+  tmp.libraryVersion.minor = 5;
   memcpy(pInfo, &tmp, sizeof(tmp));
   return CKR_OK;
 }

@@ -1,10 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0.0] - Unreleased
 
 Behaviour changes a caller written against 0.4.0.0 can observe:
 
-- Generated keys and KEM outputs now default `CKA_DERIVE` to false, as PKCS#11 specifies; set it explicitly to derive.
+- Generated keys and KEM outputs now default `CKA_DERIVE` to false,
+  as PKCS#11 specifies; set it explicitly to keep deriving.
+  `CKM_EXTRACT_KEY_FROM_KEY` and shortening `CKM_CONCATENATE_*` /
+  `CKM_XOR_BASE_AND_DATA` derives also need `CKA_SENSITIVE=false`
+  and `CKA_EXTRACTABLE=true`, and both refusals answer
+  `CKR_KEY_FUNCTION_NOT_PERMITTED`.
 - `CKA_DERIVE` now reads `CK_FALSE` on created, unwrapped and
   derived keys and on public keys stored by 0.4.0.0, instead of
   `CKR_ATTRIBUTE_TYPE_INVALID`; enforcement is unchanged.
@@ -144,11 +149,12 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
 - `CKM_AES_GMAC` no longer advertises `CKF_MESSAGE_SIGN` or
   `CKF_MESSAGE_VERIFY`: PKCS#11 defines no message-API parameter shape
   for it. Single-part sign and verify with `CK_GCM_PARAMS` are unchanged.
-- `CKM_XOR_BASE_AND_DATA` accepts a base key and data of different
-  lengths (PKCS#11 v3.1 section 6.43.6). The natural result width is the
-  shorter of the two; a template length past it fails with
+- `CKM_XOR_BASE_AND_DATA` accepts an unsealed base key and data of
+  different lengths (PKCS#11 v3.1 section 6.43.6). The natural result
+  width is the shorter of the two; a template length past it fails with
   `CKR_KEY_SIZE_RANGE`. Unequal lengths used to fail with
-  `CKR_DATA_LEN_RANGE`.
+  `CKR_DATA_LEN_RANGE`. A sensitive or unextractable base — the
+  default — refuses shorter data and shorter children (see Security).
 - `CKM_HOTP` takes the standard `CK_OTP_PARAMS` (an array of
   `CK_OTP_PARAM` entries). A `CK_OTP_COUNTER` entry of 8 big-endian bytes
   is required for sign and verify, since no token counter is kept;
@@ -225,11 +231,6 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
 - Identity refusal messages no longer say 'in this phase'; they name the
   absence of a relabel or slot-move command.
 - The test-only `storeResetToken` keeps the token's credential row.
-- `C_FindObjects` on a removed session answers
-  `CKR_SESSION_HANDLE_INVALID`; it used to answer
-  `CKR_OPERATION_NOT_INITIALIZED`. The session check now runs before
-  the cursor lookup, and refusals leave the output buffer and count
-  untouched.
 - The provider starts the RTS with one capability and ignores
   `GHCRTS` entirely, when it starts the RTS itself. A `GHCRTS` of
   `-N2` or higher no longer takes effect, and an unsafe option no
@@ -239,15 +240,16 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   102-byte raw signatures (51-byte order) where 0.4.0.0 signed 104
   bytes; the 104-byte form still verifies. Every other served
   curve signs byte-identical output.
-- RSA signatures shorter than the modulus on the raw PKCS#1 v1.5
-  (`CKM_RSA_PKCS`), PSS, X9.31 and X.509 rows now fail with
-  `CKR_SIGNATURE_LEN_RANGE`; the raw RSA decryption underneath
-  used to accept them.
-- Non-empty signatures whose length alone disproves them now fail
-  with `CKR_SIGNATURE_LEN_RANGE` instead of
-  `CKR_SIGNATURE_INVALID`: RSA at the modulus width, raw DSA at
-  twice the subprime width, EdDSA, ML-DSA and SLH-DSA at their
-  fixed widths, and raw ECDSA at odd lengths or past twice the
+- Non-empty RSA signatures of the wrong length now fail with
+  `CKR_SIGNATURE_LEN_RANGE`: shorter-than-modulus signatures on the
+  raw PKCS#1 v1.5 (`CKM_RSA_PKCS`), PSS, X9.31 and X.509 rows used to
+  verify, since the raw RSA decryption underneath accepted them,
+  while every other wrong-length RSA signature used to report
+  `CKR_SIGNATURE_INVALID`. Non-empty signatures whose length alone
+  disproves them in the remaining families now fail with
+  `CKR_SIGNATURE_LEN_RANGE` instead of `CKR_SIGNATURE_INVALID`:
+  raw DSA at twice the subprime width, EdDSA, ML-DSA and SLH-DSA at
+  their fixed widths, and raw ECDSA at odd lengths or past twice the
   wider of the order and coordinate widths. DSA clients sending
   stripped minimal-width encodings, and raw ECDSA clients
   zero-padding past the bound, both of which 0.4.0.0 verified,
@@ -256,6 +258,24 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   the no-`HASKOKI_CONFIG` default, no longer writes
   `./haskoki-<pid>.jsonl` into the host process's working
   directory. Set `[trace] enabled = true` to keep writing traces.
+- `CKM_EXTRACT_KEY_FROM_KEY` over a sealed base, and
+  `CKM_XOR_BASE_AND_DATA` with data shorter than a sealed base, fail
+  with `CKR_KEY_FUNCTION_NOT_PERMITTED`; a child length below the
+  natural width, or a child type outside the allow-list, fails with
+  `CKR_TEMPLATE_INCONSISTENT` (see Security).
+- `CKA_ALLOWED_MECHANISMS` is enforced on derive bases and auxiliary
+  keys, on wrapping and unwrapping keys, and on KEM keys, failing
+  with `CKR_KEY_FUNCTION_NOT_PERMITTED` outside the listed mechanisms
+  (see Security).
+- Templates naming an asymmetric key type (e.g. `CKK_RSA`) with
+  `CKO_SECRET_KEY` fail with `CKR_TEMPLATE_INCONSISTENT` on create,
+  import, unwrap, derive and generate; operation init, agreement
+  derives and KEM refuse a wrong-class key with
+  `CKR_KEY_TYPE_INCONSISTENT` (see Security).
+- A wrong-type generated base now answers
+  `CKR_KEY_FUNCTION_NOT_PERMITTED`, since generated keys carry
+  `CKA_DERIVE=false` and the derive mark is checked before the key
+  type; in 0.4.0.0 it answered `CKR_KEY_TYPE_INCONSISTENT`.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and
@@ -328,9 +348,14 @@ record: symbol separation, sanitizer runs, evidence limits) and
   Deriving from such a key now fails with
   `CKR_KEY_FUNCTION_NOT_PERMITTED`, except
   `CKM_PUB_KEY_FROM_PRIV_KEY`, which ignores the mark. Set
-  `CKA_DERIVE=true` explicitly in the template to keep deriving.
-  Imported, unwrapped and derived keys are unchanged (an omitted
-  mark already denied derivation there); pub-from-priv outputs
+  `CKA_DERIVE=true` explicitly in the template to keep deriving;
+  `CKM_EXTRACT_KEY_FROM_KEY` and shortening `CKM_CONCATENATE_*` /
+  `CKM_XOR_BASE_AND_DATA` derives also need `CKA_SENSITIVE=false`
+  and `CKA_EXTRACTABLE=true` on the base (both refusals answer
+  `CKR_KEY_FUNCTION_NOT_PERMITTED`).
+  Imported, unwrapped and derived keys keep their derive enforcement
+  (an omitted mark already denied derivation there; they now read
+  `CK_FALSE`, see above); pub-from-priv outputs
   copy `CKA_DERIVE` from the base, so outputs of newly generated
   private keys now read false instead of true.
 
@@ -344,18 +369,24 @@ record: symbol separation, sanitizer runs, evidence limits) and
   native struct image through planning, checked construction and the
   real backend seal, pinned against an independent vector.
 - A hang in hosts that load the provider with at least 2 RTS
-  capabilities (`GHCRTS=-N2` or higher, or `-N`). When two threads
-  opened the OpenSSL 4 backend at once, they could both evaluate the
-  same lazy capability table, and a GHC runtime bug (GHC #27272, seen
-  on 9.10.3, 9.12.4 and 9.14.1) could leave a string literal's
-  black hole without an owner, blocking every thread that needed it.
-  Capability tables are now fully evaluated before they are published,
-  which covers that backend-open instance only; a second instance
-  through the store commit path is now known too. The provider no
-  longer starts the RTS with more than one capability (see below):
-  when it starts the RTS itself, it pins one capability and
-  ignores `GHCRTS` entirely. A process that already runs a GHC RTS
-  keeps its own capability count.
+  capabilities (`GHCRTS=-N2` or higher, or `-N`), reachable through
+  ordinary concurrent opens. When two threads opened the OpenSSL 4
+  backend at once, they could both evaluate the same lazy capability
+  table, and a GHC runtime bug (GHC #27272, seen on 9.10.3, 9.12.4
+  and 9.14.1) could leave a string literal's black hole without an
+  owner, blocking every thread that needed it. Capability tables are
+  now fully evaluated before they are published, which covers that
+  backend-open instance only; a second instance through the store
+  commit path is now known too, and fixing constants site by site
+  cannot be shown complete, so the provider no longer starts the RTS
+  with more than one capability at all: when it starts the RTS
+  itself, it pins one capability and ignores `GHCRTS` entirely. An
+  unsafe `GHCRTS` option no longer aborts the host during startup
+  either. A process that already runs a GHC RTS keeps its own
+  capability count (later inits are ignored), so that kind of host
+  keeps its #27272 exposure. The PKCS#11 surface is serialized on
+  the C state lock, so one capability costs nothing there; native
+  callers share the single capability unserialized.
   0.4.0.0 is affected (earlier releases not checked); until upgrading,
   run with a single capability.
 - Store lock and guard file descriptors are now opened with
@@ -471,20 +502,6 @@ record: symbol separation, sanitizer runs, evidence limits) and
   is now retired first and its pointer freed only after the entry's
   borrow count drains, through the registry's reclamation queue;
   callers dereference the pointer before releasing the lookup borrow.
-- The provider now pins one RTS capability and ignores `GHCRTS`
-  entirely, when it starts the RTS itself. With two or more
-  capabilities, two host threads first-evaluating the same constant
-  table could orphan a string-literal black hole and hang the whole
-  host process (GHC #27272, seen on 9.10.3, 9.12.4 and 9.14.1),
-  reachable through ordinary concurrent opens; fixing constants site
-  by site cannot be shown complete, so the provider no longer starts
-  the RTS multi-capability at all. An unsafe `GHCRTS` option no
-  longer aborts the host during startup either. A process that
-  already runs a GHC RTS keeps its own capability count (later
-  inits are ignored), so that kind of host keeps its #27272
-  exposure. The PKCS#11 surface is serialized on the C state lock,
-  so one capability costs nothing there; native callers share the
-  single capability unserialized.
 - Concurrent first calls through the native API (`haskoki_async_*`,
   `haskoki_crypto_*`) could kill the host process: threads that lost
   the RTS-start race entered Haskell before `hs_init` finished
@@ -586,11 +603,14 @@ record: symbol separation, sanitizer runs, evidence limits) and
   the allow-list (generic secret, the HMAC types, AES, ChaCha20,
   Camellia, ARIA and SEED), since e.g. Poly1305, RC2 and RC4
   children expose the sealed bytes through their own mechanisms,
-  and a known part of a DES3 child reduces them to DES-strength
-  search. A sealed second key of `CKM_CONCATENATE_BASE_AND_KEY`
+  and a known or caller-related part of a DES3 child reduces them
+  to DES-strength search. A sealed second key of
+  `CKM_CONCATENATE_BASE_AND_KEY`
   triggers the length and type rules even when the base is open.
   Unsealed keys derive exactly as before, and `C_DigestKey` is
-  unchanged. 0.4.0.0 is affected.
+  unchanged. 0.4.0.0 is affected through the
+  `CKM_EXTRACT_KEY_FROM_KEY` and short-child routes (short-data
+  `CKM_XOR_BASE_AND_DATA` is new in 0.5.0.0).
 - Known limitation: sensitivity cannot be fully enforced for
   `CKK_RC2` keys used with reduced effective bits or for
   `CKK_POLY1305` keys, whose own mechanisms expose key bytes.
@@ -632,8 +652,12 @@ record: symbol separation, sanitizer runs, evidence limits) and
   also verifies the loaded key is RSA before use, as do the ECDSA and
   ECDH shims for EC. In 0.4.0.0 a confused object could be created
   and driven through signing or agreement. 0.4.0.0 is affected.
+- In 0.4.0.0, `CKA_SEED` of sensitive or unextractable ML-DSA, ML-KEM
+  and SLH-DSA private keys was readable via `C_GetAttributeValue` and
+  matchable via `C_FindObjects`; 0.5.0.0 seals it: reads fail with
+  `CKR_ATTRIBUTE_SENSITIVE` and find withholds such keys by seed.
 
-## [0.4.0.0] - Unreleased
+## [0.4.0.0] - 2026-10-15
 
 - Token provisioning lifecycle: `C_InitToken`, `C_InitPIN`, and `C_SetPIN`
   are routed end to end with durable SQLite persistence, catalog-seeded

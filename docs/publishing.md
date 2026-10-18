@@ -2,7 +2,7 @@
 
 Use **Actions -> CI and Release -> Run workflow** to publish the demo.
 Select **main**, set **mode** to **release**, and enter the exact Cabal
-**version** without `v` (matching `haskoki.cabal`, currently `0.4.0.0`).
+**version** without `v` (matching `haskoki.cabal`, currently `0.5.0.0`).
 The default **build** mode
 only builds and tests artifacts. A release always uses the selected
 commit recorded by GitHub, even if main changes while the jobs run.
@@ -29,7 +29,7 @@ with **mode=build** on that branch. CI builds the native bundle and demo image
 and runs their checks. Download
 `demo-image-tested` from a successful run if you want the candidate image
 before publication; extract the artifact ZIP, then use `docker load -i
-demo-image.tar.gz` and `docker run --rm --network none haskoki-demo:0.4.0.0`.
+demo-image.tar.gz` and `docker run --rm --network none haskoki-demo:0.5.0.0`.
 The `demo-image-candidate` artifact is produced before all tests finish;
 use the tested artifact for a demo. No local compiler build is needed.
 
@@ -98,9 +98,9 @@ provenance attestations, updating `latest`, and publishing the draft:
 
 | Asset | Purpose |
 | --- | --- |
-| `haskoki-0.4.0.0-linux-x86_64.tar.gz` | Native module, control tool, runtime libraries, licenses, smoke consumer |
-| `haskoki-0.4.0.0.tar.gz` | Verified source distribution |
-| `test-results-0.4.0.0.tar.gz` | Staged test evidence |
+| `haskoki-0.5.0.0-linux-x86_64.tar.gz` | Native module, control tool, runtime libraries, licenses, smoke consumer |
+| `haskoki-0.5.0.0.tar.gz` | Verified source distribution |
+| `test-results-0.5.0.0.tar.gz` | Staged test evidence |
 | `release-manifest.json` | Source SHA, hashes, build information, image digest |
 | `SHA256SUMS` | Checksums of the three archives and manifest |
 | `SHA256SUMS.asc` | Detached OpenPGP signature of the checksums (only when a signing key is provisioned) |
@@ -159,8 +159,8 @@ fingerprint, and verify the signature first:
 gpg --verify SHA256SUMS.asc SHA256SUMS  # signed releases only
 sha256sum -c SHA256SUMS
 HASKOKI_DOCKER_CONFIG=$(mktemp -d)
-docker --config "$HASKOKI_DOCKER_CONFIG" pull ghcr.io/mingulov/haskoki-demo:v0.4.0.0
-docker image inspect ghcr.io/mingulov/haskoki-demo:v0.4.0.0 \
+docker --config "$HASKOKI_DOCKER_CONFIG" pull ghcr.io/mingulov/haskoki-demo:v0.5.0.0
+docker image inspect ghcr.io/mingulov/haskoki-demo:v0.5.0.0 \
   --format '{{json .RepoDigests}}'
 rm -r "$HASKOKI_DOCKER_CONFIG"
 ```
