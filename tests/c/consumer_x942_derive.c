@@ -28,9 +28,11 @@
  * Every setup call, mechanism call, and result (exact rv, hex
  * images) is printed, so a refusal caused by setup cannot
  * masquerade as a passing negative control. Hex images of
- * generated values and derived keys differ on every run, so they
- * carry the "crypto:" prefix (excluded from the proxy parity
- * transcript); the equality checks on them still run here. The negative legs
+ * generated values and derived keys differ on every run, and so does
+ * the byte length of a public value (minimal big-endian, one byte
+ * shorter when its top byte is zero), so they carry the "crypto:"
+ * prefix (excluded from the proxy parity transcript); the equality
+ * checks on them still run here. The negative legs
  * reuse the base that the positive leg proves derive-capable, so
  * each refusal is parameter-caused.
  *
@@ -295,12 +297,12 @@ int main(int argc, char **argv) {
     return 1;
   }
   rv = read_attr(sess, pubA, CKA_VALUE, yA, sizeof(yA), &yAn);
-  printf("setup: read CKA_VALUE(pubA) rv=0x%lx n=%lu\n",
-         (unsigned long)rv, (unsigned long)yAn);
+  printf("setup: read CKA_VALUE(pubA) rv=0x%lx\n", (unsigned long)rv);
+  printf("crypto: pubA n=%lu\n", (unsigned long)yAn);
   CHECK(rv == CKR_OK, "read pubA value");
   rv = read_attr(sess, pubB, CKA_VALUE, yB, sizeof(yB), &yBn);
-  printf("setup: read CKA_VALUE(pubB) rv=0x%lx n=%lu\n",
-         (unsigned long)rv, (unsigned long)yBn);
+  printf("setup: read CKA_VALUE(pubB) rv=0x%lx\n", (unsigned long)rv);
+  printf("crypto: pubB n=%lu\n", (unsigned long)yBn);
   CHECK(rv == CKR_OK, "read pubB value");
   if (rv != CKR_OK || yAn == 0u || yBn == 0u) {
     return 1;
