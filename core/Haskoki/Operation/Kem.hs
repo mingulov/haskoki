@@ -41,6 +41,8 @@ import Haskoki.Operation.KeyManagement
   , ckkAes
   , ckkGenericSecret
   , ckkMlKem
+  , ckoPrivateKey
+  , ckoPublicKey
   , ckoSecretKey
   , mechAllowed
   , pendingFromAttrs
@@ -141,9 +143,9 @@ stampKemOutput attrs =
 -- secret template must describe a 32-byte secret
 -- (generic-secret, or AES-256 — the oracle's output shape).
 -- Check order is documented and tested: mechanism, handle, key
--- kind, parameter set, usage mark, allowed mechanisms,
--- template, then the output intent. A wrong key TYPE is the
--- deeper mismatch
+-- kind, key class, parameter set, usage mark, allowed
+-- mechanisms, template, then the output intent. A wrong key
+-- TYPE or the wrong key half is the deeper mismatch
 -- (@CKR_KEY_TYPE_INCONSISTENT@, the 'checkKeyBinding'
 -- precedent); a right-typed key on another set or without the
 -- usage mark refuses @CKR_KEY_FUNCTION_NOT_PERMITTED@.
@@ -164,6 +166,9 @@ planKemEncaps model st mech h alg tmpl intent
         | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkMlKem) ->
             KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
               "peer key is not an ML-KEM key")
+        | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoPublicKey) ->
+            KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+              "peer key is not a public key")
         | Map.lookup AttrKemAlg (osAttrs ost) /= Just (ValULong (fromIntegral (kemAlgNum alg))) ->
             KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
               "peer key names a different KEM parameter set")
@@ -257,8 +262,8 @@ checkKemSecret tmpl
 -- parameter set carrying the decapsulate mark, and the secret
 -- template must describe a 32-byte secret (generic-secret or
 -- AES-256). The answer completes exactly one pending secret
--- object. Wrong key types refuse @CKR_KEY_TYPE_INCONSISTENT@
--- (the encaps precedent).
+-- object. Wrong key types and the wrong key half refuse
+-- @CKR_KEY_TYPE_INCONSISTENT@ (the encaps precedent).
 planKemDecaps
   :: Model -> SessionState -> MechanismId -> ExternalHandle -> KemAlg
   -> ByteString -> [(AttributeType, AttributeValue)]
@@ -280,6 +285,9 @@ planKemDecaps model st mech h alg ct tmpl
         | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkMlKem) ->
             KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
               "key is not an ML-KEM key")
+        | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoPrivateKey) ->
+            KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+              "key is not a private key")
         | Map.lookup AttrKemAlg (osAttrs ost) /= Just (ValULong (fromIntegral (kemAlgNum alg))) ->
             KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
               "key names a different KEM parameter set")

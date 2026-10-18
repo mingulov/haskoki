@@ -601,7 +601,8 @@ record: symbol separation, sanitizer runs, evidence limits) and
   auxiliary key, on wrapping and unwrapping keys, and on KEM
   encapsulate and decapsulate keys, failing with
   `CKR_KEY_FUNCTION_NOT_PERMITTED` outside the listed mechanisms,
-  matching the operation-init path. An empty list allows nothing,
+  with the same return code as the operation-init path. An empty
+  list allows nothing,
   on these paths as at init. The public-key derivation
   (`CKM_PUB_KEY_FROM_PRIV_KEY`) is exempt: its output is public,
   so the list is not consulted. In 0.4.0.0 the list was checked
@@ -613,13 +614,24 @@ record: symbol separation, sanitizer runs, evidence limits) and
   `CKR_TEMPLATE_INCONSISTENT`, and operation init checks the object
   class fits the mechanism on the reviewed rows (HMAC, RSA, ECDSA
   and the ciphers), failing with `CKR_KEY_TYPE_INCONSISTENT` for a
-  secret-class key under an asymmetric mechanism. The reverse
-  direction — a symmetric key type on a public- or private-class
-  object — is refused at operation init on the same rows. Every
-  native RSA shim also verifies the loaded key is RSA before use,
-  as do the ECDSA and ECDH shims for EC. In 0.4.0.0 a confused
-  object could be created and driven through signing. 0.4.0.0 is
-  affected.
+  secret-class key under an asymmetric mechanism. Derive agreement
+  (`CKM_ECDH1_DERIVE`, `CKM_ECDH1_COFACTOR_DERIVE`,
+  `CKM_DH_PKCS_DERIVE`, `CKM_X9_42_DH_DERIVE`) and KEM decapsulation
+  likewise require a private-class key, and KEM encapsulation a
+  public-class key, failing with `CKR_KEY_TYPE_INCONSISTENT`
+  otherwise — including rows stored by earlier versions, which the
+  creation gate never saw. The refused shapes also include ones that
+  can still be created: a public-class EC or DH base with
+  `CKA_DERIVE` set (pub-from-priv copies the mark onto its output)
+  and a private-class ML-KEM key with the default `CKA_ENCAPSULATE`;
+  these previously failed late with `CKR_GENERAL_ERROR` (an
+  encapsulate length query instead returned `CKR_OK`) and now refuse
+  with `CKR_KEY_TYPE_INCONSISTENT`. The reverse direction — a
+  symmetric key type on a public- or private-class object — is
+  refused at operation init on the same rows. Every native RSA shim
+  also verifies the loaded key is RSA before use, as do the ECDSA and
+  ECDH shims for EC. In 0.4.0.0 a confused object could be created
+  and driven through signing or agreement. 0.4.0.0 is affected.
 
 ## [0.4.0.0] - Unreleased
 

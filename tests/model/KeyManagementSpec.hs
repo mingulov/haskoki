@@ -300,6 +300,8 @@ import Haskoki.Registry.Generated
   , ckm_CONCATENATE_DATA_AND_BASE
   , ckm_DH_PKCS_DERIVE
   , ckm_ECDH1_DERIVE
+  , ckm_ECDH1_COFACTOR_DERIVE
+  , ckm_X9_42_DH_DERIVE
   , ckm_EXTRACT_KEY_FROM_KEY
   , ckm_IKE1_EXTENDED_DERIVE
   , ckm_IKE1_PRF_DERIVE
@@ -409,6 +411,19 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Single-key derive delivers one handle" caseDeriveSingle
   , testCase "ECDH derive refuses a non-EC base before params" caseDeriveEcdhWrongKeyType
   , testCase "ECDH derive refuses malformed params on an EC base" caseDeriveEcdhBadParams
+  , testCase "ECDH derive refuses a secret-class EC base" caseDeriveEcdhRefusesSecretEc
+  , testCase "ECDH derive refuses a secret-class Montgomery base" caseDeriveEcdhRefusesSecretMont
+  , testCase "ECDH derive refuses a public-class EC base" caseDeriveEcdhRefusesPublicEc
+  , testCase "ECDH derive refuses a secret-class EC base on the cofactor row" caseDeriveEcdhRefusesSecretEcCofactor
+  , testCase "ECDH derive plans private-class bases" caseDeriveEcdhPlansPrivate
+  , testCase "DH derive refuses a secret-class DH base" caseDeriveDhRefusesSecretDh
+  , testCase "DH derive refuses a public-class DH base" caseDeriveDhRefusesPublicDh
+  , testCase "DH derive refuses a secret-class X9.42 base" caseDeriveDhRefusesSecretX942
+  , testCase "DH derive refuses a public-class X9.42 base" caseDeriveDhRefusesPublicX942
+  , testCase "DH derive plans private-class bases" caseDeriveDhPlansPrivate
+  , testCase "Derive mark refuses before the family key type" caseDeriveRefusalOrderPin
+  , testCase "Derive mark refuses before the object class" caseDeriveMarkBeforeClassPin
+  , testCase "Derive allowed list refuses before the family key type" caseDeriveAllowedBeforeTypePin
   , testCase "SHA-KDF derive refuses a destroyed base handle" caseDeriveKdfBadHandle
   , testCase "SHA-KDF derive refuses a non-generic-secret base" caseDeriveKdfWrongKeyType
   , testCase "Shared publication is all-or-nothing" casePublishAtomic
@@ -506,6 +521,9 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real authenticated wrap round-trips" caseRealAuthWrap
   , testCase "Real backend mints AES and ML-KEM" caseRealAesKem
   , testCase "KEM refuses wrong key types inconsistent" caseKemWrongKeyType
+  , testCase "KEM encapsulate refuses a private-class key" caseKemEncapsRefusesPrivate
+  , testCase "KEM decapsulate refuses a public-class key" caseKemDecapsRefusesPublic
+  , testCase "KEM plans the correct half per direction" caseKemPlansCorrectHalves
   , testCase "KEM accepts AES-256 secret templates" caseKemAesTemplate
   , testCase "KEM keygen honors CKA_PARAMETER_SET" caseKemKeygenParamSet
   , testCase "KEM outputs stamp creation history" caseKemStampsOutputHistory
@@ -9905,3 +9923,271 @@ caseCopyGeneratedKeyDerivesHistory = withSynth $ \answer -> do
   assertStoredBool "sensitized always-sensitive" (osAttrs sensOst) AttrAlwaysSensitive False
   assertStoredBool "sensitized never-extractable" (osAttrs sensOst) AttrNeverExtractable True
   assertStoredBool "sensitized local" (osAttrs sensOst) AttrLocal True
+
+-- Shared fixtures for the class-gate legs: one 32-byte
+-- generic-secret target, one ECDH peer frame, one DH peer frame,
+-- and a confused-base attribute constructor. Each refused leg is
+-- its own case so each leg shows its own failure.
+gateTmpl :: [(AttributeType, AttributeValue)]
+gateTmpl =
+  [ (AttrClass, ValULong ckoSecretKey)
+  , (AttrKeyType, ValULong ckkGenericSecret)
+  , (AttrValueLen, ValULong 32)
+  , (AttrToken, ValBool False)
+  ]
+
+gateEcdhFrame :: ByteString
+gateEcdhFrame =
+  encodeDeriveParams (encodeEcdhParams 0 BS.empty (BS.pack [1 .. 32])) [gateTmpl]
+
+gateDhFrame :: ByteString
+gateDhFrame =
+  encodeDeriveParams (encodeDhParams 0 (BS.pack [1 .. 32])) [gateTmpl]
+
+gateBaseAttrs :: Word64 -> Word64 -> Bool -> [(AttributeType, AttributeValue)]
+gateBaseAttrs cls kty canDerive =
+  [ (AttrClass, ValULong cls)
+  , (AttrKeyType, ValULong kty)
+  , (AttrToken, ValBool False)
+  , (AttrDerive, ValBool canDerive)
+  ]
+
+gateMat :: ByteString
+gateMat = BS.pack [0 .. 63]
+
+expectGateRefused :: String -> KeyPlan -> IO ()
+expectGateRefused tag plan = case plan of
+  KeyDenied (KeyDeny code _) ->
+    assertEqual tag CKR_KEY_TYPE_INCONSISTENT code
+  other -> assertFailure (tag ++ " must not plan: " ++ show other)
+
+expectGatePlans :: String -> KeyPlan -> IO ()
+expectGatePlans tag plan = case plan of
+  KeyEffect _ _ -> pure ()
+  other -> assertFailure (tag ++ " must plan: " ++ show other)
+
+-- | A secret-class EC base with the derive mark (a pre-gate
+-- stored shape) refuses KEY_TYPE_INCONSISTENT on the plain ECDH
+-- row.
+caseDeriveEcdhRefusesSecretEc :: IO ()
+caseDeriveEcdhRefusesSecretEc = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoSecretKey ckkEc True) gateMat
+  expectGateRefused "secret-class EC base"
+    (planDerive defaultRules m1 st (MechanismId ckm_ECDH1_DERIVE) h gateEcdhFrame)
+
+-- | A secret-class Montgomery base with the derive mark refuses
+-- KEY_TYPE_INCONSISTENT on the plain ECDH row.
+caseDeriveEcdhRefusesSecretMont :: IO ()
+caseDeriveEcdhRefusesSecretMont = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoSecretKey ckkEcMontgomery True) gateMat
+  expectGateRefused "secret-class Montgomery base"
+    (planDerive defaultRules m1 st (MechanismId ckm_ECDH1_DERIVE) h gateEcdhFrame)
+
+-- | A public-class EC base with the derive mark refuses
+-- KEY_TYPE_INCONSISTENT on the plain ECDH row.
+caseDeriveEcdhRefusesPublicEc :: IO ()
+caseDeriveEcdhRefusesPublicEc = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoPublicKey ckkEc True) gateMat
+  expectGateRefused "public-class EC base"
+    (planDerive defaultRules m1 st (MechanismId ckm_ECDH1_DERIVE) h gateEcdhFrame)
+
+-- | A secret-class EC base with the derive mark refuses
+-- KEY_TYPE_INCONSISTENT on the cofactor ECDH row.
+caseDeriveEcdhRefusesSecretEcCofactor :: IO ()
+caseDeriveEcdhRefusesSecretEcCofactor = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoSecretKey ckkEc True) gateMat
+  expectGateRefused "secret-class EC base, cofactor row"
+    (planDerive defaultRules m1 st (MechanismId ckm_ECDH1_COFACTOR_DERIVE) h gateEcdhFrame)
+
+-- | Correctly-classed private EC and Montgomery bases still plan
+-- on both ECDH rows.
+caseDeriveEcdhPlansPrivate :: IO ()
+caseDeriveEcdhPlansPrivate = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, privEcH) <- plantKey m0 st (gateBaseAttrs ckoPrivateKey ckkEc True) gateMat
+  (m2, privMontH) <- plantKey m1 st (gateBaseAttrs ckoPrivateKey ckkEcMontgomery True) gateMat
+  let mech = MechanismId ckm_ECDH1_DERIVE
+      cofactorMech = MechanismId ckm_ECDH1_COFACTOR_DERIVE
+  expectGatePlans "private-class EC base"
+    (planDerive defaultRules m2 st mech privEcH gateEcdhFrame)
+  expectGatePlans "private-class Montgomery base"
+    (planDerive defaultRules m2 st mech privMontH gateEcdhFrame)
+  expectGatePlans "private-class EC base, cofactor row"
+    (planDerive defaultRules m2 st cofactorMech privEcH gateEcdhFrame)
+
+-- | A secret-class DH base with the derive mark refuses
+-- KEY_TYPE_INCONSISTENT on the PKCS#3 row.
+caseDeriveDhRefusesSecretDh :: IO ()
+caseDeriveDhRefusesSecretDh = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoSecretKey ckkDh True) gateMat
+  expectGateRefused "secret-class DH base"
+    (planDerive defaultRules m1 st (MechanismId ckm_DH_PKCS_DERIVE) h gateDhFrame)
+
+-- | A public-class DH base with the derive mark refuses
+-- KEY_TYPE_INCONSISTENT on the PKCS#3 row.
+caseDeriveDhRefusesPublicDh :: IO ()
+caseDeriveDhRefusesPublicDh = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoPublicKey ckkDh True) gateMat
+  expectGateRefused "public-class DH base"
+    (planDerive defaultRules m1 st (MechanismId ckm_DH_PKCS_DERIVE) h gateDhFrame)
+
+-- | A secret-class X9.42 base with the derive mark refuses
+-- KEY_TYPE_INCONSISTENT on the X9.42 row.
+caseDeriveDhRefusesSecretX942 :: IO ()
+caseDeriveDhRefusesSecretX942 = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoSecretKey ckkX9_42Dh True) gateMat
+  expectGateRefused "secret-class X9.42 base"
+    (planDerive defaultRules m1 st (MechanismId ckm_X9_42_DH_DERIVE) h gateDhFrame)
+
+-- | A public-class X9.42 base with the derive mark refuses
+-- KEY_TYPE_INCONSISTENT on the X9.42 row.
+caseDeriveDhRefusesPublicX942 :: IO ()
+caseDeriveDhRefusesPublicX942 = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoPublicKey ckkX9_42Dh True) gateMat
+  expectGateRefused "public-class X9.42 base"
+    (planDerive defaultRules m1 st (MechanismId ckm_X9_42_DH_DERIVE) h gateDhFrame)
+
+-- | Correctly-classed private DH and X9.42 bases still plan on
+-- their rows.
+caseDeriveDhPlansPrivate :: IO ()
+caseDeriveDhPlansPrivate = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, privDhH) <- plantKey m0 st (gateBaseAttrs ckoPrivateKey ckkDh True) gateMat
+  (m2, privX942H) <- plantKey m1 st (gateBaseAttrs ckoPrivateKey ckkX9_42Dh True) gateMat
+  expectGatePlans "private-class DH base"
+    (planDerive defaultRules m2 st (MechanismId ckm_DH_PKCS_DERIVE) privDhH gateDhFrame)
+  expectGatePlans "private-class X9.42 base"
+    (planDerive defaultRules m2 st (MechanismId ckm_X9_42_DH_DERIVE) privX942H gateDhFrame)
+
+-- | A private-class ML-KEM key (right type, right set, usage
+-- mark set) presented to encapsulate refuses
+-- KEY_TYPE_INCONSISTENT: encapsulation takes the public key.
+caseKemEncapsRefusesPrivate :: IO ()
+caseKemEncapsRefusesPrivate = do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoPrivateKey)
+    , (AttrKeyType, ValULong ckkMlKem)
+    , (AttrKemAlg, ValULong 768)
+    , (AttrToken, ValBool False)
+    , (AttrEncapsulate, ValBool True)
+    ] (BS.pack [0 .. 63])
+  let ctLen = kemCtLen KemMl768
+      intent = IntentBuffer (fromIntegral ctLen)
+  case planKemEncaps m1 st mlKemMech h KemMl768 secretTmpl intent of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "encaps private-class code" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("encaps with a private-class key must not plan: " ++ show other)
+
+-- | A public-class ML-KEM key (right type, right set, usage mark
+-- set) presented to decapsulate refuses KEY_TYPE_INCONSISTENT:
+-- decapsulation takes the private key.
+caseKemDecapsRefusesPublic :: IO ()
+caseKemDecapsRefusesPublic = do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoPublicKey)
+    , (AttrKeyType, ValULong ckkMlKem)
+    , (AttrKemAlg, ValULong 768)
+    , (AttrToken, ValBool False)
+    , (AttrDecapsulate, ValBool True)
+    ] (BS.pack [64 .. 127])
+  let ctLen = kemCtLen KemMl768
+  case planKemDecaps m1 st mlKemMech h KemMl768 (BS.replicate ctLen 0) secretTmpl of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "decaps public-class code" CKR_KEY_TYPE_INCONSISTENT code
+    other -> assertFailure ("decaps with a public-class key must not plan: " ++ show other)
+
+-- | KEM directions take opposite halves: the generated public key
+-- still encapsulates and the generated private key still
+-- decapsulates.
+caseKemPlansCorrectHalves :: IO ()
+caseKemPlansCorrectHalves = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, pubH, privH) <- genKemPair answer m0 st
+  let ctLen = kemCtLen KemMl768
+      intent = IntentBuffer (fromIntegral ctLen)
+  case planKemEncaps m1 st mlKemMech pubH KemMl768 secretTmpl intent of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("encaps with the public key must plan: " ++ show other)
+  case planKemDecaps m1 st mlKemMech privH KemMl768 (BS.replicate ctLen 0) secretTmpl of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("decaps with the private key must plan: " ++ show other)
+
+-- | Derive refusal order: the derive mark and the
+-- allowed-mechanism list refuse before the family key type, so
+-- a wrong-type generated base (DERIVE false by default)
+-- answers KEY_FUNCTION_NOT_PERMITTED rather than
+-- KEY_TYPE_INCONSISTENT.
+caseDeriveRefusalOrderPin :: IO ()
+caseDeriveRefusalOrderPin = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, aesH) <- genAesKey answer m0 st (aesTmpl 32)
+  Just ost <- pure (resolveHandle m1 aesH)
+  assertEqual "generated DERIVE reads false"
+    (Just (ValBool False)) (Map.lookup AttrDerive (osAttrs ost))
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong 16)
+        , (AttrToken, ValBool False)
+        ]
+      mech = MechanismId ckm_ECDH1_DERIVE
+      frame = encodeDeriveParams (encodeEcdhParams 0 BS.empty "peer") [tmpl]
+  case planDerive defaultRules m1 st mech aesH frame of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "wrong-type DERIVE=false code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("wrong-type DERIVE=false base must not plan: " ++ show other)
+
+-- | Derive refusal order: the derive mark refuses before the
+-- object class, so a public-class EC base (right type, wrong
+-- class) without the mark answers KEY_FUNCTION_NOT_PERMITTED
+-- rather than KEY_TYPE_INCONSISTENT.
+caseDeriveMarkBeforeClassPin :: IO ()
+caseDeriveMarkBeforeClassPin = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st (gateBaseAttrs ckoPublicKey ckkEc False) gateMat
+  case planDerive defaultRules m1 st (MechanismId ckm_ECDH1_DERIVE) h gateEcdhFrame of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "public-class DERIVE=false code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("public-class DERIVE=false base must not plan: " ++ show other)
+
+-- | Derive refusal order: the allowed-mechanism list refuses
+-- before the family key type, so a wrong-type base with the
+-- mark whose list excludes ECDH answers
+-- KEY_FUNCTION_NOT_PERMITTED rather than KEY_TYPE_INCONSISTENT.
+caseDeriveAllowedBeforeTypePin :: IO ()
+caseDeriveAllowedBeforeTypePin = do
+  m0 <- seedModel
+  st <- getSession m0
+  (m1, h) <- plantKey m0 st
+    (gateBaseAttrs ckoSecretKey ckkAes True
+      ++ [(AttrAllowedMechanisms, allowedList [hmacSha256Mech])])
+    gateMat
+  case planDerive defaultRules m1 st (MechanismId ckm_ECDH1_DERIVE) h gateEcdhFrame of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "excluded-list wrong-type code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("excluded-list wrong-type base must not plan: " ++ show other)

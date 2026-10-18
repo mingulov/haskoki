@@ -444,9 +444,14 @@ planDerive rules model st mech baseH blob
   | Just r <- ecdhRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      -- Key-type contradiction outranks parameter shape (the
-      -- Init-matrix ordering): the base resolves and must be EC
-      -- before params are examined.
+      -- Key-type and class contradictions outrank parameter
+      -- shape (the Init-matrix ordering): the base resolves and
+      -- must be a private EC key before params are examined.
+      -- The class arm is stricter than init's coherence check:
+      -- the agreement needs the private half, so a secret- or
+      -- public-class object with a matching key type (a row
+      -- stored before the creation gate) still refuses here,
+      -- with the same return code.
       Just (ecdhBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, mat)
@@ -454,6 +459,9 @@ planDerive rules model st mech baseH blob
           , Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkEcMontgomery) ->
               KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
                 "ECDH base key is not an EC or Montgomery key")
+          | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoPrivateKey) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "ECDH base key is not a private key")
           | not (ecdhParamsValid r ecdhBlob) -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
               "ECDH mechanism parameters rejected by the recipe")
           | rhCofactor r && isMontgomery ost -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
@@ -475,16 +483,20 @@ planDerive rules model st mech baseH blob
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
       -- Same ordering as ECDH: the base resolves and must carry
-      -- the row's key type (CKK_DH vs CKK_X9_42_DH) before params
-      -- are examined. The peer is bare bytes (no domain framing
-      -- to compare), so range membership is enforced by the
-      -- executing backend, which owns the prime.
+      -- the row's key type (CKK_DH vs CKK_X9_42_DH) on a private
+      -- object before params are examined. The peer is bare
+      -- bytes (no domain framing to compare), so range
+      -- membership is enforced by the executing backend, which
+      -- owns the prime.
       Just (dhBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, mat)
           | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong (dhKeyType r)) ->
               KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
                 "DH base key type mismatch for the mechanism row")
+          | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoPrivateKey) ->
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
+                "DH base key is not a private key")
           | not (dhParamsValid r dhBlob) -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
               "DH mechanism parameters rejected by the recipe")
           | otherwise -> case decodeDhParams dhBlob of
@@ -1279,8 +1291,20 @@ data LenDefault
 
 -- | Resolve the base key: known handle, session-visible, derive
 -- mark set, the derive mechanism in the allowed mechanisms,
--- stored material present. Shared by the HKDF and ECDH
--- constructions (identical denials, one implementation).
+-- stored material present. Shared by the derive families that
+-- resolve a marked base (identical denials, one
+-- implementation).
+--
+-- Refusal order: the handle resolves first, then session
+-- visibility (both deny @CKR_KEY_HANDLE_INVALID@), then the
+-- derive mark, then the allowed-mechanism list (both deny
+-- @CKR_KEY_FUNCTION_NOT_PERMITTED@), then stored material
+-- (@CKR_GENERAL_ERROR@), and only then the family key type and
+-- the object class (both deny @CKR_KEY_TYPE_INCONSISTENT@,
+-- decided by the family arm after this returns). A wrong-type
+-- base without the mark therefore answers
+-- @CKR_KEY_FUNCTION_NOT_PERMITTED@; operation init orders the
+-- same checks type, class, allowed list, usage.
 resolveBase
   :: Model -> SessionState -> MechanismId -> ExternalHandle
   -> Either KeyDeny (ObjectState, ByteString)

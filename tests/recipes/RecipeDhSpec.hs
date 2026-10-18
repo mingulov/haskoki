@@ -49,6 +49,7 @@ import Haskoki.Operation.KeyManagement
   , ckkEc
   , ckkGenericSecret
   , ckkX9_42Dh
+  , ckoPrivateKey
   , ckoSecretKey
   )
 import Haskoki.Recipe.Dh
@@ -230,7 +231,7 @@ mkBaseModel keyType mat canDerive = emptyModel
       , osRevision = Revision 1
       , osGeneration = Generation 1
       , osAttrs = Map.fromList
-          [ (AttrClass, ValULong ckoSecretKey)
+          [ (AttrClass, ValULong ckoPrivateKey)
           , (AttrKeyType, ValULong keyType)
           , (AttrPrivate, ValBool False)
           , (AttrDerive, ValBool canDerive)

@@ -52,6 +52,7 @@ import Haskoki.Operation.KeyManagement
   , ckkEc
   , ckkEcMontgomery
   , ckkGenericSecret
+  , ckoPrivateKey
   , ckoSecretKey
   )
 import Haskoki.Recipe.Ecdh
@@ -281,18 +282,25 @@ testSession = SessionState
   , ssOps = emptySessionOps
   }
 
+-- The base class follows the key type: generic-secret legs
+-- plant a secret-class object, agreement legs a private-class
+-- one, so a future class check on another family cannot trip on
+-- this fixture.
 mkBaseModel :: Word64 -> BS.ByteString -> Bool -> Model
 mkBaseModel keyType mat canDerive = emptyModel
   { mObjects = Map.fromList [(baseOid, ost)]
   , mHandles = Map.fromList [(baseHandle, HandleBinding baseOid (Generation 1))]
   }
   where
+    baseClass
+      | keyType == ckkGenericSecret = ckoSecretKey
+      | otherwise = ckoPrivateKey
     ost = ObjectState
       { osId = baseOid
       , osRevision = Revision 1
       , osGeneration = Generation 1
       , osAttrs = Map.fromList
-          [ (AttrClass, ValULong ckoSecretKey)
+          [ (AttrClass, ValULong baseClass)
           , (AttrKeyType, ValULong keyType)
           , (AttrPrivate, ValBool False)
           , (AttrDerive, ValBool canDerive)
