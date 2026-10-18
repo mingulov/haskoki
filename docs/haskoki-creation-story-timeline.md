@@ -1,8 +1,8 @@
 # Haskoki development timeline
 
 The project grew from a loadable module into a token people could try.
-This table follows the development work; it is not a list of separately
-published releases. The [changelog](../CHANGELOG.md) starts on September 20.
+This table follows the development work and the releases that followed
+it. The [changelog](../CHANGELOG.md) starts on September 20.
 The public repository begins with
 [the September 24 import](https://github.com/mingulov/haskoki/commit/2cd3f37).
 
@@ -21,7 +21,9 @@ The public repository begins with
 | October 4-6 | Demo, coverage publication, checker profiles, and proxy qualification | Prepared repeatable examples and recorded the remaining differences. |
 | October 7-8 | Security fixes, dependency and CI checks, release packaging | Reduced the demo's full-checker findings from 27 to 22 and tested the artifacts. |
 | October 9 | First tagged release (not announced), v0.3.0.0 | Published the native bundle, source archive, checksums, reports, and Docker image. |
-| v0.3.1.0 preparation | Shorter onboarding, a prepared shell, pkcs11-tool examples, and p11-kit remoting | Makes a first demo easier to run and understand; publication is a separate step. |
+| October 12 | v0.3.1.0: shorter onboarding, a prepared shell, client examples, and a local p11-kit demo | Made a first demo easier to run and understand. |
+| October 15 | v0.4.0.0: token provisioning lifecycle, stricter request checks, and refreshed guides | Put PIN setup and change on durable storage with end-to-end coverage. |
+| v0.5.0.0 preparation | Attribute-sensitivity model, storage schema 3 with a migrate-once upgrade, and a 61-leg client portfolio | Being prepared as the first public release. |
 
 The [coverage](coverage.md) and [results](release-results.md) pages give
 current counts and limitations. The

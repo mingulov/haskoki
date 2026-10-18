@@ -8,8 +8,12 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   as PKCS#11 specifies; set it explicitly to keep deriving.
   `CKM_EXTRACT_KEY_FROM_KEY` and shortening `CKM_CONCATENATE_*` /
   `CKM_XOR_BASE_AND_DATA` derives also need `CKA_SENSITIVE=false`
-  and `CKA_EXTRACTABLE=true`, and both refusals answer
-  `CKR_KEY_FUNCTION_NOT_PERMITTED`.
+  and `CKA_EXTRACTABLE=true`. `CKM_EXTRACT_KEY_FROM_KEY` and
+  short-data XOR on a sealed base answer the same
+  `CKR_KEY_FUNCTION_NOT_PERMITTED` as a missing `CKA_DERIVE`, so the
+  code alone does not say which rule refused. A shortened
+  CONCATENATE or XOR child from a sealed base fails with
+  `CKR_TEMPLATE_INCONSISTENT`.
 - `CKA_DERIVE` now reads `CK_FALSE` on created, unwrapped and
   derived keys and on public keys stored by 0.4.0.0, instead of
   `CKR_ATTRIBUTE_TYPE_INVALID`; enforcement is unchanged.
@@ -133,6 +137,10 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   objects by effective value, so a key stored without
   `CKA_EXTRACTABLE` matches `CKA_EXTRACTABLE=false`. In 0.4.0.0
   matching ran over the stored rows, so absent flags never matched.
+- `C_FindObjects` on a removed session answers
+  `CKR_SESSION_HANDLE_INVALID` instead of
+  `CKR_OPERATION_NOT_INITIALIZED`: the session check now runs before
+  the cursor lookup.
 - Public keys report no `CKA_ALWAYS_SENSITIVE` and no
   `CKA_NEVER_EXTRACTABLE`: reads fail with
   `CKR_ATTRIBUTE_TYPE_INVALID`, since those are creation-history
@@ -241,11 +249,12 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   bytes; the 104-byte form still verifies. Every other served
   curve signs byte-identical output.
 - Non-empty RSA signatures of the wrong length now fail with
-  `CKR_SIGNATURE_LEN_RANGE`: shorter-than-modulus signatures on the
-  raw PKCS#1 v1.5 (`CKM_RSA_PKCS`), PSS, X9.31 and X.509 rows used to
-  verify, since the raw RSA decryption underneath accepted them,
-  while every other wrong-length RSA signature used to report
-  `CKR_SIGNATURE_INVALID`. Non-empty signatures whose length alone
+  `CKR_SIGNATURE_LEN_RANGE`: on the raw PKCS#1 v1.5 (`CKM_RSA_PKCS`),
+  PSS and X9.31 rows a valid signature with its leading zero bytes
+  stripped used to verify, since 0.4.0.0 passed the short input to
+  the raw RSA operation; `CKM_RSA_X_509` already refused any wrong
+  length, with `CKR_GENERAL_ERROR`; every other wrong-length RSA
+  signature reported `CKR_SIGNATURE_INVALID`. Non-empty signatures whose length alone
   disproves them in the remaining families now fail with
   `CKR_SIGNATURE_LEN_RANGE` instead of `CKR_SIGNATURE_INVALID`:
   raw DSA at twice the subprime width, EdDSA, ML-DSA and SLH-DSA at
@@ -260,9 +269,10 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   directory. Set `[trace] enabled = true` to keep writing traces.
 - `CKM_EXTRACT_KEY_FROM_KEY` over a sealed base, and
   `CKM_XOR_BASE_AND_DATA` with data shorter than a sealed base, fail
-  with `CKR_KEY_FUNCTION_NOT_PERMITTED`; a child length below the
-  natural width, or a child type outside the allow-list, fails with
-  `CKR_TEMPLATE_INCONSISTENT` (see Security).
+  with `CKR_KEY_FUNCTION_NOT_PERMITTED`; from a sealed input, a child
+  length below the natural width, or a child type outside the
+  allow-list, fails with `CKR_TEMPLATE_INCONSISTENT` (see
+  Security). Unsealed inputs keep every row.
 - `CKA_ALLOWED_MECHANISMS` is enforced on derive bases and auxiliary
   keys, on wrapping and unwrapping keys, and on KEM keys, failing
   with `CKR_KEY_FUNCTION_NOT_PERMITTED` outside the listed mechanisms
@@ -276,6 +286,7 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   `CKR_KEY_FUNCTION_NOT_PERMITTED`, since generated keys carry
   `CKA_DERIVE=false` and the derive mark is checked before the key
   type; in 0.4.0.0 it answered `CKR_KEY_TYPE_INCONSISTENT`.
+- The C library version is now {0, 5}.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and
@@ -351,8 +362,12 @@ record: symbol separation, sanitizer runs, evidence limits) and
   `CKA_DERIVE=true` explicitly in the template to keep deriving;
   `CKM_EXTRACT_KEY_FROM_KEY` and shortening `CKM_CONCATENATE_*` /
   `CKM_XOR_BASE_AND_DATA` derives also need `CKA_SENSITIVE=false`
-  and `CKA_EXTRACTABLE=true` on the base (both refusals answer
-  `CKR_KEY_FUNCTION_NOT_PERMITTED`).
+  and `CKA_EXTRACTABLE=true` on the base. `CKM_EXTRACT_KEY_FROM_KEY`
+  and short-data XOR on a sealed base answer the same
+  `CKR_KEY_FUNCTION_NOT_PERMITTED` as a missing `CKA_DERIVE`, so the
+  code alone does not say which rule refused. A shortened
+  CONCATENATE or XOR child from a sealed base fails with
+  `CKR_TEMPLATE_INCONSISTENT`.
   Imported, unwrapped and derived keys keep their derive enforcement
   (an omitted mark already denied derivation there; they now read
   `CK_FALSE`, see above); pub-from-priv outputs
@@ -556,8 +571,9 @@ record: symbol separation, sanitizer runs, evidence limits) and
   over and reset like open and migrate.
 - Non-empty asymmetric signatures of the wrong length are refused
   with `CKR_SIGNATURE_LEN_RANGE` instead of verified or reported as
-  invalid: raw ECDSA accepts any even non-zero length up to twice
-  the wider of the order and coordinate widths, raw DSA requires
+  invalid (or `CKR_GENERAL_ERROR` on `CKM_RSA_X_509`): raw ECDSA
+  accepts any even non-zero length up to twice the wider of the
+  order and coordinate widths, raw DSA requires
   exactly twice the subprime width, ML-DSA, SLH-DSA and EdDSA
   require their fixed widths, and RSA requires the modulus width.
   Right-length bad signatures still fail with
@@ -754,8 +770,9 @@ record: symbol separation, sanitizer runs, evidence limits) and
 
 ## [0.3.0.0] - 2026-10-09
 
-First public release: a native Linux x86-64 bundle, verified source
-archive, test reports, checksums, release manifest, and Docker demo image.
+First tagged release (not announced): a native Linux x86-64 bundle,
+verified source archive, test reports, checksums, release manifest,
+and Docker demo image.
 See the [release notes](docs/release-notes-0.3.0.0.md) and
 [measured results](docs/release-results.md).
 
@@ -784,7 +801,7 @@ Development leading to this release included:
 
 ## Earlier development
 
-These were development milestones, before the first public release:
+These were development milestones, before the first tagged release:
 
 - **September 20, 2026:** first C-loadable Haskell module, function-table
   layouts, and a small SHA-256 path.

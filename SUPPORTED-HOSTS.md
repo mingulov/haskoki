@@ -140,7 +140,8 @@ presence.
 - `haskoki-ctl scenario run` interprets scenarios against an owned
   in-memory model; it never controls another live process.
 - Trace files: tracing is off by default; `[trace] enabled = true`
-  turns it on, writing one JSON record per control-plane call to
+  turns it on, writing one JSON record per successful control-plane
+  command to
   `./haskoki-<pid>.jsonl` in the host process's working directory,
   or the configured path (`HASKOKI_TRACE` overrides the path only;
   it does not enable tracing). Events append without rotation

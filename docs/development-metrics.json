@@ -1,5 +1,5 @@
 {
-  "schema": "haskoki/development-metrics/v2",
+  "schema": "haskoki/development-metrics/v3",
   "status": "Dated development usage from individual model calls; not a bill or lifetime project total",
   "counted_on_utc": "2026-10-11",
   "window": {
@@ -21,7 +21,8 @@
     "output_tokens": "Includes reasoning output.",
     "reasoning_tokens": "Subset of output, never added again.",
     "total_tokens": "input_tokens + output_tokens",
-    "calls": "Individual recorded model responses, including failed requests, retries, planning, implementation, and review."
+    "calls": "Individual recorded model responses, including failed requests, retries, planning, implementation, and review.",
+    "claude_input_tokens": "Claude logs report input excluding cache reads and writes, so the reported input_tokens for Claude rows is raw input plus cache_read plus cache_write; cached_tokens is the cache_read part and cache_write_tokens the cache_write part, and total_tokens is that input plus output_tokens, the same as for every harness."
   },
   "inventory": {
     "muse_bound_session_files": 345,
@@ -335,5 +336,511 @@
       "uncached_input_tokens": 36126675
     },
     "warnings": []
+  },
+  "cutoff_exclusive": "2026-10-18T13:30:00+03:00",
+  "cumulative_window": {
+    "start_inclusive": "2026-09-20T00:00:00+03:00",
+    "end_exclusive": "2026-10-18T13:30:00+03:00",
+    "description": "September 20 through October 18 13:30 in UTC+03:00; covers the development window plus the three later phases below"
+  },
+  "later_phases": [
+    {
+      "phase": "v0.3.0.0 publication and public docs",
+      "start_inclusive": "2026-10-09T00:00:00+03:00",
+      "end_exclusive": "2026-10-12T04:31:19+03:00",
+      "description": "October 9 through October 12 up to the v0.3.1.0 tag, in UTC+03:00",
+      "by_harness": {
+        "Muse Code": {
+          "calls": 94,
+          "input_tokens": 13276695,
+          "output_tokens": 76214,
+          "cached_tokens": 12199000,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 39359,
+          "total_tokens": 13352909
+        },
+        "Codex": {
+          "calls": 1643,
+          "input_tokens": 190296283,
+          "output_tokens": 1020566,
+          "cached_tokens": 185157376,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 446108,
+          "total_tokens": 191316849
+        }
+      },
+      "by_model": [
+        {
+          "model": "gpt-6-astra",
+          "harness": "Codex",
+          "calls": 670,
+          "input_tokens": 81605906,
+          "output_tokens": 381288,
+          "cached_tokens": 79693312,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 171324,
+          "total_tokens": 81987194
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "harness": "Codex",
+          "calls": 973,
+          "input_tokens": 108690377,
+          "output_tokens": 639278,
+          "cached_tokens": 105464064,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 274784,
+          "total_tokens": 109329655
+        },
+        {
+          "model": "muse-spark-1.3-contributor",
+          "harness": "Muse Code",
+          "calls": 94,
+          "input_tokens": 13276695,
+          "output_tokens": 76214,
+          "cached_tokens": 12199000,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 39359,
+          "total_tokens": 13352909
+        }
+      ],
+      "muse_by_session_kind": {
+        "root": {
+          "calls": 94,
+          "input_tokens": 13276695,
+          "output_tokens": 76214,
+          "cached_tokens": 12199000,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 39359,
+          "total_tokens": 13352909
+        },
+        "child": {
+          "calls": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "total_tokens": 0
+        }
+      },
+      "totals": {
+        "calls": 1737,
+        "input_tokens": 203572978,
+        "output_tokens": 1096780,
+        "cached_tokens": 197356376,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 485467,
+        "total_tokens": 204669758
+      }
+    },
+    {
+      "phase": "v0.4.0.0",
+      "start_inclusive": "2026-10-12T04:31:19+03:00",
+      "end_exclusive": "2026-10-15T18:03:23+03:00",
+      "description": "From the v0.3.1.0 tag through October 15 up to the v0.4.0.0 tag, in UTC+03:00",
+      "by_harness": {
+        "Muse Code": {
+          "calls": 1633,
+          "input_tokens": 391852285,
+          "output_tokens": 986359,
+          "cached_tokens": 376184315,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 510273,
+          "total_tokens": 392838644
+        },
+        "Codex": {
+          "calls": 4042,
+          "input_tokens": 401671479,
+          "output_tokens": 2900211,
+          "cached_tokens": 375411200,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 1253278,
+          "total_tokens": 404571690
+        },
+        "Claude": {
+          "calls": 2415,
+          "input_tokens": 365807111,
+          "output_tokens": 2087556,
+          "cached_tokens": 354215405,
+          "cache_write_tokens": 11586702,
+          "reasoning_tokens": 716934,
+          "total_tokens": 367894667
+        }
+      },
+      "by_model": [
+        {
+          "model": "claude-opus-5-5",
+          "harness": "Claude",
+          "calls": 1840,
+          "input_tokens": 319067271,
+          "output_tokens": 1593265,
+          "cached_tokens": 310485158,
+          "cache_write_tokens": 8578265,
+          "reasoning_tokens": 612667,
+          "total_tokens": 320660536
+        },
+        {
+          "model": "claude-sonnet-5-5",
+          "harness": "Claude",
+          "calls": 575,
+          "input_tokens": 46739840,
+          "output_tokens": 494291,
+          "cached_tokens": 43730247,
+          "cache_write_tokens": 3008437,
+          "reasoning_tokens": 104267,
+          "total_tokens": 47234131
+        },
+        {
+          "model": "other",
+          "harness": "Codex",
+          "calls": 253,
+          "input_tokens": 30078759,
+          "output_tokens": 159761,
+          "cached_tokens": 28551808,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 56461,
+          "total_tokens": 30238520
+        },
+        {
+          "model": "gpt-6-astra",
+          "harness": "Codex",
+          "calls": 788,
+          "input_tokens": 79553711,
+          "output_tokens": 436633,
+          "cached_tokens": 76319360,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 67795,
+          "total_tokens": 79990344
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "harness": "Codex",
+          "calls": 3001,
+          "input_tokens": 292039009,
+          "output_tokens": 2303817,
+          "cached_tokens": 270540032,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 1129022,
+          "total_tokens": 294342826
+        },
+        {
+          "model": "muse-spark-1.3-contributor",
+          "harness": "Muse Code",
+          "calls": 1633,
+          "input_tokens": 391852285,
+          "output_tokens": 986359,
+          "cached_tokens": 376184315,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 510273,
+          "total_tokens": 392838644
+        }
+      ],
+      "muse_by_session_kind": {
+        "root": {
+          "calls": 1152,
+          "input_tokens": 327806185,
+          "output_tokens": 653995,
+          "cached_tokens": 313655602,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 336932,
+          "total_tokens": 328460180
+        },
+        "child": {
+          "calls": 481,
+          "input_tokens": 64046100,
+          "output_tokens": 332364,
+          "cached_tokens": 62528713,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 173341,
+          "total_tokens": 64378464
+        }
+      },
+      "totals": {
+        "calls": 8090,
+        "input_tokens": 1159330875,
+        "output_tokens": 5974126,
+        "cached_tokens": 1105810920,
+        "cache_write_tokens": 11586702,
+        "reasoning_tokens": 2480485,
+        "total_tokens": 1165305001
+      }
+    },
+    {
+      "phase": "v0.5.0.0 preparation",
+      "start_inclusive": "2026-10-15T18:03:23+03:00",
+      "end_exclusive": "2026-10-18T13:30:00+03:00",
+      "description": "From the v0.4.0.0 tag through the October 18 cut-off, in UTC+03:00",
+      "by_harness": {
+        "Muse Code": {
+          "calls": 18701,
+          "input_tokens": 3382949560,
+          "output_tokens": 11878886,
+          "cached_tokens": 3318276149,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 6531510,
+          "total_tokens": 3394828446
+        },
+        "Claude": {
+          "calls": 10863,
+          "input_tokens": 1867368828,
+          "output_tokens": 8812919,
+          "cached_tokens": 1815465775,
+          "cache_write_tokens": 51880231,
+          "reasoning_tokens": 4151293,
+          "total_tokens": 1876181747
+        }
+      },
+      "by_model": [
+        {
+          "model": "<synthetic>",
+          "harness": "Claude",
+          "calls": 17,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "total_tokens": 0
+        },
+        {
+          "model": "claude-opus-5-5",
+          "harness": "Claude",
+          "calls": 9113,
+          "input_tokens": 1703448583,
+          "output_tokens": 7548165,
+          "cached_tokens": 1664933200,
+          "cache_write_tokens": 38496051,
+          "reasoning_tokens": 3747513,
+          "total_tokens": 1710996748
+        },
+        {
+          "model": "claude-sonnet-5-5",
+          "harness": "Claude",
+          "calls": 1733,
+          "input_tokens": 163920245,
+          "output_tokens": 1264754,
+          "cached_tokens": 150532575,
+          "cache_write_tokens": 13384180,
+          "reasoning_tokens": 403780,
+          "total_tokens": 165184999
+        },
+        {
+          "model": "muse-spark-1.3-contributor",
+          "harness": "Muse Code",
+          "calls": 18701,
+          "input_tokens": 3382949560,
+          "output_tokens": 11878886,
+          "cached_tokens": 3318276149,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 6531510,
+          "total_tokens": 3394828446
+        }
+      ],
+      "muse_by_session_kind": {
+        "root": {
+          "calls": 18701,
+          "input_tokens": 3382949560,
+          "output_tokens": 11878886,
+          "cached_tokens": 3318276149,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 6531510,
+          "total_tokens": 3394828446
+        },
+        "child": {
+          "calls": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "total_tokens": 0
+        }
+      },
+      "totals": {
+        "calls": 29564,
+        "input_tokens": 5250318388,
+        "output_tokens": 20691805,
+        "cached_tokens": 5133741924,
+        "cache_write_tokens": 51880231,
+        "reasoning_tokens": 10682803,
+        "total_tokens": 5271010193
+      }
+    }
+  ],
+  "cumulative": {
+    "by_harness": {
+      "Muse Code": {
+        "calls": 83838,
+        "input_tokens": 16526589257,
+        "output_tokens": 47155398,
+        "cached_tokens": 16205433167,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 22694728,
+        "total_tokens": 16573744655
+      },
+      "Codex": {
+        "calls": 9733,
+        "input_tokens": 1050861936,
+        "output_tokens": 8565931,
+        "cached_tokens": 986660352,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 3820388,
+        "total_tokens": 1059427867
+      },
+      "Claude": {
+        "calls": 13278,
+        "input_tokens": 2233175939,
+        "output_tokens": 10900475,
+        "cached_tokens": 2169681180,
+        "cache_write_tokens": 63466933,
+        "reasoning_tokens": 4868227,
+        "total_tokens": 2244076414
+      }
+    },
+    "by_model": [
+      {
+        "model": "muse-spark-1.3-contributor",
+        "harness": "Muse Code",
+        "input_tokens": 16526589257,
+        "cached_tokens": 16205433167,
+        "cache_write_tokens": 0,
+        "output_tokens": 47155398,
+        "reasoning_tokens": 22694728,
+        "calls": 83838,
+        "total_tokens": 16573744655
+      },
+      {
+        "model": "gpt-6-astra",
+        "harness": "Codex",
+        "input_tokens": 322469338,
+        "cached_tokens": 310594944,
+        "cache_write_tokens": 0,
+        "output_tokens": 2239839,
+        "reasoning_tokens": 726706,
+        "calls": 2825,
+        "total_tokens": 324709177
+      },
+      {
+        "model": "gpt-6-sol",
+        "harness": "Codex",
+        "input_tokens": 7708906,
+        "cached_tokens": 7537024,
+        "cache_write_tokens": 0,
+        "output_tokens": 45791,
+        "reasoning_tokens": 28872,
+        "calls": 92,
+        "total_tokens": 7754697
+      },
+      {
+        "model": "gpt-6.1-sol",
+        "harness": "Codex",
+        "input_tokens": 690604933,
+        "cached_tokens": 639976576,
+        "cache_write_tokens": 0,
+        "output_tokens": 6120540,
+        "reasoning_tokens": 3008349,
+        "calls": 6563,
+        "total_tokens": 696725473
+      },
+      {
+        "model": "other",
+        "harness": "Codex",
+        "input_tokens": 30078759,
+        "cached_tokens": 28551808,
+        "cache_write_tokens": 0,
+        "output_tokens": 159761,
+        "reasoning_tokens": 56461,
+        "calls": 253,
+        "total_tokens": 30238520
+      },
+      {
+        "model": "claude-opus-5-5",
+        "harness": "Claude",
+        "input_tokens": 2022515854,
+        "cached_tokens": 1975418358,
+        "cache_write_tokens": 47074316,
+        "output_tokens": 9141430,
+        "reasoning_tokens": 4360180,
+        "calls": 10953,
+        "total_tokens": 2031657284
+      },
+      {
+        "model": "claude-sonnet-5-5",
+        "harness": "Claude",
+        "input_tokens": 210660085,
+        "cached_tokens": 194262822,
+        "cache_write_tokens": 16392617,
+        "output_tokens": 1759045,
+        "reasoning_tokens": 508047,
+        "calls": 2308,
+        "total_tokens": 212419130
+      },
+      {
+        "model": "<synthetic>",
+        "harness": "Claude",
+        "input_tokens": 0,
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "calls": 17,
+        "total_tokens": 0
+      }
+    ],
+    "muse_by_session_kind": {
+      "root": {
+        "calls": 58942,
+        "input_tokens": 12698331958,
+        "output_tokens": 29021973,
+        "cached_tokens": 12449318543,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 13395436,
+        "total_tokens": 12727353931
+      },
+      "child": {
+        "calls": 24896,
+        "input_tokens": 3828257299,
+        "output_tokens": 18133425,
+        "cached_tokens": 3756114624,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 9299292,
+        "total_tokens": 3846390724
+      }
+    },
+    "totals": {
+      "calls": 106849,
+      "input_tokens": 19810627132,
+      "cached_tokens": 19361774699,
+      "cache_write_tokens": 63466933,
+      "output_tokens": 66621804,
+      "reasoning_tokens": 31383343,
+      "total_tokens": 19877248936,
+      "uncached_input_tokens": 448852433
+    }
+  },
+  "cumulative_inventory": {
+    "muse_sessions": 492,
+    "codex_contributing_sessions": 204,
+    "claude_contributing_sessions": 50,
+    "muse_root_calls": 58942,
+    "muse_child_calls": 24896,
+    "note": "Session counts come from the cumulative tool runs; one session can hold calls in several phases, so per-phase session counts do not add up to these."
+  },
+  "claude_counting_method": {
+    "input_rule": "Reported Claude input_tokens is raw input plus cache_read plus cache_write, because Claude logs report input excluding cache; cached_tokens is the cache_read part.",
+    "dedup": "One assistant message id counts once across all log files; 24,690 workspace-bound records in the cumulative window collapse to 13,278 counted calls, and no record lacks an id.",
+    "final_snapshot": "Repeated records of one message carry growing output token counts, so the counted usage per message is the final record, not the first: output 10,900,475 instead of 3,153,701.",
+    "synthetic": "17 records with model <synthetic> are client-side rate-limit placeholders with zero usage; they count as calls with zero tokens."
+  },
+  "codex_attribution_note": "One development-window usage record precedes its turn's turn_context in file order, so the current tool labels it model unknown; its turn context and every sibling record identify gpt-6.1-sol, and the development per-model counts keep that attribution. No later phase holds such a record.",
+  "extended_validation": {
+    "phase_sums_match_cumulative": true,
+    "cumulative_matches_independent_run": true,
+    "claude_final_snapshot_equals_last_record": true,
+    "claude_no_untimed_no_idless_records": true,
+    "claude_no_cross_phase_messages": true,
+    "codex_no_duplicate_response_ids": true,
+    "cached_input_and_reasoning_nesting_checked": true
   }
 }

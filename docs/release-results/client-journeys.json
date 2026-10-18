@@ -3,16 +3,16 @@
   "portfolio": {
     "run": "v050-prep/portfolio",
     "source": {
-      "sha": "f22687fb24eedfbf09b0b3188a399ac1e64223cb",
+      "sha": "8ff2e92a277d4f20e56bb84f0b5277759100d2a8",
       "dirty": false,
       "dirty_basis": "caller"
     },
     "artifact": {
       "kind": "bundle",
       "haskoki_version": "0.5.0.0",
-      "bundle_sha256": "013a2df0927253077cde6c8ae08465ae1630a2e72547c82fdc4b3007edf5672a",
+      "bundle_sha256": "5bd01f55ef012a4f1d022bbeb9ae08f5bbbbe34acc0bda032a14b3f799155658",
       "image_id": null,
-      "toolchain_record_sha256": "ca8513a53ca8c7c69f302c75f9c7ef2a68fcf8ae6b71c327b4ca04b589096415"
+      "toolchain_record_sha256": "2435049015259edbf6f5132c010a5ae49ee0ceaa98636b40730046c38e23707a"
     },
     "aggregate": "pass",
     "required": 61,
@@ -22,14 +22,14 @@
       "module",
       "verifier"
     ],
-    "module_sha256": "22b71f2d76ba8d5a59a1c10b14bbf79abc175b983b6ab0a2a6fc6768f2cb325e",
+    "module_sha256": "1b4f520d5d7ad95b6f8be0da3d7064ca7fe14746de80c3e7466f6c44a90fadd5",
     "module_sha256_stable": true,
     "first_verified_signature": {
       "leg": "opensc-sign",
-      "seconds": 2.290653145,
+      "seconds": 2.303672526,
       "t0_basis": "bundle-extract"
     },
-    "client_setup_seconds": 60.0,
+    "client_setup_seconds": 41.0,
     "client_setup_seconds_basis": "caller",
     "versions": {
       "opensc": {
@@ -57,7 +57,7 @@
   "image": {
     "run": "v050-prep/image",
     "source": {
-      "sha": "f22687fb24eedfbf09b0b3188a399ac1e64223cb",
+      "sha": "8ff2e92a277d4f20e56bb84f0b5277759100d2a8",
       "dirty": false,
       "dirty_basis": "caller"
     },
@@ -65,8 +65,8 @@
       "kind": "image",
       "haskoki_version": "0.5.0.0",
       "bundle_sha256": null,
-      "image_id": "sha256:5472a767e35bb4661be42f0416960768e235482d8be943b747db44aedb31451f",
-      "toolchain_record_sha256": "ca8513a53ca8c7c69f302c75f9c7ef2a68fcf8ae6b71c327b4ca04b589096415"
+      "image_id": "sha256:67fc08fc38067dc172d39b52a2da31308481894f8c6b5871b3d4f8c73a73bec5",
+      "toolchain_record_sha256": "2435049015259edbf6f5132c010a5ae49ee0ceaa98636b40730046c38e23707a"
     },
     "aggregate": "pass",
     "required": 28,
@@ -76,11 +76,11 @@
       "module",
       "verifier"
     ],
-    "module_sha256": "22b71f2d76ba8d5a59a1c10b14bbf79abc175b983b6ab0a2a6fc6768f2cb325e",
+    "module_sha256": "1b4f520d5d7ad95b6f8be0da3d7064ca7fe14746de80c3e7466f6c44a90fadd5",
     "module_sha256_stable": true,
     "first_verified_signature": {
       "leg": "opensc-sign",
-      "seconds": 0.979462256,
+      "seconds": 1.03767932,
       "t0_basis": "module-phase-start"
     },
     "client_setup_seconds": null,

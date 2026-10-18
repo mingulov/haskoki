@@ -11,20 +11,20 @@ and the onboarding docs checked against the artifacts named in section 5.
 
 | Component | Visibility | Modules | Notes |
 |---|---|---:|---|
-| Main library, `exposed-modules` | public | 32 | `haskoki.cabal:164-196` |
-| Main library, `other-modules` | private | 2 | `Haskoki.FFI.OpenSSL4.Raw` (provider-only bindings) and `Haskoki.Runtime.Attach` (store-owned detached claim authority) (`haskoki.cabal:200-202`) |
+| Main library, `exposed-modules` | public | 30 | `haskoki.cabal:160-190` |
+| Main library, `other-modules` | private | 1 | `Haskoki.FFI.OpenSSL4.Raw` (provider-only bindings) (`haskoki.cabal:192-193`) |
 | `haskoki-core` | `private` component | 67 | `haskoki.cabal:78-156`; module list at `:81-148`; not the package public API |
-| Foreign library `haskoki`, `other-modules` | bundled, not imported | 28 | `haskoki.cabal:260-288`; compiled into `libhaskoki.so` |
+| Foreign library `haskoki`, `other-modules` | bundled, not imported | 25 | `haskoki.cabal:244-269`; compiled into `libhaskoki.so` |
 
-Main-library exposed set (32): `Haskoki`, `Haskoki.PKCS11`,
+Main-library exposed set (30): `Haskoki`, `Haskoki.PKCS11`,
 `Haskoki.Engine.Backend`, `Haskoki.Engine.Driver`, `Haskoki.Engine.OpenSSL4`,
-`Haskoki.Engine.Synthetic`, `Haskoki.Ctl`, `Haskoki.Ctl.Store`,
+`Haskoki.Engine.Synthetic`, `Haskoki.Ctl`,
 `Haskoki.Runtime`, `Haskoki.Runtime.Async`, `Haskoki.Runtime.Catalog`,
 `Haskoki.Runtime.Config`, `Haskoki.Runtime.Control`,
 `Haskoki.Runtime.Detached`, `Haskoki.Runtime.Events`,
 `Haskoki.Runtime.Lifecycle`, `Haskoki.Runtime.SlotEvents`,
 `Haskoki.Runtime.Storage`, `Haskoki.Runtime.Storage.Memory`,
-`Haskoki.Runtime.Storage.Preflight`, `Haskoki.Runtime.Storage.SQLite`,
+`Haskoki.Runtime.Storage.SQLite`,
 `Haskoki.Runtime.Trace`, `Haskoki.FFI.Async`, `Haskoki.FFI.Decode`,
 `Haskoki.FFI.Encode`, `Haskoki.FFI.Exports`, `Haskoki.FFI.Instance`,
 `Haskoki.FFI.KeyOutputs`, `Haskoki.FFI.MessageParams`,
@@ -34,7 +34,7 @@ Library/flib divergence (for H3/V5; unexplained in-tree):
 
 | Fact | Detail |
 |---|---|
-| 7 library-exposed modules absent from the flib | `Haskoki`, `Haskoki.PKCS11`, `Haskoki.Ctl`, `Haskoki.Ctl.Store`, `Haskoki.Engine.Synthetic`, `Haskoki.FFI.KeyOutputs`, `Haskoki.Runtime` (`Haskoki.FFI.MessageParams` and `Haskoki.Runtime.Storage.Preflight` are bundled in the flib) |
+| 7 library-exposed modules absent from the flib | `Haskoki`, `Haskoki.PKCS11`, `Haskoki.Ctl`, `Haskoki.Engine.Synthetic`, `Haskoki.FFI.KeyOutputs`, `Haskoki.FFI.MessageParams`, `Haskoki.Runtime` |
 | `Engine.Synthetic` omission is consistent | `src/Haskoki/Engine/Driver.hs` imports `Haskoki.Engine.Backend` only, never `Synthetic`; synthetic stays test-only |
 | 1 flib-only module, absent from the library | `Haskoki.FFI.Types` (`ffi/Haskoki/FFI/Types.hsc:16`); zero in-tree `import` sites found by search over `src/`, `ffi/`, `app/`, `tests/`, `test/` |
 | `Haskoki` re-exports a core module | `src/Haskoki.hs:12-20` re-exports `Haskoki.Types` (a `haskoki-core` module) alongside `Haskoki.PKCS11` |
@@ -146,7 +146,7 @@ is fixed reason-side.
 
 | Doc claim | Artifact | Result |
 |---|---|---|
-| README: demo image `ghcr.io/mingulov/haskoki-demo:v0.3.0.0`, `demo-ok: 8/8` | `docker/haskoki-demo:479` marker; `scripts/test-demo-image.sh:244`, `scripts/test-demo-onboarding.sh:25` gates | holds |
+| README: demo image `ghcr.io/mingulov/haskoki-demo:v0.4.0.0`, `demo-ok: 8/8` | `README.md:24` pin; `docker/haskoki-demo:479` marker; `scripts/test-demo-image.sh:244`, `scripts/test-demo-onboarding.sh:25` gates | holds |
 | README: checkout prepares v0.5.0.0 | `haskoki.cabal:3` reads `version: 0.5.0.0` | holds |
 | README + cabal description: 316 tested of 464 catalog mechanisms | `docs/coverage.md:5,19-21` (464 rows; behavior/real/synthetic 316 tested) | holds |
 | README: full profile 21 findings on the v0.5.0.0 candidate image, the published v0.4.0.0 image reports 22; smoke expects zero | `docs/release-results.md` "What the findings mean" (21 after the v0.5 re-freeze and the derive-default delta, re-measured on the 0.5.0.0 candidate); the `:11-14` table and `summary.json` are the dated October baseline (22), which the published v0.4.0.0 image's classifier still asserts (83 exclusions, 22 shared) | holds |

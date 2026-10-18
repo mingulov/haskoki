@@ -62,20 +62,27 @@ that view. It is optional and runs separately from the demo image.
 
 ## Making it useful to someone else
 
-Muse Code and Codex agents helped implement and review the project.
-Model tests, properties, C clients, and external checks exercised different
-parts of it. Packaging became part of the work too: a relocatable native
-bundle, a source archive built outside the checkout, and a Docker image
-with the runtime and client tools included. The first tagged release,
+Muse Code, Codex, and Claude agents helped implement and review the
+project. Model tests, properties, C clients, and external checks exercised
+different parts of it. Packaging became part of the work too: a relocatable
+native bundle, a source archive built outside the checkout, and a Docker
+image with the runtime and client tools included. The first tagged release,
 [v0.3.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.3.0.0),
-was published on October 9 but never announced. v0.3.1.0 improves
-onboarding and hands-on examples.
+was published on October 9 but never announced.
 
-Recorded development calls through October 8 account for about **13.24
-billion input-plus-output tokens**; **97.9% of input was cached**, mostly
+v0.3.1.0 followed on October 12 with shorter onboarding, a prepared
+shell, and hands-on client examples. v0.4.0.0 followed on October 15
+with the token provisioning lifecycle, stricter request checks, and
+refreshed guides. v0.5.0.0 is being prepared as the first public release:
+new private and secret keys default to unextractable, storage moves to
+schema 3 with a migrate-once upgrade, and a 61-leg client portfolio
+exercises the release.
+
+Recorded calls through October 18, 2026, account for about **19.88
+billion input-plus-output tokens**; **97.7% of input was cached**, mostly
 repeated context reads. That is model usage, not generated-code volume,
 a bill, or personal working hours. The [usage account](haskoki-creation-story-costing.md)
-gives the model breakdown and later Codex usage.
+gives the model breakdown and the later phases.
 
 To see the result, [try the Docker demo](../README.md#try-it-with-docker)
 with disposable keys. Haskoki remains a demonstrator with unencrypted

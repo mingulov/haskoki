@@ -190,8 +190,11 @@ Mechanisms and errors:
 - Wrong-length signatures are refused with
   `CKR_SIGNATURE_LEN_RANGE`: RSA at the modulus width, raw DSA at
   twice the subprime width, EdDSA, ML-DSA and SLH-DSA at their fixed
-  widths, and raw ECDSA within its bound. Right-length bad signatures
-  still fail with `CKR_SIGNATURE_INVALID`.
+  widths, and raw ECDSA at even lengths up to its bound. Right-length
+  bad signatures still fail with `CKR_SIGNATURE_INVALID`. Some
+  encodings 0.4.0.0 verified are now refused: stripped DSA,
+  zero-padded ECDSA past the bound, and short `CKM_RSA_PKCS`, PSS
+  and X9.31 signatures.
 - DH derives keep leading zero bytes, so the shared secret is always
   the prime's byte width (in 0.4.0.0 about one derive in 256 lost a
   byte).
@@ -204,6 +207,13 @@ Operations:
   enabled = true`.
 - A stale store lock with no holder is taken over instead of refusing
   the store; a held lock still refuses.
+- Detached-job attachment claims are exclusive across detach contexts
+  on one store: the second join of a persistent id is refused with
+  `CKR_OPERATION_ACTIVE`. A join that observes a failed job answers
+  the failed code, and re-detaching a joined job retires the old id.
+- `haskoki-ctl store reset` refuses a live store even when its lock
+  file was removed by hand; a stale lock with no holder is taken over
+  like open and migrate.
 - Token labels and PINs containing non-ASCII characters are refused at
   config load.
 
@@ -236,7 +246,7 @@ This is a bounded release. These items are not claimed.
   process already running a GHC RTS keeps its own capability count.
   Hosts must not assume parallel throughput from a provider-started
   RTS; native work serializes.
-- **API gaps.** 93 of the 104 entries in the 3.2 table layout are
+- **API gaps.** 91 of the 104 entries in the 3.2 table layout are
   served. 11 refuse by design (`C_GetOperationState`,
   `C_SetOperationState`, `C_GetObjectSize`, `C_LoginUser`, the four
   `C_VerifySignature*` entries, `C_GetSessionValidationFlags`,

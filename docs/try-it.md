@@ -95,7 +95,8 @@ A session saved by an older image needs a one-time
 `haskoki-ctl store migrate` with the matching newer bundle before the
 newer image serves it (see [Upgrading a v0.4 token
 store](demo-walkthrough.md#upgrading-a-v04-token-store)); otherwise the
-open refuses with no slot listed.
+open refuses: `C_Initialize` answers `CKR_GENERAL_ERROR`, so no slot
+is listed. `haskoki-ctl store check` names the reason.
 
 The store contains disposable private keys in plaintext. Stop its clients
 before reusing it. Keep one key pair in this introductory exercise: some

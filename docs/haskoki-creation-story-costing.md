@@ -6,6 +6,9 @@ review, retries, and verification. From **September 20 through October 8,
 A token is a small chunk of text processed by a model; most input here was
 cached context read again during long sessions.
 
+Through **October 18, 2026, 13:30 (UTC+03:00)**, all recorded harnesses
+used **19.88 billion tokens** across **106,849 calls**.
+
 | Development measurement | Amount |
 | --- | ---: |
 | Input, including cached input | 13,197,404,891 |
@@ -15,24 +18,47 @@ cached context read again during long sessions.
 | Input plus output | 13,236,263,984 |
 | Model calls | 67,458 |
 
-## Models and later work
+## Cumulative usage and later work
 
-The development columns cover September 20-October 8 in UTC+03:00.
-The later columns contain **additional Codex usage after October 8**,
-counted on October 11 at 13:04 UTC. These periods do not overlap.
+The cumulative columns cover September 20 through October 18, 13:30 in
+UTC+03:00. The phase table splits the same calls into the development
+window and three later phases; the phases add up to the cumulative row.
 
-| Model | Development calls | Development tokens | Later Codex calls | Later Codex tokens |
+| Cumulative measurement | Amount |
+| --- | ---: |
+| Input, including cached input | 19,810,627,132 |
+| Input served from cache | 19,361,774,699 (97.7%) |
+| Input not served from cache | 448,852,433 |
+| Output, including reasoning | 66,621,804 |
+| Input plus output | 19,877,248,936 |
+| Model calls | 106,849 |
+
+| Phase | Muse Code calls / tokens | Codex calls / tokens | Claude calls / tokens | Phase tokens |
 | --- | ---: | ---: | ---: | ---: |
-| `muse-spark-1.3-contributor` (Muse Code) | 63,410 | 12.77B | - | - |
-| `gpt-6-astra` (Codex) | 1,367 | 162.73M | 663 | 81.72M |
-| `gpt-6-sol` (Codex) | 92 | 7.75M | 0 | 0 |
-| `gpt-6.1-sol` (Codex) | 2,589 | 293.05M | 345 | 37.38M |
+| Development (Sep 20-Oct 8) | 63,410 / 12.77B | 4,048 / 463.54M | - | 13.24B |
+| Publication and public docs (Oct 9-12) | 94 / 13.35M | 1,643 / 191.32M | - | 204.67M |
+| v0.4.0.0 (Oct 12-15) | 1,633 / 392.84M | 4,042 / 404.57M | 2,415 / 367.89M | 1.17B |
+| v0.5.0.0 preparation (Oct 15-18) | 18,701 / 3.39B | - | 10,863 / 1.88B | 5.27B |
 
-Codex accounts for **463.54M** tokens in the development period and
-**119.10M** in 1,008 later calls: **582,639,404 tokens across 5,056 calls**
-by the October 11 count. That cumulative Codex amount includes
-577,398,355 input tokens (541,271,680 cached) and 5,241,049 output tokens.
-Later Muse usage is not included in this snapshot.
+| Model | Calls | Tokens (input plus output) |
+| --- | ---: | ---: |
+| `muse-spark-1.3-contributor` (Muse Code) | 83,838 | 16.57B |
+| `gpt-6-astra` (Codex) | 2,825 | 324.71M |
+| `gpt-6-sol` (Codex) | 92 | 7.75M |
+| `gpt-6.1-sol` (Codex) | 6,563 | 696.73M |
+| Other Codex models | 253 | 30.24M |
+| `claude-opus-5-5` (Claude) | 10,953 | 2.03B |
+| `claude-sonnet-5-5` (Claude) | 2,308 | 212.42M |
+
+Muse Code did implementation work in every phase; Codex models planned
+and reviewed the earlier work; Claude took over orchestration and review
+in the v0.4.0.0 and v0.5.0.0 phases, with Opus handling orchestration
+and critical reviews and Sonnet ordinary reviews.
+
+Claude input here means raw input plus cache reads and cache writes, so
+input including cached input means the same for every harness.
+Seventeen further Claude records are client-side rate-limit placeholders
+with zero usage; they count as calls with zero tokens.
 
 ## Development stages
 

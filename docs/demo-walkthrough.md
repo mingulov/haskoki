@@ -60,6 +60,7 @@ Upgrade, backup and recovery in
 [operations-notes.md](operations-notes.md#upgrade-backup-and-recovery)):
 
 ```sh
+HASKOKI_BUNDLE="$PWD/dist-release/haskoki-0.5.0.0"  # candidate bundle until v0.5.0.0 is published
 mkdir -p /tmp/rehearsal /tmp/rehearsal/backups
 cp "$PWD/token.sqlite" /tmp/rehearsal/token.sqlite
 sed "s#^path = .*#path = \"/tmp/rehearsal/token.sqlite\"#" "$PWD/backend.toml" > /tmp/rehearsal/backend.toml

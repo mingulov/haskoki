@@ -894,7 +894,7 @@ like the store itself.
 
 Trace and store files. Tracing is off by default; `[trace]
 enabled = true` turns it on, and the provider then writes the
-trace file, one JSON record per control-plane call
+trace file, one JSON record per successful control-plane command
 (`./haskoki-<pid>.jsonl` in the host process's working
 directory, or the configured path; `HASKOKI_TRACE` overrides the
 path only and does not enable tracing; `{pid}` expansion,
