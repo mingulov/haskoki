@@ -37,6 +37,13 @@ echo "docker $*" >> "$FAKE_DOCKER_LOG"
 sub="$1"; shift
 case "$sub" in
   inspect)
+    case "$*" in
+      *haskoki-demo*)
+        if [ "${FAKE_DEMO_INSPECT_RC:-0}" -ne 0 ]; then
+          echo "fake docker: injected demo inspect failure" >&2
+          exit 1
+        fi;;
+    esac
     if [ "${FAKE_INSPECT_RC:-0}" -ne 0 ]; then
       echo "fake docker: injected inspect failure" >&2
       exit 1
@@ -130,6 +137,18 @@ touch "$FIXTURE_ROOT/onboarding-direct-run"
 exit 0
 """
 
+# Phase-aware demo-image stub: records the phase plus the freeze env the
+# runner threaded (image id for test phases, build tag for the build),
+# and fails the injected phase (FAKE_DEMO_FAIL_PHASE) with exit 3.
+STUB_DEMO_IMAGE = """#!/bin/sh
+echo "stub driver test-demo-image.sh ok (phase=${1-} image=${HASKOKI_DEMO_IMAGE:-unset} out=${HASKOKI_DEMO_TEST_OUT:-unset})"
+if [ "${1-}" = "${FAKE_DEMO_FAIL_PHASE:-__none__}" ]; then
+  echo "stub driver test-demo-image.sh injected failure for phase $1" >&2
+  exit 3
+fi
+exit 0
+"""
+
 
 class Fixture:
     """Temporary repo fixture running the real release-evidence.sh."""
@@ -164,7 +183,12 @@ class Fixture:
         for name in names:
             if name == "test-release-install.sh":
                 continue  # the fake above already owns this path
-            body = STUB_ONBOARDING if name == "test-demo-onboarding.sh" else STUB_DRIVER
+            if name == "test-demo-onboarding.sh":
+                body = STUB_ONBOARDING
+            elif name == "test-demo-image.sh":
+                body = STUB_DEMO_IMAGE
+            else:
+                body = STUB_DRIVER
             (self.root / "scripts" / name).write_text(body)
         if plant_stale:
             tree = self.root / "dist-release"
@@ -282,7 +306,13 @@ class ReleaseEvidenceTests(unittest.TestCase):
                          "install must not run after bundle failure")
         demo_log = fix.root / "evidence" / "test-demo-image.sh.log"
         self.assertTrue(demo_log.exists(), "independent host driver still runs")
-        self.assertIn("stub driver test-demo-image.sh ok", demo_log.read_text())
+        combined = demo_log.read_text()
+        for phase in ("build", "contracts", "full", "compare"):
+            self.assertIn(f"phase {phase}: rc=0", combined)
+            phase_log = fix.root / "evidence" / "demo-image" / f"{phase}.log"
+            self.assertTrue(phase_log.exists(), f"phase log still runs: {phase}")
+            self.assertIn(f"stub driver test-demo-image.sh ok (phase={phase} ",
+                          phase_log.read_text())
         loader_log = fix.root / "evidence" / "test-loader.sh.log"
         self.assertTrue(loader_log.exists(), "independent container drivers still run")
 
@@ -382,6 +412,107 @@ class ReleaseEvidenceTests(unittest.TestCase):
                          "runner must not execute the nested child standalone")
         docker_log = (fix.root / "docker.log").read_text()
         self.assertNotIn("scripts/test-demo-onboarding.sh", docker_log)
+
+    # The demo-image leg builds once, freezes the inspected image id,
+    # and runs the three test phases against it (the CI sharding,
+    # serialized): one manifest step, one combined log, per-phase logs
+    # and out dirs, each phase under its own 5400s guard.
+    def test_demo_image_runs_build_then_frozen_phases(self):
+        fix = self.make()
+        proc = fix.run_runner()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        ev = fix.root / "evidence"
+        combined = (ev / "test-demo-image.sh.log").read_text()
+        self.assertIn(f"image id: {FAKE_IMAGE_ID}", combined)
+        for phase in ("build", "contracts", "full", "compare"):
+            line = next(line for line in combined.splitlines()
+                        if line.startswith(f"phase {phase}: "))
+            self.assertIn("rc=0", line)
+            self.assertRegex(line, r"duration=\d+s")
+            self.assertIn(f"log={ev}/demo-image/{phase}.log", line)
+        build_log = (ev / "demo-image" / "build.log").read_text()
+        self.assertIn(f"(phase=build image=haskoki-demo:{VER} ", build_log)
+        self.assertIn(f"out={ev}/demo-image/build)", build_log)
+        for phase in ("contracts", "full", "compare"):
+            text = (ev / "demo-image" / f"{phase}.log").read_text()
+            self.assertIn(f"(phase={phase} image={FAKE_IMAGE_ID} ", text)
+            self.assertIn(f"out={ev}/demo-image/{phase})", text)
+        manifest = fix.manifest()
+        line = next(line for line in manifest.splitlines()
+                    if line.startswith("test-demo-image.sh "))
+        self.assertIn("PASS", line)
+        self.assertIn("rc=0", line)
+        for phase in ("build", "contracts", "full", "compare"):
+            self.assertIn(f"bash scripts/test-demo-image.sh {phase}", line)
+        self.assertIn(f"HASKOKI_DEMO_IMAGE={FAKE_IMAGE_ID}", line)
+        self.assertIn("timeout -s KILL 5400", line)
+
+    # A caller-provided build tag (the runbook's unique-tag convention)
+    # is what gets built and inspected; test phases still freeze to id.
+    def test_demo_image_honors_unique_build_tag(self):
+        tag = "haskoki-demo:unique-qual"
+        fix = self.make(env={"HASKOKI_DEMO_IMAGE": tag})
+        proc = fix.run_runner()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        ev = fix.root / "evidence"
+        build_log = (ev / "demo-image" / "build.log").read_text()
+        self.assertIn(f"(phase=build image={tag} ", build_log)
+        for phase in ("contracts", "full", "compare"):
+            text = (ev / "demo-image" / f"{phase}.log").read_text()
+            self.assertIn(f"image={FAKE_IMAGE_ID} ", text)
+
+    # A failing middle phase fails the step and later phases are not run.
+    def test_failing_middle_phase_fails_step_and_skips_later(self):
+        fix = self.make(env={"FAKE_DEMO_FAIL_PHASE": "full"})
+        proc = fix.run_runner()
+        self.assertNotEqual(proc.returncode, 0)
+        manifest = fix.manifest()
+        line = next(line for line in manifest.splitlines()
+                    if line.startswith("test-demo-image.sh "))
+        self.assertIn("MISS", line)
+        self.assertIn("rc=3", line)
+        for phase in ("build", "contracts", "full", "compare"):
+            self.assertIn(f"bash scripts/test-demo-image.sh {phase}", line)
+        ev = fix.root / "evidence"
+        combined = (ev / "test-demo-image.sh.log").read_text()
+        self.assertIn("phase build: rc=0", combined)
+        self.assertIn("phase contracts: rc=0", combined)
+        self.assertIn("phase full: rc=3", combined)
+        self.assertIn("phase compare: NOT RUN", combined)
+        self.assertFalse((ev / "demo-image" / "compare.log").exists(),
+                         "later phases are not run after a failure")
+        self.assertIn("pass: 18 miss: 1 blocked: 0", manifest)
+
+    # A failed build runs no test phase and resolves no image id.
+    def test_failing_build_phase_skips_tests_and_inspect(self):
+        fix = self.make(env={"FAKE_DEMO_FAIL_PHASE": "build"})
+        proc = fix.run_runner()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("test-demo-image.sh MISS", fix.manifest())
+        combined = (fix.root / "evidence" / "test-demo-image.sh.log").read_text()
+        self.assertIn("phase build: rc=3", combined)
+        for phase in ("contracts", "full", "compare"):
+            self.assertIn(f"phase {phase}: NOT RUN", combined)
+            self.assertFalse(
+                (fix.root / "evidence" / "demo-image" / f"{phase}.log").exists())
+        docker_log = (fix.root / "docker.log").read_text()
+        self.assertNotIn("haskoki-demo", docker_log,
+                         "no image id is resolved when the build fails")
+
+    # An unresolvable image id fails the step and runs no test phase.
+    def test_missing_demo_image_id_fails_step(self):
+        fix = self.make(env={"FAKE_DEMO_INSPECT_RC": "1"})
+        proc = fix.run_runner()
+        self.assertNotEqual(proc.returncode, 0)
+        manifest = fix.manifest()
+        self.assertIn("test-demo-image.sh MISS", manifest)
+        combined = (fix.root / "evidence" / "test-demo-image.sh.log").read_text()
+        self.assertIn("phase build: rc=0", combined)
+        self.assertIn("cannot resolve", combined)
+        for phase in ("contracts", "full", "compare"):
+            self.assertIn(f"phase {phase}: NOT RUN", combined)
+            self.assertFalse(
+                (fix.root / "evidence" / "demo-image" / f"{phase}.log").exists())
 
     # Install argument contract (real script, build-free: both cases fail
     # before any docker use).

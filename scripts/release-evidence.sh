@@ -25,10 +25,15 @@
 #     image). No default pathname, older archive or failed-build
 #     output can satisfy this prerequisite: the install leg never
 #     falls back to dist-release/*.tar.gz on its own;
-#   * scripts/test-demo-image.sh runs ON THE HOST (it rebuilds the
-#     demo image and drives the entrypoint lanes itself; measured
-#     wall ~85 min (staging + lanes), hence its own longer
-#     timeout below);
+#   * scripts/test-demo-image.sh runs ON THE HOST in four phases
+#     (build once, then contracts/full/compare against the frozen
+#     image id — the CI sharding, serialized): it rebuilds the demo
+#     image and drives the entrypoint lanes itself (measured serial
+#     wall 84-113 min on v0.5.0.0, so one shared 90 min guard fired
+#     after every leg passed). Each phase runs under its own
+#     `timeout -s KILL 5400` with its own out dir and log under
+#     $EVIDENCE_DIR/demo-image/<phase>, recorded as ONE manifest
+#     step whose log names every phase, exit, duration and log;
 #   * role=nested drivers (test-demo-onboarding.sh, under
 #     test-demo-image.sh) run ONLY inside their parent and are never
 #     executed standalone here, so the parent pipeline runs once.
@@ -186,6 +191,98 @@ record_blocked() {
 "
 }
 
+# DEMO-PHASES-BEGIN -- extractable block: the verification runbook
+# copies these two functions verbatim to run the demo-image leg
+# standalone against an evidence dir. Keep them free of record/fail
+# calls: results come back in DEMO_RC/DEMO_CMD/DEMO_LOG/DEMO_IMAGE_ID
+# so the caller records ONE manifest step.
+run_demo_phase() {
+  # $1=name $2=out-dir $3=log $4=image $5=driver-phase. Runs one
+  # demo-image phase under its own 5400s kill guard and appends one
+  # receipt line (exit, duration, log) to the combined DEMO_LOG.
+  # Sets DEMO_PHASE_RC to the phase exit status.
+  _DP_NAME="$1"; _DP_OUT="$2"; _DP_LOG="$3"; _DP_IMAGE="$4"; _DP_PHASE="$5"
+  if ! mkdir -p "$_DP_OUT"; then
+    echo "phase $_DP_NAME: cannot create $_DP_OUT" >>"$DEMO_LOG"
+    DEMO_PHASE_RC=1
+    return
+  fi
+  _DP_START=$(date +%s)
+  HASKOKI_DEMO_IMAGE="$_DP_IMAGE" HASKOKI_DEMO_TEST_OUT="$_DP_OUT" \
+    timeout -s KILL 5400 bash scripts/test-demo-image.sh "$_DP_PHASE" \
+    >"$_DP_LOG" 2>&1
+  DEMO_PHASE_RC=$?
+  _DP_DUR=$(($(date +%s) - _DP_START))
+  echo "phase $_DP_NAME: rc=$DEMO_PHASE_RC duration=${_DP_DUR}s log=$_DP_LOG" >>"$DEMO_LOG"
+}
+
+run_demo_image_phases() {
+  # $1=evidence dir. Build the demo image once, freeze its immutable
+  # id (the same `docker inspect .Id` the driver itself freezes to),
+  # then run the contracts/full/compare test phases against that id.
+  # Stop-after-first-failure: a failed phase (or an unresolvable
+  # image id) leaves every later phase NOT RUN and fails the step.
+  # Sets DEMO_RC (0 iff build + all three phases exit 0), DEMO_CMD
+  # (all four phase commands, joined as the && chain they form),
+  # DEMO_LOG (combined log) and DEMO_IMAGE_ID.
+  _DI_EV="$1"
+  _DI_DIR="$_DI_EV/demo-image"
+  DEMO_LOG="$_DI_EV/test-demo-image.sh.log"
+  DEMO_RC=1
+  DEMO_IMAGE_ID=""
+  _DI_VER=$(grep -m1 '^version:' haskoki.cabal 2>/dev/null | awk '{print $2}')
+  _DI_TAG="${HASKOKI_DEMO_IMAGE:-haskoki-demo:${_DI_VER:-unknown}}"
+  DEMO_CMD="HASKOKI_DEMO_IMAGE=$_DI_TAG HASKOKI_DEMO_TEST_OUT=$_DI_DIR/build timeout -s KILL 5400 bash scripts/test-demo-image.sh build && HASKOKI_DEMO_IMAGE=<frozen-id> HASKOKI_DEMO_TEST_OUT=$_DI_DIR/contracts timeout -s KILL 5400 bash scripts/test-demo-image.sh contracts && HASKOKI_DEMO_IMAGE=<frozen-id> HASKOKI_DEMO_TEST_OUT=$_DI_DIR/full timeout -s KILL 5400 bash scripts/test-demo-image.sh full && HASKOKI_DEMO_IMAGE=<frozen-id> HASKOKI_DEMO_TEST_OUT=$_DI_DIR/compare timeout -s KILL 5400 bash scripts/test-demo-image.sh compare"
+  mkdir -p "$_DI_DIR" || return 0
+  : >"$DEMO_LOG" || return 0
+  echo "demo-image phases: build then contracts/full/compare (each timeout -s KILL 5400)" >>"$DEMO_LOG"
+  if [ -z "$_DI_VER" ]; then
+    echo "image tag: cannot parse version from haskoki.cabal" >>"$DEMO_LOG"
+    for _DI_P in build contracts full compare; do
+      echo "phase $_DI_P: NOT RUN (no version)" >>"$DEMO_LOG"
+    done
+    return 0
+  fi
+  echo "build tag: $_DI_TAG" >>"$DEMO_LOG"
+  run_demo_phase build "$_DI_DIR/build" "$_DI_DIR/build.log" "$_DI_TAG" build
+  if [ "$DEMO_PHASE_RC" -ne 0 ]; then
+    for _DI_P in contracts full compare; do
+      echo "phase $_DI_P: NOT RUN (build rc=$DEMO_PHASE_RC)" >>"$DEMO_LOG"
+    done
+    DEMO_RC=$DEMO_PHASE_RC
+    return 0
+  fi
+  DEMO_IMAGE_ID=$(timeout -s KILL 60 docker inspect --format '{{.Id}}' "$_DI_TAG" 2>/dev/null) || DEMO_IMAGE_ID=""
+  if [ -z "$DEMO_IMAGE_ID" ]; then
+    echo "image id: cannot resolve $_DI_TAG (fail closed)" >>"$DEMO_LOG"
+    for _DI_P in contracts full compare; do
+      echo "phase $_DI_P: NOT RUN (no image id)" >>"$DEMO_LOG"
+    done
+    DEMO_RC=1
+    return 0
+  fi
+  echo "image id: $DEMO_IMAGE_ID ($_DI_TAG)" >>"$DEMO_LOG"
+  DEMO_CMD="HASKOKI_DEMO_IMAGE=$_DI_TAG HASKOKI_DEMO_TEST_OUT=$_DI_DIR/build timeout -s KILL 5400 bash scripts/test-demo-image.sh build && HASKOKI_DEMO_IMAGE=$DEMO_IMAGE_ID HASKOKI_DEMO_TEST_OUT=$_DI_DIR/contracts timeout -s KILL 5400 bash scripts/test-demo-image.sh contracts && HASKOKI_DEMO_IMAGE=$DEMO_IMAGE_ID HASKOKI_DEMO_TEST_OUT=$_DI_DIR/full timeout -s KILL 5400 bash scripts/test-demo-image.sh full && HASKOKI_DEMO_IMAGE=$DEMO_IMAGE_ID HASKOKI_DEMO_TEST_OUT=$_DI_DIR/compare timeout -s KILL 5400 bash scripts/test-demo-image.sh compare"
+  _DI_STOPPED=""
+  for _DI_P in contracts full compare; do
+    if [ -n "$_DI_STOPPED" ]; then
+      echo "phase $_DI_P: NOT RUN ($_DI_STOPPED rc=$DEMO_RC)" >>"$DEMO_LOG"
+      continue
+    fi
+    run_demo_phase "$_DI_P" "$_DI_DIR/$_DI_P" "$_DI_DIR/$_DI_P.log" "$DEMO_IMAGE_ID" "$_DI_P"
+    if [ "$DEMO_PHASE_RC" -ne 0 ]; then
+      DEMO_RC=$DEMO_PHASE_RC
+      _DI_STOPPED="$_DI_P"
+    fi
+  done
+  if [ -z "$_DI_STOPPED" ]; then
+    DEMO_RC=0
+  fi
+  echo "demo-image step: rc=$DEMO_RC" >>"$DEMO_LOG"
+  return 0
+}
+# DEMO-PHASES-END
+
 for d in $CONTAINER_DRIVERS; do
   LOG="$EVIDENCE_DIR/$d.log"
   echo "--- driver: $d"
@@ -299,12 +396,9 @@ for h in $HOST_DRIVERS; do
   fi
   case "$h" in
     test-demo-image.sh)
-      echo "--- host demo-image driver: test-demo-image.sh"
-      DEMO_CMD="HASKOKI_DEMO_TEST_OUT=$EVIDENCE_DIR/demo-image timeout -s KILL 5400 bash scripts/test-demo-image.sh"
-      HASKOKI_DEMO_TEST_OUT="$EVIDENCE_DIR/demo-image" \
-        timeout -s KILL 5400 bash scripts/test-demo-image.sh \
-        >"$EVIDENCE_DIR/test-demo-image.sh.log" 2>&1
-      record "test-demo-image.sh" "$?" "$EVIDENCE_DIR/test-demo-image.sh.log" "$DEMO_CMD"
+      echo "--- host demo-image driver: test-demo-image.sh (build + contracts/full/compare)"
+      run_demo_image_phases "$EVIDENCE_DIR"
+      record "test-demo-image.sh" "$DEMO_RC" "$DEMO_LOG" "$DEMO_CMD"
       ;;
     *)
       echo "--- host driver: $h"
