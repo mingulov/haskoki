@@ -70,6 +70,7 @@ module Haskoki.Runtime.Detached
   , openDetached
   , detachToken
   , detachSlot
+  , sameDetachCtx
     -- * Saveability
   , markJobOpaque
     -- * Recipes (pointer-free pending records)
@@ -338,6 +339,14 @@ detachToken = dcToken
 -- | The home token's slot (target-session compatibility).
 detachSlot :: DetachCtx -> SlotId
 detachSlot = dcSlot
+
+-- | Detach-context identity: whether two handles borrow the same context.
+sameDetachCtx :: DetachCtx -> DetachCtx -> Bool
+sameDetachCtx a b =
+  dcServed a == dcServed b
+    && dcRefused a == dcRefused b
+    && dcMarked a == dcMarked b
+    && dcJoinHook a == dcJoinHook b
 
 -- | This context's token's claim state on the shared authority.
 readClaims :: DetachCtx -> STM TokenClaims
@@ -870,16 +879,16 @@ commitDetach dc table jid view execState body = do
       [] ->
         pure DetachNoToken
       (trec : _) -> do
-        ePid <- storeReserveJobId (dcStore dc)
-        case ePid of
+        eSup <- loadSuperseded dc table jid
+        case eSup of
           Left err ->
             pure (DetachStore err)
-          Right pid -> do
-            eSup <- loadSuperseded dc table jid
-            case eSup of
+          Right mSup -> do
+            ePid <- storeReserveJobId (dcStore dc)
+            case ePid of
               Left err ->
                 pure (DetachStore err)
-              Right mSup -> do
+              Right pid -> do
                 let rec = JobRecord
                       { jrPersistentId = pid
                       , jrToken = dcToken dc

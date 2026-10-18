@@ -84,8 +84,8 @@ isolated static prefix through a git-ignored `cabal.project.local`.
 
 Download `haskoki-<version>.tar.gz` from
 [GitHub Releases](https://github.com/mingulov/haskoki/releases), with its
-manifest and checksums. The archive contains the main package and six test
-suites; the separate test client belongs to the repository checkout.
+manifest and checksums. The archive contains the main package and seven test
+suites; the separate test client ships its own source archive (below).
 With the native prerequisites above, or a prepared developer image:
 
 ```sh
@@ -107,6 +107,36 @@ docker run --rm -v "$PWD:/src" -w /src haskoki-dev:ghc-9.10.3 \
 
 The archive's freeze pins dependency resolution. GitHub's bundle job checks
 source archives outside the checkout before release.
+
+## Building the client source archive
+
+The test client is not in the main archive. From the repository root, build
+its own source archive (plain `cabal sdist` packages only the main package):
+
+```sh
+cabal sdist haskoki-client
+```
+
+Unpack `dist-newstyle/sdist/haskoki-client-<version>.tar.gz` outside the
+checkout. The client archive carries no freeze file, so update the package
+index before building:
+
+```sh
+HASKOKI_CLIENT_VERSION=$(grep -m1 '^version:' client/haskoki-client.cabal | awk '{print $2}')
+tar -xzf "dist-newstyle/sdist/haskoki-client-$HASKOKI_CLIENT_VERSION.tar.gz" -C /tmp/sdist-client
+cd "/tmp/sdist-client/haskoki-client-$HASKOKI_CLIENT_VERSION"
+printf 'packages: .\nallow-newer: all\n' > cabal.project
+cabal update
+cabal build all --enable-tests
+cabal test all
+```
+
+For the Docker route, replace the last three commands with:
+
+```sh
+docker run --rm -v "$PWD:/src" -w /src haskoki-dev:ghc-9.10.3 \
+  sh -c 'cabal update && cabal build all --enable-tests && cabal test all'
+```
 
 ## Packaging and maintenance
 

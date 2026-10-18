@@ -18,10 +18,10 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (isInfixOf, isPrefixOf, sort, (\\))
 import GHC.Clock (getMonotonicTimeNSec)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectoryRecursive, removeFile)
+import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath ((</>), joinPath, splitDirectories)
 import System.Process (CreateProcess (env), proc, readCreateProcessWithExitCode)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
@@ -139,10 +139,14 @@ spec = testGroup "Config honesty"
     [ testCase "utf-8 comment loads" caseUtf8CommentLoads
     , testCase "utf-8 label is typed in every locale" caseUtf8LabelTyped
     , testCase "invalid utf-8 gives typed invalid" caseInvalidUtf8Typed
+    , testCase "latin-1 pin refused without echo" caseLatin1PinRefusedSilent
     , testCase "non-ascii slot-1 label refused" caseNonAsciiLabelRefused
     , testCase "non-ascii pin refused" caseNonAsciiPinRefused
     , testCase "ascii catalog loads unchanged" caseAsciiCatalogLoads
     , testCase "config check accepts utf-8 under C locale" caseConfigCheckCSubprocess
+    , testCase "ctl derivation follows the test exe version and kind" caseCtlBinDerivesVersionKind
+    , testCase "ctl derivation never crosses versions or kinds" caseCtlBinNeverCrossesVersionKind
+    , testCase "ctl derivation rejects non-cabal paths" caseCtlBinRejectsNonCabalPath
     ]
   , testGroup "audit"
     [ testCase "key table matches the parser catalog" caseKeyTableMatches
@@ -1196,6 +1200,27 @@ caseInvalidUtf8Typed = withTimeout "invalid utf-8" $ do
       Left (CfgInvalid _) -> pure ()
       other -> assertFailure ("0xFF must be typed invalid, got: " ++ show other)
 
+-- A PIN saved in Latin-1 is refused without echoing any byte of
+-- it: the refusal carries a fixed message, never the raw byte nor
+-- its escaped form (what `show` of the decode exception prints,
+-- and what `haskoki-ctl config check` would print via `show`).
+caseLatin1PinRefusedSilent :: IO ()
+caseLatin1PinRefusedSilent = withTimeout "latin-1 pin silent" $ do
+  let body = BS.concat
+        [ BC8.pack "[tokens]\nlabels = [\"haskoki-demo\"]\nso_pins = [\"5678\"]\nuser_pins = [\"p"
+        , BS.pack [0xE4]
+        , BC8.pack "ss\"]\n"
+        ]
+  withBytesFile "haskoki-latin1-pin.toml" body $ \path -> do
+    eCfg <- loadConfigFile path
+    case eCfg of
+      Left err@(CfgInvalid msg) -> do
+        assertBool "refusal carries no PIN byte" (not ("\xe4" `isInfixOf` msg))
+        assertBool "refusal carries no escaped byte" (not ("\\xe4" `isInfixOf` msg))
+        assertBool "shown refusal carries no escaped byte"
+          (not ("\\xe4" `isInfixOf` show err))
+      other -> assertFailure ("latin-1 PIN must refuse, got: " ++ show other)
+
 -- | UTF-8 bytes for "a with diaeresis" (U+00E4): C3 A4.
 aUmlaut :: BS.ByteString
 aUmlaut = BS.pack [0xC3, 0xA4]
@@ -1233,16 +1258,17 @@ caseNonAsciiPinRefused = withTimeout "non-ascii pin" $ do
         , user
         , BC8.pack "\"]\n"
         ]
-      expectRole file role body = withBytesFile file body $ \path -> do
+      expectRole file role pin body = withBytesFile file body $ \path -> do
         eCfg <- loadConfigFile path
         case eCfg of
           Left (CfgInvalid msg) -> do
             assertBool "names the token" ("haskoki-demo" `isInfixOf` msg)
             assertBool ("names the role " ++ role) (role `isInfixOf` msg)
+            assertBool ("hides the PIN text " ++ role) (not (pin `isInfixOf` msg))
           other -> assertFailure ("non-ASCII " ++ role ++ " must refuse, got: " ++ show other)
-  expectRole "haskoki-nonascii-so.toml" "so_pin"
+  expectRole "haskoki-nonascii-so.toml" "so_pin" "p\228ss"
     (mkBody (BS.concat [BC8.pack "p", aUmlaut, BC8.pack "ss"]) (BC8.pack "1234"))
-  expectRole "haskoki-nonascii-user.toml" "user_pin"
+  expectRole "haskoki-nonascii-user.toml" "user_pin" "w\246rd"
     (mkBody (BC8.pack "5678") (BS.concat [BC8.pack "w", oUmlaut, BC8.pack "rd"]))
 
 -- An ASCII catalog loads exactly as before: the ASCII gate changes
@@ -1291,38 +1317,95 @@ caseConfigCheckCSubprocess = withTimeout "C-locale subprocess" $ withPrivateDir 
   assertEqual ("config check exits 0 under C locale: " ++ err) ExitSuccess code
   assertBool "reports config-ok" ("config-ok" `isInfixOf` out)
 
--- | The built @haskoki-ctl@ binary, found under the package's
--- @dist-newstyle/build@ tree (a full build precedes every suite run,
--- so the binary is present and fresh; absence fails loudly, never
--- skips).
+-- | A synthetic cabal test-exe path under a custom build
+-- directory (deliberately not @dist-newstyle@: the derivation
+-- must work under any @--builddir@).
+synthTestExe :: String -> String -> FilePath
+synthTestExe pkgdir kind =
+  "/tmp/synth-hpc-build/build/x86_64-linux/ghc-9.10.3"
+    </> pkgdir </> "t" </> "model-tests" </> kind
+    </> "model-tests" </> "model-tests"
+
+-- | The ctl binary for the same package version and build kind
+-- as a synthetic test exe.
+synthCtlBin :: String -> String -> FilePath
+synthCtlBin pkgdir kind =
+  "/tmp/synth-hpc-build/build/x86_64-linux/ghc-9.10.3"
+    </> pkgdir </> "x" </> "haskoki-ctl" </> kind
+    </> "haskoki-ctl" </> "haskoki-ctl"
+
+-- The ctl for the running test executable's own package version
+-- and build kind is derived from the exe path — never a sorted
+-- search over the build tree (which can hand back a stale
+-- older-version binary). Pure: synthetic paths only, no
+-- filesystem writes.
+caseCtlBinDerivesVersionKind :: IO ()
+caseCtlBinDerivesVersionKind =
+  assertEqual "same version and kind"
+    (Just (synthCtlBin "haskoki-0.5.0.0" "build"))
+    (ctlBinForTestExe (synthTestExe "haskoki-0.5.0.0" "build"))
+
+-- A different version directory or build kind can never be
+-- returned: each exe maps exactly to its own ctl.
+caseCtlBinNeverCrossesVersionKind :: IO ()
+caseCtlBinNeverCrossesVersionKind = do
+  assertEqual "stale version maps to its own ctl"
+    (Just (synthCtlBin "haskoki-0.4.0.0" "build"))
+    (ctlBinForTestExe (synthTestExe "haskoki-0.4.0.0" "build"))
+  assertEqual "other kind maps to its own ctl"
+    (Just (synthCtlBin "haskoki-0.5.0.0" "prof"))
+    (ctlBinForTestExe (synthTestExe "haskoki-0.5.0.0" "prof"))
+  case ctlBinForTestExe (synthTestExe "haskoki-0.5.0.0" "build") of
+    Just ctl -> do
+      assertBool "not the stale-version ctl"
+        (ctl /= synthCtlBin "haskoki-0.4.0.0" "build")
+      assertBool "not the other-kind ctl"
+        (ctl /= synthCtlBin "haskoki-0.5.0.0" "prof")
+    Nothing -> assertFailure "current-version exe must derive a ctl"
+
+-- Paths that are not cabal test-exe paths give Nothing: the
+-- caller fails loudly instead of guessing a binary.
+caseCtlBinRejectsNonCabalPath :: IO ()
+caseCtlBinRejectsNonCabalPath = do
+  assertEqual "installed ctl path" Nothing
+    (ctlBinForTestExe "/usr/bin/haskoki-ctl")
+  assertEqual "ctl build path (no /t/ segment)" Nothing
+    (ctlBinForTestExe (synthCtlBin "haskoki-0.5.0.0" "build"))
+  assertEqual "short path" Nothing
+    (ctlBinForTestExe "model-tests")
+  assertEqual "non-haskoki package dir" Nothing
+    (ctlBinForTestExe
+      "/b/out/x86_64-linux/ghc-9.10.3/otherpkg-1.0/t/foo/build/foo/foo")
+
+-- | The built @haskoki-ctl@ binary for the same package version
+-- and build kind as the running test executable, derived from the
+-- test exe path — never a sorted search over the build tree
+-- (which can hand back a stale older-version binary). A full
+-- build precedes every suite run, so the binary is present and
+-- fresh; absence fails loudly, never skips.
 resolveCtlBin :: IO FilePath
 resolveCtlBin = do
-  exeDir <- takeDirectory <$> getExecutablePath
-  root <- ascend exeDir
-  found <- search (root </> "dist-newstyle" </> "build") (10 :: Int)
-  case sort found of
-    (p : _) -> pure p
-    [] -> assertFailure
-      "haskoki-ctl binary missing under dist-newstyle/build (run `cabal build all` first)"
-  where
-    ascend dir = do
-      here <- doesFileExist (dir </> "haskoki.cabal")
-      if here
-        then pure dir
-        else let parent = takeDirectory dir
-             in if parent == dir
-                  then assertFailure "haskoki.cabal not found above the test binary"
-                  else ascend parent
-    search _ 0 = pure []
-    search dir depth = do
-      isDir <- doesDirectoryExist dir
-      if not isDir
-        then pure []
-        else do
-          names <- listDirectory dir
-          fmap concat $ mapM (collect dir (depth - 1)) names
-    collect dir depth name = do
-      let p = dir </> name
-      isFile <- doesFileExist p
-      rest <- search p depth
-      pure ([p | isFile && name == "haskoki-ctl"] ++ rest)
+  exe <- getExecutablePath
+  case ctlBinForTestExe exe of
+    Nothing -> assertFailure
+      ("cannot derive haskoki-ctl from the test exe path: " ++ exe)
+    Just ctl -> do
+      ok <- doesFileExist ctl
+      if ok
+        then pure ctl
+        else assertFailure
+          ("haskoki-ctl binary missing for this test build"
+            ++ " (run `cabal build all` first): " ++ ctl)
+
+-- | Derive the ctl path from a test executable path. The exe sits
+-- at @...\/haskoki-\<ver\>\/t\/\<test\>\/\<kind\>\/...@; the ctl
+-- for the same version and kind sits at
+-- @...\/haskoki-\<ver\>\/x\/haskoki-ctl\/\<kind\>\/haskoki-ctl\/haskoki-ctl@.
+-- 'Nothing' when the path is not a cabal test-exe path.
+ctlBinForTestExe :: FilePath -> Maybe FilePath
+ctlBinForTestExe exe = case reverse (splitDirectories exe) of
+  (_exename : _bindir : kind : _testname : "t" : pkgdir : rest)
+    | "haskoki-" `isPrefixOf` pkgdir ->
+        Just (joinPath (reverse rest) </> pkgdir </> "x" </> "haskoki-ctl"
+          </> kind </> "haskoki-ctl" </> "haskoki-ctl")
+  _ -> Nothing

@@ -42,6 +42,7 @@
 # without its file (or with a bad role/parent/cycle) fails too. Env:
 #   HASKOKI_EVIDENCE_DIR  evidence root (default ./dist-release-evidence/<utc-stamp>)
 #   HASKOKI_PROXY_DIR     host dir holding the canonical proxy pair (for proxy-parity)
+#   HASKOKI_PROXY_PORT    loopback listener port for the parity leg (default 17512)
 #   HASKOKI_IMAGE         toolchain image (default haskoki-dev:ghc-9.10.3)
 #   HASKOKI_INSTALL_IMAGE bare install image (default ubuntu:26.04)
 #
@@ -190,10 +191,11 @@ for d in $CONTAINER_DRIVERS; do
   echo "--- driver: $d"
   if [ "$d" = "test-proxy-parity.sh" ] && [ -n "${HASKOKI_PROXY_DIR:-}" ]; then
     [ -f "$HASKOKI_PROXY_DIR/pkcs11-proxy-ng" ] || fail "proxy dir lacks daemon: $HASKOKI_PROXY_DIR"
-    CMD="timeout -s KILL $DRIVER_TIMEOUT docker run --rm --network host -v \$PWD:/work -w /work -v $HASKOKI_PROXY_DIR:/opt/pkcs11-proxy-ng:ro $IMAGE scripts/$d"
+    CMD="timeout -s KILL $DRIVER_TIMEOUT docker run --rm --network host -v \$PWD:/work -w /work -v $HASKOKI_PROXY_DIR:/opt/pkcs11-proxy-ng:ro --env HASKOKI_PROXY_PORT=${HASKOKI_PROXY_PORT:-17512} $IMAGE scripts/$d"
     timeout -s KILL $DRIVER_TIMEOUT docker run --rm --network host \
       -v "$PWD:/work" -w /work \
       -v "$HASKOKI_PROXY_DIR:/opt/pkcs11-proxy-ng:ro" \
+      --env HASKOKI_PROXY_PORT="${HASKOKI_PROXY_PORT:-17512}" \
       "$IMAGE" "scripts/$d" >"$LOG" 2>&1
     RC=$?
   else

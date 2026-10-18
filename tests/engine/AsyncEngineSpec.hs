@@ -11,7 +11,7 @@ bogus handles stay stale with the job intact.
 module AsyncEngineSpec (spec) where
 
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (bracket, evaluate, finally)
+import Control.Exception (bracket, finally)
 import Control.Monad (forM, forM_, replicateM, when)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -34,7 +34,6 @@ import Foreign.StablePtr
   )
 import Foreign.Storable (peek, poke, peekByteOff, pokeByteOff)
 import System.Directory (createDirectoryIfMissing, removePathForcibly)
-import System.Mem.StableName (makeStableName)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -168,6 +167,7 @@ import Haskoki.Runtime.Detached
   , detachToken
   , inspectAttachment
   , inspectReverse
+  , sameDetachCtx
   )
 import Haskoki.Runtime.Storage (Store (..), StoreError (..))
 import Haskoki.Runtime.Lifecycle
@@ -177,6 +177,7 @@ import Haskoki.Runtime.Lifecycle
   , invalidateSession
   , newEnv
   , publish
+  , sameEnv
   , seatToken
   , snapshotModel
   )
@@ -1096,12 +1097,6 @@ stdDigestBinding inst h = do
   maybe (assertFailure "missing Digest binding") pure $
     lookupStdAsyncBinding (stdSessionId h) JobDigest bindings
 
-assertSameObject :: String -> a -> a -> IO ()
-assertSameObject label a b = do
-  sa <- evaluate a >>= makeStableName
-  sb <- evaluate b >>= makeStableName
-  assertBool label (sa == sb)
-
 assertStdEmpty :: StdInstance -> IO ()
 assertStdEmpty inst = do
   (live, _, _) <- tableStats (siAsyncTable inst)
@@ -1152,7 +1147,7 @@ caseAsyncBorrowedOwnership envLock = do
     (_, co) <- stdAsyncView inst ordinary
     forM_ [(a, ca, True), (b, cb, True), (ordinary, co, False)] $ \(h, c, enabled) -> do
       assertEqual "view uses actual session" (stdSessionId h) (acSession c)
-      assertSameObject "borrowed environment" (siEnv inst) (acEnv c)
+      assertBool "borrowed environment" (sameEnv (siEnv inst) (acEnv c))
       -- BackendEnv is a small data-family wrapper that GHC may rebox. Prove
       -- shared native state: feed its Standard-created resource via the view,
       -- then consume that same resource through Standard's backend.
@@ -1166,7 +1161,7 @@ caseAsyncBorrowedOwnership envLock = do
         poke pLen 32
         haskokiStdDigestFinal ctx h pOut pLen >>= assertEqual "consume shared backend resource" rvOK
         readBytes pOut 32 >>= assertEqual "shared backend resource KAT" sha256Abc
-      assertSameObject "one instance table" (siAsyncTable inst) (acTable c)
+      assertEqual "one instance table" (asyncTableId (siAsyncTable inst)) (asyncTableId (acTable c))
       assertBool "memory view cannot detach" (isNothing (acDetach c))
       isAsyncSession (siAsyncTable inst) (acSession c) >>= assertEqual "explicit async only" enabled
       alloca $ \pSlot -> alloca $ \pRO -> alloca $ \pLogin -> alloca $ \pErr -> alloca $ \pAsync -> do
@@ -1224,7 +1219,7 @@ caseAsyncBorrowedOwnership envLock = do
     (_, ch) <- stdAsyncView inst home
     (_, co) <- stdAsyncView inst other
     dh <- maybe (assertFailure "home view has no detach context") pure (acDetach ch)
-    assertSameObject "home borrows instance detach context" dc dh
+    assertBool "home borrows instance detach context" (sameDetachCtx dc dh)
     assertBool "other slot cannot detach under home token" (isNothing (acDetach co))
     readIORef loads >>= assertEqual "views do not reopen detach context" 1
     allocaBytes 32 $ \pOut -> alloca $ \pLen -> do

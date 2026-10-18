@@ -35,6 +35,7 @@ module Haskoki.Runtime.Lifecycle
   , rulesFromConfig
   , envGate
   , envAdapter
+  , sameEnv
   , initialize
   , finalize
   , seatToken
@@ -241,6 +242,10 @@ newEnvWith rules hooks = do
     , envProvider = provider
     , envAdapter = adapter
     }
+
+-- | Env identity: whether two handles borrow the same environment.
+sameEnv :: Env -> Env -> Bool
+sameEnv a b = envModel a == envModel b && envProvider a == envProvider b
 
 -- | Derive instance policy from a resolved config: the @[limits]@
 -- admission bounds become the 'Rules' bounds (sessions, objects,

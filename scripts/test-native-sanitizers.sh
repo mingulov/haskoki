@@ -15,7 +15,15 @@
 set -u
 HERE=$(dirname "$0"); cd "$HERE/.." || exit 1
 ART=${HASKOKI_SAN_ART:-${TMPDIR:-/tmp}/haskoki-native-sanitizers}
-rm -rf "$ART"; mkdir -p "$ART/bin" "$ART/logs" || exit 1
+# Retain the previous run to keep first failures: move an
+# existing art directory aside instead of deleting it, so a rerun
+# never destroys the evidence it is meant to reproduce.
+if [ -e "$ART" ]; then
+  PREV="$ART.prev-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  mv "$ART" "$PREV" || exit 1
+  echo "previous sanitizer art moved aside: $PREV"
+fi
+mkdir -p "$ART/bin" "$ART/logs" || exit 1
 CC=${CC:-gcc}; OSSL=/opt/openssl-4.0.2
 COMMON="-std=c11 -Wall -Wextra -Werror -pthread -Icbits -I$OSSL/include"
 SAN="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all"

@@ -221,6 +221,7 @@ spec = testGroup "Detached jobs"
   , testCase "re-detach retires the superseded id" (counted "m5-detached-jobs" "re-detach-retires-the-superseded-id" (caseRedetachRetires))
   , testCase "ambiguous re-detach reconciles present and retires" (counted "m5-detached-jobs" "ambiguous-re-detach-reconciles-present-and-retires" (caseRedetachAmbiguousPresent))
   , testCase "refused re-detach commit preserves the live job" (counted "m5-detached-jobs" "refused-re-detach-commit-preserves-the-live-job" (caseRedetachCommitRefused))
+  , testCase "superseded load failure burns no id" (counted "m5-detached-jobs" "superseded-load-failure-burns-no-id" (caseSupersededLoadBurnsNoId))
   , testCase "joined poll of a terminal job marks the observed fate" (counted "m5-detached-jobs" "joined-poll-of-a-terminal-job-marks-the-observed-fate" (caseJoinedPollTerminalMarks))
   ]
 
@@ -3447,6 +3448,59 @@ caseRedetachCommitRefused = do
   assertEqual "old handle still live" PollReady p
   deltas <- readIORef commits
   assertEqual "one commit attempted" 1 (length deltas)
+  storeClose backing
+
+-- A superseded-record load failure burns no id: the load runs
+-- before the reservation, so detach answers DetachStore with no
+-- reservation attempted, pid1 still active and queued, no orphan
+-- record, the old handle still live, and the durable counter
+-- mark untouched.
+caseSupersededLoadBurnsNoId :: IO ()
+caseSupersededLoadBurnsNoId = do
+  (_world, backing) <- mkWorld
+  gen <- openLiveGen
+  armed <- newIORef False
+  reserves <- newIORef (0 :: Int)
+  let fake = backing
+        { storeLoadJobs = do
+            arm <- readIORef armed
+            if arm
+              then do
+                writeIORef armed False
+                pure (Left (StoreIO "scripted load failure"))
+              else storeLoadJobs backing
+        , storeReserveJobId = do
+            modifyIORef' reserves (+ 1)
+            storeReserveJobId backing
+        }
+  dc <- mkDetached fake
+  let table = lgTable gen
+      sid = ssId (lgSession gen)
+  j0 <- startDigestJob gen "abc" 32 1
+  DetachOk pid1 <- detachJob dc table j0 JobDigest
+  outA <- joinJob dc (lgEnv gen) table (digestJoin pid1 sid)
+  jA <- case outA of
+    JoinOk j -> pure j
+    other -> assertFailure ("join failed: " ++ show other)
+  markBefore <- loadCounter backing
+  writeIORef reserves 0
+  writeIORef armed True
+  out <- detachJob dc table jA JobDigest
+  case out of
+    DetachStore _ -> pure ()
+    other -> assertFailure ("expected DetachStore, got " ++ show other)
+  nRes <- readIORef reserves
+  assertEqual "no id reserved" 0 nRes
+  markAfter <- loadCounter backing
+  assertEqual "counter mark untouched" markBefore markAfter
+  av1 <- inspectAttachment dc pid1
+  assertEqual "superseded id still active" (Just (AvActive jA)) av1
+  durableState backing pid1 >>= assertEqual "superseded durable still queued" JobQueued
+  jobs <- loadJobs backing
+  assertEqual "no orphan record" 1 (length jobs)
+  runs <- newIORef 0
+  p <- pollJob (countingRunner runs) (lgEnv gen) table JobDigest jA
+  assertEqual "old handle still live" PollReady p
   storeClose backing
 
 -- A joined poll that observes an already-terminal job marks the

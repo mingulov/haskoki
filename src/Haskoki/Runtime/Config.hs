@@ -477,7 +477,9 @@ loadConfigFile path = do
   case eBytes of
     Left _ -> pure (Left (CfgMissingFile path))
     Right bytes -> case TE.decodeUtf8' bytes of
-      Left err -> pure (Left (CfgInvalid ("config file is not valid UTF-8: " ++ show err)))
+      -- Fixed text, never the decode exception: `show` of it
+      -- echoes one raw byte, which may belong to a PIN.
+      Left _ -> pure (Left (CfgInvalid "config file is not valid UTF-8"))
       Right text -> pure (parseConfig (T.unpack text))
 
 getInt :: Map TomlKey TomlVal -> TomlKey -> Integer -> Either ConfigError Int

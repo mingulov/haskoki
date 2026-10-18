@@ -22,6 +22,7 @@ module Haskoki.Runtime.SlotEvents
   , waitSlot
   , closeSlotEvents
   , observeSlotEvents
+  , sameSlotEvents
   ) where
 
 import Control.Concurrent.STM (STM, TVar, atomically, newTVarIO, readTVar, retry, writeTVar)
@@ -202,3 +203,7 @@ closeSlotEvents hub = do
 
 observeSlotEvents :: SlotEvents -> NotificationPoint -> IO ()
 observeSlotEvents = eventsObserve
+
+-- | Hub identity: whether two handles borrow the same hub.
+sameSlotEvents :: SlotEvents -> SlotEvents -> Bool
+sameSlotEvents a b = eventsState a == eventsState b

@@ -4,7 +4,7 @@ module NotificationsEngineSpec (spec) where
 import Control.Concurrent (ThreadId, isCurrentThreadBound, runInBoundThread, forkFinally, killThread, myThreadId, throwTo, yield)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryReadMVar)
 import Control.Concurrent.STM (atomically, newTQueueIO, readTQueue, writeTQueue)
-import Control.Exception (SomeException, AsyncException (ThreadKilled), IOException, MaskingState (..), bracket, catch, evaluate, try, mask, getMaskingState, fromException)
+import Control.Exception (SomeException, AsyncException (ThreadKilled), IOException, MaskingState (..), bracket, catch, try, mask, getMaskingState, fromException)
 import Control.Monad (forM_, replicateM, replicateM_, when)
 import qualified Data.ByteString as Bytes
 import qualified Data.ByteString.Char8 as BS
@@ -24,7 +24,6 @@ import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Conc (threadStatus, ThreadStatus (..), BlockReason (..))
 import System.Directory (createDirectory, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
-import System.Mem.StableName (makeStableName)
 import System.IO (hFlush, hClose, openBinaryTempFile, stdout)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
@@ -156,9 +155,7 @@ caseServingInitialSnapshot envLock = do
       bracket (haskokiStdOpen cell) haskokiStdClose $ \sp -> do
         assertBool "Standard borrows resolved config despite invalid current env" (not (isNull sp))
         std <- deRefStablePtr sp
-        a <- evaluate (instSlots ops) >>= makeStableName
-        b <- evaluate (siSlots std) >>= makeStableName
-        assertBool "one shared hub identity" (a == b)
+        assertBool "one shared hub identity" (sameSlotEvents (instSlots ops) (siSlots std))
         assertEqual "two actual catalog entries" [SlotId 0, SlotId 1] (Map.keys (siCatalog std))
         assertEqual "initial presence and epochs" (initial removable) =<< snapshotSlots (siSlots std)
         assertEqual "no startup indications" SlotNoEvent =<< waitSlot (instSlots ops) DontBlock

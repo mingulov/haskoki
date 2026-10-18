@@ -53,6 +53,7 @@ spec = testGroup "Notifications"
   , testCase "caseServingBound" caseServingBound
   , testCase "caseServingClosedFirst" caseServingClosedFirst
   , testCase "caseServingReferenceTraces" caseServingReferenceTraces
+  , testCase "caseServingHubIdentity" caseServingHubIdentity
   ]
   , testGroup "T-N03"
     [ testCase "casePresencePublication" casePresencePublication
@@ -396,6 +397,14 @@ caseServingReferenceTraces = do
       pure next) referenceInitial (zip [1 :: Int ..] inputs)
     pure ()
   putStrLn "T-N01 reference traces: 2401/2401 (length four, lexical order)"
+
+-- Catches hub-identity confusion: separately created hubs are distinct.
+caseServingHubIdentity :: Assertion
+caseServingHubIdentity = do
+  a <- fresh
+  b <- fresh
+  assertBool "separately created hubs are distinct" (not (sameSlotEvents a b))
+  assertBool "a hub is identical to itself" (sameSlotEvents a a)
 
 -- T-N03: a split publication, a write on a Left arm, or a stale binding
 -- revived by a later generation all violate these independently built states.
