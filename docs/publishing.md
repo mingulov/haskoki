@@ -79,6 +79,11 @@ Reports keep separate `contracts/`, `full/` and `compare/` directories in
 `demo-image-runs`; the publisher still consumes `demo-image-tested`.
 For complete local verification, run `sh scripts/test-demo-image.sh` from
 the repository root; it builds and runs all three groups in sequence.
+The local release manifest (`scripts/release-evidence.sh`) runs the same
+driver in four phases instead — `build`, then `contracts`, `full` and
+`compare` against the frozen image id, each under its own 5400 s guard —
+and records them as one `test-demo-image.sh` step, because the serial run
+takes 84–113 min on v0.5.0.0 and outlasts a single 90-minute guard.
 
 There is no second build or dispatch after creating the source tag.
 A tag pushed with `GITHUB_TOKEN` need not trigger another workflow.
