@@ -318,7 +318,7 @@ static void expect_derived(CK_SESSION_HANDLE s, CK_MECHANISM *m,
  * rule cannot mask the domain refusal. */
 static void negative_matrix(CK_SESSION_HANDLE s, CK_MECHANISM *m,
                             CK_OBJECT_HANDLE base, int readable,
-                            CK_RV aes33_rv, const char *tag) {
+                            CK_RV aes33_rv, CK_RV aes0_rv, const char *tag) {
   static const CK_ULONG bad_aes[] = { 1, 15, 17, 20, 31 };
   char what[96];
   size_t i;
@@ -345,10 +345,10 @@ static void negative_matrix(CK_SESSION_HANDLE s, CK_MECHANISM *m,
   snprintf(what, sizeof(what), "%s AES/no-length", tag);
   expect_refused(s, m, base, 1, CKK_AES, NO_LEN, readable,
                  CKR_TEMPLATE_INCOMPLETE, what);
-  /* A zero length keeps its pre-existing code. */
+  /* A zero length is never a shortening: it keeps its
+   * pre-existing size-range code on every base. */
   snprintf(what, sizeof(what), "%s AES/0", tag);
-  expect_refused(s, m, base, 1, CKK_AES, 0, readable, CKR_KEY_SIZE_RANGE,
-                 what);
+  expect_refused(s, m, base, 1, CKK_AES, 0, readable, aes0_rv, what);
 }
 
 int main(int argc, char **argv) {
@@ -418,7 +418,8 @@ int main(int argc, char **argv) {
   msha.ulParameterLen = 0;
 
   /* Byte-concatenation path. */
-  negative_matrix(sess, &mcat, cbase, 1, CKR_TEMPLATE_INCONSISTENT, "concat");
+  negative_matrix(sess, &mcat, cbase, 1, CKR_TEMPLATE_INCONSISTENT,
+                  CKR_KEY_SIZE_RANGE, "concat");
   expect_derived(sess, &mcat, cbase, 1, CKK_AES, 16, 1, CKK_AES,
                  concat, 16, fips_ct128, "concat AES/16");
   expect_derived(sess, &mcat, cbase, 1, CKK_AES, 24, 1, CKK_AES,
@@ -435,14 +436,30 @@ int main(int argc, char **argv) {
    * bytes unpinned: DES parity adjustment is a separate item). */
   expect_derived(sess, &mcat, cbase, 1, CKK_DES3, NO_LEN, 0, CKK_DES3,
                  NULL, 24, NULL, "concat DES3/no-length");
-  /* Protected base: the sealed AES child still keys AES correctly. */
+  /* Protected base: a sealed base refuses truncation, so the
+   * full-width AES child carries the known-answer leg (base 16 +
+   * data 16 is the 32-byte FIPS key). */
   negative_matrix(sess, &mcat, pbase, 0, CKR_TEMPLATE_INCONSISTENT,
-                  "concat-protected");
-  expect_derived(sess, &mcat, pbase, 1, CKK_AES, 16, 0, CKK_AES,
-                 concat, 16, fips_ct128, "concat-protected AES/16");
+                  CKR_KEY_SIZE_RANGE, "concat-protected");
+  /* A sealed base refuses the truncated AES/16 child it used to
+   * mint: pin the refusal (natural width is 33). */
+  expect_refused(sess, &mcat, pbase, 1, CKK_AES, 16, 0,
+                 CKR_TEMPLATE_INCONSISTENT, "concat-protected AES/16");
+  {
+    CK_KEY_DERIVATION_STRING_DATA sd16;
+    CK_MECHANISM mcat32;
+    sd16.pData = dat;
+    sd16.ulLen = 16;
+    mcat32.mechanism = CKM_CONCATENATE_BASE_AND_DATA;
+    mcat32.pParameter = &sd16;
+    mcat32.ulParameterLen = sizeof(sd16);
+    expect_derived(sess, &mcat32, pbase, 1, CKK_AES, 32, 0, CKK_AES,
+                   concat, 32, fips_ct256, "concat-protected AES/32");
+  }
 
   /* Hash-KDF path. */
-  negative_matrix(sess, &msha, sbase, 1, CKR_KEY_SIZE_RANGE, "sha256");
+  negative_matrix(sess, &msha, sbase, 1, CKR_KEY_SIZE_RANGE, CKR_KEY_SIZE_RANGE,
+                  "sha256");
   expect_derived(sess, &msha, sbase, 1, CKK_AES, 16, 1, CKK_AES,
                  sha_abc, 16, sha_ct128, "sha256 AES/16");
   expect_derived(sess, &msha, sbase, 1, CKK_AES, 24, 1, CKK_AES,

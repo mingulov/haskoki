@@ -1486,6 +1486,7 @@ toCryptoError f = case f of
   BackendBadKey o w -> CryptoBadKey o w
   BackendMechParamInvalid o w -> CryptoMechParamInvalid o w
   BackendAuthFailed o -> CryptoAuthFailed o
+  BackendSigLenRange o -> CryptoSigLenRange o
   BackendInvalidState o w -> CryptoInvalidState o w
   BackendNative o c w -> CryptoNative o c w
   BackendResourceGone o r -> CryptoResourceGone o r

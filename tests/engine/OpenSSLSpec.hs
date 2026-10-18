@@ -105,7 +105,8 @@ spec = testGroup "openssl4 engine"
   , testCase "ECDSA curves/digests/raw (CLI vectors)" caseEcdsaCurvesVectors
   , testCase "ECDSA raw truncates overlong digests (SEC1)" caseEcdsaRawTruncate
   , testCase "ECDSA point-at-infinity rejects as mismatch" caseEcdsaInfinity
-  , testCase "ECDSA odd-length raw sig mismatches" caseEcdsaOddSig
+  , testCase "ECDSA odd-length raw sig refused by length" caseEcdsaOddSig
+  , testCase "ECDSA short raw forms verify, past-bound refuses" caseEcdsaShortForms
   , testCase "ECDSA off-curve keys refused typed" caseEcdsaOffCurve
   , testCase "DSA wycheproof KAT + roundtrips (q224/q256)" caseDsa
   , testCase "DSA paramgen + keygen mint usable pairs" caseDsaKeygen
@@ -187,6 +188,11 @@ expectAuthFailed :: Show a => String -> EngineResult a -> IO ()
 expectAuthFailed label r = case r of
   EngineFail (BackendAuthFailed _) -> pure ()
   other -> assertFailure (label ++ ": expected BackendAuthFailed, got " ++ show other)
+
+expectSigLenRange :: Show a => String -> EngineResult a -> IO ()
+expectSigLenRange label r = case r of
+  EngineFail (BackendSigLenRange _) -> pure ()
+  other -> assertFailure (label ++ ": expected BackendSigLenRange, got " ++ show other)
 
 expectBadParam :: Show a => String -> EngineResult a -> IO ()
 expectBadParam label r = case r of
@@ -2151,6 +2157,11 @@ caseRsaKats = withBackend $ \env -> do
     sign env (SigRSA_PKCS1v15 D_SHA512) priv rsaMsg
   expectAuthFailed "sha512 sig under sha256 rejected" =<<
     verify env sha256 pub rsaMsg cross
+  -- Wrong-length signatures refuse by length, never verify.
+  expectSigLenRange "truncated refused by length" =<<
+    verify env sha256 pub rsaMsg (BS.init rsaSig256)
+  expectSigLenRange "overlong refused by length" =<<
+    verify env sha256 pub rsaMsg (rsaSig256 <> "\x00")
   -- Typed key refusals: garbage DER is a bad key, never native.
   expectBadKey "rsa sign garbage priv" =<< sign env sha256 (KeyDer "bogus") rsaMsg
   expectBadKey "rsa verify garbage pub" =<<
@@ -2179,6 +2190,11 @@ caseRsaPssVectors = withBackend $ \env -> do
     verify env sha256 pub "wrong message" pssSig256
   expectAuthFailed "pss-sha256 wrong salt rejected" =<<
     verify env (SigRSA_PSS (PssParams D_SHA256 D_SHA256 20)) pub pssMsg pssSig256
+  -- Wrong-length signatures refuse by length, never verify.
+  expectSigLenRange "pss truncated refused by length" =<<
+    verify env sha256 pub pssMsg (BS.init pssSig256)
+  expectSigLenRange "pss overlong refused by length" =<<
+    verify env sha256 pub pssMsg (pssSig256 <> "\x00")
   -- Roundtrips: the backend signs (fresh randomness each call) and
   -- verifies its own output across salts and digests.
   mapM_ (roundtrip env priv pub)
@@ -2333,6 +2349,11 @@ caseRsaX509Vectors = withBackend $ \env -> do
     verify env SigRSA_X509 pub x509Msg (tamperLast x509Sig)
   expectAuthFailed "x509 wrong msg rejected" =<<
     verify env SigRSA_X509 pub "tampered-data-32-bytes-payload!!!" x509Sig
+  -- Wrong-length signatures refuse by length, never verify.
+  expectSigLenRange "x509 truncated refused by length" =<<
+    verify env SigRSA_X509 pub x509Msg (BS.init x509Sig)
+  expectSigLenRange "x509 overlong refused by length" =<<
+    verify env SigRSA_X509 pub x509Msg (x509Sig <> "\x00")
   zeroPt <- expectOk "x509 zero opens" =<<
     pkeyDecrypt env RsaX509 priv (BS.replicate 256 0)
   assertEqual "x509 zero identity" (BS.replicate 256 0) zeroPt
@@ -2392,6 +2413,11 @@ caseRsaX931Vectors = withBackend $ \env -> do
     verify env raw pub x931Digest (tamperLast x931Sig)
   expectAuthFailed "x931 wrong digest rejected" =<<
     verify env raw pub (BS.replicate 32 0x55) x931Sig
+  -- Wrong-length signatures refuse by length, never verify.
+  expectSigLenRange "x931 truncated refused by length" =<<
+    verify env raw pub x931Digest (BS.init x931Sig)
+  expectSigLenRange "x931 overlong refused by length" =<<
+    verify env raw pub x931Digest (x931Sig <> "\x00")
   -- Every other hash-id length roundtrips (20/48/64 bytes).
   mapM_ (rawRoundtrip env priv pub) [20, 48, 64]
   -- Off-rule lengths refuse typed (28-byte SHA-224 has no X9.31
@@ -2553,7 +2579,10 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
       , ("brainpoolP320r1", 80), ("brainpoolP384r1", 96)
       , ("brainpoolP512r1", 128)
       , ("sect283k1", 72), ("sect283r1", 72)
-      , ("sect409k1", 104), ("sect409r1", 104)
+      -- sect409k1's order is 51 bytes, narrower than its 52-byte
+      -- field, so order-width halves are 51 (raw 102); its twin
+      -- sect409r1 has a full 52-byte order and stays 104.
+      , ("sect409k1", 102), ("sect409r1", 104)
       , ("sect571k1", 144), ("sect571r1", 144)
       ]
     roundtrip env priv pub curve rawLen digest = do
@@ -2616,13 +2645,91 @@ caseEcdsaInfinity = withBackend $ \env -> do
     verify env sraw (KeyDer ecInf224Pub) ecInf224Digest ecInf224Sig
 
 -- | An odd-length raw signature cannot split into halves and can
--- never be valid: a mismatch verdict, like malformed DER — not a
--- parameter refusal.
+-- never be valid: refused by length, like an overlong encoding —
+-- not a value mismatch.
 caseEcdsaOddSig :: IO ()
 caseEcdsaOddSig = withBackend $ \env -> do
   let sraw = SigECDSA (mkEc "P-256" "RAW") Nothing
-  expectAuthFailed "63-byte raw sig mismatches" =<<
+  expectSigLenRange "63-byte raw sig refused by length" =<<
     verify env sraw (KeyDer ecPubDer) ecRaw32 (BS.replicate 63 1)
+
+-- | Short raw ECDSA forms verify (PKCS#11 §6.3.1: an even
+-- non-zero length up to twice the wider of the order and
+-- coordinate widths): a P-521 signature with leading-zero bytes
+-- stripped from both halves, a wider-order secp160r1 signature
+-- padded out to twice the order width, and the pre-narrowing
+-- 104-byte sect409k1 form. Past the bound still refuses by
+-- length.
+caseEcdsaShortForms :: IO ()
+caseEcdsaShortForms = withBackend $ \env -> do
+  -- P-521: sign until both halves carry a leading zero (about 1
+  -- in 4), strip one byte per half, and the 130-byte form
+  -- verifies.
+  (p521, Just q521) <- expectOk "gen p521" =<<
+    generateKey env (GenEC (mkEc "P-521" "DER"))
+  let sraw521 = SigECDSA (mkEc "P-521" "RAW") Nothing
+      input521 = BS.replicate 66 0x33
+      findShort :: Int -> IO BS.ByteString
+      findShort tries
+        | tries <= 0 =
+            assertFailure "no short P-521 signature in 64 signs" >> undefined
+        | otherwise = do
+            sig <- expectOk "sign p521" =<< sign env sraw521 p521 input521
+            assertEqual "p521 raw width" 132 (BS.length sig)
+            let (r, s) = BS.splitAt 66 sig
+            if BS.index r 0 == 0 && BS.index s 0 == 0
+              then pure (BS.drop 1 r <> BS.drop 1 s)
+              else findShort (tries - 1)
+  short521 <- findShort 64
+  assertEqual "stripped form is 130 bytes" 130 (BS.length short521)
+  expectOk "p521 stripped form verifies" =<<
+    verify env sraw521 q521 input521 short521
+  -- secp160r1: the order is 21 bytes against a 20-byte field, so
+  -- the 40-byte signature pads out to the 42-byte bound form and
+  -- verifies.
+  (p160, Just q160) <- expectOk "gen secp160r1" =<<
+    generateKey env (GenEC (mkEc "secp160r1" "DER"))
+  let sraw160 = SigECDSA (mkEc "secp160r1" "RAW") Nothing
+      input160 = BS.replicate 20 0x33
+  sig40 <- expectOk "sign secp160r1" =<< sign env sraw160 p160 input160
+  assertEqual "secp160r1 raw width" 40 (BS.length sig40)
+  let wide42 = BS.singleton 0 <> BS.take 20 sig40
+        <> BS.singleton 0 <> BS.drop 20 sig40
+  expectOk "secp160r1 42-byte form verifies" =<<
+    verify env sraw160 q160 input160 wide42
+  -- sect409k1: the sign side emits 102 bytes (51-byte order),
+  -- but the 104-byte field-width form from before the narrowing
+  -- still verifies through the compatibility bound.
+  (p409, Just q409) <- expectOk "gen sect409k1" =<<
+    generateKey env (GenEC (mkEc "sect409k1" "DER"))
+  let sraw409 = SigECDSA (mkEc "sect409k1" "RAW") Nothing
+      input409 = BS.replicate 52 0x33
+  sig102 <- expectOk "sign sect409k1" =<< sign env sraw409 p409 input409
+  assertEqual "sect409k1 raw width" 102 (BS.length sig102)
+  let wide104 = BS.singleton 0 <> BS.take 51 sig102
+        <> BS.singleton 0 <> BS.drop 51 sig102
+  expectOk "sect409k1 104-byte form verifies" =<<
+    verify env sraw409 q409 input409 wide104
+  -- Past the bound refuses by length: 66 bytes on P-256.
+  let sraw256 = SigECDSA (mkEc "P-256" "RAW") Nothing
+  expectSigLenRange "p256 66-byte refused by length" =<<
+    verify env sraw256 (KeyDer ecPubDer) ecRaw32 (BS.replicate 66 1)
+  -- Degenerate values at allowed lengths still mismatch (the
+  -- bound guards the length; OpenSSL guards the range).
+  expectAuthFailed "p256 2-byte zero sig mismatches" =<<
+    verify env sraw256 (KeyDer ecPubDer) ecRaw32 (BS.pack [0, 0])
+  let secp160r1Order = hex "0100000000000000000001f4c8f927aed3ca752257"
+  assertEqual "secp160r1 order is 21 bytes" 21 (BS.length secp160r1Order)
+  expectAuthFailed "secp160r1 r=n mismatches" =<<
+    verify env sraw160 q160 input160 (secp160r1Order <> BS.replicate 20 0 <> BS.singleton 1)
+  let bad409 = BS.singleton 0xFF <> BS.drop 1 wide104
+  expectAuthFailed "sect409k1 r above n mismatches" =<<
+    verify env sraw409 q409 input409 bad409
+  -- Bound+2 refuses by length where the max matters.
+  expectSigLenRange "secp160r1 44-byte refused by length" =<<
+    verify env sraw160 q160 input160 (BS.replicate 44 1)
+  expectSigLenRange "sect409k1 106-byte refused by length" =<<
+    verify env sraw409 q409 input409 (BS.replicate 106 1)
 
 -- | The curve allowlist: a well-formed brainpoolP160r1 key (real
 -- but uncollected) refuses typed on both sign and verify (the
@@ -3204,7 +3311,7 @@ mldsaWyMsg = hex "48656c6c6f20776f726c64"
 mldsaWyCtx :: ByteString
 mldsaWyCtx = hex "436f6e74657874"
 -- | DSA sign/verify: wycheproof KAT (tc59 valid verifies, tc1
--- r+q invalid mismatches), CLI cross-implementation DER KAT,
+-- r+q overlong refused by length), CLI cross-implementation DER KAT,
 -- roundtrips over all 9 digests x RAW/DER plus the raw row, the
 -- raw 20-byte floor, and typed key refusals.
 caseDsa :: IO ()
@@ -3214,10 +3321,17 @@ caseDsa = withBackend $ \env -> do
       cliPriv = KeyDer dsaCliPriv
       wyPub = KeyDer dsaWyPub
       tamper bs = BS.init bs <> BS.singleton (BS.last bs + 1)
-  -- Wycheproof KAT: tc59 (valid) verifies, tc1 (r+q) mismatches.
+  -- Wycheproof KAT: tc59 (valid) verifies; tc1 (r+q) is 66
+  -- bytes, not the 64 the q256 row requires, so length rejects it
+  -- before the value check (right-length bad sigs still mismatch,
+  -- pinned by the tampered leg below).
   expectOk "wycheproof tc59 valid" =<< verify env wyRaw wyPub dsaWyMsg dsaWySig
-  expectAuthFailed "wycheproof tc1 invalid" =<< verify env wyRaw wyPub dsaWyMsg dsaWyBadSig
+  expectSigLenRange "wycheproof tc1 invalid" =<< verify env wyRaw wyPub dsaWyMsg dsaWyBadSig
   expectAuthFailed "wycheproof tampered" =<< verify env wyRaw wyPub dsaWyMsg (tamper dsaWySig)
+  -- Range still enforces at the right length: r above the group
+  -- order (all-ones, wider than any 256-bit q) mismatches.
+  expectAuthFailed "wycheproof r above q mismatches" =<<
+    verify env wyRaw wyPub dsaWyMsg (BS.replicate 32 0xFF <> BS.drop 32 dsaWySig)
   -- CLI cross-implementation KAT (DER signature over dsaCliMsg).
   let cliDer = SigDSA "DER" (Just D_SHA256)
   expectOk "cli DER verifies" =<< verify env cliDer cliPub dsaCliMsg dsaCliSigDer
@@ -3241,10 +3355,10 @@ caseDsa = withBackend $ \env -> do
   expectOk "raw DER verify" =<< verify env rawDer cliPub dgst20 sigRawDer
   expectBadParam "raw short sign refuses" =<< sign env raw cliPriv (BS.replicate 7 0)
   expectBadParam "raw short verify refuses" =<< verify env raw cliPub (BS.replicate 7 0) sigRaw
-  -- Wrong-length raw signatures mismatch, never verify.
-  expectAuthFailed "truncated raw mismatches" =<<
+  -- Wrong-length raw signatures refuse by length, never verify.
+  expectSigLenRange "truncated raw refused by length" =<<
     verify env wyRaw wyPub dsaWyMsg (BS.init dsaWySig)
-  expectAuthFailed "overlong raw mismatches" =<<
+  expectSigLenRange "overlong raw refused by length" =<<
     verify env wyRaw wyPub dsaWyMsg (dsaWySig <> "\x00")
   -- Garbage keys refuse typed.
   expectBadKey "garbage sign refused" =<< sign env wyRaw (KeyDer "bogus") dsaWyMsg
@@ -3326,10 +3440,10 @@ caseEddsa = withBackend $ \env -> do
     verify env ed48 (KeyDer ed48Pub) edCliMsg sig48
   expectAuthFailed "Ed448 tampered" =<<
     verify env ed48 (KeyDer ed48Pub) edCliMsg (tamper sig48)
-  -- Wrong-length signatures mismatch, never verify.
-  expectAuthFailed "truncated mismatches" =<<
+  -- Wrong-length signatures refuse by length, never verify.
+  expectSigLenRange "truncated refused by length" =<<
     verify env ed19 (KeyDer edCliPub) edCliMsg (BS.init sig19)
-  expectAuthFailed "overlong mismatches" =<<
+  expectSigLenRange "overlong refused by length" =<<
     verify env ed19 (KeyDer edCliPub) edCliMsg (sig19 <> "\x00")
   -- Garbage keys refuse typed.
   expectBadKey "garbage sign refused" =<<
@@ -3721,9 +3835,9 @@ caseMldsa = withBackend $ \env -> do
     verify env mldsa87 (KeyDer mldsaWyPub87) mldsaWyMsg mldsaWySig87
   expectAuthFailed "wycheproof 44 tampered" =<<
     verify env mldsa44 (KeyDer mldsaWyPub44) mldsaWyMsg (tamper mldsaWySig44)
-  expectAuthFailed "wycheproof 44 truncated" =<<
+  expectSigLenRange "wycheproof 44 truncated" =<<
     verify env mldsa44 (KeyDer mldsaWyPub44) mldsaWyMsg (BS.init mldsaWySig44)
-  expectAuthFailed "wycheproof 44 overlong" =<<
+  expectSigLenRange "wycheproof 44 overlong" =<<
     verify env mldsa44 (KeyDer mldsaWyPub44) mldsaWyMsg (mldsaWySig44 <> "\x00")
   -- Wycheproof tc3: the context signature verifies under its
   -- context and mismatches under pure (domain separation).
@@ -3850,9 +3964,9 @@ caseSlhdsa = withBackend $ \env -> do
     verify env ctx266 (KeyDer slhAcvpPub266) slhAcvpMsg266 slhAcvpSig266
   expectAuthFailed "acvp 266 tampered" =<<
     verify env ctx266 (KeyDer slhAcvpPub266) slhAcvpMsg266 (tamper slhAcvpSig266)
-  expectAuthFailed "acvp 266 truncated" =<<
+  expectSigLenRange "acvp 266 truncated" =<<
     verify env ctx266 (KeyDer slhAcvpPub266) slhAcvpMsg266 (BS.init slhAcvpSig266)
-  expectAuthFailed "acvp 266 overlong" =<<
+  expectSigLenRange "acvp 266 overlong" =<<
     verify env ctx266 (KeyDer slhAcvpPub266) slhAcvpMsg266 (slhAcvpSig266 <> "\x00")
   expectAuthFailed "acvp 266 under pure" =<<
     verify env pure128s (KeyDer slhAcvpPub266) slhAcvpMsg266 slhAcvpSig266
@@ -4744,11 +4858,10 @@ caseRawVsDer = withBackend $ \env -> do
     EngineFail (BackendAuthFailed _) -> pure ()
     EngineFail (BackendBadParam _ _) -> pure ()
     other -> assertFailure ("raw-as-der must be rejected, got " ++ show other)
-  r2 <- verify env rawSpec pub ecMsg ecSigDer
-  case r2 of
-    EngineFail (BackendAuthFailed _) -> pure ()
-    EngineFail (BackendBadParam _ _) -> pure ()
-    other -> assertFailure ("der-as-raw must be rejected, got " ++ show other)
+  -- The 71-byte DER fixture is odd, so length alone disproves
+  -- it on the raw row: pin the length refusal exactly.
+  expectSigLenRange "der-as-raw refused by length" =<<
+    verify env rawSpec pub ecMsg ecSigDer
   -- RSA v1.5 is supported (see caseRsaKats); the XOF
   -- digest never makes a servable RSA spec.
   expectUnsupported "rsa xof never servable"

@@ -188,6 +188,11 @@ mkSecret oid kty mat canDerive = ObjectState
       , (AttrKeyType, ValULong kty)
       , (AttrPrivate, ValBool False)
       , (AttrDerive, ValBool canDerive)
+      -- Explicitly unsealed: this spec pins the recipe
+      -- accept/deny shapes (including shortening rows), and
+      -- sealed inputs refuse shortening derives.
+      , (AttrSensitive, ValBool False)
+      , (AttrExtractable, ValBool True)
       , (AttrValue, ValBytes mat)
       ]
   , osOwner = Nothing

@@ -21,6 +21,7 @@ module Haskoki.FFI.OpenSSL4.Raw
   , errNoMem
   , errAuthFail
   , errBadPeer
+  , errSigLen
     -- * Lifecycle
   , envNew
   , envLoad
@@ -136,13 +137,14 @@ data TestGate
 
 -- Shim error codes (mirror cbits/ossl4_ctx.h).
 
-errNative, errBadParam, errBadKey, errNoMem, errAuthFail, errBadPeer :: Int
+errNative, errBadParam, errBadKey, errNoMem, errAuthFail, errBadPeer, errSigLen :: Int
 errNative = -1
 errBadParam = -2
 errBadKey = -3
 errNoMem = -4
 errAuthFail = -5
 errBadPeer = -6
+errSigLen = -7
 
 -- Foreign imports: the hsk_ossl4_* shim only.
 

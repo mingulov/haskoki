@@ -149,6 +149,7 @@ data BackendError
     -- validate (an ECDH peer point off the base curve); the edge
     -- answers CKR_MECHANISM_PARAM_INVALID.
   | BackendAuthFailed { beOp :: !String } -- ^ verify/tag mismatch only
+  | BackendSigLenRange { beOp :: !String } -- ^ signature length alone disproves it
   | BackendInvalidState { beOp :: !String, beWhy :: !String }
   | BackendNative { beOp :: !String, beCode :: !Int, beWhy :: !String }
   | BackendResourceGone { beOp :: !String, beId :: !EngineResourceId }

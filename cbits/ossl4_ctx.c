@@ -646,8 +646,10 @@ long hsk_ossl4_digest_final(hsk_ossl4_md_t *h, unsigned char **out)
     if (h == NULL || out == NULL)
         return HSK_OSSL4_ERR_BADPARAM;
     buf = OPENSSL_malloc(EVP_MAX_MD_SIZE);
-    if (buf == NULL)
+    if (buf == NULL) {
+        rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
+    }
     if (!EVP_DigestFinal_ex(h->mctx, buf, &outlen)) {
         OPENSSL_clear_free(buf, EVP_MAX_MD_SIZE);
         goto end;
@@ -843,10 +845,14 @@ long hsk_ossl4_hmac_sized(OSSL_LIB_CTX *ctx, const char *mdname,
     if (keylen > (size_t)block) {
         unsigned int hashed = 0;
         unsigned char kh[EVP_MAX_MD_SIZE];
-        if (!sized_digest_2(md, outsize, key, keylen, NULL, 0, kh, &hashed))
+        if (!sized_digest_2(md, outsize, key, keylen, NULL, 0, kh, &hashed)) {
+            OPENSSL_cleanse(kh, sizeof(kh));
             goto end;
-        if (hashed > (unsigned int)block)
+        }
+        if (hashed > (unsigned int)block) {
+            OPENSSL_cleanse(kh, sizeof(kh));
             goto end;
+        }
         memcpy(kbuf, kh, hashed);
         OPENSSL_cleanse(kh, sizeof(kh));
     } else if (keylen > 0) {
@@ -1730,22 +1736,23 @@ int hsk_ossl4_ec_gen(OSSL_LIB_CTX *ctx, const char *groupname,
     pctx = EVP_PKEY_CTX_new_from_name(ctx, "EC", propq);
     if (pctx == NULL)
         goto end;
-    if (!EVP_PKEY_keygen_init(pctx))
+    if (EVP_PKEY_keygen_init(pctx) <= 0)
         goto end;
     params[0] =
         OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
                                          (char *)groupname, 0);
     params[1] = OSSL_PARAM_construct_end();
-    if (!EVP_PKEY_CTX_set_params(pctx, params)) {
+    if (EVP_PKEY_CTX_set_params(pctx, params) <= 0) {
         rc = HSK_OSSL4_ERR_BADPARAM;
         goto end;
     }
-    if (!EVP_PKEY_generate(pctx, &pkey))
+    if (EVP_PKEY_generate(pctx, &pkey) <= 0)
         goto end;
     privlen = i2d_PrivateKey(pkey, &priv);
     publen = i2d_PUBKEY(pkey, &pub);
     if (privlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, privlen > 0 ? (size_t)privlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -1791,7 +1798,7 @@ int hsk_ossl4_rsa_gen_keypair(OSSL_LIB_CTX *ctx, int bits,
     pctx = EVP_PKEY_CTX_new_from_name(ctx, "RSA", propq);
     if (pctx == NULL)
         goto end;
-    if (!EVP_PKEY_keygen_init(pctx))
+    if (EVP_PKEY_keygen_init(pctx) <= 0)
         goto end;
     params[0] = OSSL_PARAM_construct_int(OSSL_PKEY_PARAM_RSA_BITS, &bits);
     /* e arrives big-endian; OSSL_PARAM BN import reads
@@ -1803,11 +1810,11 @@ int hsk_ossl4_rsa_gen_keypair(OSSL_LIB_CTX *ctx, int bits,
         goto end;
     params[1] = OSSL_PARAM_construct_BN(OSSL_PKEY_PARAM_RSA_E, ele, e_len);
     params[2] = OSSL_PARAM_construct_end();
-    if (!EVP_PKEY_CTX_set_params(pctx, params)) {
+    if (EVP_PKEY_CTX_set_params(pctx, params) <= 0) {
         rc = HSK_OSSL4_ERR_BADPARAM;
         goto end;
     }
-    if (!EVP_PKEY_generate(pctx, &pkey))
+    if (EVP_PKEY_generate(pctx, &pkey) <= 0)
         goto end;
     /* PKCS#8 explicitly: i2d_PrivateKey prefers the traditional
      * (PKCS#1) encoding for RSA, but the house convention (and the
@@ -1821,7 +1828,8 @@ int hsk_ossl4_rsa_gen_keypair(OSSL_LIB_CTX *ctx, int bits,
     }
     publen = i2d_PUBKEY(pkey, &pub);
     if (privlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, privlen > 0 ? (size_t)privlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -1968,6 +1976,73 @@ static int hsk_ossl4_ec_orderbits(EVP_PKEY *pkey, unsigned int *bits)
     return 1;
 }
 
+/* Raw ECDSA sign-side half-width for one key: the group order
+ * size in bytes, clamped to the field coordinate width from the
+ * encoded point. The order sizes curves whose order is narrower
+ * than the field (sect409k1 emits 51-byte halves, not 52); the
+ * clamp keeps every other served curve byte-identical to the
+ * historical field width (including the wider-order secp160r1/r2/k1
+ * and secp224k1, which keep 20- and 28-byte halves). Verify takes
+ * the bound below instead. Returns the width in bytes, or -1 when
+ * either size is unreadable. */
+static int hsk_ossl4_ec_raw_width(EVP_PKEY *pkey)
+{
+    unsigned char point[1 + 2 * HSK_OSSL4_EC_MAX_COORD]; /* 0x04 || X || Y */
+    size_t pointlen = 0;
+    size_t coordlen;
+    unsigned int orderbits = 0;
+    size_t orderbytes;
+
+    if (!hsk_ossl4_ec_orderbits(pkey, &orderbits))
+        return -1;
+    if (!EVP_PKEY_get_octet_string_param(pkey,
+                                         OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
+                                         point, sizeof(point), &pointlen)
+        || pointlen < 3 || point[0] != 0x04
+        || ((pointlen - 1) % 2) != 0)
+        return -1;
+    coordlen = (pointlen - 1) / 2;
+    if (coordlen == 0 || coordlen > HSK_OSSL4_EC_MAX_COORD)
+        return -1;
+    orderbytes = (orderbits + 7) / 8;
+    if (orderbytes == 0)
+        return -1;
+    return (int)(orderbytes < coordlen ? orderbytes : coordlen);
+}
+
+/* Raw ECDSA verify-side bound for one key (PKCS#11 §6.3.1): twice
+ * the wider of the group order width and the field coordinate
+ * width. Short even forms verify (clients that strip leading
+ * zeros; wider-order curves signing 2*nLen), while a zero, odd or
+ * past-bound length is disproved by length alone. The max keeps
+ * wider-than-order signatures verifying (e.g. 104-byte sect409k1
+ * signatures from before the sign side narrowed). Returns the
+ * bound in bytes, or 0 when either size is unreadable. */
+static size_t hsk_ossl4_ec_verify_bound(EVP_PKEY *pkey)
+{
+    unsigned char point[1 + 2 * HSK_OSSL4_EC_MAX_COORD]; /* 0x04 || X || Y */
+    size_t pointlen = 0;
+    size_t coordlen;
+    unsigned int orderbits = 0;
+    size_t nlen;
+
+    if (!hsk_ossl4_ec_orderbits(pkey, &orderbits))
+        return 0;
+    if (!EVP_PKEY_get_octet_string_param(pkey,
+                                         OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
+                                         point, sizeof(point), &pointlen)
+        || pointlen < 3 || point[0] != 0x04
+        || ((pointlen - 1) % 2) != 0)
+        return 0;
+    coordlen = (pointlen - 1) / 2;
+    if (coordlen == 0 || coordlen > HSK_OSSL4_EC_MAX_COORD)
+        return 0;
+    nlen = (orderbits + 7) / 8;
+    if (nlen == 0)
+        return 0;
+    return 2 * (nlen > coordlen ? nlen : coordlen);
+}
+
 /* Truncate a raw-operation input to the leftmost orderbits bits
  * (SEC1 §4.1.3 / PKCS#11 §2.3.1): full bytes plus a masked partial
  * byte when the order is not byte-aligned. Returns 1 with *out
@@ -2068,6 +2143,13 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+    /* ECDSA serves EC keys only: a foreign key would otherwise
+     * dispatch into the wrong provider operation (DER mode would
+     * return that key's own signature). */
+    if (!EVP_PKEY_is_a(pkey, "EC")) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     if (no_hash) {
         /* Raw operation (CKM_ECDSA): sign the input directly with no
          * hashing; overlong input truncates to the leftmost order
@@ -2134,42 +2216,36 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         goto end;
     }
     /* DER -> raw r||s: parse the ASN.1 signature, pad each scalar to
-     * the curve coordinate size derived from the key's encoded point. */
+     * the raw half-width (order size clamped to the field width). */
     {
         const unsigned char *p = der;
         ECDSA_SIG *sig = d2i_ECDSA_SIG(NULL, &p, (long)derlen);
         const BIGNUM *r = NULL, *s = NULL;
         unsigned char *raw = NULL;
-        unsigned char point[1 + 2 * HSK_OSSL4_EC_MAX_COORD]; /* 0x04 || X || Y */
-        size_t pointlen = 0;
-        size_t coordlen = 0;
+        int width = 0;
         if (sig == NULL)
             goto end;
         ECDSA_SIG_get0(sig, &r, &s);
-        if (!EVP_PKEY_get_octet_string_param(pkey,
-                                             OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
-                                             point, sizeof(point), &pointlen)
-            || pointlen < 3 || point[0] != 0x04
-            || ((pointlen - 1) % 2) != 0) {
+        width = hsk_ossl4_ec_raw_width(pkey);
+        if (width <= 0) {
             ECDSA_SIG_free(sig);
             goto end;
         }
-        coordlen = (pointlen - 1) / 2;
-        raw = OPENSSL_malloc(2 * coordlen);
+        raw = OPENSSL_malloc(2 * (size_t)width);
         if (raw == NULL) {
             ECDSA_SIG_free(sig);
             rc = HSK_OSSL4_ERR_NOMEM;
             goto end;
         }
-        if (BN_bn2binpad(r, raw, (int)coordlen) < 0 ||
-            BN_bn2binpad(s, raw + coordlen, (int)coordlen) < 0) {
-            OPENSSL_clear_free(raw, 2 * coordlen);
+        if (BN_bn2binpad(r, raw, width) < 0 ||
+            BN_bn2binpad(s, raw + width, width) < 0) {
+            OPENSSL_clear_free(raw, 2 * (size_t)width);
             ECDSA_SIG_free(sig);
             goto end;
         }
         ECDSA_SIG_free(sig);
         *out = raw;
-        rc = (long)(2 * coordlen);
+        rc = (long)(2 * width);
     }
 
 end:
@@ -2209,6 +2285,12 @@ int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+    /* ECDSA serves EC keys only: a foreign key would otherwise
+     * dispatch into the wrong provider operation. */
+    if (!EVP_PKEY_is_a(pkey, "EC")) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     if (no_hash) {
         /* Raw operation: overlong input truncates to the leftmost
          * order bits (SEC1 §4.1.3 / PKCS#11 §2.3.1). */
@@ -2254,25 +2336,28 @@ int hsk_ossl4_ecdsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
         der = sig;
         derlen = siglen;
     } else {
-        /* Raw r||s -> DER: split halves, re-encode (range is
-         * enforced by the provider math, not here). Odd lengths
-         * cannot split into halves and can never be valid: answer
-         * mismatch, like malformed DER. */
+        /* Raw r||s -> DER: the signature is any even non-zero
+         * length up to the verify bound (PKCS#11 §6.3.1), split
+         * at half the presented length; a zero, odd or
+         * past-bound length is disproved by length alone
+         * (SIGLEN). Range is enforced by the provider math, not
+         * here. */
         ECDSA_SIG *osig = NULL;
         BIGNUM *r = NULL, *s = NULL;
         unsigned char *p = NULL;
         int len;
-        if (siglen == 0) {
-            rc = HSK_OSSL4_ERR_BADPARAM;
+        size_t bound = hsk_ossl4_ec_verify_bound(pkey);
+        size_t half = 0;
+        if (bound == 0)
             goto end;
-        }
-        if ((siglen % 2) != 0) {
+        if (siglen == 0 || (siglen % 2) != 0 || siglen > bound) {
             ERR_clear_error();
-            rc = 0;
+            rc = HSK_OSSL4_ERR_SIGLEN;
             goto end;
         }
-        r = BN_bin2bn(sig, (int)(siglen / 2), NULL);
-        s = BN_bin2bn(sig + siglen / 2, (int)(siglen / 2), NULL);
+        half = siglen / 2;
+        r = BN_bin2bn(sig, (int)half, NULL);
+        s = BN_bin2bn(sig + half, (int)half, NULL);
         osig = ECDSA_SIG_new();
         if (r == NULL || s == NULL || osig == NULL ||
             !ECDSA_SIG_set0(osig, r, s)) {
@@ -2613,25 +2698,26 @@ int hsk_ossl4_dsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
         der = sig;
         derlen = siglen;
     } else {
-        /* Raw r||s -> DER: split halves, re-encode (range is
-         * enforced by the provider math, not here). Odd lengths
-         * cannot split into halves and can never be valid: answer
-         * mismatch, like malformed DER. */
+        /* Raw r||s -> DER: the signature is exactly two q-width
+         * halves (the width the sign side emits); any other length
+         * is disproved by length alone (SIGLEN). Range is enforced
+         * by the provider math, not here. */
         DSA_SIG *osig = NULL;
         BIGNUM *r = NULL, *s = NULL;
         unsigned char *p = NULL;
         int len;
-        if (siglen == 0) {
-            rc = HSK_OSSL4_ERR_BADPARAM;
+        unsigned int qbits = 0;
+        size_t half = 0;
+        if (!hsk_ossl4_dsa_qbits(pkey, &qbits) || qbits == 0)
             goto end;
-        }
-        if ((siglen % 2) != 0) {
+        half = (qbits + 7) / 8;
+        if (siglen != 2 * half) {
             ERR_clear_error();
-            rc = 0;
+            rc = HSK_OSSL4_ERR_SIGLEN;
             goto end;
         }
-        r = BN_bin2bn(sig, (int)(siglen / 2), NULL);
-        s = BN_bin2bn(sig + siglen / 2, (int)(siglen / 2), NULL);
+        r = BN_bin2bn(sig, (int)half, NULL);
+        s = BN_bin2bn(sig + half, (int)half, NULL);
         osig = DSA_SIG_new();
         if (r == NULL || s == NULL || osig == NULL ||
             !DSA_SIG_set0(osig, r, s)) {
@@ -2804,7 +2890,8 @@ int hsk_ossl4_dsa_gen_keypair(OSSL_LIB_CTX *ctx, const char *propq,
     }
     publen = i2d_PUBKEY(pkey, &pub);
     if (privlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, privlen > 0 ? (size_t)privlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -2928,15 +3015,14 @@ int hsk_ossl4_eddsa_verify(OSSL_LIB_CTX *ctx, const char *curvename,
         EVP_PKEY_free(pkey);
         return HSK_OSSL4_ERR_BADKEY;
     }
-    /* Fixed widths (64/114): anything else can never be valid, so
-     * answer mismatch (0) without calling the provider — encoding
-     * errors surface as authentication failures, never native
-     * errors. */
+    /* Fixed widths (64/114): anything else is disproved by length
+     * alone (SIGLEN) without calling the provider; right-length
+     * bad signatures still answer mismatch (0) below. */
     if ((nid == EVP_PKEY_ED25519 && siglen != 64) ||
         (nid == EVP_PKEY_ED448 && siglen != 114)) {
         EVP_PKEY_free(pkey);
         ERR_clear_error();
-        return 0;
+        return HSK_OSSL4_ERR_SIGLEN;
     }
     mctx = EVP_MD_CTX_new();
     if (mctx == NULL)
@@ -2978,14 +3064,15 @@ int hsk_ossl4_edwards_gen(OSSL_LIB_CTX *ctx, const char *propq,
     pctx = EVP_PKEY_CTX_new_from_name(ctx, curvename, propq);
     if (pctx == NULL)
         goto end;
-    if (!EVP_PKEY_keygen_init(pctx))
+    if (EVP_PKEY_keygen_init(pctx) <= 0)
         goto end;
-    if (!EVP_PKEY_generate(pctx, &pkey))
+    if (EVP_PKEY_generate(pctx, &pkey) <= 0)
         goto end;
     privlen = i2d_PrivateKey(pkey, &priv);
     publen = i2d_PUBKEY(pkey, &pub);
     if (privlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, privlen > 0 ? (size_t)privlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -3036,14 +3123,15 @@ int hsk_ossl4_montgomery_gen(OSSL_LIB_CTX *ctx, const char *propq,
     pctx = EVP_PKEY_CTX_new_from_name(ctx, curvename, propq);
     if (pctx == NULL)
         goto end;
-    if (!EVP_PKEY_keygen_init(pctx))
+    if (EVP_PKEY_keygen_init(pctx) <= 0)
         goto end;
-    if (!EVP_PKEY_generate(pctx, &pkey))
+    if (EVP_PKEY_generate(pctx, &pkey) <= 0)
         goto end;
     privlen = i2d_PrivateKey(pkey, &priv);
     publen = i2d_PUBKEY(pkey, &pub);
     if (privlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, privlen > 0 ? (size_t)privlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -3165,7 +3253,7 @@ long hsk_ossl4_mldsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
             params[n++] = OSSL_PARAM_construct_int(
                 OSSL_SIGNATURE_PARAM_DETERMINISTIC, &deterministic);
         params[n] = OSSL_PARAM_construct_end();
-        if (!EVP_PKEY_CTX_set_params(sctx, params))
+        if (EVP_PKEY_CTX_set_params(sctx, params) <= 0)
             goto end;
     }
     if (!EVP_DigestSign(mctx, NULL, &siglen, msg, msglen))
@@ -3223,14 +3311,13 @@ int hsk_ossl4_mldsa_verify(OSSL_LIB_CTX *ctx, const char *algname,
         EVP_PKEY_free(pkey);
         return HSK_OSSL4_ERR_BADKEY;
     }
-    /* Fixed widths (2420/3309/4627): anything else can never be
-     * valid, so answer mismatch (0) without calling the provider
-     * — encoding errors surface as authentication failures,
-     * never native errors. */
+    /* Fixed widths (2420/3309/4627): anything else is disproved
+     * by length alone (SIGLEN) without calling the provider;
+     * right-length bad signatures still answer mismatch (0). */
     if (siglen != expect) {
         EVP_PKEY_free(pkey);
         ERR_clear_error();
-        return 0;
+        return HSK_OSSL4_ERR_SIGLEN;
     }
     mctx = EVP_MD_CTX_new();
     if (mctx == NULL)
@@ -3243,7 +3330,7 @@ int hsk_ossl4_mldsa_verify(OSSL_LIB_CTX *ctx, const char *algname,
         params[0] = OSSL_PARAM_construct_octet_string(
             OSSL_SIGNATURE_PARAM_CONTEXT_STRING, (void *)ctxstr, ctxlen);
         params[1] = OSSL_PARAM_construct_end();
-        if (!EVP_PKEY_CTX_set_params(sctx, params))
+        if (EVP_PKEY_CTX_set_params(sctx, params) <= 0)
             goto end;
     }
     rc = EVP_DigestVerify(mctx, sig, siglen, msg, msglen);
@@ -3281,14 +3368,15 @@ int hsk_ossl4_mldsa_gen(OSSL_LIB_CTX *ctx, const char *propq,
     pctx = EVP_PKEY_CTX_new_from_name(ctx, algname, propq);
     if (pctx == NULL)
         goto end;
-    if (!EVP_PKEY_keygen_init(pctx))
+    if (EVP_PKEY_keygen_init(pctx) <= 0)
         goto end;
-    if (!EVP_PKEY_generate(pctx, &pkey))
+    if (EVP_PKEY_generate(pctx, &pkey) <= 0)
         goto end;
     prvlen = i2d_PrivateKey(pkey, &priv);
     publen = i2d_PUBKEY(pkey, &pub);
     if (prvlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, prvlen > 0 ? (size_t)prvlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -3427,7 +3515,7 @@ long hsk_ossl4_slhdsa_sign(OSSL_LIB_CTX *ctx, const char *algname,
             params[n++] = OSSL_PARAM_construct_int(
                 OSSL_SIGNATURE_PARAM_DETERMINISTIC, &deterministic);
         params[n] = OSSL_PARAM_construct_end();
-        if (!EVP_PKEY_CTX_set_params(sctx, params))
+        if (EVP_PKEY_CTX_set_params(sctx, params) <= 0)
             goto end;
     }
     if (!EVP_DigestSign(mctx, NULL, &siglen, msg, msglen))
@@ -3488,13 +3576,13 @@ int hsk_ossl4_slhdsa_verify(OSSL_LIB_CTX *ctx, const char *algname,
         return HSK_OSSL4_ERR_BADKEY;
     }
     /* Fixed widths (7856/17088/16224/35664/29792/49856):
-     * anything else can never be valid, so answer mismatch (0)
-     * without calling the provider — encoding errors surface as
-     * authentication failures, never native errors. */
+     * anything else is disproved by length alone (SIGLEN) without
+     * calling the provider; right-length bad signatures still
+     * answer mismatch (0). */
     if (siglen != expect) {
         EVP_PKEY_free(pkey);
         ERR_clear_error();
-        return 0;
+        return HSK_OSSL4_ERR_SIGLEN;
     }
     mctx = EVP_MD_CTX_new();
     if (mctx == NULL)
@@ -3507,7 +3595,7 @@ int hsk_ossl4_slhdsa_verify(OSSL_LIB_CTX *ctx, const char *algname,
         params[0] = OSSL_PARAM_construct_octet_string(
             OSSL_SIGNATURE_PARAM_CONTEXT_STRING, (void *)ctxstr, ctxlen);
         params[1] = OSSL_PARAM_construct_end();
-        if (!EVP_PKEY_CTX_set_params(sctx, params))
+        if (EVP_PKEY_CTX_set_params(sctx, params) <= 0)
             goto end;
     }
     rc = EVP_DigestVerify(mctx, sig, siglen, msg, msglen);
@@ -3545,14 +3633,15 @@ int hsk_ossl4_slhdsa_gen(OSSL_LIB_CTX *ctx, const char *propq,
     pctx = EVP_PKEY_CTX_new_from_name(ctx, algname, propq);
     if (pctx == NULL)
         goto end;
-    if (!EVP_PKEY_keygen_init(pctx))
+    if (EVP_PKEY_keygen_init(pctx) <= 0)
         goto end;
-    if (!EVP_PKEY_generate(pctx, &pkey))
+    if (EVP_PKEY_generate(pctx, &pkey) <= 0)
         goto end;
     prvlen = i2d_PrivateKey(pkey, &priv);
     publen = i2d_PUBKEY(pkey, &pub);
     if (prvlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, prvlen > 0 ? (size_t)prvlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -3644,8 +3733,8 @@ static EVP_PKEY *hsk_ossl4_mlkem_fromdata_pub(OSSL_LIB_CTX *ctx,
     bld[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
                                                (void *)ek, eklen);
     bld[1] = OSSL_PARAM_construct_end();
-    if (!EVP_PKEY_fromdata_init(fctx) ||
-        !EVP_PKEY_fromdata(fctx, &pkey, EVP_PKEY_PUBLIC_KEY, bld))
+    if (EVP_PKEY_fromdata_init(fctx) <= 0 ||
+        EVP_PKEY_fromdata(fctx, &pkey, EVP_PKEY_PUBLIC_KEY, bld) <= 0)
         pkey = NULL;
     EVP_PKEY_CTX_free(fctx);
     return pkey;
@@ -3671,8 +3760,8 @@ static EVP_PKEY *hsk_ossl4_mlkem_fromdata_priv(OSSL_LIB_CTX *ctx,
     bld[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PRIV_KEY,
                                                (void *)dk, dklen);
     bld[1] = OSSL_PARAM_construct_end();
-    if (!EVP_PKEY_fromdata_init(fctx) ||
-        !EVP_PKEY_fromdata(fctx, &pkey, EVP_PKEY_KEYPAIR, bld))
+    if (EVP_PKEY_fromdata_init(fctx) <= 0 ||
+        EVP_PKEY_fromdata(fctx, &pkey, EVP_PKEY_KEYPAIR, bld) <= 0)
         pkey = NULL;
     EVP_PKEY_CTX_free(fctx);
     return pkey;
@@ -3757,12 +3846,12 @@ long hsk_ossl4_mlkem_encaps(OSSL_LIB_CTX *ctx, const char *algname,
     ectx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
     if (ectx == NULL)
         goto end;
-    if (!EVP_PKEY_encapsulate_init(ectx, NULL))
+    if (EVP_PKEY_encapsulate_init(ectx, NULL) <= 0)
         goto end;
     /* NULL-query the output lengths (probed 768/1088/1568 ct,
      * 32 ss); the provider is authoritative for sizing, the
      * table for framing — disagreement is a native error. */
-    if (!EVP_PKEY_encapsulate(ectx, NULL, &ctq, NULL, &ssq))
+    if (EVP_PKEY_encapsulate(ectx, NULL, &ctq, NULL, &ssq) <= 0)
         goto end;
     if (ctq != ctlen || ssq != 32)
         goto end;
@@ -3771,7 +3860,7 @@ long hsk_ossl4_mlkem_encaps(OSSL_LIB_CTX *ctx, const char *algname,
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (!EVP_PKEY_encapsulate(ectx, buf, &ctq, buf + ctlen, &ssq) ||
+    if (EVP_PKEY_encapsulate(ectx, buf, &ctq, buf + ctlen, &ssq) <= 0 ||
         ctq != ctlen || ssq != 32) {
         OPENSSL_clear_free(buf, ctlen + 32);
         buf = NULL;
@@ -3821,9 +3910,9 @@ long hsk_ossl4_mlkem_decaps(OSSL_LIB_CTX *ctx, const char *algname,
     dctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
     if (dctx == NULL)
         goto end;
-    if (!EVP_PKEY_decapsulate_init(dctx, NULL))
+    if (EVP_PKEY_decapsulate_init(dctx, NULL) <= 0)
         goto end;
-    if (!EVP_PKEY_decapsulate(dctx, NULL, &ssq, ct, ctlen_in))
+    if (EVP_PKEY_decapsulate(dctx, NULL, &ssq, ct, ctlen_in) <= 0)
         goto end;
     if (ssq != 32)
         goto end;
@@ -3832,7 +3921,7 @@ long hsk_ossl4_mlkem_decaps(OSSL_LIB_CTX *ctx, const char *algname,
         rc = HSK_OSSL4_ERR_NOMEM;
         goto end;
     }
-    if (!EVP_PKEY_decapsulate(dctx, ss, &ssq, ct, ctlen_in) || ssq != 32) {
+    if (EVP_PKEY_decapsulate(dctx, ss, &ssq, ct, ctlen_in) <= 0 || ssq != 32) {
         OPENSSL_clear_free(ss, 32);
         ss = NULL;
         goto end;
@@ -3873,14 +3962,15 @@ int hsk_ossl4_mlkem_gen(OSSL_LIB_CTX *ctx, const char *propq,
     pctx = EVP_PKEY_CTX_new_from_name(ctx, algname, propq);
     if (pctx == NULL)
         goto end;
-    if (!EVP_PKEY_keygen_init(pctx))
+    if (EVP_PKEY_keygen_init(pctx) <= 0)
         goto end;
-    if (!EVP_PKEY_generate(pctx, &pkey))
+    if (EVP_PKEY_generate(pctx, &pkey) <= 0)
         goto end;
     prvlen = i2d_PrivateKey(pkey, &priv);
     publen = i2d_PUBKEY(pkey, &pub);
     if (prvlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, prvlen > 0 ? (size_t)prvlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -3918,6 +4008,12 @@ long hsk_ossl4_ecdh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     priv = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (priv == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+    /* ECDH serves EC keys only: a foreign key would otherwise
+     * dispatch into the wrong provider operation. */
+    if (!EVP_PKEY_is_a(priv, "EC")) {
+        EVP_PKEY_free(priv);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     peer = hsk_ossl4_load_pub(ctx, propq, peer_der, peer_len);
     if (peer == NULL) {
         /* Not SPKI: try the PKCS#11 raw-point form on the
@@ -4404,7 +4500,8 @@ int hsk_ossl4_dh_gen_keypair(OSSL_LIB_CTX *ctx, const char *propq,
     }
     publen = i2d_PUBKEY(pkey, &pub);
     if (privlen <= 0 || publen <= 0) {
-        OPENSSL_free(priv);
+        if (priv != NULL)
+            OPENSSL_clear_free(priv, privlen > 0 ? (size_t)privlen : 0);
         OPENSSL_free(pub);
         goto end;
     }
@@ -4446,6 +4543,15 @@ long hsk_ossl4_rsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
 
     if (raw == 0) {
         /* Hash-and-sign: the provider defaults RSA to PKCS#1 v1.5. */
@@ -4524,6 +4630,29 @@ int hsk_ossl4_rsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+
+    /* RSA signatures are exactly one modulus wide; any other
+     * length is disproved by length alone (SIGLEN). */
+    {
+        int ksize = EVP_PKEY_get_size(pkey);
+        if (ksize <= 0) {
+            EVP_PKEY_free(pkey);
+            return HSK_OSSL4_ERR_BADPARAM;
+        }
+        if (siglen != (size_t)ksize) {
+            EVP_PKEY_free(pkey);
+            return HSK_OSSL4_ERR_SIGLEN;
+        }
+    }
 
     if (raw == 0) {
         mctx = EVP_MD_CTX_new();
@@ -4606,6 +4735,15 @@ long hsk_ossl4_rsa_pss_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     mctx = EVP_MD_CTX_new();
     if (mctx == NULL)
         goto end;
@@ -4661,6 +4799,29 @@ int hsk_ossl4_rsa_pss_verify(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+
+    /* RSA signatures are exactly one modulus wide; any other
+     * length is disproved by length alone (SIGLEN). */
+    {
+        int ksize = EVP_PKEY_get_size(pkey);
+        if (ksize <= 0) {
+            EVP_PKEY_free(pkey);
+            return HSK_OSSL4_ERR_BADPARAM;
+        }
+        if (siglen != (size_t)ksize) {
+            EVP_PKEY_free(pkey);
+            return HSK_OSSL4_ERR_SIGLEN;
+        }
+    }
     mctx = EVP_MD_CTX_new();
     if (mctx == NULL)
         goto end;
@@ -4714,6 +4875,15 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     if (prehash) {
         sctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
         if (sctx == NULL)
@@ -4723,9 +4893,9 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         md = EVP_MD_fetch(ctx, mdname, propq);
         if (md == NULL)
             goto end;
-        if (!EVP_PKEY_CTX_set_signature_md(sctx, md))
+        if (EVP_PKEY_CTX_set_signature_md(sctx, md) <= 0)
             goto end;
-        if (!EVP_PKEY_CTX_set_rsa_padding(sctx, RSA_X931_PADDING))
+        if (EVP_PKEY_CTX_set_rsa_padding(sctx, RSA_X931_PADDING) <= 0)
             goto end;
         if (EVP_PKEY_sign(sctx, NULL, &buflen, msg, msglen) <= 0)
             goto end;
@@ -4747,7 +4917,7 @@ long hsk_ossl4_rsa_x931_sign(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         if (!EVP_DigestSignInit_ex(mctx, &pctx, mdname, ctx, propq, pkey, NULL))
             goto end;
-        if (!EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_X931_PADDING))
+        if (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_X931_PADDING) <= 0)
             goto end;
         if (!EVP_DigestSign(mctx, NULL, &buflen, msg, msglen))
             goto end;
@@ -4799,18 +4969,41 @@ int hsk_ossl4_rsa_x931_verify(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
+
+    /* RSA signatures are exactly one modulus wide; any other
+     * length is disproved by length alone (SIGLEN). */
+    {
+        int ksize = EVP_PKEY_get_size(pkey);
+        if (ksize <= 0) {
+            EVP_PKEY_free(pkey);
+            return HSK_OSSL4_ERR_BADPARAM;
+        }
+        if (siglen != (size_t)ksize) {
+            EVP_PKEY_free(pkey);
+            return HSK_OSSL4_ERR_SIGLEN;
+        }
+    }
     if (prehash) {
         vctx = EVP_PKEY_CTX_new_from_pkey(ctx, pkey, propq);
         if (vctx == NULL)
             goto end;
-        if (!EVP_PKEY_verify_init(vctx))
+        if (EVP_PKEY_verify_init(vctx) <= 0)
             goto end;
         md = EVP_MD_fetch(ctx, mdname, propq);
         if (md == NULL)
             goto end;
-        if (!EVP_PKEY_CTX_set_signature_md(vctx, md))
+        if (EVP_PKEY_CTX_set_signature_md(vctx, md) <= 0)
             goto end;
-        if (!EVP_PKEY_CTX_set_rsa_padding(vctx, RSA_X931_PADDING))
+        if (EVP_PKEY_CTX_set_rsa_padding(vctx, RSA_X931_PADDING) <= 0)
             goto end;
         rc = EVP_PKEY_verify(vctx, sig, siglen, msg, msglen);
     } else {
@@ -4819,7 +5012,7 @@ int hsk_ossl4_rsa_x931_verify(OSSL_LIB_CTX *ctx, const char *mdname,
             goto end;
         if (!EVP_DigestVerifyInit_ex(mctx, &pctx, mdname, ctx, propq, pkey, NULL))
             goto end;
-        if (!EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_X931_PADDING))
+        if (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_X931_PADDING) <= 0)
             goto end;
         rc = EVP_DigestVerify(mctx, sig, siglen, msg, msglen);
     }
@@ -4905,6 +5098,15 @@ long hsk_ossl4_rsa_oaep_encrypt(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     md = EVP_MD_fetch(ctx, mdname, propq);
     mgfmd = EVP_MD_fetch(ctx, mgfname, propq);
     if (md == NULL || mgfmd == NULL) {
@@ -4979,6 +5181,15 @@ long hsk_ossl4_rsa_pkcs1_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
     pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     /* Typed input bound: mLen <= k - 11. */
     ksize = EVP_PKEY_get_size(pkey);
     if (ksize <= 0) {
@@ -5047,6 +5258,15 @@ long hsk_ossl4_rsa_pkcs1_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
     pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     /* Off-modulus input is a caller shape error, not a padding verdict. */
     ksize = EVP_PKEY_get_size(pkey);
     if (ksize <= 0) {
@@ -5241,6 +5461,15 @@ long hsk_ossl4_rsa_x509_encrypt(OSSL_LIB_CTX *ctx, const char *propq,
     pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     /* Typed input bound: 1 <= mLen <= k, left-padded. */
     ksize = EVP_PKEY_get_size(pkey);
     if (ksize <= 0) {
@@ -5287,6 +5516,15 @@ long hsk_ossl4_rsa_x509_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
     pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     /* Ciphertexts are exactly one modulus wide; anything else is a
      * typed length refusal, never a verdict. */
     ksize = EVP_PKEY_get_size(pkey);
@@ -5337,6 +5575,15 @@ long hsk_ossl4_rsa_x509_sign(OSSL_LIB_CTX *ctx, const char *propq,
     pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     /* Typed input bound: 1 <= mLen <= k, left-padded. */
     ksize = EVP_PKEY_get_size(pkey);
     if (ksize <= 0) {
@@ -5384,13 +5631,26 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
     pkey = hsk_ossl4_load_pub(ctx, propq, pub_der, pub_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     ksize = EVP_PKEY_get_size(pkey);
     if (ksize <= 0) {
         ok = HSK_OSSL4_ERR_BADPARAM;
         goto end;
     }
     k = (size_t)ksize;
-    if (siglen != k || msglen == 0 || msglen > k) {
+    if (siglen != k) {
+        ok = HSK_OSSL4_ERR_SIGLEN;
+        goto end;
+    }
+    if (msglen == 0 || msglen > k) {
         ok = HSK_OSSL4_ERR_BADPARAM;
         goto end;
     }
@@ -5401,9 +5661,16 @@ int hsk_ossl4_rsa_x509_verify(OSSL_LIB_CTX *ctx, const char *propq,
     }
     memset(padded, 0, k - msglen);
     memcpy(padded + (k - msglen), msg, msglen);
-    if (x509_pub_op(ctx, propq, pkey, sig, k, &recovered) < 0) {
-        ok = 0;
-        goto end;
+    {
+        long sub = x509_pub_op(ctx, propq, pkey, sig, k, &recovered);
+        if (sub == HSK_OSSL4_ERR_NOMEM) {
+            ok = HSK_OSSL4_ERR_NOMEM;
+            goto end;
+        }
+        if (sub < 0) {
+            ok = 0;
+            goto end;
+        }
     }
     ok = (CRYPTO_memcmp(recovered, padded, k) == 0) ? 1 : 0;
 
@@ -5441,6 +5708,15 @@ long hsk_ossl4_rsa_oaep_decrypt(OSSL_LIB_CTX *ctx, const char *mdname,
     pkey = hsk_ossl4_load_priv(ctx, propq, priv_der, priv_len);
     if (pkey == NULL)
         return HSK_OSSL4_ERR_BADKEY;
+
+    /* RSA-family shims serve RSA keys only: a foreign key would
+     * otherwise dispatch into the wrong provider operation.
+     * RSA-PSS keys pass; each operation still refuses
+     * combinations its provider call does not serve. */
+    if (!(EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))) {
+        EVP_PKEY_free(pkey);
+        return HSK_OSSL4_ERR_BADKEY;
+    }
     /* OAEP ciphertexts are exactly one modulus wide; anything else
      * is a typed length refusal, never a padding verdict. */
     if (inlen != (size_t)EVP_PKEY_get_size(pkey)) {

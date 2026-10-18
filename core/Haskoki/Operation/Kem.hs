@@ -42,6 +42,7 @@ import Haskoki.Operation.KeyManagement
   , ckkGenericSecret
   , ckkMlKem
   , ckoSecretKey
+  , mechAllowed
   , pendingFromAttrs
   )
 import Haskoki.Outcome
@@ -140,8 +141,9 @@ stampKemOutput attrs =
 -- secret template must describe a 32-byte secret
 -- (generic-secret, or AES-256 — the oracle's output shape).
 -- Check order is documented and tested: mechanism, handle, key
--- kind, parameter set, usage mark, template, then the output
--- intent. A wrong key TYPE is the deeper mismatch
+-- kind, parameter set, usage mark, allowed mechanisms,
+-- template, then the output intent. A wrong key TYPE is the
+-- deeper mismatch
 -- (@CKR_KEY_TYPE_INCONSISTENT@, the 'checkKeyBinding'
 -- precedent); a right-typed key on another set or without the
 -- usage mark refuses @CKR_KEY_FUNCTION_NOT_PERMITTED@.
@@ -168,6 +170,9 @@ planKemEncaps model st mech h alg tmpl intent
         | Map.lookup AttrEncapsulate (osAttrs ost) /= Just (ValBool True) ->
             KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
               "peer key does not permit encapsulation")
+        | not (mechAllowed mech ost) ->
+            KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+              "mechanism is not in the key's allowed list")
         | otherwise -> case checkKemSecret tmpl of
             Left deny -> KeyDenied deny
             Right attrs -> case checkSecretLen attrs of
@@ -281,6 +286,9 @@ planKemDecaps model st mech h alg ct tmpl
         | Map.lookup AttrDecapsulate (osAttrs ost) /= Just (ValBool True) ->
             KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
               "key does not permit decapsulation")
+        | not (mechAllowed mech ost) ->
+            KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+              "mechanism is not in the key's allowed list")
         | otherwise -> case checkKemSecret tmpl of
             Left deny -> KeyDenied deny
             Right attrs -> case checkSecretLen attrs of

@@ -34442,7 +34442,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "IKE recipe (core/Haskoki/Recipe/Ike.hs): the IKEv1 extended derive, prf+ expansion over (base, keygxy, extra-data) that truncates the base when neither aux key nor extra data is present (the oracle reference rule). Parameters are the canonical frame (ike-params/1); the native CK_IKE1_EXTENDED_DERIVE_PARAMS struct decodes in the FFI (keygxy flag and handle must agree). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 16320-byte counter ceiling (the base length when truncating). Vectors pinned (RoutingE2ESpec caseDriverIke: oracle-reference cross-checked, aux + truncate legs); planner and native-profile pins (RecipeIkeSpec); synthetic construction (SyntheticSpec caseIke); real KATs (KeyManagementSpec caseRealIkeVector).",
+      "notes": "IKE recipe (core/Haskoki/Recipe/Ike.hs): the IKEv1 extended derive, prf+ expansion over (base, keygxy, extra-data) that truncates the base when neither aux key nor extra data is present (the oracle reference rule; refused on a sealed base). Parameters are the canonical frame (ike-params/1); the native CK_IKE1_EXTENDED_DERIVE_PARAMS struct decodes in the FFI (keygxy flag and handle must agree). The output length arrives via the derived template CKA_VALUE_LEN, capped by the 16320-byte counter ceiling (the base length when truncating). Vectors pinned (RoutingE2ESpec caseDriverIke: oracle-reference cross-checked, aux + truncate legs); planner and native-profile pins (RecipeIkeSpec); synthetic construction (SyntheticSpec caseIke); real KATs (KeyManagementSpec caseRealIkeVector).",
       "numeric_id": "0x00004031",
       "routes": [
         {

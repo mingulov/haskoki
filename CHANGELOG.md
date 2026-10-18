@@ -127,9 +127,11 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   matching ran over the stored rows, so absent flags never matched.
 - Public keys report no `CKA_ALWAYS_SENSITIVE` and no
   `CKA_NEVER_EXTRACTABLE`: reads fail with
-  `CKR_ATTRIBUTE_TYPE_INVALID`, since PKCS#11 Table 27 assigns those
-  rows to private and secret keys only. In 0.4.0.0 the attributes
-  were unmapped on every class; now only public keys answer this way.
+  `CKR_ATTRIBUTE_TYPE_INVALID`, since those are creation-history
+  rows and public keys report only the operational protection
+  flags (`CKA_SENSITIVE`/`CKA_EXTRACTABLE`, never sealing). In
+  0.4.0.0 the attributes were unmapped on every class; now only
+  public keys answer this way.
 - `C_CopyObject` naming the value or a private component of a
   sealed key fails with `CKR_ATTRIBUTE_READ_ONLY` whatever the value,
   even when it matches the source. In 0.4.0.0 the copy succeeded, so
@@ -230,6 +232,23 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   `-N2` or higher no longer takes effect, and an unsafe option no
   longer aborts the host during startup. A process that already
   runs a GHC RTS keeps its own capability count.
+- Raw ECDSA signatures narrowed on one curve: sect409k1 signs
+  102-byte raw signatures (51-byte order) where 0.4.0.0 signed 104
+  bytes; the 104-byte form still verifies. Every other served
+  curve signs byte-identical output.
+- RSA signatures shorter than the modulus on the raw PKCS#1 v1.5
+  (`CKM_RSA_PKCS`), PSS, X9.31 and X.509 rows now fail with
+  `CKR_SIGNATURE_LEN_RANGE`; the raw RSA decryption underneath
+  used to accept them.
+- Non-empty signatures whose length alone disproves them now fail
+  with `CKR_SIGNATURE_LEN_RANGE` instead of
+  `CKR_SIGNATURE_INVALID`: RSA at the modulus width, raw DSA at
+  twice the subprime width, EdDSA, ML-DSA and SLH-DSA at their
+  fixed widths, and raw ECDSA at odd lengths or past twice the
+  wider of the order and coordinate widths. DSA clients sending
+  stripped minimal-width encodings, and raw ECDSA clients
+  zero-padding past the bound, both of which 0.4.0.0 verified,
+  now get `CKR_SIGNATURE_LEN_RANGE`.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and
@@ -509,6 +528,82 @@ record: symbol separation, sanitizer runs, evidence limits) and
   starting service can no longer race it, and a stale lock with no
   holder (pid 1 after a container kill, empty, garbage) is taken
   over and reset like open and migrate.
+- Non-empty asymmetric signatures of the wrong length are refused
+  with `CKR_SIGNATURE_LEN_RANGE` instead of verified or reported as
+  invalid: raw ECDSA accepts any even non-zero length up to twice
+  the wider of the order and coordinate widths, raw DSA requires
+  exactly twice the subprime width, ML-DSA, SLH-DSA and EdDSA
+  require their fixed widths, and RSA requires the modulus width.
+  Right-length bad signatures still fail with
+  `CKR_SIGNATURE_INVALID`. Raw ECDSA sign widths follow the curve
+  order, clamped to the field width, so every served curve signs
+  byte-identical output except sect409k1, whose 51-byte order
+  narrows raw signatures from 104 to 102 bytes (104-byte
+  signatures made before the narrowing still verify). 0.4.0.0 is
+  affected.
+- The native shim checks OpenSSL success returns with `<= 0`
+  instead of logical negation, so a `-2` (not supported) return
+  fails closed instead of reading as success; the RSA
+  key-algorithm gate in the Security section below keeps foreign
+  keys from the calls where `-2` was reachable, so served
+  operations behave as before. A digest-final allocation failure
+  now surfaces as an out-of-memory failure through the native
+  layers (still `CKR_GENERAL_ERROR` at the C ABI); X.509 verify
+  under out-of-memory now returns `CKR_GENERAL_ERROR` instead of
+  `CKR_SIGNATURE_INVALID`. The key-generation failure path
+  releases private key bytes with `OPENSSL_clear_free`, and the
+  HMAC oversized-key hash buffer is cleansed on early exits.
+  0.4.0.0 is affected.
+
+### Security
+
+- Byte derivations can no longer recover a sealed generic secret
+  or HMAC key. `CKM_EXTRACT_KEY_FROM_KEY` over a sensitive or
+  unextractable base fails with `CKR_KEY_FUNCTION_NOT_PERMITTED`,
+  as does `CKM_XOR_BASE_AND_DATA` with data shorter than a sealed
+  base and `CKM_IKE1_EXTENDED_DERIVE` with no aux key and empty
+  extra data (which would return raw base bytes). A child length
+  below the natural output width — an explicit `CKA_VALUE_LEN` or
+  a length filled in from a fixed-length template key type — on
+  `CKM_CONCATENATE_*` and `CKM_XOR_BASE_AND_DATA` fails with
+  `CKR_TEMPLATE_INCONSISTENT`, as does a child key type outside
+  the allow-list (generic secret, the HMAC types, AES, ChaCha20,
+  Camellia, ARIA and SEED), since e.g. Poly1305, RC2 and RC4
+  children expose the sealed bytes through their own mechanisms,
+  and a known part of a DES3 child reduces them to DES-strength
+  search. A sealed second key of `CKM_CONCATENATE_BASE_AND_KEY`
+  triggers the length and type rules even when the base is open.
+  Unsealed keys derive exactly as before, and `C_DigestKey` is
+  unchanged. 0.4.0.0 is affected.
+- Known limitation: sensitivity cannot be fully enforced for
+  `CKK_RC2` keys used with reduced effective bits or for
+  `CKK_POLY1305` keys, whose own mechanisms expose key bytes.
+  Such sealed keys can still arrive through key generation,
+  create, unwrap, or as children of a PRF-family derive.
+  0.4.0.0 is affected.
+- `CKA_ALLOWED_MECHANISMS` is now enforced on the derive base and
+  auxiliary key, on wrapping and unwrapping keys, and on KEM
+  encapsulate and decapsulate keys, failing with
+  `CKR_KEY_FUNCTION_NOT_PERMITTED` outside the listed mechanisms,
+  matching the operation-init path. An empty list allows nothing,
+  on these paths as at init. The public-key derivation
+  (`CKM_PUB_KEY_FROM_PRIV_KEY`) is exempt: its output is public,
+  so the list is not consulted. In 0.4.0.0 the list was checked
+  only at operation init, so a key could derive, wrap, unwrap or
+  agree under a mechanism its policy forbade. 0.4.0.0 is affected.
+- Asymmetric key types are refused on secret-class objects: create,
+  import, unwrap, derive and generate templates naming e.g.
+  `CKK_RSA` with `CKO_SECRET_KEY` fail with
+  `CKR_TEMPLATE_INCONSISTENT`, and operation init checks the object
+  class fits the mechanism on the reviewed rows (HMAC, RSA, ECDSA
+  and the ciphers), failing with `CKR_KEY_TYPE_INCONSISTENT` for a
+  secret-class key under an asymmetric mechanism. The reverse
+  direction — a symmetric key type on a public- or private-class
+  object — is refused at operation init on the same rows. Every
+  native RSA shim also verifies the loaded key is RSA before use,
+  as do the ECDSA and ECDH shims for EC. In 0.4.0.0 a confused
+  object could be created and driven through signing. 0.4.0.0 is
+  affected.
 
 ## [0.4.0.0] - Unreleased
 

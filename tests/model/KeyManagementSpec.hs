@@ -308,6 +308,7 @@ import Haskoki.Registry.Generated
   , ckm_PKCS5_PBKD2
   , ckm_SHA256
   , ckm_SHA256_HMAC
+  , ckm_SHA256_RSA_PKCS
   , ckm_SHA1_KEY_DERIVATION
   , ckm_SHA256_KEY_DERIVATION
   , ckm_SHAKE_128_KEY_DERIVATION
@@ -370,8 +371,13 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "ChaCha20 keygen mints 32 bytes" caseChacha20Keygen
   , testCase "AES keygen refuses PQC wrap flags" caseAesKeygenEncapsulate
   , testCase "Init enforces the allowed-mechanism list" caseInitAllowedMechanisms
+  , testCase "Derive inputs enforce the allowed-mechanism list" caseDeriveAllowedMechanisms
+  , testCase "Wrap inputs enforce the allowed-mechanism list" caseWrapAllowedMechanisms
+  , testCase "KEM inputs enforce the allowed-mechanism list" caseKemAllowedMechanisms
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
   , testCase "Init enforces the key-type matrix" caseInitKeyTypeMatrix
+  , testCase "Init refuses class/type confusion" caseInitClassConfusion
+  , testCase "Unwrap refuses asymmetric types on secret templates" caseUnwrapRefusesAsymmetric
   , testCase "EC keypair delivers two handles" caseEcKeypair
   , testCase "ML-DSA keypair delivers two handles" caseMldsaKeypair
   , testCase "ML-DSA set plans, agrees and refuses" caseMldsaSetPlanner
@@ -472,6 +478,8 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "IKE plans rows, refuses bad shapes" caseIkePlans
   , testCase "Real IKE derives match the KATs" caseRealIkeVector
   , testCase "Byte-op plans rows, refuses bad shapes" caseByteOpsPlans
+  , testCase "Sealed bases refuse shortening byte derivations" caseSealedByteOpsRefuse
+  , testCase "Sealed bases refuse IKEv1-extended truncation" caseSealedIkeTruncRefuse
   , testCase "Real byte-op derives match the KATs" caseRealByteOpsVector
   , testCase "Byte-op derives preserve source protection" caseByteOpsProtection
   , testCase "Generate stamps key attributes at birth" caseGenerateStampsKeyAttrs
@@ -1728,6 +1736,239 @@ caseInitAllowedMechanisms = withSynth $ \answer -> do
     le64 w = BS.pack
       [ fromIntegral ((w `shiftR` s) .&. 0xFF) | s <- [0, 8 .. 56] ]
 
+-- | The stored form of a @CKA_ALLOWED_MECHANISMS@ list: packed
+-- little-endian mechanism ids.
+allowedList :: [MechanismId] -> AttributeValue
+allowedList mechs = ValBytes (BS.concat (map (le64 . unMechanismId) mechs))
+  where
+    le64 :: Word64 -> ByteString
+    le64 w = BS.pack
+      [ fromIntegral ((w `shiftR` s) .&. 0xFF) | s <- [0, 8 .. 56] ]
+
+-- | The derive base and the concat-key aux refuse a mechanism
+-- outside their allowed list; a listed mechanism still derives.
+caseDeriveAllowedMechanisms :: IO ()
+caseDeriveAllowedMechanisms = do
+  m0 <- seedModel
+  st <- getSession m0
+  let openTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool True)
+        , (AttrSensitive, ValBool False)
+        , (AttrExtractable, ValBool True)
+        ]
+      listed = allowedList [extractMech]
+      otherList = allowedList [hmacSha256Mech]
+  (m1, listedH) <- plantKey m0 st
+    (openTmpl ++ [(AttrAllowedMechanisms, listed)]) (BS.pack [0 .. 31])
+  (m2, otherH) <- plantKey m1 st
+    (openTmpl ++ [(AttrAllowedMechanisms, otherList)]) (BS.pack [32 .. 63])
+  (m3, listedAuxH) <- plantKey m2 st
+    (openTmpl ++ [(AttrAllowedMechanisms, allowedList [concatKeyMech])])
+    (BS.pack [64 .. 95])
+  (m4, otherAuxH) <- plantKey m3 st
+    (openTmpl ++ [(AttrAllowedMechanisms, otherList)]) (BS.pack [96 .. 127])
+  (m5, concatBaseH) <- plantKey m4 st
+    (openTmpl ++ [(AttrAllowedMechanisms, allowedList [concatKeyMech])])
+    (BS.pack [128 .. 159])
+  (m6, ikeBaseH) <- plantKey m5 st
+    (openTmpl ++ [(AttrAllowedMechanisms, allowedList [ike1Mech])])
+    (BS.pack [160 .. 191])
+  (m7, ikeAuxListedH) <- plantKey m6 st
+    (openTmpl ++ [(AttrAllowedMechanisms, allowedList [ike1Mech])])
+    (BS.pack [192 .. 223])
+  let kid :: Int -> [(AttributeType, AttributeValue)]
+      kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      plans label mech base frame tmpl =
+        case planDerive defaultRules m7 st mech base (encodeDeriveParams frame [tmpl]) of
+          KeyEffect _ (FxDerive _ _ _ _ _ got) -> pure got
+          other -> assertFailure (label ++ " must plan, got: " ++ show other) >> undefined
+      refuses label mech base frame tmpl =
+        case planDerive defaultRules m7 st mech base (encodeDeriveParams frame [tmpl]) of
+          KeyDenied (KeyDeny code _) ->
+            assertEqual label CKR_KEY_FUNCTION_NOT_PERMITTED code
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      fExt = encodeByteOpsParams 0 0 BS.empty
+  refuses "unlisted base extract" extractMech otherH fExt (kid 1)
+  _ <- plans "listed base extract" extractMech listedH fExt (kid 1)
+  let listedAuxN = fromIntegral (unExternalHandle listedAuxH)
+      otherAuxN = fromIntegral (unExternalHandle otherAuxH)
+      ikeAuxListedN = fromIntegral (unExternalHandle ikeAuxListedH)
+  refuses "unlisted aux concat-key" concatKeyMech concatBaseH
+    (encodeByteOpsParams otherAuxN 0 BS.empty) (kid 64)
+  _ <- plans "listed aux concat-key" concatKeyMech concatBaseH
+    (encodeByteOpsParams listedAuxN 0 BS.empty) (kid 64)
+  refuses "unlisted aux IKEv1-PRF" ike1Mech ikeBaseH
+    (encodeIkeParams 4 0 7 otherAuxN ikeNi ikeNr) (kid 32)
+  _ <- plans "listed aux IKEv1-PRF" ike1Mech ikeBaseH
+    (encodeIkeParams 4 0 7 ikeAuxListedN ikeNi ikeNr) (kid 32)
+  pure ()
+
+-- | The wrapping key (secret, RSA and EC-composition rows) and the
+-- unwrapping key refuse a mechanism outside their allowed list; a
+-- listed mechanism still plans.
+caseWrapAllowedMechanisms :: IO ()
+caseWrapAllowedMechanisms = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let otherList = allowedList [aesCbcMech]
+      kwTmpl extra = aesTmpl 32 ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)] ++ extra
+  (m1, kwListedH) <- genAesKey answer m0 st
+    (kwTmpl [(AttrAllowedMechanisms, allowedList [aesKwMech])])
+  (m2, kwOtherH) <- genAesKey answer m1 st (kwTmpl [(AttrAllowedMechanisms, otherList)])
+  (m3, targetH) <- genAesKey answer m2 st (aesTmpl 16)
+  let unwrapTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrToken, ValBool False)
+        ]
+      refusesWrap label mech wrapH =
+        case planWrapKey m3 st mech BS.empty wrapH targetH IntentNull of
+          KeyDenied (KeyDeny code _) ->
+            assertEqual label CKR_KEY_FUNCTION_NOT_PERMITTED code
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      plansWrap label mech wrapH =
+        case planWrapKey m3 st mech BS.empty wrapH targetH IntentNull of
+          KeyDenied deny -> assertFailure (label ++ " must plan, got: " ++ show deny)
+          _ -> pure ()
+      refusesUnwrap label mech wrapH blob =
+        case planUnwrapKey defaultRules m3 st mech BS.empty wrapH blob unwrapTmpl of
+          KeyDenied (KeyDeny code _) ->
+            assertEqual label CKR_KEY_FUNCTION_NOT_PERMITTED code
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      plansUnwrap label mech wrapH blob =
+        case planUnwrapKey defaultRules m3 st mech BS.empty wrapH blob unwrapTmpl of
+          KeyDenied deny -> assertFailure (label ++ " must plan, got: " ++ show deny)
+          _ -> pure ()
+  refusesWrap "unlisted AES wrap" aesKwMech kwOtherH
+  plansWrap "listed AES wrap" aesKwMech kwListedH
+  refusesUnwrap "unlisted AES unwrap" aesKwMech kwOtherH (BS.replicate 24 0)
+  plansUnwrap "listed AES unwrap" aesKwMech kwListedH (BS.replicate 24 0)
+  -- RSA row: OAEP wrap takes the public half, unwrap the private.
+  let oaep = encodeOaepParams "SHA256" "SHA256" BS.empty
+      rsaPubListed = rsaPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True), (AttrAllowedMechanisms, allowedList [rsaOaepMech])]
+      rsaPrivListed = rsaPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True), (AttrAllowedMechanisms, allowedList [rsaOaepMech])]
+      rsaPubOther = rsaPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True), (AttrAllowedMechanisms, otherList)]
+      rsaPrivOther = rsaPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True), (AttrAllowedMechanisms, otherList)]
+  (m4, rsaPubListedH, rsaPrivListedH) <- genRsaPair answer m3 st rsaPubListed rsaPrivListed
+  (m5, rsaPubOtherH, rsaPrivOtherH) <- genRsaPair answer m4 st rsaPubOther rsaPrivOther
+  let refusesRsaWrap label wrapH =
+        case planWrapKey m5 st rsaOaepMech oaep wrapH targetH IntentNull of
+          KeyDenied (KeyDeny code _) ->
+            assertEqual label CKR_KEY_FUNCTION_NOT_PERMITTED code
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      plansRsaWrap label wrapH =
+        case planWrapKey m5 st rsaOaepMech oaep wrapH targetH IntentNull of
+          KeyDenied deny -> assertFailure (label ++ " must plan, got: " ++ show deny)
+          _ -> pure ()
+      refusesRsaUnwrap label wrapH =
+        case planUnwrapKey defaultRules m5 st rsaOaepMech oaep wrapH (BS.replicate 256 0) unwrapTmpl of
+          KeyDenied (KeyDeny code _) ->
+            assertEqual label CKR_KEY_FUNCTION_NOT_PERMITTED code
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      plansRsaUnwrap label wrapH =
+        case planUnwrapKey defaultRules m5 st rsaOaepMech oaep wrapH (BS.replicate 256 0) unwrapTmpl of
+          KeyDenied deny -> assertFailure (label ++ " must plan, got: " ++ show deny)
+          _ -> pure ()
+  refusesRsaWrap "unlisted RSA wrap" rsaPubOtherH
+  plansRsaWrap "listed RSA wrap" rsaPubListedH
+  refusesRsaUnwrap "unlisted RSA unwrap" rsaPrivOtherH
+  plansRsaUnwrap "listed RSA unwrap" rsaPrivListedH
+  -- EC-composition row: wrap takes the public half, unwrap the private.
+  let compParams = encodeWrapCompEcdhParams 0 BS.empty 128
+      ecPubListed = ecPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True), (AttrAllowedMechanisms, allowedList [ecdhAesKwMech])]
+      ecPrivListed = ecPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True), (AttrAllowedMechanisms, allowedList [ecdhAesKwMech])]
+      ecPubOther = ecPubTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True), (AttrAllowedMechanisms, otherList)]
+      ecPrivOther = ecPrivTmpl ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True), (AttrAllowedMechanisms, otherList)]
+      genEcPair m pubT privT =
+        case planGenerateKeyPair defaultRules m st ecKeyPairGenMech pubT privT of
+          KeyEffect pw fx -> do
+            res <- answer m fx
+            c <- finishCommit m st pw res 2
+            pub <- handleOf (pcOutputs c !! 0)
+            priv <- handleOf (pcOutputs c !! 1)
+            m' <- expectRight (publishDelta m (pcDelta c))
+            pure (m', pub, priv)
+          other -> assertFailure ("EC keypair plan is not an effect: " ++ show other) >> undefined
+  (m6, ecPubListedH, ecPrivListedH) <- genEcPair m5 ecPubListed ecPrivListed
+  (m7, ecPubOtherH, ecPrivOtherH) <- genEcPair m6 ecPubOther ecPrivOther
+  let refusesEcWrap label wrapH =
+        case planWrapKey m7 st ecdhAesKwMech compParams wrapH targetH IntentNull of
+          KeyDenied (KeyDeny code _) ->
+            assertEqual label CKR_KEY_FUNCTION_NOT_PERMITTED code
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      plansEcWrap label wrapH =
+        case planWrapKey m7 st ecdhAesKwMech compParams wrapH targetH IntentNull of
+          KeyDenied deny -> assertFailure (label ++ " must plan, got: " ++ show deny)
+          _ -> pure ()
+      refusesEcUnwrap label wrapH =
+        case planUnwrapKey defaultRules m7 st ecdhAesKwMech compParams wrapH (BS.replicate 93 0) unwrapTmpl of
+          KeyDenied (KeyDeny code _) ->
+            assertEqual label CKR_KEY_FUNCTION_NOT_PERMITTED code
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      plansEcUnwrap label wrapH =
+        case planUnwrapKey defaultRules m7 st ecdhAesKwMech compParams wrapH (BS.replicate 93 0) unwrapTmpl of
+          KeyDenied deny -> assertFailure (label ++ " must plan, got: " ++ show deny)
+          _ -> pure ()
+  refusesEcWrap "unlisted EC-comp wrap" ecPubOtherH
+  plansEcWrap "listed EC-comp wrap" ecPubListedH
+  refusesEcUnwrap "unlisted EC-comp unwrap" ecPrivOtherH
+  plansEcUnwrap "listed EC-comp unwrap" ecPrivListedH
+  pure ()
+
+-- | The KEM encapsulate and decapsulate keys refuse a mechanism
+-- outside their allowed list; a listed mechanism still plans.
+caseKemAllowedMechanisms :: IO ()
+caseKemAllowedMechanisms = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  let otherList = allowedList [aesCbcMech]
+      listed = allowedList [mlKemMech]
+      genPair m pubT privT =
+        case planGenerateKeyPair defaultRules m st mlKemKeyPairGenMech pubT privT of
+          KeyEffect pw fx -> do
+            res <- answer m fx
+            c <- finishCommit m st pw res 2
+            pub <- handleOf (pcOutputs c !! 0)
+            priv <- handleOf (pcOutputs c !! 1)
+            m' <- expectRight (publishDelta m (pcDelta c))
+            pure (m', pub, priv)
+          other -> assertFailure ("KEM keypair plan is not an effect: " ++ show other) >> undefined
+  (m1, pubListedH, privListedH) <- genPair m0
+    (kemPubTmpl ++ [(AttrAllowedMechanisms, listed)])
+    (kemPrivTmpl ++ [(AttrAllowedMechanisms, listed)])
+  (m2, pubOtherH, privOtherH) <- genPair m1
+    (kemPubTmpl ++ [(AttrAllowedMechanisms, otherList)])
+    (kemPrivTmpl ++ [(AttrAllowedMechanisms, otherList)])
+  let ctLen = kemCtLen KemMl768
+      intent = IntentBuffer (fromIntegral ctLen)
+  case planKemEncaps m2 st mlKemMech pubOtherH KemMl768 secretTmpl intent of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "unlisted encaps" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("unlisted encaps must deny, got: " ++ show other)
+  ct <- case planKemEncaps m2 st mlKemMech pubListedH KemMl768 secretTmpl intent of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      case pcOutputs c of
+        (NativeOutput (RegionBytes "ciphertext" _) ct0 : _) -> pure ct0
+        _ -> assertFailure "no ciphertext output" >> undefined
+    other -> assertFailure ("listed encaps must plan, got: " ++ show other) >> undefined
+  case planKemDecaps m2 st mlKemMech privOtherH KemMl768 ct secretTmpl of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "unlisted decaps" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("unlisted decaps must deny, got: " ++ show other)
+  case planKemDecaps m2 st mlKemMech privListedH KemMl768 ct secretTmpl of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("listed decaps must plan, got: " ++ show other)
+
 genericTmpl :: Int -> [(AttributeType, AttributeValue)]
 genericTmpl n =
   [ (AttrClass, ValULong ckoSecretKey)
@@ -1901,15 +2142,116 @@ caseInitKeyTypeMatrix = withSynth $ \answer -> do
         [ (AttrClass, ValULong ckoSecretKey)
         , (AttrToken, ValBool False)
         ]
-  (m4, legacyH) <- case publishPending m2 st [pendingFromAttrs st legacyAttrs] of
+  (m4, legacyH) <- case publishPending m3 st [pendingFromAttrs st legacyAttrs] of
     Left deny -> assertFailure ("plant must publish: " ++ show deny) >> undefined
     Right (delta, [h]) -> do
-      m' <- expectRight (publishDelta m2 delta)
+      m' <- expectRight (publishDelta m3 delta)
       pure (m', h)
     Right _ -> assertFailure "plant must mint one handle" >> undefined
   let env3 = env { oeModel = m4 }
       (_, signLegacy) = initOperation env3 emptySessionOps st (mkSign legacyH)
   assertEqual "untyped legacy key skips matrix" CKR_OK (ioCode signLegacy)
+
+-- | A secret-class object carrying an asymmetric key type (or a
+-- public-class object carrying a secret type) refuses at Init
+-- with the key-type code on reviewed rows, even with the usage
+-- mark set; coherent keys still init.
+caseInitClassConfusion :: IO ()
+caseInitClassConfusion = withSynth $ \answer -> do
+  mSeed <- seedModel
+  m0 <- loginUser mSeed
+  st <- getSession m0
+  let rsaSignMech = MechanismId ckm_SHA256_RSA_PKCS
+  (m1, confusedH) <- plantKey m0 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkRsa)
+    , (AttrToken, ValBool False)
+    , (AttrSign, ValBool True)
+    ] (BS.pack [0 .. 15])
+  (m2, flippedH) <- plantKey m1 st
+    [ (AttrClass, ValULong ckoPublicKey)
+    , (AttrKeyType, ValULong ckkAes)
+    , (AttrToken, ValBool False)
+    , (AttrEncrypt, ValBool True)
+    ] (BS.pack [0 .. 15])
+  (m3, rsaPubH, rsaPrivH) <- genRsaPair answer m2 st
+    (rsaPubTmpl ++ [(AttrVerify, ValBool True)])
+    (rsaPrivTmpl ++ [(AttrSign, ValBool True)])
+  (m4, aesH) <- genAesKey answer m3 st (aesTmpl 16)
+  let env = OpEnv
+        { oeRegistry = curatedRegistry
+        , oeCaps = mkCapabilities
+            [ (rsaSignMech, OpSign)
+            , (rsaSignMech, OpVerify)
+            , (aesCbcMech, OpEncrypt)
+            ]
+        , oeModel = m4
+        }
+      mkRsaSign h = InitArgs
+        { iaOp = OpSign
+        , iaMech = rsaSignMech
+        , iaParams = BS.empty
+        , iaKey = Just (KeyPolicy h [OpSign] False)
+        , iaCipher = Nothing
+        , iaRecover = Nothing
+        }
+      mkEnc h = InitArgs
+        { iaOp = OpEncrypt
+        , iaMech = aesCbcMech
+        , iaParams = iv16
+        , iaKey = Just (KeyPolicy h [OpEncrypt] False)
+        , iaCipher = Just (CipherSpec 16 False)
+        , iaRecover = Nothing
+        }
+  let (_, denyConfused) = initOperation env emptySessionOps st (mkRsaSign confusedH)
+  assertEqual "secret-class RSA key refuses sign" CKR_KEY_TYPE_INCONSISTENT
+    (ioCode denyConfused)
+  let (_, denyFlipped) = initOperation env emptySessionOps st (mkEnc flippedH)
+  assertEqual "public-class AES key refuses encrypt" CKR_KEY_TYPE_INCONSISTENT
+    (ioCode denyFlipped)
+  let (_, okRsa) = initOperation env emptySessionOps st (mkRsaSign rsaPrivH)
+  assertEqual "RSA private key signs" CKR_OK (ioCode okRsa)
+  let (_, okAes) = initOperation env emptySessionOps st (mkEnc aesH)
+  assertEqual "AES key encrypts" CKR_OK (ioCode okAes)
+  _ <- pure (rsaPubH, m1, m2, m3)
+  pure ()
+
+-- | An unwrap template asking for a secret-class object with an
+-- asymmetric key type refuses inconsistent; the coherent
+-- template over the same blob still plans.
+caseUnwrapRefusesAsymmetric :: IO ()
+caseUnwrapRefusesAsymmetric = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, wrapH) <- genAesKey answer m0 st
+    (aesTmpl 32 ++ [(AttrWrap, ValBool True), (AttrUnwrap, ValBool True)])
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 16)
+  blob <- case planWrapKey m2 st aesKwMech BS.empty wrapH targetH (IntentBuffer 24) of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Immediate c -> case pcOutputs c of
+          [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+          o -> assertFailure ("wrap outputs one blob, got: " ++ show o) >> undefined
+        other -> assertFailure ("wrap finish must commit, got: " ++ show other) >> undefined
+    other -> assertFailure ("wrap plan is not an effect: " ++ show other) >> undefined
+  let mkTmpl kty =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong kty)
+        , (AttrToken, ValBool False)
+        ]
+  mapM_ (\(tag, kty) ->
+    case planUnwrapKey defaultRules m2 st aesKwMech BS.empty wrapH blob (mkTmpl kty) of
+      KeyDenied (KeyDeny code _) ->
+        assertEqual ("reject code " ++ tag) CKR_TEMPLATE_INCONSISTENT code
+      other -> assertFailure ("must deny, got (" ++ tag ++ "): " ++ show other))
+    [ ("RSA", ckkRsa)
+    , ("EC", ckkEc)
+    , ("ML-KEM", ckkMlKem)
+    ]
+  case planUnwrapKey defaultRules m2 st aesKwMech BS.empty wrapH blob (mkTmpl ckkAes) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("coherent unwrap must plan, got: " ++ show other)
 
 caseEcKeypair :: IO ()
 caseEcKeypair = withSynth $ \answer -> do
@@ -6580,17 +6922,24 @@ caseByteOpsPlans :: IO ()
 caseByteOpsPlans = do
   m0 <- seedModel
   st <- getSession m0
+  -- Explicitly unsealed fixtures: this case pins the row
+  -- shapes (including shortening rows), and sealed inputs
+  -- refuse shortening derives.
   (m1, baseH) <- plantKey m0 st
     [ (AttrClass, ValULong ckoSecretKey)
     , (AttrKeyType, ValULong ckkGenericSecret)
     , (AttrToken, ValBool False)
     , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
     ] (BS.pack [0 .. 31])
   (m2, auxH) <- plantKey m1 st
     [ (AttrClass, ValULong ckoSecretKey)
     , (AttrKeyType, ValULong ckkGenericSecret)
     , (AttrToken, ValBool False)
     , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
     ] (BS.pack [32 .. 63])
   let auxN = fromIntegral (unExternalHandle auxH)
       kid :: Int -> [(AttributeType, AttributeValue)]
@@ -6673,22 +7022,321 @@ caseByteOpsPlans = do
       assertEqual "aux code" CKR_KEY_HANDLE_INVALID code
     other -> assertFailure ("bad aux must deny, got: " ++ show other)
 
+-- | A sealed byte-op input (sensitive, or unextractable, on the
+-- effective view) cannot mint a shorter child: EXTRACT refuses,
+-- short-data XOR refuses, a template length below the natural
+-- width refuses, and a child key type outside the allow-list
+-- refuses even at full width. Full-width allow-listed derives
+-- still plan, and unsealed inputs keep every row.
+caseSealedByteOpsRefuse :: IO ()
+caseSealedByteOpsRefuse = do
+  m0 <- seedModel
+  st <- getSession m0
+  let sealedTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool True)
+        , (AttrSensitive, ValBool True)
+        , (AttrExtractable, ValBool False)
+        ]
+      openTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool True)
+        , (AttrSensitive, ValBool False)
+        , (AttrExtractable, ValBool True)
+        ]
+  (m1, sealedH) <- plantKey m0 st sealedTmpl (BS.pack [0 .. 31])
+  (m2, sealedAuxH) <- plantKey m1 st sealedTmpl (BS.pack [32 .. 63])
+  (m3, openH) <- plantKey m2 st openTmpl (BS.pack [64 .. 95])
+  (m4, openAuxH) <- plantKey m3 st openTmpl (BS.pack [96 .. 127])
+  (m5, sealed16H) <- plantKey m4 st sealedTmpl (BS.pack [0 .. 15])
+  (m6, sealed16AuxH) <- plantKey m5 st sealedTmpl (BS.pack [16 .. 31])
+  (m7, sealed24H) <- plantKey m6 st sealedTmpl (BS.pack [32 .. 55])
+  let sealedAuxN = fromIntegral (unExternalHandle sealedAuxH)
+      openAuxN = fromIntegral (unExternalHandle openAuxH)
+      sealed16AuxN = fromIntegral (unExternalHandle sealed16AuxH)
+      kid :: Int -> [(AttributeType, AttributeValue)]
+      kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      kidNoLen =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        ]
+      kidNoType :: Int -> [(AttributeType, AttributeValue)]
+      kidNoType n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      fExt = encodeByteOpsParams 0 0 BS.empty
+      fExtOff = encodeByteOpsParams 0 64 BS.empty
+      fShort = encodeByteOpsParams 0 0 (BS.pack (replicate 16 0))
+      fFull = encodeByteOpsParams 0 0 (BS.pack (replicate 32 0))
+      fLong = encodeByteOpsParams 0 0 (BS.pack (replicate 48 0))
+      fEmpty = encodeByteOpsParams 0 0 BS.empty
+      fData8 = encodeByteOpsParams 0 0 (BS.pack (replicate 8 0))
+      fFull24 = encodeByteOpsParams 0 0 (BS.pack (replicate 24 0))
+      fKeySealed = encodeByteOpsParams sealedAuxN 0 BS.empty
+      fKeyOpen = encodeByteOpsParams openAuxN 0 BS.empty
+      fKeySealed16 = encodeByteOpsParams sealed16AuxN 0 BS.empty
+      kidTyped kty =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong kty)
+        , (AttrToken, ValBool False)
+        ]
+      kidTypedLen :: Word64 -> Int -> [(AttributeType, AttributeValue)]
+      kidTypedLen kty n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong kty)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      refuses label code mech base frame tmpl =
+        case planDerive defaultRules m7 st mech base (encodeDeriveParams frame [tmpl]) of
+          KeyDenied (KeyDeny got _) -> assertEqual label code got
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      plans label total mech base frame tmpl =
+        case planDerive defaultRules m7 st mech base (encodeDeriveParams frame [tmpl]) of
+          KeyEffect _ (FxDerive _ _ _ _ _ got) -> assertEqual label total got
+          other -> assertFailure (label ++ " must plan, got: " ++ show other)
+  -- EXTRACT on a sealed base refuses, at any offset and length.
+  refuses "sealed extract 1 byte" CKR_KEY_FUNCTION_NOT_PERMITTED
+    extractMech sealedH fExt (kid 1)
+  refuses "sealed extract offset" CKR_KEY_FUNCTION_NOT_PERMITTED
+    extractMech sealedH fExtOff (kid 1)
+  refuses "sealed extract full width" CKR_KEY_FUNCTION_NOT_PERMITTED
+    extractMech sealedH fExt (kid 32)
+  refuses "sealed extract no length" CKR_KEY_FUNCTION_NOT_PERMITTED
+    extractMech sealedH fExt kidNoLen
+  -- Short-data XOR on a sealed base refuses, with or without a length.
+  refuses "sealed xor short data" CKR_KEY_FUNCTION_NOT_PERMITTED
+    xorMech sealedH fShort (kid 16)
+  refuses "sealed xor short data no length" CKR_KEY_FUNCTION_NOT_PERMITTED
+    xorMech sealedH fShort kidNoLen
+  -- Truncating lengths on sealed inputs refuse inconsistent.
+  refuses "sealed xor truncation" CKR_TEMPLATE_INCONSISTENT
+    xorMech sealedH fFull (kid 16)
+  refuses "sealed concat-data truncation" CKR_TEMPLATE_INCONSISTENT
+    concatDataMech sealedH fShort (kid 16)
+  refuses "sealed concat-data-base truncation" CKR_TEMPLATE_INCONSISTENT
+    dataConcatMech sealedH fShort (kid 16)
+  refuses "sealed concat-key truncation" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech sealedH fKeySealed (kid 32)
+  refuses "sealed base open aux truncation" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech sealedH fKeyOpen (kid 32)
+  refuses "open base sealed aux truncation" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech openH fKeySealed (kid 32)
+  -- A fixed-length template key type without CKA_VALUE_LEN fills
+  -- in that type's length: below the natural width it refuses the
+  -- same way as an explicit short length.
+  mapM_ (\(label, mech, frame) ->
+    mapM_ (\(tlabel, kty) ->
+      refuses (label ++ " " ++ tlabel) CKR_TEMPLATE_INCONSISTENT
+        mech sealedH frame (kidTyped kty))
+      [ ("DES/8", ckkDes)
+      , ("DES3/24", ckkDes3)
+      , ("ChaCha20/32", ckkChacha20)
+      , ("Poly1305/32", ckkPoly1305)
+      ])
+    [ ("sealed concat-data typelen", concatDataMech, fShort)
+    , ("sealed data-concat typelen", dataConcatMech, fShort)
+    , ("sealed concat-key typelen", concatKeyMech, fKeySealed)
+    ]
+  refuses "sealed xor typelen DES/8" CKR_TEMPLATE_INCONSISTENT
+    xorMech sealedH fFull (kidTyped ckkDes)
+  refuses "sealed xor typelen DES3/24" CKR_TEMPLATE_INCONSISTENT
+    xorMech sealedH fFull (kidTyped ckkDes3)
+  -- A DES3 child at the natural width reaches the child-type
+  -- gate: a known part of a DES3 key reduces the sealed bytes to
+  -- DES-strength search, so it refuses (planned on the base
+  -- revision, where DES3 was allow-listed).
+  refuses "sealed concat-data DES3/24" CKR_TEMPLATE_INCONSISTENT
+    concatDataMech sealed16H fData8 (kidTyped ckkDes3)
+  refuses "sealed xor DES3/24" CKR_TEMPLATE_INCONSISTENT
+    xorMech sealed24H fFull24 (kidTyped ckkDes3)
+  -- A 16+16 concat-key reaches the gate for Poly1305/32: the
+  -- floor (32) and the type domain (32) both pass, so only the
+  -- gate refuses. The reason names the allow-list, telling the
+  -- gate apart from the floor and domain checks sharing the code.
+  case planDerive defaultRules m7 st concatKeyMech sealed16H
+      (encodeDeriveParams fKeySealed16 [kidTyped ckkPoly1305]) of
+    KeyDenied (KeyDeny got reason) -> do
+      assertEqual "sealed concat-key Poly1305/32"
+        CKR_TEMPLATE_INCONSISTENT got
+      assertEqual "sealed concat-key Poly1305/32 reason"
+        "sealed byte-op child key type is outside the allow-list"
+        reason
+    other -> assertFailure
+      ("sealed concat-key Poly1305/32 must deny, got: " ++ show other)
+  -- A sealed concat-key aux triggers the type-length rule even
+  -- when the base is open.
+  mapM_ (\(tlabel, kty) ->
+    refuses ("open base sealed aux typelen " ++ tlabel) CKR_TEMPLATE_INCONSISTENT
+      concatKeyMech openH fKeySealed (kidTyped kty))
+    [ ("DES/8", ckkDes)
+    , ("DES3/24", ckkDes3)
+    , ("ChaCha20/32", ckkChacha20)
+    , ("Poly1305/32", ckkPoly1305)
+    ]
+  -- A full-width child of a leak-prone type refuses even at the
+  -- natural width: the child's own mechanism would expose the
+  -- sealed bytes (the child-type allow-list gate).
+  refuses "sealed xor typelen Poly1305/32" CKR_TEMPLATE_INCONSISTENT
+    xorMech sealedH fFull (kidTyped ckkPoly1305)
+  refuses "sealed concat-data Poly1305/32" CKR_TEMPLATE_INCONSISTENT
+    concatDataMech sealedH fEmpty (kidTyped ckkPoly1305)
+  refuses "sealed data-concat Poly1305/32" CKR_TEMPLATE_INCONSISTENT
+    dataConcatMech sealedH fEmpty (kidTyped ckkPoly1305)
+  refuses "sealed concat-key Poly1305/64" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech sealedH fKeySealed (kidTypedLen ckkPoly1305 64)
+  refuses "open base sealed aux concat-key Poly1305/64" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech openH fKeySealed (kidTypedLen ckkPoly1305 64)
+  refuses "sealed concat-data RC2/48" CKR_TEMPLATE_INCONSISTENT
+    concatDataMech sealedH fShort (kidTypedLen ckkRc2 48)
+  refuses "sealed concat-data RC4/48" CKR_TEMPLATE_INCONSISTENT
+    concatDataMech sealedH fShort (kidTypedLen ckkRc4 48)
+  refuses "sealed data-concat RC2/48" CKR_TEMPLATE_INCONSISTENT
+    dataConcatMech sealedH fShort (kidTypedLen ckkRc2 48)
+  refuses "sealed data-concat RC4/48" CKR_TEMPLATE_INCONSISTENT
+    dataConcatMech sealedH fShort (kidTypedLen ckkRc4 48)
+  refuses "sealed xor RC2/32" CKR_TEMPLATE_INCONSISTENT
+    xorMech sealedH fFull (kidTypedLen ckkRc2 32)
+  refuses "sealed xor RC4/32" CKR_TEMPLATE_INCONSISTENT
+    xorMech sealedH fFull (kidTypedLen ckkRc4 32)
+  refuses "sealed concat-key RC2/64" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech sealedH fKeySealed (kidTypedLen ckkRc2 64)
+  refuses "sealed concat-key RC4/64" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech sealedH fKeySealed (kidTypedLen ckkRc4 64)
+  refuses "open base sealed aux concat-key RC2/64" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech openH fKeySealed (kidTypedLen ckkRc2 64)
+  refuses "open base sealed aux concat-key RC4/64" CKR_TEMPLATE_INCONSISTENT
+    concatKeyMech openH fKeySealed (kidTypedLen ckkRc4 64)
+  -- An allow-listed type at the natural width still plans.
+  plans "sealed xor typelen ChaCha20/32" 32
+    xorMech sealedH fFull (kidTyped ckkChacha20)
+  plans "sealed xor AES/32" 32
+    xorMech sealedH fFull (kidTypedLen ckkAes 32)
+  plans "sealed xor HMAC/32" 32
+    xorMech sealedH fFull (kidTypedLen ckkSha256Hmac 32)
+  -- Full-width derives on sealed inputs still plan.
+  plans "sealed concat-data default" 48 concatDataMech sealedH fShort kidNoLen
+  plans "sealed concat-data full" 48 concatDataMech sealedH fShort (kid 48)
+  plans "sealed data-concat default" 48 dataConcatMech sealedH fShort kidNoLen
+  plans "sealed xor default" 32 xorMech sealedH fFull kidNoLen
+  plans "sealed xor full" 32 xorMech sealedH fFull (kid 32)
+  -- A sealed template without CKA_KEY_TYPE takes the generic
+  -- default and still plans.
+  plans "sealed xor full no key type" 32
+    xorMech sealedH fFull (kidNoType 32)
+  plans "sealed xor long data default" 32 xorMech sealedH fLong kidNoLen
+  plans "sealed concat-key default" 64 concatKeyMech sealedH fKeySealed kidNoLen
+  plans "sealed concat-key full" 64 concatKeyMech sealedH fKeySealed (kid 64)
+  -- Unsealed inputs keep every row, including shortening ones.
+  plans "open extract 1 byte" 1 extractMech openH fExt (kid 1)
+  plans "open xor short data" 16 xorMech openH fShort kidNoLen
+  plans "open xor truncation" 16 xorMech openH fFull (kid 16)
+  plans "open concat-data truncation" 16 concatDataMech openH fShort (kid 16)
+  plans "open concat-key truncation" 32 concatKeyMech openH fKeyOpen (kid 32)
+  -- Unsealed controls for the refused types: RC2, RC4, Poly1305
+  -- and DES3 byte-op children still plan on the open base.
+  plans "open xor typelen Poly1305/32" 32
+    xorMech openH fFull (kidTyped ckkPoly1305)
+  plans "open xor RC2/32" 32
+    xorMech openH fFull (kidTypedLen ckkRc2 32)
+  plans "open xor RC4/32" 32
+    xorMech openH fFull (kidTypedLen ckkRc4 32)
+  plans "open concat-data DES3/24" 24
+    concatDataMech openH fData8 (kidTyped ckkDes3)
+
+-- | A sealed base refuses the IKEv1-extended truncation shape (no
+-- aux key, empty extra data): the driver would return raw base
+-- bytes. The same request with extra data goes through the PRF
+-- and still plans, as does the unsealed truncation.
+caseSealedIkeTruncRefuse :: IO ()
+caseSealedIkeTruncRefuse = do
+  m0 <- seedModel
+  st <- getSession m0
+  let sealedTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool True)
+        , (AttrSensitive, ValBool True)
+        , (AttrExtractable, ValBool False)
+        ]
+      openTmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrToken, ValBool False)
+        , (AttrDerive, ValBool True)
+        , (AttrSensitive, ValBool False)
+        , (AttrExtractable, ValBool True)
+        ]
+  (m1, sealedH) <- plantKey m0 st sealedTmpl (BS.pack [0 .. 31])
+  (m2, openH) <- plantKey m1 st openTmpl (BS.pack [64 .. 95])
+  (m3, sealedHmacH) <- plantKey m2 st
+    [ (AttrClass, ValULong ckoSecretKey)
+    , (AttrKeyType, ValULong ckkSha256Hmac)
+    , (AttrToken, ValBool False)
+    , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool True)
+    , (AttrExtractable, ValBool False)
+    ] (BS.pack [128 .. 159])
+  let kid :: Int -> [(AttributeType, AttributeValue)]
+      kid n =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkGenericSecret)
+        , (AttrValueLen, ValULong (fromIntegral n))
+        , (AttrToken, ValBool False)
+        ]
+      trunc = encodeIkeParams 4 0 0 0 BS.empty BS.empty
+      withExtra = encodeIkeParams 4 0 0 0 ikeSeed32 BS.empty
+      refuses label base frame tmpl =
+        case planDerive defaultRules m3 st ikeExtMech base (encodeDeriveParams frame [tmpl]) of
+          KeyDenied (KeyDeny got _) ->
+            assertEqual label CKR_KEY_FUNCTION_NOT_PERMITTED got
+          other -> assertFailure (label ++ " must deny, got: " ++ show other)
+      plans label total base frame tmpl =
+        case planDerive defaultRules m3 st ikeExtMech base (encodeDeriveParams frame [tmpl]) of
+          KeyEffect _ (FxDerive _ _ _ _ _ got) -> assertEqual label total got
+          other -> assertFailure (label ++ " must plan, got: " ++ show other)
+  refuses "sealed ike truncation" sealedH trunc (kid 16)
+  refuses "sealed ike truncation full width" sealedH trunc (kid 32)
+  refuses "sealed hmac ike truncation" sealedHmacH trunc (kid 16)
+  plans "sealed ike with extra data" 32 sealedH withExtra (kid 32)
+  plans "open ike truncation" 16 openH trunc (kid 16)
+
 caseRealByteOpsVector :: IO ()
 caseRealByteOpsVector = withRealEnv $ \env -> do
   m0 <- seedModel >>= loginUser
   st <- getSession m0
   let answer = answerReal env
+  -- Explicitly unsealed fixtures: this case pins the
+  -- executed output bytes (including shortening rows), and
+  -- sealed inputs refuse shortening derives.
   (m1, baseH) <- plantKey m0 st
     [ (AttrClass, ValULong ckoSecretKey)
     , (AttrKeyType, ValULong ckkGenericSecret)
     , (AttrToken, ValBool False)
     , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
     ] (BS.pack [0 .. 31])
   (m2, auxH) <- plantKey m1 st
     [ (AttrClass, ValULong ckoSecretKey)
     , (AttrKeyType, ValULong ckkGenericSecret)
     , (AttrToken, ValBool False)
     , (AttrDerive, ValBool True)
+    , (AttrSensitive, ValBool False)
+    , (AttrExtractable, ValBool True)
     ] (BS.pack [32 .. 63])
   let auxN = fromIntegral (unExternalHandle auxH)
       kid :: Int -> [(AttributeType, AttributeValue)]
@@ -6821,18 +7469,22 @@ caseByteOpsProtection = withSynth $ \answer -> do
       pendingSealed tag plan = case plan of
         KeyEffect (PwDerive (po : _) _) _ -> assertSealed tag (poAttrs po)
         other -> assertFailure (tag ++ " must plan sealed, got: " ++ show other)
-  -- Every row refuses an explicit downgrade of a protected base.
-  mapM_ (\(mech, frame, n) ->
+  -- Every row refuses an explicit downgrade of a protected base
+  -- at the natural width (below it the sealed shortening refusal
+  -- would answer first with the same code; the extract row
+  -- refuses the sealed base before the template merge, so its
+  -- code is the permission refusal).
+  mapM_ (\(mech, frame, n, code) ->
     case planDerive defaultRules m5 st mech protBaseH
         (encodeDeriveParams frame [kidDown n]) of
-      KeyDenied (KeyDeny code _) ->
-        assertEqual ("downgrade code " ++ show mech) CKR_TEMPLATE_INCONSISTENT code
+      KeyDenied (KeyDeny got _) ->
+        assertEqual ("downgrade code " ++ show mech) code got
       other -> assertFailure ("downgrade must deny, got: " ++ show other))
-    [ (concatKeyMech, fKeyPlainAux, 64)
-    , (concatDataMech, fBD, 16)
-    , (dataConcatMech, fBD, 16)
-    , (xorMech, fXor, 16)
-    , (extractMech, fExt, 16)
+    [ (concatKeyMech, fKeyPlainAux, 64, CKR_TEMPLATE_INCONSISTENT)
+    , (concatDataMech, fBD, 48, CKR_TEMPLATE_INCONSISTENT)
+    , (dataConcatMech, fBD, 48, CKR_TEMPLATE_INCONSISTENT)
+    , (xorMech, fXor, 32, CKR_TEMPLATE_INCONSISTENT)
+    , (extractMech, fExt, 16, CKR_KEY_FUNCTION_NOT_PERMITTED)
     ]
   -- Aux-only concat-key protection: the protected second input
   -- alone refuses a downgrade and seals an omitted template.
@@ -6847,15 +7499,18 @@ caseByteOpsProtection = withSynth $ \answer -> do
   -- row: each flag alone refuses its own downgrade, stamps only
   -- itself when omitted (the unrequired flag inherits the
   -- source-effective value), and passes its own matching template
-  -- through.
-  mapM_ (\(mech, frame, n) -> do
+  -- through. Downgrade, match and omitted legs all run at the
+  -- natural width (below it the sealed shortening refusal would
+  -- answer first with the same code); the extract row refuses
+  -- outright on either flag (separate block below).
+  mapM_ (\(mech, frame, downN, fullN) -> do
     case planDerive defaultRules m5 st mech sensOnlyH
-        (encodeDeriveParams frame [kidDown n]) of
+        (encodeDeriveParams frame [kidDown downN]) of
       KeyDenied (KeyDeny code _) ->
         assertEqual ("sens-only downgrade " ++ show mech) CKR_TEMPLATE_INCONSISTENT code
       other -> assertFailure ("sens-only downgrade must deny, got: " ++ show other)
     case planDerive defaultRules m5 st mech sensOnlyH
-        (encodeDeriveParams frame [kid n sensOnlyFlags]) of
+        (encodeDeriveParams frame [kid fullN sensOnlyFlags]) of
       KeyEffect (PwDerive (po : _) _) _ -> do
         assertEqual ("sens-only match sensitive " ++ show mech)
           (Just (ValBool True)) (Map.lookup AttrSensitive (poAttrs po))
@@ -6863,7 +7518,7 @@ caseByteOpsProtection = withSynth $ \answer -> do
           (Just (ValBool True)) (Map.lookup AttrExtractable (poAttrs po))
       other -> assertFailure ("sens-only match must plan, got: " ++ show other)
     case planDerive defaultRules m5 st mech sensOnlyH
-        (encodeDeriveParams frame [kidOmit n]) of
+        (encodeDeriveParams frame [kidOmit fullN]) of
       KeyEffect (PwDerive (po : _) _) _ -> do
         assertEqual ("sens-only omitted sensitive " ++ show mech)
           (Just (ValBool True)) (Map.lookup AttrSensitive (poAttrs po))
@@ -6879,12 +7534,12 @@ caseByteOpsProtection = withSynth $ \answer -> do
           (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (poAttrs po))
       other -> assertFailure ("sens-only omitted must plan, got: " ++ show other)
     case planDerive defaultRules m5 st mech unextrOnlyH
-        (encodeDeriveParams frame [kidDown n]) of
+        (encodeDeriveParams frame [kidDown downN]) of
       KeyDenied (KeyDeny code _) ->
         assertEqual ("unextr-only downgrade " ++ show mech) CKR_TEMPLATE_INCONSISTENT code
       other -> assertFailure ("unextr-only downgrade must deny, got: " ++ show other)
     case planDerive defaultRules m5 st mech unextrOnlyH
-        (encodeDeriveParams frame [kid n unextrOnlyFlags]) of
+        (encodeDeriveParams frame [kid fullN unextrOnlyFlags]) of
       KeyEffect (PwDerive (po : _) _) _ -> do
         assertEqual ("unextr-only match sensitive " ++ show mech)
           (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
@@ -6892,7 +7547,7 @@ caseByteOpsProtection = withSynth $ \answer -> do
           (Just (ValBool False)) (Map.lookup AttrExtractable (poAttrs po))
       other -> assertFailure ("unextr-only match must plan, got: " ++ show other)
     case planDerive defaultRules m5 st mech unextrOnlyH
-        (encodeDeriveParams frame [kidOmit n]) of
+        (encodeDeriveParams frame [kidOmit fullN]) of
       KeyEffect (PwDerive (po : _) _) _ -> do
         assertEqual ("unextr-only omitted sensitive " ++ show mech)
           (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
@@ -6907,12 +7562,26 @@ caseByteOpsProtection = withSynth $ \answer -> do
         assertEqual ("unextr-only omitted kgm " ++ show mech)
           (Just (ValULong maxBound)) (Map.lookup AttrKeyGenMechanism (poAttrs po))
       other -> assertFailure ("unextr-only omitted must plan, got: " ++ show other))
-    [ (concatKeyMech, fKeyPlainAux, 64)
-    , (concatDataMech, fBD, 16)
-    , (dataConcatMech, fBD, 16)
-    , (xorMech, fXor, 16)
-    , (extractMech, fExt, 16)
+    [ (concatKeyMech, fKeyPlainAux, 64, 64)
+    , (concatDataMech, fBD, 48, 48)
+    , (dataConcatMech, fBD, 48, 48)
+    , (xorMech, fXor, 32, 32)
     ]
+  -- Either flag alone seals the base for the extract row:
+  -- downgrade, matching and omitted templates all refuse
+  -- with the permission code.
+  mapM_ (\(tag, base, matchFlags) ->
+    mapM_ (\(tmplTag, tmpl) ->
+      case planDerive defaultRules m5 st extractMech base
+          (encodeDeriveParams fExt [tmpl]) of
+        KeyDenied (KeyDeny code _) ->
+          assertEqual (tag ++ " extract " ++ tmplTag) CKR_KEY_FUNCTION_NOT_PERMITTED code
+        other -> assertFailure (tag ++ " extract must deny, got: " ++ show other))
+      [ ("downgrade", kidDown 16)
+      , ("match", kid 16 matchFlags)
+      , ("omitted", kidOmit 16)
+      ])
+    [("sens-only", sensOnlyH, sensOnlyFlags), ("unextr-only", unextrOnlyH, unextrOnlyFlags)]
   -- Mixed inputs combine: a sensitivity-only base plus a
   -- nonextractable-only aux requires both flags, in either
   -- direction.
@@ -6925,27 +7594,37 @@ caseByteOpsProtection = withSynth $ \answer -> do
     (encodeDeriveParams fKeyUnextrAux [kidOmit 64]))
   pendingSealed "mixed reversed omitted" (planDerive defaultRules m5 st concatKeyMech unextrOnlyH
     (encodeDeriveParams fKeySensAux [kidOmit 64]))
-  -- Matching passes through and omitted stamps (extract plus one
-  -- concat row); an omitted length still defaults to the natural
-  -- width with the sealed flags.
-  pendingSealed "match" (planDerive defaultRules m5 st extractMech protBaseH
-    (encodeDeriveParams fExt [kidMatch 16]))
+  -- Matching passes through and omitted stamps (full-width
+  -- rows); an omitted length still defaults to the natural
+  -- width with the sealed flags. The extract row refuses the
+  -- sealed base at any length.
+  pendingSealed "match" (planDerive defaultRules m5 st concatKeyMech protBaseH
+    (encodeDeriveParams fKeyPlainAux [kidMatch 64]))
   pendingSealed "omitted" (planDerive defaultRules m5 st concatDataMech protBaseH
-    (encodeDeriveParams fBD [kidOmit 16]))
+    (encodeDeriveParams fBD [kidOmit 48]))
   case planDerive defaultRules m5 st concatDataMech protBaseH
       (encodeDeriveParams fBD [kidOmitNoLen]) of
     KeyEffect (PwDerive (po : _) _) (FxDerive _ _ _ _ _ total) -> do
       assertEqual "natural total" 48 total
       assertSealed "natural omitted" (poAttrs po)
     other -> assertFailure ("natural default must plan, got: " ++ show other)
-  -- Boundaries with protection: full-length extract plans sealed,
-  -- past-the-end still refuses typed.
-  pendingSealed "full-length" (planDerive defaultRules m5 st extractMech protBaseH
-    (encodeDeriveParams fExt [kidMatch 32]))
+  case planDerive defaultRules m5 st extractMech protBaseH
+      (encodeDeriveParams fExt [kidMatch 16]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "sealed extract code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("sealed extract must deny, got: " ++ show other)
+  -- Boundaries with protection: the sealed base refuses extract
+  -- before the window check, so even a past-the-end request
+  -- reports the permission refusal.
+  case planDerive defaultRules m5 st extractMech protBaseH
+      (encodeDeriveParams fExt [kidMatch 32]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "full-length code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("full-length extract must deny, got: " ++ show other)
   case planDerive defaultRules m5 st extractMech protBaseH
       (encodeDeriveParams fExt [kidMatch 33]) of
     KeyDenied (KeyDeny code _) ->
-      assertEqual "overrun code" CKR_ARGUMENTS_BAD code
+      assertEqual "overrun code" CKR_KEY_FUNCTION_NOT_PERMITTED code
     other -> assertFailure ("overrun must deny, got: " ++ show other)
   -- A refused derivation allocates nothing: publishing the
   -- denied plan's own delta leaves the pre-snapshot unchanged. The
@@ -6960,9 +7639,11 @@ caseByteOpsProtection = withSynth $ \answer -> do
     KeyDenied _ -> pure ()
     other -> assertFailure ("downgrade must deny, got: " ++ show other)
   -- The sealed flags retain through finish/publication with exact
-  -- output bytes; readback and wrap then refuse typed.
-  (m6, childH) <- case planDerive defaultRules m5 st extractMech protBaseH
-      (encodeDeriveParams fExt [kidMatch 32]) of
+  -- output bytes; readback and wrap then refuse typed. The
+  -- full-width concat row carries the execution (extract refuses
+  -- the sealed base).
+  (m6, childH) <- case planDerive defaultRules m5 st concatDataMech protBaseH
+      (encodeDeriveParams fBD [kidMatch 48]) of
     KeyEffect pw fx -> do
       res <- answer m5 fx
       c <- finishCommit m5 st pw res 1
@@ -6972,7 +7653,7 @@ caseByteOpsProtection = withSynth $ \answer -> do
     other -> assertFailure ("sealed derive must plan: " ++ show other) >> undefined
   Just child <- pure (resolveHandle m6 childH)
   assertSealed "child" (osAttrs child)
-  assertEqual "child bytes" (Just baseMat) (keyBytesOf child)
+  assertEqual "child bytes" (Just (baseMat <> byteOpsD16)) (keyBytesOf child)
   case getAttributes (osAttrs child) [AttrValue] of
     PartialReads code results -> do
       assertEqual "readback code" CKR_ATTRIBUTE_SENSITIVE code
@@ -7058,14 +7739,16 @@ caseByteOpsProtection = withSynth $ \answer -> do
   -- A base with no protection flags derives unextractable but
   -- non-sensitive: the absent EXTRACTABLE reads as unextractable
   -- through the effective view, the absent SENSITIVE as false.
+  -- The full-width concat row carries the derivation (the
+  -- flag-less base counts as sealed, so extract refuses it).
   (mAbsBase, absBaseH) <- plantKey m5 st
     [ (AttrClass, ValULong ckoSecretKey)
     , (AttrKeyType, ValULong ckkGenericSecret)
     , (AttrToken, ValBool False)
     , (AttrDerive, ValBool True)
     ] baseMat
-  case planDerive defaultRules mAbsBase st extractMech absBaseH
-      (encodeDeriveParams fExt [kidOmit 16]) of
+  case planDerive defaultRules mAbsBase st concatDataMech absBaseH
+      (encodeDeriveParams fBD [kidOmit 48]) of
     KeyEffect (PwDerive (po : _) _) _ -> do
       assertEqual "absent-base omitted sensitive"
         (Just (ValBool False)) (Map.lookup AttrSensitive (poAttrs po))
@@ -8996,9 +9679,9 @@ caseDeriveStampsEveryFamily = withSynth $ \answer -> do
   poTrue <- derivePending "hkdf-true" m8 st hkdfDeriveMech genH
     (encodeHkdfInfo 4 0x02 BS.empty "stamp-true") [kid 32]
   assertDerivedHistory "hkdf-true" poTrue True False True True
-  poTrueByte <- derivePending "extract-true" m8 st extractMech genH
-    (encodeByteOpsParams 0 0 BS.empty) [kid 16]
-  assertDerivedHistory "extract-true" poTrueByte True False True True
+  poTrueByte <- derivePending "concat-true" m8 st concatDataMech genH
+    (encodeByteOpsParams 0 0 byteOpsD16) [kid 48]
+  assertDerivedHistory "concat-true" poTrueByte True False True True
   -- One history-free aux poisons the conjunction: the child keeps
   -- the inherited protection but loses both history rows.
   poAnd <- derivePending "concat-aux-and" m8 st concatKeyMech genH

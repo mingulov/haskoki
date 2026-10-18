@@ -36,7 +36,7 @@ import Haskoki.Model
    lookupSession)
 import Haskoki.Object (decodeHandle, planCopyObject, planCreateObject, planFindObjects, planGetAttributes, resolveHandle)
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkEcMontgomery, ckkMlDsa, ckkMlKem, ckkRsa, ckkSlhDsa, ckkX9_42Dh)
+  (ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkAes, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkEcMontgomery, ckkMlDsa, ckkMlKem, ckkRsa, ckkSlhDsa, ckkX9_42Dh)
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -108,6 +108,7 @@ spec = testGroup "key import"
   , testCase "ML-DSA seed seals with the payload" caseMldsaSeedSeals
   , testCase "ML-KEM seed seals with the payload" caseMlkemSeedSeals
   , testCase "SLH-DSA seed seals with the payload" caseSlhdsaSeedSeals
+  , testCase "Secret import refuses asymmetric key types" caseSecretRefusesAsymmetric
   ]
 
 slot0 :: SlotId
@@ -2136,4 +2137,37 @@ caseMontgomeryTableAgreement = do
     assertEqual ("ffi emits " ++ name) (hex oid) (ecParamsToWire (BS8.pack name))
     assertEqual ("ffi parses " ++ name) (BS8.pack name) (ecParamsFromWire (hex oid))
     ) curves
+
+-- | A secret-class import carrying an asymmetric key type refuses
+-- inconsistent (every served asymmetric type); a secret type with
+-- the same shape still imports.
+caseSecretRefusesAsymmetric :: IO ()
+caseSecretRefusesAsymmetric = do
+  m0 <- seedModel
+  st <- getSession m0
+  let mkTmpl kty =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong kty)
+        , (AttrToken, ValBool False)
+        , (AttrValue, ValBytes (BS.pack [0 .. 15]))
+        ]
+  mapM_ (\(tag, kty) ->
+    case planCreateObject m0 st (mkTmpl kty) of
+      Reject rej -> assertEqual ("reject code " ++ tag)
+        CKR_TEMPLATE_INCONSISTENT (rejCode rej)
+      Immediate _ -> assertFailure ("must reject, created: " ++ tag)
+      Execute _ _ -> assertFailure ("must reject, executes: " ++ tag))
+    [ ("RSA", ckkRsa)
+    , ("EC", ckkEc)
+    , ("DSA", ckkDsa)
+    , ("DH", ckkDh)
+    , ("X9.42 DH", ckkX9_42Dh)
+    , ("EC Edwards", ckkEcEdwards)
+    , ("EC Montgomery", ckkEcMontgomery)
+    , ("ML-KEM", ckkMlKem)
+    , ("ML-DSA", ckkMlDsa)
+    , ("SLH-DSA", ckkSlhDsa)
+    ]
+  _ <- doCreate m0 st (mkTmpl ckkAes)
+  pure ()
 

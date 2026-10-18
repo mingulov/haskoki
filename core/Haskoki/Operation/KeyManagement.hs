@@ -53,6 +53,7 @@ module Haskoki.Operation.KeyManagement
   , keyBytesOf
   , policyFromObject
   , keyTypeCompatible
+  , keyClassCompatible
   , mechAllowed
     -- * Class and key-type codes (spec\/vendor\/pkcs11.h)
   , ckoData
@@ -209,6 +210,7 @@ module Haskoki.Operation.KeyManagement
   , DerivedDomain (..)
   , derivedObjectDomain
   , checkDerivedTarget
+  , sealedByteOpChildOk
   , pendingFromAttrs
   , ByteOpsProtection (..)
   , byteOpsProtectionOf
@@ -270,6 +272,7 @@ import Haskoki.Object
   , effectiveExtractable
   , effectiveSensitive
   , findRule
+  , isAsymmetricKeyType
   , mergedIsPrivate
   , mergedIsToken
   , objectVisible
@@ -1740,6 +1743,25 @@ keyTypeCompatible mech op ost = case matrixKeyTypes mech op of
     Just (ValULong k) -> k `elem` tys
     _ -> True
 
+-- | Class/type coherence for one @(mechanism, operation, key)@ on a
+-- reviewed matrix row: an asymmetric key type lives on a
+-- public\/private object and a secret key type on a secret object
+-- (a secret-class object for an asymmetric mechanism is
+-- incoherent, and vice versa). Pairs outside the reviewed matrix,
+-- objects without a key class, and objects without a key type
+-- skip the check (the same legacy seam as 'keyTypeCompatible'):
+-- 'False' only when a present class and a present type contradict
+-- each other on a reviewed row.
+keyClassCompatible :: MechanismId -> Operation -> ObjectState -> Bool
+keyClassCompatible mech op ost = case matrixKeyTypes mech op of
+  Nothing -> True
+  Just _ -> case (Map.lookup AttrClass (osAttrs ost), Map.lookup AttrKeyType (osAttrs ost)) of
+    (Just (ValULong c), Just (ValULong k))
+      | c == ckoSecretKey -> not (isAsymmetricKeyType k)
+      | c == ckoPublicKey || c == ckoPrivateKey -> isAsymmetricKeyType k
+      | otherwise -> True
+    _ -> True
+
 -- | Allowed-mechanism compatibility for a @(mechanism, key)@: keys
 -- without @CKA_ALLOWED_MECHANISMS@ serve every mechanism; keys
 -- carrying it serve exactly the listed ids. The stored value is a
@@ -1812,6 +1834,9 @@ checkKeyTemplate
   :: Word64 -> Word64 -> [(AttributeType, AttributeValue)]
   -> Either KeyDeny (Map AttributeType AttributeValue)
 checkKeyTemplate wantClass wantKey tmpl
+  | wantClass == ckoSecretKey && isAsymmetricKeyType wantKey =
+      Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+        "asymmetric key type on a secret template")
   | Just (t, _) <- find ((`elem` historyAttrs) . fst) tmpl =
       Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
         ("history attribute not allowed in key template: " ++ show t))
@@ -1913,6 +1938,7 @@ applyRules wantClass wantKey attrs =
 -- type: a history attribute refuses before any other check,
 -- contradictions reject, a missing class defaults to the
 -- mechanism-implied class, a class that is present but wrong is
+-- inconsistent, an asymmetric key type on a secret class is
 -- inconsistent, and a missing key type defaults to the caller's
 -- default. Derivation templates use this (derived keys span key
 -- types); generation and KEM use the strict 'checkKeyTemplate'.
@@ -1937,7 +1963,11 @@ checkKeyTemplateAny wantClass defaultKey tmpl
           ("template class " ++ show c ++ " is not " ++ show wantClass))
       | otherwise -> case Map.lookup AttrKeyType attrs of
           Nothing -> Right (Map.insert AttrKeyType (ValULong defaultKey) attrs)
-          Just (ValULong _) -> Right attrs
+          Just (ValULong k)
+            | c == ckoSecretKey && isAsymmetricKeyType k ->
+                Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                  "asymmetric key type on a secret template")
+            | otherwise -> Right attrs
           Just _ -> Left (KeyDeny CKR_TEMPLATE_INCONSISTENT
             "template key type is malformed")
     _ -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE "template is missing the class")
@@ -2040,6 +2070,29 @@ checkDerivedTarget attrs n = do
     admits DomainAnyLength = n >= 1
     admits (DomainLengths ns) = n `elem` ns
     admits (DomainRange lo hi) = n >= lo && n <= hi
+
+-- | Child key types a sealed byte-op input may mint: generic
+-- secrets, the HMAC families and vetted ciphers whose mechanisms
+-- do not expose raw key bytes. Any other type — RC2, RC4,
+-- Poly1305, DES2, DES3, DES, CAST, Salsa20 and the rest — refuses
+-- closed with @CKR_TEMPLATE_INCONSISTENT@, since the child's own
+-- mechanism would hand the sealed bytes back (a Poly1305 tag with
+-- r = 0 is the sealed half; RC2 effective-bits stepping walks the
+-- key; a known part of a DES3 key reduces the sealed bytes to
+-- DES-strength search).
+sealedByteOpChildOk :: Word64 -> Bool
+sealedByteOpChildOk k = k `elem` sealedByteOpChildTypes
+  where
+    sealedByteOpChildTypes =
+      [ ckkGenericSecret
+      , ckkAes, ckkChacha20
+      , ckkCamellia, ckkAria, ckkSeed
+      , ckkSha1Hmac, ckkSha224Hmac, ckkSha256Hmac, ckkSha384Hmac
+      , ckkSha512Hmac, ckkSha512_224Hmac, ckkSha512_256Hmac, ckkSha512THmac
+      , ckkSha3_224Hmac, ckkSha3_256Hmac, ckkSha3_384Hmac, ckkSha3_512Hmac
+      , ckkBlake2b160Hmac, ckkBlake2b256Hmac, ckkBlake2b384Hmac
+      , ckkBlake2b512Hmac
+      ]
 
 -- | Check one data-object template for data-output derivations
 -- (@CKM_HKDF_DATA@): a history attribute refuses before any other
@@ -3509,14 +3562,20 @@ dhPkcsParamSizes = fips186ParamSizes "DH PKCS" False
 -- ---------------------------------------------------------------------------
 
 -- | Resolve a wrapping key: the handle resolves to a visible object
--- carrying the required usage mark and stored material. Every
+-- carrying the required usage mark, listing the wrap mechanism in
+-- its allowed mechanisms, and stored material. Every
 -- caller is an AES-CBC wrap/unwrap path, so the key must be an AES
 -- secret key; anything else (EC/RSA halves, generic secrets) is a
 -- key-type refusal, never a silent coercion of foreign material.
+-- Check order is usage, allowed list, then class\/type — unlike
+-- operation init (type, class, allowed list, usage) — so an
+-- unlisted mechanism on a wrong-type key reports
+-- @CKR_KEY_FUNCTION_NOT_PERMITTED@ here. The RSA and EC-composition
+-- helpers share this order.
 withWrappingKey
-  :: Model -> SessionState -> AttributeType -> String -> ExternalHandle
+  :: Model -> SessionState -> AttributeType -> String -> MechanismId -> ExternalHandle
   -> Either KeyDeny (ObjectId, ByteString)
-withWrappingKey model st usage label h = case resolveHandle model h of
+withWrappingKey model st usage label dMech h = case resolveHandle model h of
   Nothing -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
     "unknown or destroyed wrapping-key handle")
   Just ost
@@ -3525,6 +3584,8 @@ withWrappingKey model st usage label h = case resolveHandle model h of
     | Map.lookup usage (osAttrs ost) /= Just (ValBool True) ->
         Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
           ("wrapping key does not permit " ++ label))
+    | not (mechAllowed dMech ost) -> Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+        "mechanism is not in the key's allowed list")
     | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoSecretKey) ||
       Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkAes) ->
         Left (KeyDeny (if usage == AttrWrap
@@ -3559,14 +3620,15 @@ rsaModulusBytes ost =
 
 -- | Resolve an RSA wrapping key: the handle resolves to a visible
 -- RSA object of the required half (public for wrapping, private
--- for unwrapping) carrying the required usage mark and modulus
+-- for unwrapping) carrying the required usage mark, listing the
+-- wrap mechanism in its allowed mechanisms, and modulus
 -- material. Answers the object id and the modulus byte width the
 -- length checks and the blob length derive from. Anything else is
 -- a key-type refusal, never a silent coercion.
 withRsaWrappingKey
-  :: Model -> SessionState -> AttributeType -> String -> Word64 -> ExternalHandle
+  :: Model -> SessionState -> AttributeType -> String -> MechanismId -> Word64 -> ExternalHandle
   -> Either KeyDeny (ObjectId, Int)
-withRsaWrappingKey model st usage label wantClass h =
+withRsaWrappingKey model st usage label dMech wantClass h =
   case resolveHandle model h of
     Nothing -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
       "unknown or destroyed wrapping-key handle")
@@ -3576,6 +3638,8 @@ withRsaWrappingKey model st usage label wantClass h =
       | Map.lookup usage (osAttrs ost) /= Just (ValBool True) ->
           Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
             ("wrapping key does not permit " ++ label))
+      | not (mechAllowed dMech ost) -> Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+          "mechanism is not in the key's allowed list")
       | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong wantClass) ||
         Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkRsa) ->
           Left (KeyDeny (if usage == AttrWrap
@@ -3588,7 +3652,8 @@ withRsaWrappingKey model st usage label wantClass h =
             "wrapping key lacks modulus material")
 
 -- | Resolve an ECDH-composition wrapping key: the handle resolves
--- to a visible key carrying the usage mark, whose class matches
+-- to a visible key carrying the usage mark, listing the wrap
+-- mechanism in its allowed mechanisms, whose class matches
 -- the direction (wrap takes the recipient PUBLIC key — the
 -- agreement runs against an ephemeral transport pair; unwrap
 -- takes the PRIVATE key) and whose key type the composition row
@@ -3596,9 +3661,9 @@ withRsaWrappingKey model st usage label wantClass h =
 -- Montgomery). Answers the object id, the key material, and its
 -- transport domain.
 withEcCompWrappingKey
-  :: Model -> SessionState -> AttributeType -> String -> WrapCompEcdhRecipe
+  :: Model -> SessionState -> AttributeType -> String -> MechanismId -> WrapCompEcdhRecipe
   -> ExternalHandle -> Either KeyDeny (ObjectId, ByteString, WrapCompDomain)
-withEcCompWrappingKey model st usage label r h =
+withEcCompWrappingKey model st usage label dMech r h =
   case resolveHandle model h of
     Nothing -> Left (KeyDeny CKR_OBJECT_HANDLE_INVALID
       "unknown or destroyed wrapping-key handle")
@@ -3608,6 +3673,8 @@ withEcCompWrappingKey model st usage label r h =
       | Map.lookup usage (osAttrs ost) /= Just (ValBool True) ->
           Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
             ("wrapping key does not permit " ++ label))
+      | not (mechAllowed dMech ost) -> Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+          "mechanism is not in the key's allowed list")
       | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong wantClass) ->
           Left (KeyDeny typeCode
             ("wrapping key has the wrong class for " ++ label))
@@ -3711,7 +3778,7 @@ planRsaWrapKey model st mech params wrapH targetH intent =
   case rsaWrapOverhead mech params of
     Left deny -> KeyDenied deny
     Right over ->
-      case withRsaWrappingKey model st AttrWrap "wrapping" ckoPublicKey wrapH of
+      case withRsaWrappingKey model st AttrWrap "wrapping" mech ckoPublicKey wrapH of
         Left deny -> KeyDenied deny
         Right (wrapOid, k) -> case withWrapTarget model st targetH of
           Left deny -> KeyDenied deny
@@ -3754,7 +3821,7 @@ planAesWrapKey
 planAesWrapKey model st mech iv wrapH targetH intent
   | BS.length iv /= 16 =
       KeyDenied (KeyDeny CKR_ARGUMENTS_BAD "AES-CBC wrap needs a 16-byte IV")
-  | otherwise = case withWrappingKey model st AttrWrap "wrapping" wrapH of
+  | otherwise = case withWrappingKey model st AttrWrap "wrapping" mech wrapH of
       Left deny -> KeyDenied deny
       Right (wrapOid, _) -> case withWrapTarget model st targetH of
         Left deny -> KeyDenied deny
@@ -3835,7 +3902,7 @@ planRsaUnwrapKey rules model st mech params wrapH blob tmpl =
     validated =
       case rsaWrapOverhead mech params of
         Left deny -> Left deny
-        Right _ -> case withRsaWrappingKey model st AttrUnwrap "unwrapping" ckoPrivateKey wrapH of
+        Right _ -> case withRsaWrappingKey model st AttrUnwrap "unwrapping" mech ckoPrivateKey wrapH of
           Left deny -> Left deny
           Right (wrapOid, k)
             | BS.length blob /= k ->
@@ -3880,7 +3947,7 @@ planAesKwWrapKey model st mech params wrapH targetH intent
   | not (BS.null params) =
       KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "AES key wrap takes empty mechanism parameters")
-  | otherwise = case withWrappingKey model st AttrWrap "wrapping" wrapH of
+  | otherwise = case withWrappingKey model st AttrWrap "wrapping" mech wrapH of
       Left deny -> KeyDenied deny
       Right (wrapOid, _) -> case withWrapTarget model st targetH of
         Left deny -> KeyDenied deny
@@ -3949,7 +4016,7 @@ planAesUnwrapKey rules model st mech iv wrapH blob tmpl =
       | not (any ((== AttrKeyType) . fst) tmpl) =
           Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
             "unwrap template must name the key type")
-      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" wrapH of
+      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" mech wrapH of
           Left deny -> Left deny
           Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
             Left deny -> Left deny
@@ -3988,7 +4055,7 @@ planAesKwUnwrapKey rules model st mech params wrapH blob tmpl =
       | not (any ((== AttrKeyType) . fst) tmpl) =
           Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
             "unwrap template must name the key type")
-      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" wrapH of
+      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" mech wrapH of
           Left deny -> Left deny
           Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
             Left deny -> Left deny
@@ -4024,7 +4091,7 @@ planAesKwPkcs7WrapKey model st mech params wrapH targetH intent
   | not (BS.null params) && BS.length params /= 8 =
       KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "AES-KW-PKCS7 wrap takes empty or 8-byte-IV mechanism parameters")
-  | otherwise = case withWrappingKey model st AttrWrap "wrapping" wrapH of
+  | otherwise = case withWrappingKey model st AttrWrap "wrapping" mech wrapH of
       Left deny -> KeyDenied deny
       Right (wrapOid, _) -> case withWrapTarget model st targetH of
         Left deny -> KeyDenied deny
@@ -4088,7 +4155,7 @@ planAesKwPkcs7UnwrapKey rules model st mech params wrapH blob tmpl =
       | not (any ((== AttrKeyType) . fst) tmpl) =
           Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
             "unwrap template must name the key type")
-      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" wrapH of
+      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" mech wrapH of
           Left deny -> Left deny
           Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
             Left deny -> Left deny
@@ -4124,7 +4191,7 @@ planEcdhCompWrapKey model st mech params wrapH targetH intent =
       | not (wrapCompEcdhKdfServed params) ->
           KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
             "ECDH wrap serves the null KDF only")
-      | otherwise -> case withEcCompWrappingKey model st AttrWrap "wrapping" r wrapH of
+      | otherwise -> case withEcCompWrappingKey model st AttrWrap "wrapping" mech r wrapH of
           Left deny -> KeyDenied deny
           Right (wrapOid, mat, dom) -> case withWrapTarget model st targetH of
             Left deny -> KeyDenied deny
@@ -4198,7 +4265,7 @@ planEcdhCompUnwrapKey rules model st mech params wrapH blob tmpl =
         | not (any ((== AttrKeyType) . fst) tmpl) ->
             Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
               "unwrap template must name the key type")
-        | otherwise -> case withEcCompWrappingKey model st AttrUnwrap "unwrapping" r wrapH of
+        | otherwise -> case withEcCompWrappingKey model st AttrUnwrap "unwrapping" mech r wrapH of
             Left deny -> Left deny
             Right (wrapOid, mat, dom) -> case wrapCompAesBytes params of
               Just aesBytes
@@ -4240,7 +4307,7 @@ planRsaCompWrapKey model st mech params wrapH targetH intent =
       | not (wrapCompRsaParamsValid r params) ->
           KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
             "RSA wrap takes framed OAEP parameters with a served AES strength")
-      | otherwise -> case withRsaWrappingKey model st AttrWrap "wrapping" ckoPublicKey wrapH of
+      | otherwise -> case withRsaWrappingKey model st AttrWrap "wrapping" mech ckoPublicKey wrapH of
           Left deny -> KeyDenied deny
           Right (wrapOid, k) -> case withWrapTarget model st targetH of
             Left deny -> KeyDenied deny
@@ -4312,7 +4379,7 @@ planRsaCompUnwrapKey rules model st mech params wrapH blob tmpl =
         | not (any ((== AttrKeyType) . fst) tmpl) ->
             Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
               "unwrap template must name the key type")
-        | otherwise -> case withRsaWrappingKey model st AttrUnwrap "unwrapping" ckoPrivateKey wrapH of
+        | otherwise -> case withRsaWrappingKey model st AttrUnwrap "unwrapping" mech ckoPrivateKey wrapH of
             Left deny -> Left deny
             Right (wrapOid, k) -> case (wrapCompRsaOaep params, wrapCompRsaAesBytes params) of
               (Just (d, _, _), Just aesBytes)
@@ -4345,7 +4412,7 @@ planAuthWrapKey model st mech iv wrapH targetH aad intent
         ("not a wrap mechanism: " ++ show mech))
   | BS.length iv /= 16 =
       KeyDenied (KeyDeny CKR_ARGUMENTS_BAD "AES-CBC wrap needs a 16-byte IV")
-  | otherwise = case withWrappingKey model st AttrWrap "wrapping" wrapH of
+  | otherwise = case withWrappingKey model st AttrWrap "wrapping" mech wrapH of
       Left deny -> KeyDenied deny
       Right (wrapOid, _) -> case withWrapTarget model st targetH of
         Left deny -> KeyDenied deny
@@ -4404,7 +4471,7 @@ planAuthUnwrapKey rules model st mech iv wrapH blob aad tmpl =
       | not (any ((== AttrKeyType) . fst) tmpl) =
           Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
             "unwrap template must name the key type")
-      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" wrapH of
+      | otherwise = case withWrappingKey model st AttrUnwrap "unwrapping" mech wrapH of
           Left deny -> Left deny
           Right (wrapOid, _) -> case checkKeyTemplateAny ckoSecretKey ckkGenericSecret tmpl of
             Left deny -> Left deny

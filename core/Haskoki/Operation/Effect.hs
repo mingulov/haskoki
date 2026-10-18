@@ -52,6 +52,7 @@ data CryptoError
   | CryptoBadKey !String !String
   | CryptoMechParamInvalid !String !String
   | CryptoAuthFailed !String
+  | CryptoSigLenRange !String
   | CryptoInvalidState !String !String
   | CryptoNative !String !Int !String
   | CryptoResourceGone !String !EngineResourceId
@@ -171,7 +172,8 @@ data TypedError
 -- crypto failures map here: unsupported stays
 -- mechanism-invalid (never a silent substitution); a bytes-shaped
 -- authentication failure (rejected KEM ciphertext or wrap tag) is
--- encrypted-data-invalid; anything else is a general failure.
+-- encrypted-data-invalid; a signature disproved by length alone
+-- is signature-len-range; anything else is a general failure.
 -- Verify-shaped calls report authentication as a verdict ('GotValid
 -- False'), never through an error. Backend failures normalize
 -- through the adapters first ('toCryptoError' in either layer, then
@@ -188,6 +190,7 @@ interpretError terr = case terr of
     CryptoBadKey _ _ -> CKR_GENERAL_ERROR
     CryptoMechParamInvalid _ _ -> CKR_MECHANISM_PARAM_INVALID
     CryptoAuthFailed _ -> CKR_ENCRYPTED_DATA_INVALID
+    CryptoSigLenRange _ -> CKR_SIGNATURE_LEN_RANGE
     CryptoInvalidState _ _ -> CKR_GENERAL_ERROR
     CryptoNative _ _ _ -> CKR_GENERAL_ERROR
     CryptoResourceGone _ _ -> CKR_GENERAL_ERROR

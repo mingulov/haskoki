@@ -144,6 +144,7 @@ data BackendFailure
   | BackendBadKey !String !String
   | BackendMechParamInvalid !String !String
   | BackendAuthFailed !String
+  | BackendSigLenRange !String
   | BackendInvalidState !String !String
   | BackendNative !String !Int !String
   | BackendResourceGone !String !EngineResourceId

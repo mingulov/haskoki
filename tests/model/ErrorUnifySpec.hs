@@ -42,6 +42,7 @@ sampleErrors =
   , BackendBadKey "op" "why"
   , BackendMechParamInvalid "op" "why"
   , BackendAuthFailed "op"
+  , BackendSigLenRange "op"
   , BackendInvalidState "op" "why"
   , BackendNative "op" 7 "why"
   , BackendResourceGone "op" (EngineResourceId 9)
@@ -54,6 +55,7 @@ sampleFailures =
   , O.BackendBadKey "op" "why"
   , O.BackendMechParamInvalid "op" "why"
   , O.BackendAuthFailed "op"
+  , O.BackendSigLenRange "op"
   , O.BackendInvalidState "op" "why"
   , O.BackendNative "op" 7 "why"
   , O.BackendResourceGone "op" (EngineResourceId 9)
@@ -66,6 +68,7 @@ sampleCryptos =
   , CryptoBadKey "op" "why"
   , CryptoMechParamInvalid "op" "why"
   , CryptoAuthFailed "op"
+  , CryptoSigLenRange "op"
   , CryptoInvalidState "op" "why"
   , CryptoNative "op" 7 "why"
   , CryptoResourceGone "op" (EngineResourceId 9)
@@ -89,6 +92,7 @@ cryptoTag err = case err of
   CryptoBadKey _ _ -> "CryptoBadKey"
   CryptoMechParamInvalid _ _ -> "CryptoMechParamInvalid"
   CryptoAuthFailed _ -> "CryptoAuthFailed"
+  CryptoSigLenRange _ -> "CryptoSigLenRange"
   CryptoInvalidState _ _ -> "CryptoInvalidState"
   CryptoNative _ _ _ -> "CryptoNative"
   CryptoResourceGone _ _ -> "CryptoResourceGone"
@@ -102,6 +106,7 @@ caseCoreMap = do
     , "CryptoBadKey"
     , "CryptoMechParamInvalid"
     , "CryptoAuthFailed"
+    , "CryptoSigLenRange"
     , "CryptoInvalidState"
     , "CryptoNative"
     , "CryptoResourceGone"
@@ -119,6 +124,7 @@ caseDriverMap = do
     , "CryptoBadKey"
     , "CryptoMechParamInvalid"
     , "CryptoAuthFailed"
+    , "CryptoSigLenRange"
     , "CryptoInvalidState"
     , "CryptoNative"
     , "CryptoResourceGone"
@@ -142,6 +148,8 @@ caseNewCodes = do
     (cryptoCode (CryptoNative "op" 7 "why"))
   assertEqual "resource gone code" CKR_GENERAL_ERROR
     (cryptoCode (CryptoResourceGone "op" (EngineResourceId 9)))
+  assertEqual "siglen code" CKR_SIGNATURE_LEN_RANGE
+    (cryptoCode (CryptoSigLenRange "op"))
 
 caseRoundTripCrypto :: IO ()
 caseRoundTripCrypto = do

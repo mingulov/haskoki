@@ -19,7 +19,7 @@ base key (generic-secret or HMAC-typed) plus per-row inputs:
   iteration @T_i = PRF(K, T_{i-1} | g^xy | extra)@ (no
   counter), the aux keygxy optional, truncating the base
   when neither input is present (the oracle reference
-  rule).
+  rule; refused on a sealed base).
 
 The canonical frame (@ike-params\/1@) is the PRF code byte
 (0 = unmapped selector, structurally valid so the planner

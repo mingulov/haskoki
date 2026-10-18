@@ -33,7 +33,10 @@ typedef struct hsk_ossl4_env hsk_ossl4_env_t;
 
 /* Error codes (negative return values). AUTHFAIL is a verdict
  * (padding/tag mismatch: wrong key, label, or tampered input), not
- * a malfunction; the Haskell side maps it onto BackendAuthFailed. */
+ * a malfunction; the Haskell side maps it onto BackendAuthFailed.
+ * SIGLEN is a verdict too: the signature length alone disproves
+ * the signature (the Haskell side maps it onto
+ * CKR_SIGNATURE_LEN_RANGE). */
 #define HSK_OSSL4_OK 0
 #define HSK_OSSL4_ERR_NATIVE (-1)
 #define HSK_OSSL4_ERR_BADPARAM (-2)
@@ -41,6 +44,7 @@ typedef struct hsk_ossl4_env hsk_ossl4_env_t;
 #define HSK_OSSL4_ERR_NOMEM (-4)
 #define HSK_OSSL4_ERR_AUTHFAIL (-5)
 #define HSK_OSSL4_ERR_BADPEER (-6)
+#define HSK_OSSL4_ERR_SIGLEN (-7)
 
 /* --- private context lifecycle -------------------------------------- */
 

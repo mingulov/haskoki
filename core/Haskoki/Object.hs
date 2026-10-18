@@ -47,6 +47,7 @@ module Haskoki.Object
   , planFindObjects
   , planGetAttributes
   , readView
+  , isAsymmetricKeyType
   ) where
 
 import Data.Bits (countLeadingZeros)
@@ -621,7 +622,7 @@ planCreateObject model st tmpl = case validateTemplate tmpl of
               where
                 stored = stampCreatedKey stored0
 
-ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes, ckkDsa, ckkDh, ckkX9_42Dh, ckkEcEdwards, ckkMlDsa, ckkSlhDsa, ckkMlKem :: Word64
+ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes, ckkDsa, ckkDh, ckkX9_42Dh, ckkEcEdwards, ckkMlDsa, ckkSlhDsa, ckkMlKem, ckkKea, ckkGostr3410, ckkHss, ckkXmss, ckkXmssMt :: Word64
 ckoPrivateKey = mustClassId "CKO_PRIVATE_KEY"
 ckoPublicKey = mustClassId "CKO_PUBLIC_KEY"
 ckoSecretKey = mustClassId "CKO_SECRET_KEY"
@@ -637,6 +638,22 @@ ckkMlDsa = mustKeyTypeId "CKK_ML_DSA"
 ckkSlhDsa = mustKeyTypeId "CKK_SLH_DSA"
 ckkMlKem = mustKeyTypeId "CKK_ML_KEM"
 ckkAes = mustKeyTypeId "CKK_AES"
+ckkKea = mustKeyTypeId "CKK_KEA"
+ckkGostr3410 = mustKeyTypeId "CKK_GOSTR3410"
+ckkHss = mustKeyTypeId "CKK_HSS"
+ckkXmss = mustKeyTypeId "CKK_XMSS"
+ckkXmssMt = mustKeyTypeId "CKK_XMSSMT"
+
+-- | Key types that belong to asymmetric (public\/private) objects:
+-- the signature, agreement and KEM types of the pinned header.
+-- A secret-class object carrying one of these is incoherent and
+-- refuses at creation, unwrap, derive and generate time.
+isAsymmetricKeyType :: Word64 -> Bool
+isAsymmetricKeyType k = k `elem`
+  [ ckkRsa, ckkDsa, ckkDh, ckkEc, ckkX9_42Dh, ckkKea
+  , ckkGostr3410, ckkEcEdwards, ckkEcMontgomery
+  , ckkHss, ckkXmss, ckkXmssMt, ckkMlKem, ckkMlDsa, ckkSlhDsa
+  ]
 
 ckoCertificate :: Word64
 ckoCertificate = mustClassId "CKO_CERTIFICATE"
@@ -1052,7 +1069,10 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       | BS.null s = Nothing
       | BS.length s > coordLen = Nothing
       | otherwise = Just s
-    secretKey k = do
+    secretKey k
+      | isAsymmetricKeyType k = Left (CKR_TEMPLATE_INCONSISTENT,
+          "asymmetric key type on a secret object")
+      | otherwise = do
       bytes <- needValue
       let n = fromIntegral (BS.length bytes) :: Word64
       case Map.lookup AttrValueLen attrs of
@@ -1156,10 +1176,14 @@ deriveCopyAttrs srcAttrs over
 -- 'planSetAttributes' and 'planCopyObject': Nothing = mutable,
 -- Just = refusal. Each ratchet compares against the effective value
 -- (the reported view): writing what a read reports succeeds and only
--- a flip against the ratchet refuses. Non-key classes own no key
--- flags and read FALSE, so their enforcement is unchanged by
--- construction. Copy and set call this one function, so the two
--- paths cannot drift on any attribute.
+-- a flip against the ratchet refuses. The 'CKA_MODIFIABLE=false'
+-- guard above the ratchets is the exception: it compares against
+-- the stored map, so on a non-modifiable object writing a defaulted
+-- value the read reports (an absent label read back as @""@) still
+-- refuses read-only. Non-key classes own no key flags and read
+-- FALSE, so their enforcement is unchanged by construction. Copy
+-- and set call this one function, so the two paths cannot drift on
+-- any attribute.
 setAttributePolicy
   :: Map AttributeType AttributeValue
   -> AttributeType -> AttributeValue -> Maybe (ReturnCode, String)

@@ -49,9 +49,9 @@ import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64, Word8)
 
-import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Attribute (AttributeType (..), AttributeValue (..), payloadSealed)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState)
-import Haskoki.Object (effectiveExtractable, effectiveSensitive, encodeTemplate, objectVisible, parseTemplate, resolveHandle)
+import Haskoki.Object (effectiveAttrs, effectiveExtractable, effectiveSensitive, encodeTemplate, objectVisible, parseTemplate, resolveHandle)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
@@ -71,8 +71,10 @@ import Haskoki.Operation.KeyManagement
   , ckoSecretKey
   , derivedObjectDomain
   , keyBytesOf
+  , mechAllowed
   , pendingFromAttrs
   , resolveByteOpsProtection
+  , sealedByteOpChildOk
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Recipe.Dh
@@ -374,7 +376,7 @@ planDerive rules model st mech baseH blob
           | otherwise -> case prfHashLen prf of
               Nothing -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                 "HKDF PRF has no servable hash length")
-              Just hashLen -> case resolveBase model st baseH of
+              Just hashLen -> case resolveBase model st mech baseH of
                 Left deny -> KeyDenied deny
                 Right (ost, _) -> finishData tmpls (255 * hashLen)
                   "derived total exceeds the HKDF-Expand ceiling"
@@ -393,7 +395,7 @@ planDerive rules model st mech baseH blob
           | otherwise -> case prfHashLen prf of
               Nothing -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                 "HKDF PRF has no servable hash length")
-              Just hashLen -> case resolveBase model st baseH of
+              Just hashLen -> case resolveBase model st mech baseH of
                 Left deny -> KeyDenied deny
                 Right (ost, _) -> finish (osAttrs ost) Nothing tmpls (255 * hashLen)
                   "derived total exceeds the HKDF-Expand ceiling"
@@ -445,7 +447,7 @@ planDerive rules model st mech baseH blob
       -- Key-type contradiction outranks parameter shape (the
       -- Init-matrix ordering): the base resolves and must be EC
       -- before params are examined.
-      Just (ecdhBlob, tmpls) -> case resolveBase model st baseH of
+      Just (ecdhBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, mat)
           | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong ckkEc)
@@ -477,7 +479,7 @@ planDerive rules model st mech baseH blob
       -- are examined. The peer is bare bytes (no domain framing
       -- to compare), so range membership is enforced by the
       -- executing backend, which owns the prime.
-      Just (dhBlob, tmpls) -> case resolveBase model st baseH of
+      Just (dhBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, mat)
           | Map.lookup AttrKeyType (osAttrs ost) /= Just (ValULong (dhKeyType r)) ->
@@ -496,7 +498,7 @@ planDerive rules model st mech baseH blob
   | Just r <- kdfRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (info, tmpls) -> case resolveBase model st baseH of
+      Just (info, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, _)
           -- SHA-KDF rows derive from generic-secret bases only;
@@ -527,6 +529,7 @@ planDerive rules model st mech baseH blob
                 (FxDerive mech (Just (osId ost)) Nothing BS.empty BS.empty)
                 (SpecLenDefault w False)
                 CKR_KEY_SIZE_RANGE
+                Nothing
               -- SHAKE XOF rows: no fixed width — the output
               -- length rides the template lengths, capped by
               -- 'maxXofTotal'; a missing length stays
@@ -542,7 +545,7 @@ planDerive rules model st mech baseH blob
   | Just r <- tlsPrfRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (prfBlob, tmpls) -> case resolveBase model st baseH of
+      Just (prfBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, _)
           -- TLS-PRF derives from generic-secret bases only; the
@@ -562,7 +565,7 @@ planDerive rules model st mech baseH blob
   | Just r <- tlsKdfRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (kdfBlob, tmpls) -> case resolveBase model st baseH of
+      Just (kdfBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, _)
           -- TLS-KDF rows derive from generic-secret bases only;
@@ -582,7 +585,7 @@ planDerive rules model st mech baseH blob
   | Just r <- tlsKeyMatRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (kmBlob, tmpls) -> case resolveBase model st baseH of
+      Just (kmBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, _)
           -- Key-material rows derive from generic-secret bases
@@ -605,7 +608,7 @@ planDerive rules model st mech baseH blob
       case decodeDeriveParams blob of
         Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
           "malformed derive arguments")
-        Just (mBlob, tmpls) -> case resolveBase model st baseH of
+        Just (mBlob, tmpls) -> case resolveBase model st mech baseH of
           Left deny -> KeyDenied deny
           Right (ost, _)
             -- SSL3 master rows derive from generic-secret
@@ -626,7 +629,7 @@ planDerive rules model st mech baseH blob
   , ssl3Kind r == Ssl3KeyMat = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (kmBlob, tmpls) -> case resolveBase model st baseH of
+      Just (kmBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, _)
           -- The SSL3 keymat row derives from generic-secret
@@ -647,7 +650,7 @@ planDerive rules model st mech baseH blob
   | Just r <- ikeRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (ikeBlob, tmpls) -> case resolveBase model st baseH of
+      Just (ikeBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, _)
           -- IKE rows derive from generic-secret or HMAC bases;
@@ -663,13 +666,21 @@ planDerive rules model st mech baseH blob
               -- Unreachable post-validation; typed, never a crash.
               Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
                 "IKE frame rejected after validation")
-              Just (prf, _, _, auxN, _, _)
+              Just (prf, _, _, auxN, extra, _)
+                -- IKEv1 extended without aux key or extra data
+                -- truncates the base (raw base bytes out, the PRF
+                -- never runs): a sealed base refuses with the
+                -- EXTRACT code, before the PRF-validity check.
+                | ikKind r == Ike1Extended && auxN == 0 && BS.null extra
+                  && payloadSealed (effectiveAttrs (osAttrs ost)) ->
+                    KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+                      "IKEv1-extended truncation on a sealed base")
                 -- The reserved code marks an unmapped PRF
                 -- selector: the spec-exact denial (the oracle's
                 -- invalid-PRF legs accept it).
                 | prf == 0 -> KeyDenied (KeyDeny CKR_MECHANISM_PARAM_INVALID
                     "IKE PRF mechanism is not a served HMAC")
-                | otherwise -> case resolveAuxKey ikeBaseOk "IKE" model st auxN of
+                | otherwise -> case resolveAuxKey ikeBaseOk "IKE" model st mech auxN of
                     Left deny -> KeyDenied deny
                     Right mAux -> case ikeCeiling (ikKind r) prf of
                       -- Unreachable post-validation (codes 1..13
@@ -689,7 +700,7 @@ planDerive rules model st mech baseH blob
   | Just r <- byteOpsRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (boBlob, tmpls) -> case resolveBase model st baseH of
+      Just (boBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, mat)
           -- Byte-op rows derive from generic-secret bases only;
@@ -706,14 +717,14 @@ planDerive rules model st mech baseH blob
               Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
                 "byte-op frame rejected after validation")
               Just (auxN, offN, payBlob) ->
-                case resolveAuxKey byteOpsBaseOkState "byte-op" model st auxN of
+                case resolveAuxKey byteOpsBaseOkState "byte-op" model st mech auxN of
                   Left deny -> KeyDenied deny
                   Right mAux -> byteOpsFinish r mat mAux offN payBlob
                     mech ost boBlob tmpls
   | Just r <- sp800RecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
-      Just (spBlob, tmpls) -> case resolveBase model st baseH of
+      Just (spBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, _)
           -- SP 800-108 derives from generic-secret bases only;
@@ -755,7 +766,7 @@ planDerive rules model st mech baseH blob
         "malformed derive arguments")
       -- Same ordering as ECDH: the base resolves and must carry
       -- the row's cipher key type before params are examined.
-      Just (edBlob, tmpls) -> case resolveBase model st baseH of
+      Just (edBlob, tmpls) -> case resolveBase model st mech baseH of
         Left deny -> KeyDenied deny
         Right (ost, _)
           | Map.lookup AttrKeyType (osAttrs ost)
@@ -778,19 +789,37 @@ planDerive rules model st mech baseH blob
   where
     finish baseAttrs mAuxAttrs tmpls ceilingN ceilingMsg fx defLen ceilingCode =
       finishMerged (Right . stampDerived baseAttrs mAuxAttrs) tmpls ceilingN ceilingMsg fx
-        (maybe NoLenDefault GenericLenDefault defLen) ceilingCode
+        (maybe NoLenDefault GenericLenDefault defLen) ceilingCode Nothing
     -- | 'finish' with a per-template merge over the validated
     -- attributes: source inheritance plus history for every
     -- family (the byte operations additionally refuse §6.43
     -- downgrades in their merge). The merge runs before ceiling,
     -- admission and effect construction, so the merged flags
-    -- retain through finish/publication.
-    finishMerged merge tmpls ceilingN ceilingMsg fx defLen ceilingCode =
+    -- retain through finish/publication. The optional seal floor
+    -- is the family's natural width on sealed inputs: any
+    -- resolved child length below it — explicit or filled from
+    -- the template key type — refuses inconsistent, as does a
+    -- child key type outside the allow-list.
+    finishMerged merge tmpls ceilingN ceilingMsg fx defLen ceilingCode mSealFloor =
       case checkAllMerged defLen merge tmpls of
         Left deny -> KeyDenied deny
         Right keyed
           | null keyed -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "derive needs at least one template")
+          -- A sealed input cannot mint a shorter child: the
+          -- resolved length below the natural width refuses
+          -- inconsistent, before the ceiling comparison.
+          | Just n <- mSealFloor, any ((< n) . snd) keyed ->
+              KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                "sealed byte-op child length is below the natural width")
+          -- A sealed input cannot mint a leak-prone child either:
+          -- the resolved key type outside the allow-list refuses
+          -- inconsistent even at full width, before the ceiling
+          -- comparison (a missing or malformed type refuses
+          -- closed; the template check above leaves it present).
+          | Just _ <- mSealFloor, any (not . childTypeOk . fst) keyed ->
+              KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                "sealed byte-op child key type is outside the allow-list")
           -- Ceiling before domain (recorded v0.4 ruling, the AC-16
           -- family-specific exception): a request past the
           -- mechanism's maximum output is a capacity error with the
@@ -838,9 +867,20 @@ planDerive rules model st mech baseH blob
     -- refuse @CKR_KEY_SIZE_RANGE@ (the SHA-KDF\/encrypt-data
     -- ceiling code), including an XOR length past
     -- min(base, data) (spec 6.43.6); an EXTRACT overrun refuses
-    -- @CKR_ARGUMENTS_BAD@.
+    -- @CKR_ARGUMENTS_BAD@. A sealed input (the base, or the
+    -- concat-key aux, sealed on the effective view) cannot mint
+    -- a shorter child: EXTRACT refuses
+    -- @CKR_KEY_FUNCTION_NOT_PERMITTED@, short-data XOR refuses
+    -- the same way, and a resolved child length below the
+    -- natural width — an explicit @CKA_VALUE_LEN@ or a length
+    -- the template key type fills in — refuses
+    -- @CKR_TEMPLATE_INCONSISTENT@ on the concatenate and XOR
+    -- rows, as does a child key type outside the allow-list at
+    -- any width. Full-width allow-listed sealed derives still
+    -- plan; unsealed inputs keep every row.
     byteOpsFinish r mat mAux offN payBlob dMech ost boBlob tmpls =
-      case boKind r of
+      let baseSealed = payloadSealed (effectiveAttrs (osAttrs ost))
+      in case boKind r of
         ConcatBaseAndKey -> case mAux of
           -- Unreachable: validation forces a nonzero aux
           -- handle, which resolves or denies above.
@@ -857,26 +897,39 @@ planDerive rules model st mech baseH blob
               Nothing -> KeyDenied (KeyDeny CKR_GENERAL_ERROR
                 "concat-key aux lost its material")
               Just auxMat -> natural (Just (osAttrs auxOst))
+                (baseSealed || payloadSealed (effectiveAttrs (osAttrs auxOst)))
                 (BS.length mat + BS.length auxMat)
-        ConcatBaseAndData -> natural Nothing (BS.length mat + BS.length payBlob)
-        ConcatDataAndBase -> natural Nothing (BS.length payBlob + BS.length mat)
+        ConcatBaseAndData -> natural Nothing baseSealed
+          (BS.length mat + BS.length payBlob)
+        ConcatDataAndBase -> natural Nothing baseSealed
+          (BS.length payBlob + BS.length mat)
         -- PKCS#11 §6.43.6: the result covers the shorter of the
         -- base and the data (an empty side leaves nothing and
         -- refuses as an empty natural output).
-        XorBaseAndData -> natural Nothing (min (BS.length mat) (BS.length payBlob))
-        ExtractKeyFromKey ->
-          let baseBits = toInteger (BS.length mat) * 8
-              remaining = (baseBits - toInteger offN) `div` 8
-              -- The whole-byte window at the offset, capped by
-              -- the byte-ops ceiling; a past-the-end offset
-              -- leaves no window, so every positive request
-              -- overruns.
-              window = max 0 (min (toInteger maxByteOpsOutput) remaining)
-          in finishMerged (byteOpsMerge Nothing) tmpls (fromInteger window)
-            "EXTRACT window exceeds the base key"
-            (FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty)
-            NoLenDefault
-            CKR_ARGUMENTS_BAD
+        XorBaseAndData
+          | baseSealed && BS.length payBlob < BS.length mat ->
+              KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+                "XOR data shorter than a sealed base")
+          | otherwise -> natural Nothing baseSealed
+              (min (BS.length mat) (BS.length payBlob))
+        ExtractKeyFromKey
+          | baseSealed ->
+              KeyDenied (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+                "EXTRACT_KEY_FROM_KEY on a sealed base")
+          | otherwise ->
+              let baseBits = toInteger (BS.length mat) * 8
+                  remaining = (baseBits - toInteger offN) `div` 8
+                  -- The whole-byte window at the offset, capped by
+                  -- the byte-ops ceiling; a past-the-end offset
+                  -- leaves no window, so every positive request
+                  -- overruns.
+                  window = max 0 (min (toInteger maxByteOpsOutput) remaining)
+              in finishMerged (byteOpsMerge Nothing) tmpls (fromInteger window)
+                "EXTRACT window exceeds the base key"
+                (FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty)
+                NoLenDefault
+                CKR_ARGUMENTS_BAD
+                Nothing
       where
         fx = FxDerive dMech (Just (osId ost)) mAux boBlob BS.empty
         -- | The §6.43 merge for one validated caller template:
@@ -887,11 +940,21 @@ planDerive rules model st mech baseH blob
         byteOpsMerge mAuxAttrs =
           fmap (stampDerived (osAttrs ost) mAuxAttrs)
             . resolveByteOpsProtection (byteOpsProtectionOf (osAttrs ost) mAuxAttrs)
-        natural mAuxAttrs n
+        natural mAuxAttrs sealed n
           | n < 1 = KeyDenied (KeyDeny CKR_KEY_SIZE_RANGE
               "byte-op natural output is empty")
           | n > maxByteOpsOutput = KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
               "byte-op natural output exceeds the ceiling")
+          -- A sealed input cannot mint a shorter child: any
+          -- positive template length below the natural width
+          -- refuses inconsistent up front (zero and malformed
+          -- shapes still fall through to the shared validator
+          -- below); the resolved floor in 'finishMerged'
+          -- additionally catches lengths the template key type
+          -- fills in.
+          | sealed && any (shorterThan n) tmpls =
+              KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+                "sealed byte-op template length is below the natural width")
           -- Concat\/XOR length rules (PKCS#11 v3.2 §6.43): no
           -- type and no length gives a generic secret of the
           -- natural width; a typed target without a length takes
@@ -900,6 +963,10 @@ planDerive rules model st mech baseH blob
               "derived total exceeds the byte-op natural width"
               fx (SpecLenDefault n True)
               CKR_KEY_SIZE_RANGE
+              (if sealed then Just n else Nothing)
+        shorterThan n tmpl = case lookup AttrValueLen tmpl of
+          Just (ValULong want) -> want >= 1 && toInteger want < toInteger n
+          _ -> False
     -- | Key-material admission after the frame validates: the
     -- single template applies to every output (v3.2 §6.39.6\/
     -- §6.40.6). Per-output lengths come from params, so a
@@ -1049,6 +1116,13 @@ planDerive rules model st mech baseH blob
       Nothing -> True
       Just (ValULong k) -> k == ckkGenericSecret
       Just _ -> False
+    -- | A resolved child key type on a sealed byte-op input: inside
+    -- the allow-list only (fail closed on a missing or malformed
+    -- entry; the template check leaves the type present).
+    childTypeOk :: Map.Map AttributeType AttributeValue -> Bool
+    childTypeOk attrs = case Map.lookup AttrKeyType attrs of
+      Just (ValULong k) -> sealedByteOpChildOk k
+      _ -> False
     -- | One secret-key destination: shape ('checkKeyTemplateAny'),
     -- then the destination type (asymmetric, vendor and
     -- unserved types refuse before any length rule), then the
@@ -1204,12 +1278,13 @@ data LenDefault
     -- length, so it stays INCOMPLETE)
 
 -- | Resolve the base key: known handle, session-visible, derive
--- mark set, stored material present. Shared by the HKDF and ECDH
+-- mark set, the derive mechanism in the allowed mechanisms,
+-- stored material present. Shared by the HKDF and ECDH
 -- constructions (identical denials, one implementation).
 resolveBase
-  :: Model -> SessionState -> ExternalHandle
+  :: Model -> SessionState -> MechanismId -> ExternalHandle
   -> Either KeyDeny (ObjectState, ByteString)
-resolveBase model st baseH = case resolveHandle model baseH of
+resolveBase model st dMech baseH = case resolveHandle model baseH of
   Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
     "unknown or destroyed base-key handle")
   Just ost
@@ -1218,6 +1293,8 @@ resolveBase model st baseH = case resolveHandle model baseH of
     | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
         Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
           "base key does not permit derivation")
+    | not (mechAllowed dMech ost) -> Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+        "mechanism is not in the key's allowed list")
     | otherwise -> case keyBytesOf ost of
         Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
           "base key lacks material")
@@ -1250,16 +1327,16 @@ ikeBaseOk ost = case Map.lookup AttrKeyType (osAttrs ost) of
   _ -> False
 
 -- | Resolve a params-carried aux handle (0 = absent),
--- held to the same visibility, type, permission, and
--- material rules as the base key; the type check and its
--- label ride per family (IKE: generic or HMAC; byte-ops:
--- generic only).
+-- held to the same visibility, type, permission, allowed
+-- mechanisms, and material rules as the base key; the type
+-- check and its label ride per family (IKE: generic or HMAC;
+-- byte-ops: generic only).
 resolveAuxKey
   :: (ObjectState -> Bool) -> String
-  -> Model -> SessionState -> Word64
+  -> Model -> SessionState -> MechanismId -> Word64
   -> Either KeyDeny (Maybe ObjectId)
-resolveAuxKey _ _ _ _ 0 = Right Nothing
-resolveAuxKey typeOk label model st auxN =
+resolveAuxKey _ _ _ _ _ 0 = Right Nothing
+resolveAuxKey typeOk label model st dMech auxN =
   case resolveHandle model (ExternalHandle (fromIntegral auxN)) of
     Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
       "unknown or destroyed aux-key handle")
@@ -1271,6 +1348,8 @@ resolveAuxKey typeOk label model st auxN =
       | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
           Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
             "aux key does not permit derivation")
+      | not (mechAllowed dMech ost) -> Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
+          "mechanism is not in the key's allowed list")
       | otherwise -> case keyBytesOf ost of
           Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
             "aux key lacks material")

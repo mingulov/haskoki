@@ -146,19 +146,21 @@ static void expect_bytes(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE h,
         "%s reads exact bytes (rv=0x%lx)", what, (unsigned long)rv);
 }
 
-/* Downgrade leg: primary expectation is typed refusal with no handle;
- * a successful derive is accepted only with inherited sealed flags
- * and an unreadable value (then destroyed). Returns the derive rv. */
+/* Downgrade leg: primary expectation is the pinned refusal with no
+ * handle (the extract row refuses the sealed base before the
+ * template merge, so it pins the permission code); a successful
+ * derive is accepted only with inherited sealed flags and an
+ * unreadable value (then destroyed). Returns the derive rv. */
 static CK_RV downgrade_leg(CK_SESSION_HANDLE s, CK_MECHANISM *m,
                            CK_OBJECT_HANDLE base, CK_ATTRIBUTE *dt,
-                           CK_ULONG ndt, CK_ULONG sealedLen,
+                           CK_ULONG ndt, CK_ULONG sealedLen, CK_RV refuse_rv,
                            const char *tag, const char *row) {
   CK_OBJECT_HANDLE h = 0;
   CK_RV rv = f->C_DeriveKey(s, m, base, dt, ndt, &h);
-  if (rv == CKR_TEMPLATE_INCONSISTENT) {
+  if (rv == refuse_rv) {
     CHECK(h == 0, "%s %s refused without handle", tag, row);
-    printf("derive-protection: %s %s refused CKR_TEMPLATE_INCONSISTENT\n",
-           tag, row);
+    printf("derive-protection: %s %s refused 0x%lx\n", tag, row,
+           (unsigned long)rv);
     return rv;
   }
   CHECK(rv == CKR_OK && h != 0, "%s %s derive ok-or-refused (rv=0x%lx)",
@@ -184,12 +186,16 @@ static CK_RV downgrade_matrix(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE base,
                               const char *refused_label) {
   CK_OBJECT_CLASS seccls = CKO_SECRET_KEY;
   CK_KEY_TYPE genkt = CKK_GENERIC_SECRET;
-  CK_ULONG len64 = 64, len32 = 32, len16 = 16;
+  CK_ULONG len64 = 64, len32 = 32;
   CK_OBJECT_HANDLE second = aux;
   CK_KEY_DERIVATION_STRING_DATA sd, sx;
   CK_ULONG off0 = 0;
   CK_MECHANISM m;
   CK_RV rv_extract;
+  /* Downgrade legs run at the natural width (base 32 + data 16
+   * for the concats, min(32, 32) for XOR): below it the sealed
+   * shortening refusal would answer first with the same code. */
+  CK_ULONG len48 = 48;
   printf("derive-protection: downgrade matrix for %s\n", tag);
   sd.pData = dat;
   sd.ulLen = 16;
@@ -208,14 +214,15 @@ static CK_RV downgrade_matrix(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE base,
     m.mechanism = CKM_CONCATENATE_BASE_AND_KEY;
     m.pParameter = &second;
     m.ulParameterLen = sizeof(second);
-    downgrade_leg(s, &m, base, dt, 6, len64, tag, "concat-key downgrade");
+    downgrade_leg(s, &m, base, dt, 6, len64, CKR_TEMPLATE_INCONSISTENT,
+                    tag, "concat-key downgrade");
   }
   /* concat-data. */
   {
     CK_ATTRIBUTE dt[] = {
       { CKA_CLASS, &seccls, sizeof(seccls) },
       { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-      { CKA_VALUE_LEN, &len16, sizeof(len16) },
+      { CKA_VALUE_LEN, &len48, sizeof(len48) },
       { CKA_TOKEN, &bFalse, sizeof(bFalse) },
       { CKA_SENSITIVE, &bFalse, sizeof(bFalse) },
       { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
@@ -223,14 +230,15 @@ static CK_RV downgrade_matrix(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE base,
     m.mechanism = CKM_CONCATENATE_BASE_AND_DATA;
     m.pParameter = &sd;
     m.ulParameterLen = sizeof(sd);
-    downgrade_leg(s, &m, base, dt, 6, len16, tag, "concat-data downgrade");
+    downgrade_leg(s, &m, base, dt, 6, len48, CKR_TEMPLATE_INCONSISTENT,
+                    tag, "concat-data downgrade");
   }
   /* data-concat. */
   {
     CK_ATTRIBUTE dt[] = {
       { CKA_CLASS, &seccls, sizeof(seccls) },
       { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-      { CKA_VALUE_LEN, &len16, sizeof(len16) },
+      { CKA_VALUE_LEN, &len48, sizeof(len48) },
       { CKA_TOKEN, &bFalse, sizeof(bFalse) },
       { CKA_SENSITIVE, &bFalse, sizeof(bFalse) },
       { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
@@ -238,14 +246,15 @@ static CK_RV downgrade_matrix(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE base,
     m.mechanism = CKM_CONCATENATE_DATA_AND_BASE;
     m.pParameter = &sd;
     m.ulParameterLen = sizeof(sd);
-    downgrade_leg(s, &m, base, dt, 6, len16, tag, "data-concat downgrade");
+    downgrade_leg(s, &m, base, dt, 6, len48, CKR_TEMPLATE_INCONSISTENT,
+                    tag, "data-concat downgrade");
   }
   /* xor. */
   {
     CK_ATTRIBUTE dt[] = {
       { CKA_CLASS, &seccls, sizeof(seccls) },
       { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-      { CKA_VALUE_LEN, &len16, sizeof(len16) },
+      { CKA_VALUE_LEN, &len32, sizeof(len32) },
       { CKA_TOKEN, &bFalse, sizeof(bFalse) },
       { CKA_SENSITIVE, &bFalse, sizeof(bFalse) },
       { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
@@ -253,7 +262,8 @@ static CK_RV downgrade_matrix(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE base,
     m.mechanism = CKM_XOR_BASE_AND_DATA;
     m.pParameter = &sx;
     m.ulParameterLen = sizeof(sx);
-    downgrade_leg(s, &m, base, dt, 6, len16, tag, "xor downgrade");
+    downgrade_leg(s, &m, base, dt, 6, len32, CKR_TEMPLATE_INCONSISTENT,
+                    tag, "xor downgrade");
   }
   /* extract (full-length, labeled for the no-object proof). */
   {
@@ -271,7 +281,8 @@ static CK_RV downgrade_matrix(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE base,
     m.pParameter = &off0;
     m.ulParameterLen = sizeof(off0);
     rv_extract =
-      downgrade_leg(s, &m, base, dt, 7, len32, tag, "extract downgrade");
+      downgrade_leg(s, &m, base, dt, 7, len32, CKR_KEY_FUNCTION_NOT_PERMITTED,
+                    tag, "extract downgrade");
   }
   return rv_extract;
 }
@@ -348,45 +359,49 @@ int main(int argc, char **argv) {
   rv_unextr = downgrade_matrix(sess, uobase, qaux, dat, xord,
                                "unextr-only", "p1-refused-unextr");
 
-  /* A refused derivation creates no object. */
-  if (rv_prot == CKR_TEMPLATE_INCONSISTENT) {
+  /* A refused derivation creates no object (the extract row now
+   * refuses with the permission code). */
+  if (rv_prot != CKR_OK) {
     CHECK(count_label(sess, "p1-refused-child") == 0,
           "refused derive publishes no object");
   }
-  if (rv_sens == CKR_TEMPLATE_INCONSISTENT) {
+  if (rv_sens != CKR_OK) {
     CHECK(count_label(sess, "p1-refused-sens") == 0,
           "refused sens-only derive publishes no object");
   }
-  if (rv_unextr == CKR_TEMPLATE_INCONSISTENT) {
+  if (rv_unextr != CKR_OK) {
     CHECK(count_label(sess, "p1-refused-unextr") == 0,
           "refused unextr-only derive publishes no object");
   }
 
-  /* Matching and omitted templates resolve sealed (extract). */
+  /* Matching and omitted templates resolve sealed (full-width
+   * concat: extract refuses the sealed base). */
   {
-    CK_ULONG len32 = 32;
-    CK_ULONG off0 = 0;
+    CK_ULONG len48 = 48;
+    CK_KEY_DERIVATION_STRING_DATA sd;
     CK_MECHANISM m;
     CK_OBJECT_HANDLE h = 0;
-    m.mechanism = CKM_EXTRACT_KEY_FROM_KEY;
-    m.pParameter = &off0;
-    m.ulParameterLen = sizeof(off0);
+    sd.pData = dat;
+    sd.ulLen = 16;
+    m.mechanism = CKM_CONCATENATE_BASE_AND_DATA;
+    m.pParameter = &sd;
+    m.ulParameterLen = sizeof(sd);
     {
       CK_ATTRIBUTE dt[] = {
         { CKA_CLASS, &seccls, sizeof(seccls) },
         { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-        { CKA_VALUE_LEN, &len32, sizeof(len32) },
+        { CKA_VALUE_LEN, &len48, sizeof(len48) },
         { CKA_TOKEN, &bFalse, sizeof(bFalse) },
         { CKA_SENSITIVE, &bTrue, sizeof(bTrue) },
         { CKA_EXTRACTABLE, &bFalse, sizeof(bFalse) }
       };
       rv = f->C_DeriveKey(sess, &m, pbase, dt, 6, &h);
-      CHECK(rv == CKR_OK && h != 0, "matching extract derives");
+      CHECK(rv == CKR_OK && h != 0, "matching concat derives");
       if (rv == CKR_OK && h != 0) {
-        expect_flags(sess, h, CK_TRUE, CK_FALSE, "matching extract");
-        expect_sealed(sess, h, len32, "matching extract");
+        expect_flags(sess, h, CK_TRUE, CK_FALSE, "matching concat");
+        expect_sealed(sess, h, len48, "matching concat");
         rv = f->C_DestroyObject(sess, h);
-        CHECK(rv == CKR_OK, "matching extract destroyed");
+        CHECK(rv == CKR_OK, "matching concat destroyed");
       }
     }
     h = 0;
@@ -394,14 +409,14 @@ int main(int argc, char **argv) {
       CK_ATTRIBUTE dt[] = {
         { CKA_CLASS, &seccls, sizeof(seccls) },
         { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-        { CKA_VALUE_LEN, &len32, sizeof(len32) },
+        { CKA_VALUE_LEN, &len48, sizeof(len48) },
         { CKA_TOKEN, &bFalse, sizeof(bFalse) }
       };
       rv = f->C_DeriveKey(sess, &m, pbase, dt, 4, &h);
-      CHECK(rv == CKR_OK && h != 0, "omitted extract derives");
+      CHECK(rv == CKR_OK && h != 0, "omitted concat derives");
       if (rv == CKR_OK && h != 0) {
-        expect_flags(sess, h, CK_TRUE, CK_FALSE, "omitted extract");
-        expect_sealed(sess, h, len32, "omitted extract");
+        expect_flags(sess, h, CK_TRUE, CK_FALSE, "omitted concat");
+        expect_sealed(sess, h, len48, "omitted concat");
         /* History attributes are stamped at creation: the derived
          * child carries stored false history. */
         {
@@ -431,7 +446,7 @@ int main(int argc, char **argv) {
       CK_ATTRIBUTE dt[] = {
         { CKA_CLASS, &seccls, sizeof(seccls) },
         { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-        { CKA_VALUE_LEN, &len32, sizeof(len32) },
+        { CKA_VALUE_LEN, &len48, sizeof(len48) },
         { CKA_TOKEN, &bFalse, sizeof(bFalse) },
         { CKA_ALWAYS_SENSITIVE, &hist, sizeof(hist) }
       };
@@ -462,6 +477,7 @@ int main(int argc, char **argv) {
         { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
       };
       downgrade_leg(sess, &m, qbase, dt, 6, len64,
+                    CKR_TEMPLATE_INCONSISTENT,
                     "aux-only", "concat-key downgrade");
     }
     {
@@ -507,7 +523,8 @@ int main(int argc, char **argv) {
     m.pParameter = &second;
     m.ulParameterLen = sizeof(second);
     downgrade_leg(sess, &m, sobase, down, 6, len64,
-                  "mixed", "concat-key downgrade");
+                    CKR_TEMPLATE_INCONSISTENT,
+                    "mixed", "concat-key downgrade");
     rv = f->C_DeriveKey(sess, &m, sobase, omit, 4, &h);
     CHECK(rv == CKR_OK && h != 0, "mixed omitted derives");
     if (rv == CKR_OK && h != 0) {
@@ -530,20 +547,23 @@ int main(int argc, char **argv) {
 
   /* Split omitted templates stamp only the required flag: a
    * sensitivity-only source keeps an explicitly readable
-   * extractable flag, and vice versa. */
+   * extractable flag, and vice versa (full-width concat:
+   * extract refuses the split-flag bases). */
   {
-    CK_ULONG len32 = 32;
-    CK_ULONG off0 = 0;
+    CK_ULONG len48 = 48;
+    CK_KEY_DERIVATION_STRING_DATA sd;
     CK_MECHANISM m;
     CK_OBJECT_HANDLE h = 0;
-    m.mechanism = CKM_EXTRACT_KEY_FROM_KEY;
-    m.pParameter = &off0;
-    m.ulParameterLen = sizeof(off0);
+    sd.pData = dat;
+    sd.ulLen = 16;
+    m.mechanism = CKM_CONCATENATE_BASE_AND_DATA;
+    m.pParameter = &sd;
+    m.ulParameterLen = sizeof(sd);
     {
       CK_ATTRIBUTE dt[] = {
         { CKA_CLASS, &seccls, sizeof(seccls) },
         { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-        { CKA_VALUE_LEN, &len32, sizeof(len32) },
+        { CKA_VALUE_LEN, &len48, sizeof(len48) },
         { CKA_TOKEN, &bFalse, sizeof(bFalse) },
         { CKA_EXTRACTABLE, &bTrue, sizeof(bTrue) }
       };
@@ -551,7 +571,7 @@ int main(int argc, char **argv) {
       CHECK(rv == CKR_OK && h != 0, "sens-only half-template derives");
       if (rv == CKR_OK && h != 0) {
         expect_flags(sess, h, CK_TRUE, CK_TRUE, "sens-only half-template");
-        expect_sealed(sess, h, len32, "sens-only half-template");
+        expect_sealed(sess, h, len48, "sens-only half-template");
         rv = f->C_DestroyObject(sess, h);
         CHECK(rv == CKR_OK, "sens-only half-template destroyed");
       }
@@ -561,7 +581,7 @@ int main(int argc, char **argv) {
       CK_ATTRIBUTE dt[] = {
         { CKA_CLASS, &seccls, sizeof(seccls) },
         { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-        { CKA_VALUE_LEN, &len32, sizeof(len32) },
+        { CKA_VALUE_LEN, &len48, sizeof(len48) },
         { CKA_TOKEN, &bFalse, sizeof(bFalse) },
         { CKA_SENSITIVE, &bFalse, sizeof(bFalse) }
       };
@@ -569,16 +589,15 @@ int main(int argc, char **argv) {
       CHECK(rv == CKR_OK && h != 0, "unextr-only half-template derives");
       if (rv == CKR_OK && h != 0) {
         expect_flags(sess, h, CK_FALSE, CK_FALSE, "unextr-only half-template");
-        expect_sealed(sess, h, len32, "unextr-only half-template");
+        expect_sealed(sess, h, len48, "unextr-only half-template");
         rv = f->C_DestroyObject(sess, h);
         CHECK(rv == CKR_OK, "unextr-only half-template destroyed");
       }
     }
   }
 
-  /* A protected overrun still refuses typed: bit offset 248 leaves
-   * a one-byte window, so 16 bytes overrun even with a matching
-   * protected template. */
+  /* A protected overrun refuses with the permission code: the
+   * sealed-base extract refusal wins before the window check. */
   {
     CK_ULONG len16 = 16;
     CK_ULONG off248 = 248;
@@ -596,14 +615,15 @@ int main(int argc, char **argv) {
     m.pParameter = &off248;
     m.ulParameterLen = sizeof(off248);
     rv = f->C_DeriveKey(sess, &m, pbase, dt, 6, &h);
-    CHECK(rv == CKR_ARGUMENTS_BAD && h == 0,
+    CHECK(rv == CKR_KEY_FUNCTION_NOT_PERMITTED && h == 0,
           "protected overrun refused typed (rv=0x%lx)", (unsigned long)rv);
   }
 
-  /* A sealed child refuses C_WrapKey with CKR_KEY_UNEXTRACTABLE. */
+  /* A sealed child refuses C_WrapKey with CKR_KEY_UNEXTRACTABLE
+   * (full-width concat: extract refuses the sealed base). */
   {
-    CK_ULONG len32 = 32;
-    CK_ULONG off0 = 0;
+    CK_ULONG len48 = 48;
+    CK_KEY_DERIVATION_STRING_DATA sd;
     CK_MECHANISM m, wm;
     CK_OBJECT_HANDLE h = 0, wrap = 0;
     CK_KEY_TYPE aeskt = CKK_AES;
@@ -621,7 +641,7 @@ int main(int argc, char **argv) {
     CK_ATTRIBUTE dt[] = {
       { CKA_CLASS, &seccls, sizeof(seccls) },
       { CKA_KEY_TYPE, &genkt, sizeof(genkt) },
-      { CKA_VALUE_LEN, &len32, sizeof(len32) },
+      { CKA_VALUE_LEN, &len48, sizeof(len48) },
       { CKA_TOKEN, &bFalse, sizeof(bFalse) }
     };
     for (i = 0; i < sizeof(wkey); i++) {
@@ -632,9 +652,11 @@ int main(int argc, char **argv) {
     }
     rv = f->C_CreateObject(sess, wt, 7, &wrap);
     CHECK(rv == CKR_OK && wrap != 0, "wrapping key imports");
-    m.mechanism = CKM_EXTRACT_KEY_FROM_KEY;
-    m.pParameter = &off0;
-    m.ulParameterLen = sizeof(off0);
+    sd.pData = dat;
+    sd.ulLen = 16;
+    m.mechanism = CKM_CONCATENATE_BASE_AND_DATA;
+    m.pParameter = &sd;
+    m.ulParameterLen = sizeof(sd);
     rv = f->C_DeriveKey(sess, &m, pbase, dt, 4, &h);
     CHECK(rv == CKR_OK && h != 0, "sealed wrap target derives");
     if (rv == CKR_OK && h != 0) {

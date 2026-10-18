@@ -109,7 +109,7 @@ caseDenyExhaustive =
 
 -- | Every crypto failure maps to its pinned code. Four rows
 -- (Failed, Unsupported, BadKey, AuthFailed) cross-check
--- tests/fixtures/code-snapshot.txt; the other four pin the
+-- tests/fixtures/code-snapshot.txt; the other five pin the
 -- Effect.hs interpreter table.
 cryptoPins :: [(CryptoError, ReturnCode)]
 cryptoPins =
@@ -118,6 +118,7 @@ cryptoPins =
   , (CryptoBadParam "o" "w", CKR_GENERAL_ERROR)
   , (CryptoBadKey "o" "w", CKR_GENERAL_ERROR)
   , (CryptoAuthFailed "d", CKR_ENCRYPTED_DATA_INVALID)
+  , (CryptoSigLenRange "d", CKR_SIGNATURE_LEN_RANGE)
   , (CryptoInvalidState "o" "w", CKR_GENERAL_ERROR)
   , (CryptoNative "n" (-1) "m", CKR_GENERAL_ERROR)
   , (CryptoResourceGone "r" (EngineResourceId 7), CKR_GENERAL_ERROR)

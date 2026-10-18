@@ -1791,7 +1791,8 @@ rsaSignRun env op mdname isRaw kb msg = do
     Right sig -> pure (EngineOk sig)
 
 -- | Verify return-code mapping shared by ECDSA and RSA: 1 is valid,
--- 0 is a verdict-shaped mismatch, bad keys and malformed encodings
+-- 0 is a verdict-shaped mismatch, a length-disproved signature
+-- keeps its own verdict, and bad keys and malformed encodings
 -- keep their taxonomy.
 verifyRc :: String -> String -> Int -> IO (EngineResult ())
 verifyRc op badParamMsg rc = case rc of
@@ -1802,6 +1803,8 @@ verifyRc op badParamMsg rc = case rc of
         pure (EngineFail (BackendBadKey op "public key DER rejected"))
     | code == Raw.errBadParam ->
         pure (EngineFail (BackendBadParam op badParamMsg))
+    | code == Raw.errSigLen ->
+        pure (EngineFail (BackendSigLenRange "verify"))
     | otherwise -> nativeFail op code
 
 cipherSupported :: BackendEnv OpenSSL4 -> CipherSpec -> Maybe String
@@ -2350,6 +2353,7 @@ nativeFail op code
   | code == Raw.errBadParam = pure (EngineFail (BackendBadParam op "native parameter rejected"))
   | code == Raw.errBadKey = pure (EngineFail (BackendBadKey op "native key rejected"))
   | code == Raw.errAuthFail = pure (EngineFail (BackendAuthFailed op))
+  | code == Raw.errSigLen = pure (EngineFail (BackendSigLenRange op))
   | code == Raw.errNoMem = pure (EngineFail (BackendNative op code "native out of memory"))
   | otherwise = do
       detail <- Raw.lastError

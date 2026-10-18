@@ -1118,6 +1118,8 @@ caseDriverErrorCats = do
     (CryptoBadKey "o" "w") (toCryptoError (B.BackendBadKey "o" "w"))
   assertEqual "authfailed"
     (CryptoAuthFailed "o") (toCryptoError (B.BackendAuthFailed "o"))
+  assertEqual "siglenrange"
+    (CryptoSigLenRange "o") (toCryptoError (B.BackendSigLenRange "o"))
   assertEqual "invalidstate"
     (CryptoInvalidState "o" "w") (toCryptoError (B.BackendInvalidState "o" "w"))
   assertEqual "native"

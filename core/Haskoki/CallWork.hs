@@ -322,7 +322,11 @@ data CallFamily = FamilySign | FamilyDigest | FamilyOther
 -- | The serving family of one function. Exhaustive over
 -- 'FunctionId' (no wildcard): a new constructor breaks the build
 -- here, forcing an explicit family verdict, exactly as in
--- 'callFunctionSlot'.
+-- 'callFunctionSlot'. The table is deliberately asymmetric:
+-- 'F_DigestInit' and 'F_DigestUpdate' share the digest family while
+-- 'F_SignInit' and 'F_SignUpdate' stay 'FamilyOther'. Only 'F_Sign'
+-- and 'F_Digest' submit jobs, so the Init\/Update rows never pair
+-- either way and the asymmetry is unobservable.
 callFunctionFamily :: FunctionId -> CallFamily
 callFunctionFamily fid = case fid of
   F_Sign -> FamilySign

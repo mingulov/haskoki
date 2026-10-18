@@ -3962,6 +3962,7 @@ toCryptoError err = case err of
   BackendBadKey o w -> CryptoBadKey o w
   BackendMechParamInvalid o w -> CryptoMechParamInvalid o w
   BackendAuthFailed o -> CryptoAuthFailed o
+  BackendSigLenRange o -> CryptoSigLenRange o
   BackendInvalidState o w -> CryptoInvalidState o w
   BackendNative o c w -> CryptoNative o c w
   BackendResourceGone o r -> CryptoResourceGone o r
@@ -3976,12 +3977,13 @@ toCoreFailure err = case err of
   BackendBadKey o w -> O.BackendBadKey o w
   BackendMechParamInvalid o w -> O.BackendMechParamInvalid o w
   BackendAuthFailed o -> O.BackendAuthFailed o
+  BackendSigLenRange o -> O.BackendSigLenRange o
   BackendInvalidState o w -> O.BackendInvalidState o w
   BackendNative o c w -> O.BackendNative o c w
   BackendResourceGone o r -> O.BackendResourceGone o r
 
 -- | Core failures back onto backend errors: the exact inverse of
--- 'toCoreFailure' over all eight constructors.
+-- 'toCoreFailure' over all nine constructors.
 fromCoreFailure :: O.BackendFailure -> BackendError
 fromCoreFailure f = case f of
   O.BackendUnsupported o w -> BackendUnsupported o w
@@ -3989,12 +3991,13 @@ fromCoreFailure f = case f of
   O.BackendBadKey o w -> BackendBadKey o w
   O.BackendMechParamInvalid o w -> BackendMechParamInvalid o w
   O.BackendAuthFailed o -> BackendAuthFailed o
+  O.BackendSigLenRange o -> BackendSigLenRange o
   O.BackendInvalidState o w -> BackendInvalidState o w
   O.BackendNative o c w -> BackendNative o c w
   O.BackendResourceGone o r -> BackendResourceGone o r
 
 -- | Crypto failures back onto core failures: the exact
--- inverse of 'toCryptoError' on the eight shared categories. The
+-- inverse of 'toCryptoError' on the nine shared categories. The
 -- unclassified 'CryptoFailed' bucket has no backend counterpart and
 -- lands on a native failure (pinned one-way mapping, code unchanged).
 cryptoToCore :: CryptoError -> O.BackendFailure
@@ -4004,6 +4007,7 @@ cryptoToCore err = case err of
   CryptoBadKey o w -> O.BackendBadKey o w
   CryptoMechParamInvalid o w -> O.BackendMechParamInvalid o w
   CryptoAuthFailed o -> O.BackendAuthFailed o
+  CryptoSigLenRange o -> O.BackendSigLenRange o
   CryptoInvalidState o w -> O.BackendInvalidState o w
   CryptoNative o c w -> O.BackendNative o c w
   CryptoResourceGone o r -> O.BackendResourceGone o r
@@ -4208,12 +4212,12 @@ hkdfExtractExpand env spec hashLen ikm salt info outLen = do
 -- | Verify-shaped answers: an authentication failure is a verdict,
 -- never a malfunction; any other backend failure keeps its
 -- category through 'toCryptoError' (categories survive
--- every adapter). Code-neutral on every reachable path: mismatch
--- stays 'False', and every preserved category still interprets to
--- 'CKR_GENERAL_ERROR' (only 'BackendUnsupported' would interpret
--- differently, and it is unreachable here — the mechanism was
--- validated at plan time; should it ever arrive, classifying beats
--- collapsing).
+-- every adapter). Mismatch stays 'False'; most preserved
+-- categories still interpret to 'CKR_GENERAL_ERROR', except
+-- 'BackendSigLenRange', which interprets to
+-- 'CKR_SIGNATURE_LEN_RANGE', and 'BackendUnsupported', which is
+-- unreachable here — the mechanism was validated at plan time;
+-- should it ever arrive, classifying beats collapsing.
 toVerifyBool :: EngineResult Bool -> CryptoResult
 toVerifyBool (EngineOk v) = GotValid v
 toVerifyBool (EngineFail (BackendAuthFailed _)) = GotValid False
