@@ -205,6 +205,11 @@ class Fixture:
             "FAKE_FRESH_MARKER": FRESH_MARKER,
         })
         self.env.pop("HASKOKI_PROXY_DIR", None)
+        # The runbook exports demo-image settings (e.g. a unique
+        # HASKOKI_DEMO_IMAGE tag) for the real run; the fixture must not
+        # inherit them, or the default-tag assertions see the caller's tag.
+        for name in [k for k in self.env if k.startswith("HASKOKI_DEMO_")]:
+            del self.env[name]
         if env:
             self.env.update(env)
         self.proc = None
