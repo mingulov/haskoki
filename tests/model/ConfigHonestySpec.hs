@@ -16,9 +16,9 @@ module ConfigHonestySpec (spec) where
 import Control.Exception (IOException, bracket, try)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
-import Data.List (isInfixOf, isPrefixOf, sort, (\\))
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort, (\\))
 import GHC.Clock (getMonotonicTimeNSec)
-import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
+import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, listDirectory, removeDirectoryRecursive, removeFile)
 import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), joinPath, splitDirectories)
@@ -101,6 +101,9 @@ spec = testGroup "Config honesty"
     , testCase "trace.queue_limit: bounds the queue" caseQueueLimit
     , testCase "trace.redact_secrets: false refused" caseRedactRefused
     , testCase "trace.redact_secrets: true accepted" caseRedactTrue
+    , testCase "trace.enabled: override alone writes nothing" caseTraceOverrideWritesNothing
+    , testCase "trace.enabled: enabled override writes the override path" caseTraceOverrideWritesPath
+    , testCase "trace.enabled: default instance writes no working-dir file" caseTraceDefaultWritesNothing
     ]
   , testGroup "control"
     [ testCase "control.enabled: false refused" caseCtlEnabledRefused
@@ -562,6 +565,60 @@ caseRedactTrue =
   case parseConfig (unlines ["schema_version = 1", "[trace]", "redact_secrets = true"]) of
     Right cfg -> assertEqual "redact true" True (tcRedactSecrets (cfgTrace cfg))
     other -> assertFailure ("redact=true must parse, got: " ++ show other)
+
+-- | The trace override alone does not enable tracing: resolving
+-- no config file with a path override ('resolveFrom', what every
+-- native open calls), then emitting and draining, writes no file.
+caseTraceOverrideWritesNothing :: IO ()
+caseTraceOverrideWritesNothing = withTimeout "trace override off" $ withPrivateDir $ \tmp -> do
+  let path = tmp </> "haskoki-override-off.jsonl"
+  eCfg <- resolveFrom Nothing (Just path)
+  case eCfg of
+    Left err -> assertFailure ("override resolve must succeed: " ++ show err)
+    Right cfg -> do
+      inst <- buildInstance cfg
+      _ <- emitTrace (instTracer inst) honestyEvent 0
+      _ <- drainTracer (instTracer inst)
+      after <- doesFileExist path
+      assertEqual "no file written" False after
+
+-- | ...while with tracing enabled, the override selects the sink
+-- file (no write lands on the default path).
+caseTraceOverrideWritesPath :: IO ()
+caseTraceOverrideWritesPath = withTimeout "trace override on" $ withPrivateDir $ \tmp -> do
+  let path = tmp </> "haskoki-override-on.jsonl"
+      src = tmp </> "haskoki-trace-on.toml"
+  writeFile src (unlines ["schema_version = 1", "[trace]", "enabled = true"])
+  eCfg <- resolveFrom (Just src) (Just path)
+  case eCfg of
+    Left err -> assertFailure ("override resolve must succeed: " ++ show err)
+    Right cfg -> do
+      inst <- buildInstance cfg
+      _ <- emitTrace (instTracer inst) honestyEvent 0
+      rep <- drainTracer (instTracer inst)
+      assertEqual "one line written" 1 (drWritten rep)
+      body <- readFile path
+      removeFile path
+      assertBool "call recorded" ("C_Sign" `isInfixOf` body)
+
+-- | End to end: the no-config resolution ('defaultConfig', what a
+-- native open without @HASKOKI_CONFIG@ serves) emits no
+-- @haskoki-*.jsonl@ into the working directory, even after calls
+-- and a drain. Fresh strays are removed before asserting, so the
+-- tree stays clean even when this case fails.
+caseTraceDefaultWritesNothing :: IO ()
+caseTraceDefaultWritesNothing = withTimeout "trace default off e2e" $ do
+  before <- cwdTraceFiles
+  inst <- buildInstance defaultConfig
+  mapM_ (\_ -> emitTrace (instTracer inst) honestyEvent 0) [1 .. 3 :: Int]
+  _ <- drainTracer (instTracer inst)
+  after <- cwdTraceFiles
+  let fresh = after \\ before
+  mapM_ (\n -> try (removeFile n) :: IO (Either IOException ())) fresh
+  assertEqual "no new haskoki-*.jsonl in the working directory" [] fresh
+  where
+    cwdTraceFiles = filter isTrace <$> listDirectory "."
+    isTrace n = "haskoki-" `isPrefixOf` n && ".jsonl" `isSuffixOf` n
 
 -- ---------------------------------------------------------------------------
 -- Control

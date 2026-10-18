@@ -47,6 +47,7 @@ module Haskoki.Object
   , planFindObjects
   , planGetAttributes
   , readView
+  , viewForFind
   , isAsymmetricKeyType
   ) where
 
@@ -57,6 +58,8 @@ import Data.List (find, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing, listToMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import Data.Word (Word64, Word8)
 
@@ -78,10 +81,10 @@ import Haskoki.Attribute
 import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
 import Haskoki.Der
-  (curveCoordLen, curveNameOfOid, curveOidOfParams, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
-   ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
-   edwardsNameOfOid, edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
-   montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPrivateDer, montgomeryPublicDer,
+  (curveCoordLen, curveOidOfParams, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
+   ecParamsNameOfOid, ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
+   edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
+   montgomeryOidOfParams, montgomeryPrivateDer, montgomeryPublicDer,
    montgomeryWidthOfParams, unwrapMontgomeryPoint,
    mldsaPrivateDer, mldsaPublicDer, mldsaWidthsOfOid,
    slhdsaOidOfCkp, slhdsaPrivateDer, slhdsaPublicDer,
@@ -404,11 +407,13 @@ isPublicKeyClass attrs = case Map.lookup AttrClass attrs of
   _ -> False
 
 -- | The reported key attributes a private or secret key object
--- lacks: non-sensitive, unextractable, with the weakest
--- history/origin claim (no false never-extracted assurance for
--- legacy rows). Key-generation mechanism reads
+-- lacks: non-sensitive, unextractable, not derivable, with the
+-- weakest history/origin claim (no false never-extracted
+-- assurance for legacy rows). Key-generation mechanism reads
 -- @CK_UNAVAILABLE_INFORMATION@: it carries a valid value only when
--- @CKA_LOCAL@ is true.
+-- @CKA_LOCAL@ is true. @CKA_DERIVE@ is a common key attribute
+-- with a CK_FALSE default (PKCS#11 Table 26), so every key
+-- reports it.
 keyDefaults :: [(AttributeType, AttributeValue)]
 keyDefaults =
   [ (AttrSensitive, ValBool False)
@@ -416,23 +421,27 @@ keyDefaults =
   , (AttrAlwaysSensitive, ValBool False)
   , (AttrNeverExtractable, ValBool False)
   , (AttrLocal, ValBool False)
+  , (AttrDerive, ValBool False)
   -- maxBound is CK_UNAVAILABLE_INFORMATION: KGM is valid only when
   -- LOCAL is TRUE (PKCS#11 Table 26).
   , (AttrKeyGenMechanism, ValULong maxBound)
   ]
 
 -- | The reported key attributes a public key object lacks:
--- non-sensitive and extractable, plus the origin pair. Public keys
--- own no ALWAYS_SENSITIVE\/NEVER_EXTRACTABLE (Table 27), so reads
--- of those report unknown. Public material is always readable
--- (the seal never applies to public keys), so the default tells
--- the truth. Caller-supplied values are stored and reported, but
--- never seal.
+-- non-sensitive, extractable and not derivable, plus the origin
+-- pair. Public keys own no ALWAYS_SENSITIVE\/NEVER_EXTRACTABLE
+-- (Table 27), so reads of those report unknown. Public material
+-- is always readable (the seal never applies to public keys), so
+-- the defaults tell the truth. @CKA_DERIVE@ is a common key
+-- attribute with a CK_FALSE default (PKCS#11 Table 26), so every
+-- key reports it. Caller-supplied values are stored and
+-- reported, but never seal.
 publicKeyDefaults :: [(AttributeType, AttributeValue)]
 publicKeyDefaults =
   [ (AttrSensitive, ValBool False)
   , (AttrExtractable, ValBool True)
   , (AttrLocal, ValBool False)
+  , (AttrDerive, ValBool False)
   -- maxBound is CK_UNAVAILABLE_INFORMATION: KGM is valid only when
   -- LOCAL is TRUE (PKCS#11 Table 26).
   , (AttrKeyGenMechanism, ValULong maxBound)
@@ -1238,6 +1247,15 @@ copyExempt :: AttributeType -> Bool
 copyExempt t = t `elem`
   [AttrToken, AttrPrivate, AttrModifiable, AttrDestroyable, AttrCopyable]
 
+-- | Same-value no-op test for copy overrides: the stored bytes,
+-- or the read-back view for @CKA_VALUE@ and @CKA_EC_PARAMS@ (the
+-- 'readView' representation a read returns). One definition shared
+-- by the refusal check and the no-op drop, so both paths agree on
+-- what a no-op is.
+copyIsNoop :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue -> AttributeType -> AttributeValue -> Bool
+copyIsNoop stored view t v = Map.lookup t stored == Just v
+  || (t `elem` [AttrValue, AttrEcParams] && Map.lookup t view == Just v)
+
 -- | Plan object copy: the source handle must resolve and be
 -- visible to the calling session, the override template must be
 -- contradiction-free, and the merged attributes must still carry a
@@ -1322,9 +1340,7 @@ planCopyObject model st h tmpl = case resolveHandle model h of
             where
               srcAttrs0 = osAttrs src
               srcView = readView srcAttrs0
-              isNoop t v = Map.lookup t srcAttrs0 == Just v
-                || (t `elem` [AttrValue, AttrEcParams] && Map.lookup t srcView == Just v)
-              over = Map.filterWithKey (\t v -> not (isNoop t v)) overRaw
+              over = Map.filterWithKey (\t v -> not (copyIsNoop srcAttrs0 srcView t v)) overRaw
               mergedTrusted =
                 Map.lookup AttrTrusted (Map.union over srcAttrs0)
                   == Just (ValBool True)
@@ -1351,8 +1367,6 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                   ordered = sortOn (\(t, _) -> (copyPriority t, fromEnum t))
                     (Map.toList overM)
                   srcViewLocal = readView srcAttrs
-                  isNoopLocal t v = Map.lookup t srcAttrs == Just v
-                    || (t `elem` [AttrValue, AttrEcParams] && Map.lookup t srcViewLocal == Just v)
                   go [] = Nothing
                   go ((t, v) : rest)
                     | isCertSource, t == AttrTrusted =
@@ -1368,7 +1382,7 @@ planCopyObject model st h tmpl = case resolveHandle model h of
                     , payloadSealed (effectiveAttrs srcAttrs) =
                         Just (CKR_ATTRIBUTE_READ_ONLY,
                           "copy cannot name a sealed component: " ++ show t)
-                    | isNoopLocal t v = go rest
+                    | copyIsNoop srcAttrs srcViewLocal t v = go rest
                     | t == AttrValue, isDataSource
                     , flagOr modifiableDefault AttrModifiable srcAttrs = go rest
                     | copyExempt t = case exemptRefusal t v of
@@ -1520,19 +1534,10 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
     matchAll :: Map AttributeType AttributeValue -> ObjectState -> Bool
     matchAll q ost = all hit (Map.toList q)
       where
-        view = viewForFind q (osAttrs ost)
+        view = viewForFind (Map.keysSet q) (osAttrs ost)
         hit (t, _)
           | t `elem` sealedAttrs, payloadSealed view = False
         hit (t, v) = Map.lookup t view == Just v
-    viewForFind :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
-    viewForFind q attrs = effectiveAttrs (norm (proj attrs))
-      where
-        proj
-          | Map.member AttrValue q = projectPublicValue
-          | otherwise = id
-        norm
-          | Map.member AttrEcParams q = normalizeEcParams
-          | otherwise = id
     currentHandle :: ObjectId -> ObjectState -> Maybe ExternalHandle
     currentHandle oid ost = listToMaybe
       [ h
@@ -1591,23 +1596,33 @@ projectPublicValue attrs = case (classOf, keyTypeOf, Map.lookup AttrValue attrs)
 -- 'ecParamsToWire'.
 normalizeEcParams :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 normalizeEcParams attrs = case Map.lookup AttrEcParams attrs of
-  Just (ValBytes bs) -> case oidToName bs of
+  Just (ValBytes bs) -> case ecParamsNameOfOid bs of
     Just name -> Map.insert AttrEcParams (ValBytes name) attrs
     Nothing -> attrs
   _ -> attrs
-  where
-    oidToName bs = case curveNameOfOid bs of
-      Just name -> Just name
-      Nothing -> case edwardsNameOfOid bs of
-        Just name -> Just name
-        Nothing -> montgomeryNameOfOid bs
 
--- | The single shared read/find view: the public-value projection,
--- then the curve-name normalization, then the common storage
--- defaults. Both 'planGetAttributes' and 'planFindObjects' match
--- over this representation, so a value a read returns always finds.
+-- | The single shared read/find view: the public-value projection
+-- and the curve-name normalization run only for the named
+-- attributes that they change (find skips an SPKI parse when the
+-- template does not name @CKA_VALUE@), then the common storage
+-- defaults. Both 'planGetAttributes' (via 'readView') and
+-- 'planFindObjects' match over this representation, so a value a
+-- read returns always finds.
+viewForFind :: Set AttributeType -> Map AttributeType AttributeValue -> Map AttributeType AttributeValue
+viewForFind names attrs = effectiveAttrs (norm (proj attrs))
+  where
+    proj
+      | Set.member AttrValue names = projectPublicValue
+      | otherwise = id
+    norm
+      | Set.member AttrEcParams names = normalizeEcParams
+      | otherwise = id
+
+-- | The full shared read/find view ('viewForFind' over both
+-- projected attributes): the representation 'planGetAttributes'
+-- returns.
 readView :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
-readView = effectiveAttrs . normalizeEcParams . projectPublicValue
+readView = viewForFind (Set.fromList [AttrValue, AttrEcParams])
 
 -- | Plan an attribute read: the handle must resolve and be
 -- visible to the calling session, then one mixed outcome. Every

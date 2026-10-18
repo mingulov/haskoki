@@ -128,7 +128,7 @@ tail was left as the derive wrote it. The KAT and consumer suites
 builds are the same flags without the sanitizers). It first probes for
 libcrypto, compile, run and LeakSanitizer. It then runs each variant's case
 list in both memory modes, `track` (the tracking allocator) and `plain`
-(OpenSSL's default allocator): 268 runs. `address-reuse` and
+(OpenSSL's default allocator): 276 runs. `address-reuse` and
 `canary-selftest` run in `track` mode only, because they test the tracker
 itself. It runs seven negative controls:
 
@@ -179,22 +179,22 @@ Evidence limits:
 
 ## 6. Measured overhead
 
-Elapsed nanoseconds for the six common cases, plain memory mode, one run per
-variant. Environment: Linux 7.0.0-38-generic; 12 CPUs; toolchain image
-`sha256:3620af288ecb91b3c8026155cf5f100a23a77a388f00b5c310fae11d175c9698`;
-other processes were not excluded.
+Elapsed nanoseconds for the seven common cases, plain memory mode, one run per
+variant. Environment: host (no container), Linux 7.0.0-38-generic;
+12 CPUs; GCC 15.2.0; other processes were not excluded.
 
 | Variant | ns | Ratio to the matching plain variant |
 |---|---|---|
-| `san-hooks` | 174394659 | 4.21 (`plain-hooks` 41378581) |
-| `san-prod` | 173831452 | 5.56 (`plain-prod` 31238298) |
-| `plain-hooks` | 41378581 | 1.32 (to `plain-prod`) |
+| `san-hooks` | 714721991 | 5.52 (`plain-hooks` 129429871) |
+| `san-prod` | 666235468 | 4.73 (`plain-prod` 140900464) |
+| `plain-hooks` | 129429871 | 0.92 (to `plain-prod`) |
 
 These are harness cost ratios from single runs, for judging how long the
 qualification takes. They say nothing about the throughput of the shipped
 library. The `plain-hooks` to `plain-prod` ratio is within run-to-run noise:
-an earlier single run on the same host measured 0.97 (31623102 against
-32507552 ns), against 1.32 here.
+an earlier single run inside the toolchain container image measured 0.97
+(31623102 against 32507552 ns), against 0.92 here on the host; the two runs
+span different environments, so the comparison is rough.
 
 ## 7. Open items
 

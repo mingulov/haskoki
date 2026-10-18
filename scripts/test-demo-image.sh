@@ -316,8 +316,9 @@ if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 # direct / 27 proxy-core / diff-core + shared re-frozen below on
 # checker 0.2.3; triaged in task-R9-report.md; F-9 re-freeze: 22/22;
 # v0.5 re-freeze: 18/18 after the GMAC and HOTP message flags were
-# withdrawn, see below). Direct is byte-exact (deterministic across runs).
-# Proxy asserts a stable 18-line core exactly (strict, codex I4 —
+# withdrawn; derive-default re-freeze: 21/21, see below). Direct is
+# byte-exact (deterministic across runs).
+# Proxy asserts a stable 21-line core exactly (strict, codex I4 —
 # the failed pair's historical {pass, fail} bound is NOT suppressed);
 # any other line fails loudly. R9 delta vs R5: +2 GMAC message-init
 # lines (init params now forward; the backend's native 0x7 refusal
@@ -333,6 +334,14 @@ if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 # still collected and now xfail in both lanes (no message routes; message
 # init refuses CKR_MECHANISM_INVALID). spec/findings-ledger.json retired
 # rows carry the receipts.
+# v0.5 derive-default delta vs v0.5: +3 lines (X9.42 DH derive). New keys
+# default CKA_DERIVE to false (PKCS#11 3.2 Table 26); the checker
+# generates X9.42 pairs without CKA_DERIVE=TRUE and then derives, so the
+# three derive tests fail with CKR_KEY_FUNCTION_NOT_PERMITTED in both
+# lanes (ECDH and PKCS#3 DH tests still pass — those set the flag).
+# Five X9.42 negative tests now xfail instead of reaching parameter
+# validation; tests/c/consumer_x942_derive.c pins the same refusals
+# (all CKR_MECHANISM_PARAM_INVALID) with a derive-capable base.
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
@@ -354,12 +363,15 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
+failed test_x942_dh.py::TestX942DHDerive::test_derive_shared_secret
+failed test_x942_dh.py::TestX942DHDerive::test_derived_key_encrypts
+failed test_x942_dh.py::TestX942DHDerive::test_different_exchanges_produce_different_secrets
 EOF
-[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 18 ] || fail "driver: want 18 expected direct findings"
+[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 21 ] || fail "driver: want 21 expected direct findings"
 if ! diff -u "$OUT/exp-full-direct.txt" "$RUN_DIR/findings.txt"; then
-  fail "check direct/full findings differ from the exact expected 18"
+  fail "check direct/full findings differ from the exact expected 21"
 fi
-echo "check direct/full: exact 18 findings match"
+echo "check direct/full: exact 21 findings match"
 
 run_check proxy full 1
 RUN_DIR=$(latest_run "check-proxy-full")
@@ -382,8 +394,11 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
+failed test_x942_dh.py::TestX942DHDerive::test_derive_shared_secret
+failed test_x942_dh.py::TestX942DHDerive::test_derived_key_encrypts
+failed test_x942_dh.py::TestX942DHDerive::test_different_exchanges_produce_different_secrets
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 18 ] || fail "driver: want 18 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 21 ] || fail "driver: want 21 stable-core proxy findings"
 # R5 strict (codex I4): the failed pair's {pass, fail} bound is
 # historical (older pin) — v0.2.0 never demonstrated the flip, so
 # no failure form is suppressed here; any variance fails loud and
@@ -406,6 +421,11 @@ if [ "$PHASE" = all ] || [ "$PHASE" = compare ]; then
 # inversion lines (family G) converged and left the exclusion core
 # (stale-handle 0x60, mechanism-parameter 0x71), and 4 shared lines
 # (GMAC x2, HOTP x2) left; receipts in spec/findings-ledger.json.
+# v0.5 derive-default re-freeze: the 61-line exclusion core is
+# unchanged (the X9.42 delta moved identically in both lanes, so no
+# new diff lines); the shared set grew 18 -> 21 with the three
+# X9.42 DH derive findings (checker-side CKA_DERIVE default
+# assumption, ledgered as checker-fix).
 # Parity-eligible = every other collected id (default-eligible;
 # the freeze is this exclusion list, not an 11k allowlist). Flaky
 # ids assert their measured v0.2.2 verdicts with NO variance
@@ -476,7 +496,7 @@ timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
   "/out/$CC_RUN" > "$OUT/classify.log" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] || fail "in-image compare-classify exited $rc, want 0"
-grep -q 'compare-classify-ok: 61 known-difference + shared 18/18 exact' \
+grep -q 'compare-classify-ok: 61 known-difference + shared 21/21 exact' \
   "$OUT/classify.log" || fail "compare-classify ok marker missing"
 [ -f "$RUN_DIR/classification.json" ] || fail "classification.json missing"
 python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
@@ -484,8 +504,8 @@ import json, sys
 c = json.load(open(sys.argv[1]))["counts"]
 assert c == {"known_difference": 61, "direct_only": 0, "flaky": 0,
              "unexpected_difference": 0, "missing_known": 0,
-             "duplicate_diff_lines": 0, "shared_expected": 18,
-             "shared_actual": 18, "shared_exact": True}, c
+             "duplicate_diff_lines": 0, "shared_expected": 21,
+             "shared_actual": 21, "shared_exact": True}, c
 PY
 # Drift controls on run-dir copies (the raw run dir is untouched):
 # an injected line must surface as unexpected=1, a removed frozen

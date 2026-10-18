@@ -86,7 +86,9 @@ static void write_test_config(char *path_out, size_t path_cap) {
                              "profile = \"demo-maximal\"\n"
                              "[control]\n"
                              "enabled = true\n"
-                             "test_enabled = true\n";
+                             "test_enabled = true\n"
+                             "[trace]\n"
+                             "enabled = true\n";
   char tmpl[] = "/tmp/haskoki-proof-XXXXXX";
   int fd = mkstemp(tmpl);
   ssize_t want;

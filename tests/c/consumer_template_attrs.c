@@ -19,6 +19,7 @@
  *   - CKO_CERTIFICATE creation with CERTIFICATE_TYPE/VALUE/SUBJECT/ID
  *   - CKO_DATA up to 1 MiB round-trips
  *   - CKA_ENCAPSULATE on AES keygen refused (non-PQC key)
+ *   - CKA_DERIVE omitted on import reads CK_FALSE
  *
  * This TU deliberately includes ONLY the pinned vendor headers; it
  * never consumes provider-generated artifacts (enforced by the
@@ -759,6 +760,33 @@ int main(int argc, char **argv) {
     rv = f->C_GenerateKey(sess, &kgm, ktmpl, (CK_ULONG)n, &tmp);
     CHECK(rv != CKR_OK, "ENCAPSULATE on AES keygen refused");
     if (rv == CKR_OK) f->C_DestroyObject(sess, tmp);
+  }
+
+  /* ---- 8. omitted CKA_DERIVE reads CK_FALSE ---- */
+  cls = CKO_SECRET_KEY;
+  kt = CKK_AES;
+  {
+    CK_ATTRIBUTE tmpl[] = {
+        {CKA_CLASS, &cls, sizeof(cls)},
+        {CKA_KEY_TYPE, &kt, sizeof(kt)},
+        {CKA_VALUE, key16, sizeof(key16)},
+        {CKA_TOKEN, &bFalse, sizeof(bFalse)},
+    };
+    CK_BBOOL der = 0xFF;
+    CK_ATTRIBUTE rd[] = {
+        {CKA_DERIVE, &der, sizeof(der)},
+    };
+    tmp = 0;
+    rv = f->C_CreateObject(sess, tmpl, 4, &tmp);
+    CHECK(rv == CKR_OK, "derive-default import ok");
+    if (tmp != 0) {
+      rv = f->C_GetAttributeValue(sess, tmp, rd, 1);
+      CHECK(rv == CKR_OK && rd[0].ulValueLen == sizeof(der) &&
+                der == CK_FALSE,
+            "omitted CKA_DERIVE reads CK_FALSE");
+      f->C_DestroyObject(sess, tmp);
+      tmp = 0;
+    }
   }
 
   rv = f->C_CloseSession(sess);

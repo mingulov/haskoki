@@ -17,6 +17,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
 import Data.Char (digitToInt, isHexDigit)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Word (Word64)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
@@ -25,18 +26,22 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), decodeValue, encodeValue, getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, slhdsaCkpOfOid, slhdsaPkcs8Fields, slhdsaSpkiFields, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, curveTable, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, ecPublicDer, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, slhdsaCkpOfOid, slhdsaPkcs8Fields, slhdsaSpkiFields, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DhSpec (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KemSpec (..), KeyMaterial (..), PqcKemAlg (..), PqcSigAlg (..), SigSpec (..))
 import Haskoki.Engine.OpenSSL4 (OpenSSL4 (..))
-import Haskoki.FFI.Standard (ecParamsFromWire, ecParamsToWire)
+import Haskoki.FFI.Standard (decodeNativeValue, ecParamsFromWire, ecParamsToWire, nativeFromCanonical)
 import Haskoki.Model
   (Model, ObjectState (..), SessionState, addToken, emptyModel,
    lookupSession)
-import Haskoki.Object (decodeHandle, planCopyObject, planCreateObject, planFindObjects, planGetAttributes, resolveHandle)
+import Haskoki.Object (decodeHandle, planCopyObject, planCreateObject, planFindObjects, planGetAttributes, readView, resolveHandle, viewForFind)
+import Haskoki.Operation.Derive (encodeDeriveParams, planDerive, pubPrivMech)
+import Haskoki.Operation.Effect (CryptoResult (..))
 import Haskoki.Operation.KeyManagement
-  (ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkAes, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkEcMontgomery, ckkMlDsa, ckkMlKem, ckkRsa, ckkSlhDsa, ckkX9_42Dh)
+  (KeyPlan (..), PendingObject (..), PendingWork (..), ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkAes, ckkDh, ckkDsa, ckkEc, ckkEcEdwards, ckkEcMontgomery, ckkMlDsa, ckkMlKem, ckkRsa, ckkSlhDsa, ckkX9_42Dh, finishWork, pendingFromAttrs, publishPending)
+import Haskoki.Rules (defaultRules)
+import Haskoki.Session (SessionLogin (..))
 import Haskoki.Outcome
   (DeltaOp (..), NativeOutput (..), PlanResult (..),
    PreparedCommit (..), Rejection (..), StateDelta (..))
@@ -64,6 +69,8 @@ spec = testGroup "key import"
   , testCase "public DH/DSA find matches the read-back value" casePublicValueFind
   , testCase "public DH/DSA copy accepts the read-back value" casePublicValueCopy
   , testCase "read and find agree over the fixture objects" caseReadFindAgreement
+  , testCase "read view names every served curve OID" caseViewNamesAllCurves
+  , testCase "find view agrees with read view on named attributes" caseViewForFindAgreement
   , testCase "imported DH key agrees through the real backend" caseDhExecutes
   , testCase "EdDSA assembly matches openssl goldens" caseEddsaDerGoldens
   , testCase "EdDSA DER readers parse openssl goldens" caseEddsaDerReaders
@@ -138,6 +145,43 @@ getSession m = case lookupSession m sid1 of
 expectRight :: Show e => Either e a -> IO a
 expectRight (Right a) = pure a
 expectRight (Left e) = assertFailure ("expected Right, got: " ++ show e) >> undefined
+
+-- | Log the seed session in as a normal user (derive bases are
+-- only visible past a login).
+loginUser :: Model -> IO Model
+loginUser m =
+  expectRight (publishDelta m (StateDelta [DeltaSetSessionLogin sid1 LoginUser]))
+
+-- | Plant one key object with fixed material.
+plantKey :: Model -> SessionState -> [(AttributeType, AttributeValue)] -> ByteString
+  -> IO (Model, ExternalHandle)
+plantKey m st tmpl mat = do
+  let attrs = Map.fromList tmpl
+      base = pendingFromAttrs st attrs
+      po = base { poAttrs = Map.insert AttrValue (ValBytes mat) (poAttrs base) }
+  case publishPending m st [po] of
+    Left deny -> assertFailure ("plant must publish: " ++ show deny) >> undefined
+    Right (delta, [h]) -> do
+      m' <- expectRight (publishDelta m delta)
+      pure (m', h)
+    Right _ -> assertFailure "plant arity" >> undefined
+
+-- | Finish planned work and demand an Immediate commit publishing
+-- exactly @n@ objects.
+finishCommit :: Model -> SessionState -> PendingWork -> CryptoResult -> Int -> IO PreparedCommit
+finishCommit m st pw res n = case finishWork m st pw res of
+  Immediate c -> do
+    let StateDelta ops = pcDelta c
+        created = length [() | DeltaCreateObjectFull {} <- ops]
+    assertEqual "published object count" n created
+    pure c
+  other -> assertFailure ("finish is not Immediate: " ++ show other) >> undefined
+
+-- | Raw SEC1 P-256 private half (version, scalar, params, public point).
+pubPrivSec1P256 :: ByteString
+pubPrivSec1P256 =
+  hex "30770201010420" <> BS.replicate 32 0x51
+    <> hex "a00a06082a8648ce3d030107a14403420004" <> BS.replicate 64 0x52
 
 -- | Answer effects against the real OpenSSL4 backend.
 withRealEnv :: (BackendEnv OpenSSL4 -> IO a) -> IO a
@@ -847,6 +891,144 @@ caseReadFindAgreement = do
   check hQ ckkX9_42Dh AttrValue "x942-value"
   check hRsa ckkRsa AttrModulus "rsa-modulus"
   check hEc ckkEc AttrEcParams "ec-params"
+  -- FFI-codec leg: a pub-from-priv EC key stores the curve OID.
+  -- The read-back params travel the C-ABI encoding path
+  -- (canonical bytes to wire, wire to template value) and the
+  -- read-back bytes still find the object. A fresh model keeps
+  -- the exact-hit assertion free of the P-256 fixture above.
+  d0 <- seedModel >>= loginUser
+  stD <- getSession d0
+  let oid = hex "06082a8648ce3d030107"
+      point = BS.pack (0x04 : [1 .. 64])
+      spki = ecPublicDer oid point
+      privT =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+      tmpl =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+      blob = encodeDeriveParams BS.empty [tmpl]
+  (d1, privH) <- plantKey d0 stD privT pubPrivSec1P256
+  case planDerive defaultRules d1 stD pubPrivMech privH blob of
+    KeyEffect pw _fx -> do
+      c <- finishCommit d1 stD pw (GotBytes spki) 1
+      h <- handleOf (pcOutputs c !! 0)
+      d2 <- expectRight (publishDelta d1 (pcDelta c))
+      Just ost <- pure (resolveHandle d2 h)
+      assertEqual "derived params stored stay OID"
+        (Just (ValBytes oid)) (Map.lookup AttrEcParams (osAttrs ost))
+      canon <- case planGetAttributes d2 stD h [AttrEcParams] of
+        Immediate pc -> case pcOutputs pc of
+          [o] -> pure (outBytes o)
+          _ -> assertFailure "params read outputs arity" >> undefined
+        Reject rej -> assertFailure ("params read rejected: " ++ show (rejCode rej)) >> undefined
+        Execute _ _ -> assertFailure "params read must not execute" >> undefined
+      wire <- case nativeFromCanonical AttrEcParams canon of
+        Just w -> pure w
+        Nothing -> assertFailure "params wire undecodable" >> undefined
+      assertEqual "derived params wire stays the OID" oid wire
+      tmplVal <- case decodeNativeValue AttrEcParams wire of
+        Just v -> pure v
+        Nothing -> assertFailure "params template undecodable" >> undefined
+      assertEqual "derived params template decodes to the curve name"
+        (ValBytes "P-256") tmplVal
+      hits <- doFind d2 stD
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrEcParams, tmplVal)
+        ]
+      assertEqual "derived find by read-back params hits" [h] hits
+    other -> assertFailure ("pubpriv plan is not an effect: " ++ show other)
+
+caseViewNamesAllCurves :: IO ()
+caseViewNamesAllCurves = do
+  -- Every served curve OID reads as its engine name through the
+  -- shared view, in step with the FFI wire decoder; stored names
+  -- and foreign OIDs pass through untouched. The per-table
+  -- agreement tests pin the table contents against hardcoded
+  -- vectors; this pins the view coverage over the tables.
+  let entries = [(name, oid) | (name, oid, _) <- curveTable]
+        ++ [(name, oid) | (name, oid, _, _) <- edwardsTable]
+        ++ [(name, oid) | (name, oid, _) <- montgomeryTable]
+      stored params = Map.fromList
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrEcParams, params)
+        ]
+  assertBool "served curves non-empty" (not (null entries))
+  mapM_ (\(name, oid) -> do
+    assertEqual ("view names " ++ BS8.unpack name)
+      (Just (ValBytes name))
+      (Map.lookup AttrEcParams (readView (stored (ValBytes oid))))
+    assertEqual ("ffi names " ++ BS8.unpack name)
+      name (ecParamsFromWire oid)
+    assertEqual ("view keeps stored name " ++ BS8.unpack name)
+      (Just (ValBytes name))
+      (Map.lookup AttrEcParams (readView (stored (ValBytes name))))
+    ) entries
+  let foreignOid = hex "06012a"
+  assertEqual "view keeps a foreign OID"
+    (Just (ValBytes foreignOid))
+    (Map.lookup AttrEcParams (readView (stored (ValBytes foreignOid))))
+  assertEqual "view keeps a non-bytes shape"
+    (Just (ValULong 7))
+    (Map.lookup AttrEcParams (readView (stored (ValULong 7))))
+
+caseViewForFindAgreement :: IO ()
+caseViewForFindAgreement = do
+  -- The conditional find view agrees with the full read view on
+  -- every named attribute, over every projection-affected shape
+  -- (exhaustive over the named-attribute subsets, so the property
+  -- holds by enumeration, not sampling); unnamed projections stay
+  -- skipped, pinning the find fast path.
+  let oid = hex "06082a8648ce3d030107"
+      pub kty rest = Map.fromList
+        ([ (AttrClass, ValULong ckoPublicKey)
+         , (AttrKeyType, ValULong kty)
+         ] ++ rest)
+      fixtures =
+        [ ("dh", pub ckkDh [(AttrValue, ValBytes dhSpkiGold)])
+        , ("dsa", pub ckkDsa [(AttrValue, ValBytes dsaSpkiGold)])
+        , ("x942", pub ckkX9_42Dh [(AttrValue, ValBytes dhQSpkiGold)])
+        , ("rsa", pub ckkRsa [(AttrModulus, ValBytes rsaN)])
+        , ("ec-name", pub ckkEc [(AttrEcParams, ValBytes "P-256")])
+        , ("ec-oid", pub ckkEc [(AttrEcParams, ValBytes oid)])
+        , ("ec-priv-oid", Map.fromList
+            [ (AttrClass, ValULong ckoPrivateKey)
+            , (AttrKeyType, ValULong ckkEc)
+            , (AttrEcParams, ValBytes oid)
+            ])
+        ]
+      subsets = [[], [AttrValue], [AttrEcParams], [AttrValue, AttrEcParams]]
+  mapM_ (\(label, attrs) -> mapM_ (\names ->
+    mapM_ (\t -> assertEqual
+      ("view agrees: " ++ label ++ " " ++ show t)
+      (Map.lookup t (readView attrs))
+      (Map.lookup t (viewForFind (Set.fromList names) attrs)))
+    names) subsets) fixtures
+  let dhAttrs = Map.fromList
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkDh)
+        , (AttrValue, ValBytes dhSpkiGold)
+        ]
+      ecOidAttrs = Map.fromList
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrEcParams, ValBytes oid)
+        ]
+  assertEqual "value stays stored when unnamed"
+    (Just (ValBytes dhSpkiGold))
+    (Map.lookup AttrValue (viewForFind Set.empty dhAttrs))
+  assertEqual "params stay stored when unnamed"
+    (Just (ValBytes oid))
+    (Map.lookup AttrEcParams (viewForFind Set.empty ecOidAttrs))
+  assertEqual "value projects when named"
+    (Map.lookup AttrValue (readView dhAttrs))
+    (Map.lookup AttrValue (viewForFind (Set.singleton AttrValue) dhAttrs))
 
 caseDhExecutes :: IO ()
 caseDhExecutes = withRealEnv $ \env -> do

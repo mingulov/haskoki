@@ -13,7 +13,7 @@ import Data.Bits (complement, popCount, xor)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
-import Control.Exception (evaluate)
+import Control.Exception (SomeException, evaluate, fromException, try)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -22,7 +22,7 @@ import Numeric (showHex)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import LazyWalk (lazyClosures)
+import LazyWalk (TrackerFired (..), lazyClosures, trackedInt, trackedTail)
 
 import Haskoki.Der (coveredCurveNames, spkiPoint)
 import Haskoki.Engine.Backend
@@ -3350,16 +3350,20 @@ caseSynthCapsEvaluated = do
   assertBool ("synthetic capability table holds " ++ show (length lz)
               ++ " lazy closures, e.g. " ++ show (take 5 lz)) (null lz)
 
--- | 'forceCaps' leaves no thunk in a record whose every String and
--- Int field starts out lazy: names, each name set, the RC2 bit
--- counts and the notes. The values come from an IORef, so nothing
--- is a compile-time literal.
+-- | 'forceCaps' enters every String and Int position deeply:
+-- names, each name set, an RC2 bit count and the note map's key
+-- and value. Each position is armed alone (a throwing tail,
+-- reached only by a deep fold) while the rest stay plain and
+-- quiet; forcing must fire exactly the armed tracker. Entry is
+-- observed rather than read from the heap, so this holds on any
+-- flags. The values come from an IORef, so nothing is a
+-- compile-time literal.
 caseForceCapsCoverage :: IO ()
 caseForceCapsCoverage = do
   ref <- newIORef (7 :: Int)
   n <- readIORef ref
   let lazyStr tag = tag ++ show n
-      caps = BackendCaps
+      base = BackendCaps
         { bcName = lazyStr "name"
         , bcVersion = lazyStr "version"
         , bcDigests = DigestCaps { dcAlgs = Set.empty, dcMultipart = True, dcXof = False }
@@ -3375,9 +3379,55 @@ caseForceCapsCoverage = do
         , bcKdfs = KdfCaps { kcKdfs = Set.fromList [lazyStr "kdf"] }
         , bcParamNotes = Map.fromList [(lazyStr "key", lazyStr "note")]
         }
-  before <- lazyClosures =<< evaluate caps
+      armed =
+        [ ("bcName", base { bcName = trackedTail "name" "bcName" })
+        , ("bcVersion", base { bcVersion = trackedTail "version" "bcVersion" })
+        , ("ccAead", base
+            { bcCiphers = (bcCiphers base)
+              { ccAead = Set.fromList [trackedTail "aead" "ccAead"] } })
+        , ("mcSpecs", base
+            { bcMacs = MacCaps { mcSpecs = Set.fromList [trackedTail "mac" "mcSpecs"] } })
+        , ("scSpecs", base
+            { bcSigs = (bcSigs base)
+              { scSpecs = Set.fromList [trackedTail "sig" "scSpecs"] } })
+        , ("scCurves", base
+            { bcSigs = (bcSigs base)
+              { scCurves = Set.fromList [trackedTail "curve" "scCurves"] } })
+        , ("kcKdfs", base
+            { bcKdfs = KdfCaps { kcKdfs = Set.fromList [trackedTail "kdf" "kcKdfs"] } })
+        , ("rc2bits", base
+            { bcCiphers = (bcCiphers base)
+              { ccCiphers = Set.fromList
+                  [C_RC2_ECB (trackedInt "rc2bits"), C_RC2_CBC (n + 2)] } })
+        , ("notes-key", base
+            { bcParamNotes = Map.fromList [(trackedTail "key" "notes-key", lazyStr "note")] })
+        , ("notes-value", base
+            { bcParamNotes = Map.fromList [(lazyStr "key", trackedTail "note" "notes-value")] })
+        ]
+  mapM_ (uncurry checkArmed) armed
+  before <- lazyClosures =<< evaluate base
   assertBool "control: the unforced record holds thunks" (not (null before))
-  forced <- evaluate (forceCaps caps)
+  forced <- evaluate (forceCaps base)
   after <- lazyClosures forced
   assertBool ("forceCaps left " ++ show (length after)
               ++ " lazy closures, e.g. " ++ show (take 5 after)) (null after)
+  where
+    -- | The armed tracker sleeps through construction and WHNF, then
+    -- fires exactly when forcing reaches its position.
+    checkArmed :: String -> BackendCaps -> IO ()
+    checkArmed tag caps = do
+      pre <- try (evaluate caps)
+      case pre of
+        Left e -> case fromException e of
+          Just (TrackerFired t) ->
+            assertFailure ("tracker fired before forcing: " ++ t)
+          Nothing -> assertFailure ("unexpected pre-force exception: " ++ show (e :: SomeException))
+        Right _ -> pure ()
+      post <- try (evaluate (forceCaps caps))
+      case post of
+        Left e -> case fromException e of
+          Just (TrackerFired t)
+            | t == tag -> pure ()
+            | otherwise -> assertFailure ("wrong tracker fired: " ++ t ++ ", armed " ++ tag)
+          Nothing -> assertFailure ("unexpected force exception: " ++ show (e :: SomeException))
+        Right _ -> assertFailure ("tracker did not fire: " ++ tag)

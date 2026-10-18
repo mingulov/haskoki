@@ -287,6 +287,7 @@ import Haskoki.Attribute.Generated (attributeNameById)
 import Haskoki.Der
   ( RsaCrt (..)
   , curveTable
+  , ecParamsNameOfOid
   , edwardsTable
   , montgomeryTable
   , parseRsaPrivate
@@ -1381,18 +1382,13 @@ decodeULongLE bs
 -- DER object identifiers for the covered curves (RFC 5480 section
 -- 2.1.1 for the SEC curves, RFC 5639 for brainpool, RFC 8410 for
 -- the Edwards and Montgomery curves) become engine names; anything
--- else passes through for the engine to refuse. Derived from the
--- core 'Haskoki.Der.curveTable' plus 'Haskoki.Der.edwardsTable'
--- plus 'Haskoki.Der.montgomeryTable' (pinned both ways by
--- KeyImportSpec).
+-- else passes through for the engine to refuse. The single shared
+-- OID-to-name source ('Haskoki.Der.ecParamsNameOfOid'), also used
+-- by the core read view (pinned both ways by KeyImportSpec).
 ecParamsFromWire :: ByteString -> ByteString
-ecParamsFromWire bs = case lookup bs oidToName of
+ecParamsFromWire bs = case ecParamsNameOfOid bs of
   Just name -> name
   Nothing -> bs
-  where
-    oidToName = [(oid, name) | (name, oid, _) <- curveTable]
-      ++ [(oid, name) | (name, oid, _, _) <- edwardsTable]
-      ++ [(oid, name) | (name, oid, _) <- montgomeryTable]
 
 -- | Map an engine curve name back to @CKA_EC_PARAMS@ wire bytes
 -- (the inverse of 'ecParamsFromWire' on the known curves;

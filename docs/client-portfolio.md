@@ -155,12 +155,12 @@ use `CKM_RSA_PKCS_OAEP` for encryption. The RSA legs above use OAEP
 with SHA-256 throughout.
 
 Attribute warnings are known and stay explicit: OpenSC may report
-`CKR_ATTRIBUTE_TYPE_INVALID` while inspecting `DERIVE`,
-`VERIFY_RECOVER`, `SIGN_RECOVER`, or `ALWAYS_AUTHENTICATE` (also
-listed in [try-it.md](try-it.md#when-something-fails)). `LOCAL`,
-`EXTRACTABLE` and `NEVER_EXTRACTABLE` now read. Key creation and
-signature checks must still succeed; the warnings never become a
-silent skip.
+`CKR_ATTRIBUTE_TYPE_INVALID` while inspecting `VERIFY_RECOVER`,
+`SIGN_RECOVER`, or `ALWAYS_AUTHENTICATE` (also listed in
+[try-it.md](try-it.md#when-something-fails)). `LOCAL`,
+`EXTRACTABLE`, `NEVER_EXTRACTABLE` and `DERIVE` now read. Key
+creation and signature checks must still succeed; the warnings
+never become a silent skip.
 
 ## Provisioning journey
 

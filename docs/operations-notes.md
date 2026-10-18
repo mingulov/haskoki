@@ -885,9 +885,13 @@ row, with no hashing), and every `store migrate` backup copies
 those bytes; backups are written 0600 and both must be protected
 like the store itself.
 
-Trace and store files. The provider writes the trace file (`{pid}`
-expansion, append-only, best-effort;
-`ffi/Haskoki/FFI/Instance.hs`) and, in SQLite mode, the store file
+Trace and store files. Tracing is off by default; `[trace]
+enabled = true` turns it on, and the provider then writes the
+trace file (`./haskoki-<pid>.jsonl` in the host process's working
+directory, or the configured path; `HASKOKI_TRACE` overrides the
+path; `{pid}` expansion, append-only without rotation,
+best-effort; `ffi/Haskoki/FFI/Instance.hs`) and, in SQLite mode,
+the store file
 plus its sidecars: a `<db>.lock` ownership file carrying the owner
 pid (created `O_EXCL` at open, removed on close, taken over when no
 process holds it — the kernel flock is the authority, so a stale
@@ -901,8 +905,7 @@ removes on commit
 PINs, key material and message bodies to kind + length
 (`src/Haskoki/Runtime/Trace.hs`). No other temp-file calls ship in
 the provider paths (the `mkstemp`/`tmpfile` family is absent from
-`src/`, `ffi/`, `app/`, `cbits/`, `core/`, `tools/`). Ship
-trace-off configs unless tracing is wanted.
+`src/`, `ffi/`, `app/`, `cbits/`, `core/`, `tools/`).
 
 Close and lifecycle. `C_Finalize` closes every open session,
 cancels attached jobs, durably retires joined attachments as

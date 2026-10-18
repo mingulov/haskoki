@@ -29,6 +29,7 @@
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
 #include <openssl/decoder.h>
+#include <openssl/dh.h>
 #include <openssl/dsa.h>
 #include <openssl/ec.h>
 #include <openssl/ecerr.h>
@@ -4384,6 +4385,11 @@ long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
     if (pctx == NULL)
         goto end;
     if (EVP_PKEY_derive_init(pctx) <= 0)
+        goto end;
+    /* Full-width output: without DH padding the provider strips
+     * leading zero bytes, while the entry contract is the prime
+     * byte width (PKCS #3). */
+    if (EVP_PKEY_CTX_set_dh_pad(pctx, 1) <= 0)
         goto end;
     if (EVP_PKEY_derive_set_peer(pctx, peer) <= 0) {
         rc = HSK_OSSL4_ERR_BADPEER;

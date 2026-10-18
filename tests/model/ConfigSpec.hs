@@ -31,6 +31,10 @@ spec = testGroup "Config"
   , testCase "limits are configurable and reported" caseLimitsReported
   , testCase "sqlite without explicit path is refused" caseNoSilentShare
   , testCase "trace override only swaps the trace path" caseTraceOverride
+  , testCase "default config leaves tracing off" caseTraceDefaultOff
+  , testCase "config without a trace section leaves tracing off" caseTraceAbsentOff
+  , testCase "trace opt-in keeps the default path" caseTraceOptInPath
+  , testCase "trace override does not enable tracing" caseTraceOverrideOff
   , testCase "template bounds are pinned constants" caseTemplatePins
   , testCase "template-bound keys are disclosed ignored" caseTemplateDisclosure
   , testCase "sim section parses with knobs" caseSimParse
@@ -157,6 +161,44 @@ caseTraceOverride = do
       assertEqual "trace path overridden" "/tmp/ovr.jsonl" (tcPath (cfgTrace cfg))
       assertEqual "nothing else moves" ProfileDemoMaximal (cfgProfile cfg)
       assertEqual "seed intact" 1234 (cfgSeed cfg)
+
+-- | Tracing is off by default: the no-config resolution must not
+-- arm the file sink. Path, redaction and queue keep their values.
+caseTraceDefaultOff :: IO ()
+caseTraceDefaultOff = do
+  let tr = cfgTrace defaultConfig
+  assertEqual "default tracing off" False (tcEnabled tr)
+  assertEqual "default path kept" "./haskoki-{pid}.jsonl" (tcPath tr)
+  assertEqual "redaction kept" True (tcRedactSecrets tr)
+  assertEqual "queue kept" 4096 (tcQueueLimit tr)
+
+-- | A config file without a @[trace]@ section resolves to
+-- tracing disabled.
+caseTraceAbsentOff :: IO ()
+caseTraceAbsentOff =
+  case parseConfig "schema_version = 1\n" of
+    Right cfg -> assertEqual "absent section means off" False (tcEnabled (cfgTrace cfg))
+    other -> assertFailure ("traceless config must parse, got: " ++ show other)
+
+-- | Explicit opt-in enables tracing with the default path.
+caseTraceOptInPath :: IO ()
+caseTraceOptInPath =
+  case parseConfig (unlines ["schema_version = 1", "[trace]", "enabled = true"]) of
+    Right cfg -> do
+      assertEqual "opt-in enables" True (tcEnabled (cfgTrace cfg))
+      assertEqual "opt-in keeps default path" "./haskoki-{pid}.jsonl" (tcPath (cfgTrace cfg))
+    other -> assertFailure ("trace opt-in must parse, got: " ++ show other)
+
+-- | The trace override swaps only the path: resolving with an
+-- override and no config file leaves tracing disabled.
+caseTraceOverrideOff :: IO ()
+caseTraceOverrideOff = do
+  eCfg <- resolveFrom Nothing (Just "/tmp/haskoki-override.jsonl")
+  case eCfg of
+    Right cfg -> do
+      assertEqual "override does not enable" False (tcEnabled (cfgTrace cfg))
+      assertEqual "override swaps path" "/tmp/haskoki-override.jsonl" (tcPath (cfgTrace cfg))
+    Left err -> assertFailure ("override resolve must succeed, got: " ++ show err)
 
 -- | The effective template bounds are pinned constants, enforced
 -- on both sides of the FFI (C packer + Haskell frame decode for

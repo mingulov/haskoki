@@ -39,6 +39,22 @@ name: hpc
 # itself is untouched. Suite verdicts in every OTHER lane are
 # unchanged: nothing outside this file reads --enable-coverage.
 #
+# Second hardened case (F-2 triage): four laziness oracles (the
+# two `SyntheticSpec` capability-table cases and the two
+# `OpenSSLSpec` published/static-table cases) failed under -fhpc
+# only, each reporting one root thunk. Triage showed the thunk is
+# the HPC tick box around the walked value at the call site (a
+# counting tick is not trivial, so GHC allocates a fresh thunk for
+# it); the heap decoder reports it correctly, and no product
+# laziness is involved. The walker (`tests/engine/LazyWalk.hs`)
+# therefore forces only the root to WHNF before walking, in a
+# module compiled with `-fno-hpc` so the walk adds no tick of its
+# own; every caller already passes a WHNF root, so the heap-read
+# assertions run unchanged on every build. `caseForceCapsCoverage`
+# additionally arms each `forceCaps` position with a throwing tail
+# (entry tracking), which fails if any field is skipped. No
+# product change: durable bytes and the ABI are untouched.
+#
 # Pin policy (F-4): same as ci.yml — every third-party action is
 # pinned to a full commit SHA with the human-readable tag as a
 # trailing comment on the same line.

@@ -31,7 +31,7 @@ PLAIN="-O1 -g"
 export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:detect_stack_use_after_return=1:strict_string_checks=1
 export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
 
-COMMON_CASES="prod-digest-cycle prod-env-cycle prod-dh-kat prod-ecdh prod-xdh prod-aead"
+COMMON_CASES="prod-digest-cycle prod-env-cycle prod-dh-kat prod-dh-width prod-ecdh prod-xdh prod-aead"
 SEAM_CASES="seam-bn-named seam-bn-explicit seam-derive-fail-shrink-ecdh seam-derive-fail-grow-ecdh seam-derive-ok-shrink-ecdh seam-derive-ok-grow-ecdh seam-derive-fail-shrink-xdh seam-derive-fail-grow-xdh seam-derive-ok-shrink-xdh seam-derive-ok-grow-xdh seam-derive-fail-shrink-dh seam-derive-fail-grow-dh seam-derive-ok-shrink-dh seam-derive-ok-grow-dh seam-oaep-fail-shrink seam-oaep-fail-grow seam-encrypt-fail-shrink seam-encrypt-fail-grow seam-pkey-sign-fail-shrink seam-pkey-sign-fail-grow seam-digest-sign-fail-shrink seam-digest-sign-fail-grow seam-ecdsa-raw-fail-shrink seam-ecdsa-raw-fail-grow seam-ecdsa-hash-fail-shrink seam-ecdsa-hash-fail-grow seam-dsa-raw-fail-shrink seam-dsa-raw-fail-grow seam-dsa-hash-fail-shrink seam-dsa-hash-fail-grow seam-eddsa-fail-shrink seam-eddsa-fail-grow seam-mldsa-fail-shrink seam-mldsa-fail-grow seam-slhdsa-fail-shrink seam-slhdsa-fail-grow seam-pss-fail-shrink seam-pss-fail-grow seam-x931-prehash-fail-shrink seam-x931-prehash-fail-grow seam-x931-digested-fail-shrink seam-x931-digested-fail-grow seam-oaep-encrypt-fail-shrink seam-oaep-encrypt-fail-grow seam-pkcs1-decrypt-fail-shrink seam-pkcs1-decrypt-fail-grow seam-ecdsa-hash-raw-ok-shrink seam-dsa-hash-raw-ok-shrink"
 HOOKS_TRACK_CASES="live-1000 credit-gone address-reuse copy-fault adoption-alloc adoption-load final-fault canary-selftest $SEAM_CASES $COMMON_CASES"
 # Track mode checks free counts, extent and canaries through the tracking
@@ -50,6 +50,8 @@ sha_of() { if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else printf ''; 
 
 write_receipt() {
   _gate=$1; _reason=$2
+  _ncommon=0
+  for _c in $COMMON_CASES; do _ncommon=$((_ncommon + 1)); done
   # The commit and cleanliness are measured here when git can read the
   # checkout (sha_source "measured"). A worktree mounted into a container
   # has no usable git directory: then the commit comes from HASKOKI_SAN_SHA
@@ -122,8 +124,8 @@ write_receipt() {
       printf '"%s": %s' "$_b" "$_t"
     done < "$OVH_TSV"
     printf '},\n'
-    printf '  "overhead_env": "%s; %s cpus; 6 common cases, plain mem, one run each; image %s",\n' \
-      "$(json_str "$(uname -sr)")" "$(nproc 2>/dev/null || echo '?')" "$(json_str "$_img")"
+    printf '  "overhead_env": "%s; %s cpus; %s common cases, plain mem, one run each; image %s",\n' \
+      "$(json_str "$(uname -sr)")" "$(nproc 2>/dev/null || echo '?')" "$_ncommon" "$(json_str "$_img")"
     printf '  "gate": "%s",\n  "open_reason": "%s",\n' "$_gate" "$(json_str "$_reason")"
     printf '  "limits": "libcrypto not instrumented; GHC/RTS not instrumented; harness compiles the shim source, the shipped .so is checked separately by test-ossl4-bounds.sh"\n'
     printf '}\n'
@@ -244,7 +246,7 @@ expect_fail san-prod plain neg-ubsan "runtime error:"
 expect_fail san-hooks track exit-gate "unacknowledged double-free" 70
 expect_fail san-hooks track seam-bn-named "seam-not-reached" "" --no-arm
 
-# --- overhead (wall time of the 6 common cases, plain memory) ---------------------
+# --- overhead (wall time of the common cases, plain memory) ------------------------
 for b in san-hooks san-prod plain-hooks plain-prod; do
   t0=$(date +%s%N)
   for c in $COMMON_CASES; do "$ART/bin/$b" --mem plain --case "$c" > /dev/null 2>&1; done

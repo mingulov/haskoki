@@ -424,6 +424,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "pub-from-priv EC serves embedded, refuses scalar-only" casePubPrivEc
   , testCase "pub-from-priv EC stamps point and params from SPKI" casePubPrivEcSpkiStamp
   , testCase "pub-from-priv EC finds by read-back params through the FFI codec" casePubPrivEcFindByReadback
+  , testCase "pub-from-priv EC copies EC_PARAMS from the base" casePubPrivEcParamsCopy
   , testCase "pub-from-priv refusals: scope, class, params, templates" casePubPrivRefusals
   , testCase "HKDF info codec round-trips mode/salt/context" caseHkdfInfoCodec
   , testCase "Decaps recovers the secret as one handle" caseKemDecaps
@@ -462,6 +463,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "Real DH keypairs generate and agree" caseRealDhKeygen
   , testCase "Keygen defaults absent usage flags (derive false)" caseKeygenUsageDefaults
   , testCase "Generated keys default CKA_DERIVE to false" caseDeriveDefaultsFalse
+  , testCase "Unwrapped and derived keys read CKA_DERIVE false" caseDeriveReadViewUnwrapDerive
   , testCase "Real P-384 keypair generates and signs" caseRealEcKeygen384
   , testCase "Real P-521 keypair generates and signs" caseRealEcKeygen521
   , testCase "Real wrap matches SP 800-38A and round-trips" caseRealWrapVector
@@ -3468,6 +3470,105 @@ caseDeriveDefaultsFalse = withSynth $ \answer -> do
           pure (m', h1, h2)
         other -> assertFailure ("EC plan is not an effect: " ++ show other) >> undefined
 
+caseDeriveReadViewUnwrapDerive :: IO ()
+caseDeriveReadViewUnwrapDerive = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  (m1, wrapH) <- genAesKey answer m0 st wrapKeyTmpl
+  (m2, targetH) <- genAesKey answer m1 st (aesTmpl 32)
+  blob <- case planWrapKey m2 st aesCbcMech iv16 wrapH targetH (IntentBuffer 48) of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      case finishWork m2 st pw res of
+        Immediate c -> case pcOutputs c of
+          [NativeOutput (RegionBytes "wrapped" _) bs] -> pure bs
+          o -> assertFailure ("one blob: " ++ show o) >> undefined
+        other -> assertFailure ("wrap must commit: " ++ show other) >> undefined
+    other -> assertFailure ("wrap must plan: " ++ show other) >> undefined
+  -- An unwrap child without CKA_DERIVE: stored without the
+  -- attribute, reads CK_FALSE through the read view.
+  let tmpl =
+        [ (AttrClass, ValULong ckoSecretKey)
+        , (AttrKeyType, ValULong ckkAes)
+        , (AttrToken, ValBool False)
+        ]
+  (m3, unwH) <- case planUnwrapKey defaultRules m2 st aesCbcMech iv16 wrapH blob tmpl of
+    KeyEffect pw fx -> do
+      res <- answer m2 fx
+      c <- finishCommit m2 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m2 (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("unwrap must plan: " ++ show other) >> undefined
+  assertStoredAbsent "unwrap" m3 unwH
+  assertReadsFalse "unwrap" m3 st unwH
+  -- A derive child without CKA_DERIVE likewise.
+  (m4, baseH) <- deriveBase answer m3 st
+  (m5, [dh]) <- runDerive answer m4 st baseH
+    (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "derive-readview") [childTmpl 32]) 1
+  assertStoredAbsent "derive-child" m5 dh
+  assertReadsFalse "derive-child" m5 st dh
+  -- Find on false matches both; true matches neither.
+  hitsF <- findWith m5 st [(AttrDerive, ValBool False)]
+  assertBool "unwrap matches derive-false" (unwH `elem` hitsF)
+  assertBool "derive-child matches derive-false" (dh `elem` hitsF)
+  hitsT <- findWith m5 st [(AttrDerive, ValBool True)]
+  assertBool "unwrap misses derive-true" (unwH `notElem` hitsT)
+  assertBool "derive-child misses derive-true" (dh `notElem` hitsT)
+  -- Enforcement is unchanged: deriving from the unwrapped key
+  -- refuses with CKR_KEY_FUNCTION_NOT_PERMITTED.
+  case planDerive defaultRules m5 st hkdfDeriveMech unwH
+      (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "no-permit") [childTmpl 32]) of
+    KeyDenied (KeyDeny code _) ->
+      assertEqual "unwrapped base code" CKR_KEY_FUNCTION_NOT_PERMITTED code
+    other -> assertFailure ("unwrapped base must refuse: " ++ show other)
+  -- An explicit CKA_DERIVE=TRUE on the unwrap template still
+  -- stores true, reads true and derives.
+  (m6, expH) <- case planUnwrapKey defaultRules m5 st aesCbcMech iv16 wrapH blob
+      (tmpl ++ [(AttrDerive, ValBool True)]) of
+    KeyEffect pw fx -> do
+      res <- answer m5 fx
+      c <- finishCommit m5 st pw res 1
+      h <- handleOf (pcOutputs c !! 0)
+      m' <- expectRight (publishDelta m5 (pcDelta c))
+      pure (m', h)
+    other -> assertFailure ("explicit unwrap must plan: " ++ show other) >> undefined
+  Just expOst <- pure (resolveHandle m6 expH)
+  assertEqual "explicit true stored" (Just (ValBool True))
+    (Map.lookup AttrDerive (osAttrs expOst))
+  case planGetAttributes m6 st expH [AttrDerive] of
+    Immediate c -> case pcOutputs c of
+      [o] -> do
+        assertEqual "explicit read code" CKR_OK (pcCode c)
+        assertEqual "explicit reads CK_TRUE" (Just (ValBool True))
+          (decodeValue AttrDerive (outBytes o))
+      _ -> assertFailure "explicit read outputs arity" >> undefined
+    Reject rej -> assertFailure ("explicit read rejected: " ++ show (rejCode rej)) >> undefined
+    Execute _ _ -> assertFailure "explicit read must not execute" >> undefined
+  case planDerive defaultRules m6 st hkdfDeriveMech expH
+      (encodeDeriveParams (encodeHkdfInfo 4 0x02 BS.empty "permit") [childTmpl 32]) of
+    KeyEffect _ _ -> pure ()
+    other -> assertFailure ("explicit-derive base must plan: " ++ show other)
+  where
+    assertStoredAbsent tag m h = case resolveHandle m h of
+      Nothing -> assertFailure (tag ++ ": handle unpublished") >> undefined
+      Just ost -> assertEqual (tag ++ " stored lacks derive") Nothing
+        (Map.lookup AttrDerive (osAttrs ost))
+    assertReadsFalse tag m st0 h = case planGetAttributes m st0 h [AttrDerive] of
+      Immediate c -> case pcOutputs c of
+        [o] -> do
+          assertEqual (tag ++ " read code") CKR_OK (pcCode c)
+          assertEqual (tag ++ " reads CK_FALSE") (Just (ValBool False))
+            (decodeValue AttrDerive (outBytes o))
+        _ -> assertFailure (tag ++ ": read outputs arity") >> undefined
+      Reject rej -> assertFailure (tag ++ ": read rejected: " ++ show (rejCode rej))
+        >> undefined
+      Execute _ _ -> assertFailure (tag ++ ": read must not execute") >> undefined
+    findWith m st0 q = case planFindObjects m st0 q of
+      Immediate fc -> mapM handleOf (pcOutputs fc)
+      Reject rej -> assertFailure ("find rejected: " ++ show (rejCode rej)) >> undefined
+      Execute _ _ -> assertFailure "find must not execute" >> undefined
+
 caseEcPointStamped :: IO ()
 caseEcPointStamped = do
   m0 <- seedModel
@@ -5294,6 +5395,50 @@ casePubPrivEcFindByReadback = do
       assertEqual "find by read-back params hits" [h] hits
     other -> assertFailure ("pubpriv plan is not an effect: " ++ show other)
 
+casePubPrivEcParamsCopy :: IO ()
+casePubPrivEcParamsCopy = withSynth $ \answer -> do
+  m0 <- seedModel >>= loginUser
+  st <- getSession m0
+  -- The base carries the engine name, not the OID: with an opaque
+  -- answer (no SPKI stamp) the derived key carries the copy
+  -- verbatim, proving the copy lands and no stamp rewrote it.
+  -- A caller-supplied value wins over the copy.
+  let baseT =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrEcParams, ValBytes "P-256")
+        , (AttrToken, ValBool False)
+        ]
+      derive m h tmpl = case planDerive defaultRules m st pubPrivMech h (encodeDeriveParams BS.empty [tmpl]) of
+        KeyEffect pw fx -> do
+          res <- answer m fx
+          c <- finishCommit m st pw res 1
+          h2 <- handleOf (pcOutputs c !! 0)
+          m' <- expectRight (publishDelta m (pcDelta c))
+          pure (m', h2)
+        other -> assertFailure ("pubpriv plan is not an effect: " ++ show other) >> undefined
+      omitT =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        ]
+      callerT =
+        [ (AttrClass, ValULong ckoPublicKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrEcParams, ValBytes "P-384")
+        , (AttrToken, ValBool False)
+        ]
+  (m1, privH) <- plantKey m0 st baseT pubPrivSec1P256
+  (m2, hCopy) <- derive m1 privH omitT
+  Just copied <- pure (resolveHandle m2 hCopy)
+  assertEqual "params copied from base" (Just (ValBytes "P-256"))
+    (Map.lookup AttrEcParams (osAttrs copied))
+  (m3, privH2) <- plantKey m2 st baseT pubPrivSec1P256
+  (m4, hCaller) <- derive m3 privH2 callerT
+  Just callerWon <- pure (resolveHandle m4 hCaller)
+  assertEqual "caller params win over the copy" (Just (ValBytes "P-384"))
+    (Map.lookup AttrEcParams (osAttrs callerWon))
+
 casePubPrivRefusals :: IO ()
 casePubPrivRefusals = withSynth $ \_answer -> do
   m0 <- seedModel >>= loginUser
@@ -6130,13 +6275,11 @@ caseRealDhKeygen = withRealEnv $ \env -> do
         EngineOk s -> pure s
         EngineFail err -> assertFailure ("real derive B->A failed: " ++ show err) >> undefined
       assertEqual "agreement commutes" sAB sBA
-      -- The provider derive returns the minimal big-endian
-      -- encoding (leading zeros stripped, no left pad): the
-      -- secret is uniform in [1, p-1], so its width is
-      -- 1..prime-width — a 255-byte draw lands with
-      -- probability ~1/256, and an exact-256 assertion flakes.
+      -- The shim left-pads the agreement to the prime byte
+      -- width, so every draw fills all 256 bytes exactly (a
+      -- leading zero byte is kept, not stripped).
       assertBool "secret nonempty" (not (BS.null sAB))
-      assertBool "secret within prime width" (BS.length sAB <= 256)
+      assertEqual "secret fills prime width" 256 (BS.length sAB)
       let checkGenerated pubH label = do
             yRead <- case planGetAttributes m2 st pubH [AttrValue] of
               Immediate c -> case pcOutputs c of

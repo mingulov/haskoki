@@ -5,7 +5,7 @@ and old TODO category has exactly one row in spec/findings-ledger.json, with
 a valid decision and evidence.
 
 Sources (1:1 set equality, never a subset):
-  * examples/release/compare-classify/frozen-shared.txt   (18 findings)
+  * examples/release/compare-classify/frozen-shared.txt   (21 findings)
   * examples/release/compare-classify/frozen-subset.tsv   (61 exclusions)
   * cbits/function_tables.c stub_probe stubs + cbits/abi_stubs.inc
     x_live_check stubs                                     (11 C refusals)
@@ -71,7 +71,7 @@ DIMENSIONS = ["checker", "c-routing", "planner", "catalog", "todo"]
 EXCL_FAMILIES = ["A-msg-init-0x71", "B-blowfish", "C-tls12", "D-wtls",
                  "E-boundary"]
 
-COUNTS = {"finding": 18, "exclusion": 61, "c-function": 11,
+COUNTS = {"finding": 21, "exclusion": 61, "c-function": 11,
           "planner-function": 21, "mechanism-planned": 57,
           "unsupported": 89, "n-a": 2}
 
@@ -357,7 +357,7 @@ def run_gate():
     if errs:
         return 1
     n = len(json.loads(LEDGER.read_text())["rows"])
-    print("findings-ledger: ok (%d rows; 18 findings, 61 exclusions, "
+    print("findings-ledger: ok (%d rows; 21 findings, 61 exclusions, "
           "11 C refusals, 21 planner, 57/89/2 mechanisms; 26 retired)" % n)
     return 0
 

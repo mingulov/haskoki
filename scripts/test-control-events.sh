@@ -57,9 +57,10 @@ cc -std=c11 -O2 -g -Wall -Wextra -Werror -Ispec/vendor \
   || fail "C proof harness did not compile"
 echo "harness compiled: $BIN"
 
-# Keep the tree clean: the native instance resolves HASKOKI_TRACE at
-# init (the trace-dest override); point it at scratch. Also asserts
-# the override path end to end (the proof's control calls emit).
+# Keep the tree clean: the proof config enables tracing explicitly
+# and the native instance resolves HASKOKI_TRACE at init (the
+# trace-dest override); point it at scratch. Also asserts the
+# override path end to end (the proof's control calls emit).
 export HASKOKI_TRACE="${TMPDIR:-/tmp}/haskoki-proof-trace.jsonl"
 rm -f "$HASKOKI_TRACE"
 

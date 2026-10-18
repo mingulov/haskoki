@@ -125,6 +125,7 @@ spec = testGroup "openssl4 engine"
   , testCase "pub-from-priv re-exports SPKI (provider)" casePubFromPrivProvider
   , testCase "Montgomery keygen mints agreeing pairs" caseRealMontgomeryKeygen
   , testCase "DH agreement KAT (CLI vectors)" caseDhAgree
+  , testCase "DH derive keeps a leading zero byte (full width)" caseDhPadLeadingZero
   , testCase "DH keygen mints agreeing pairs" caseDhKeygen
   , testCase "raw-vs-der encodings never convert silently" caseRawVsDer
   , testCase "Symmetric keygen (fresh random bytes)" caseSymKeygen
@@ -1243,6 +1244,72 @@ dhPrime2048 = hex $ concat
   , "ae56ede76372bb190b07a7c8ee0a6d709e02fce1cdf7e2ecc03404cd28342f61"
   , "9172fe9ce98583ff8e4f1232eef28183c3fe3b1b4c6fad733bb5fcbc2ec22005"
   , "c58ef1837d1683b2c6f34a26c1b2effa886b423861285c97ffffffffffffffff"
+  ]
+
+-- | Full-width DH KAT fixtures: an ffdhe2048 pair (OpenSSL 4.0.2
+-- genpkey, offline) whose shared secret starts with 0x00. The same
+-- pinned vector as the sanitizer @prod-dh-width@ case; the secret
+-- is the left-padded @pkeyutl -derive@ output, cross-checked by
+-- independent big-int arithmetic at generation time.
+dhPadPrivA, dhPadPrivB, dhPadPeerA, dhPadPeerB, dhPadSecret :: ByteString
+dhPadPrivA = hex $ concat
+  [ "3082013e0201003082011706092a864886f70d010301308201080282010100"
+  , "ffffffffffffffffadf85458a2bb4a9aafdc5620273d3cf1d8b9c583ce2d36"
+  , "95a9e13641146433fbcc939dce249b3ef97d2fe363630c75d8f681b202aec4"
+  , "617ad3df1ed5d5fd65612433f51f5f066ed0856365553ded1af3b557135e7f"
+  , "57c935984f0c70e0e68b77e2a689daf3efe8721df158a136ade73530acca4f"
+  , "483a797abc0ab182b324fb61d108a94bb2c8e3fbb96adab760d7f4681d4f42"
+  , "a3de394df4ae56ede76372bb190b07a7c8ee0a6d709e02fce1cdf7e2ecc034"
+  , "04cd28342f619172fe9ce98583ff8e4f1232eef28183c3fe3b1b4c6fad733b"
+  , "b5fcbc2ec22005c58ef1837d1683b2c6f34a26c1b2effa886b423861285c97"
+  , "ffffffffffffffff020102041e021c3c1d2502efef371d66145d353243a1b6"
+  , "11a50fbd6116e82f25a6bb4c"
+  ]
+dhPadPrivB = hex $ concat
+  [ "3082013f0201003082011706092a864886f70d010301308201080282010100"
+  , "ffffffffffffffffadf85458a2bb4a9aafdc5620273d3cf1d8b9c583ce2d36"
+  , "95a9e13641146433fbcc939dce249b3ef97d2fe363630c75d8f681b202aec4"
+  , "617ad3df1ed5d5fd65612433f51f5f066ed0856365553ded1af3b557135e7f"
+  , "57c935984f0c70e0e68b77e2a689daf3efe8721df158a136ade73530acca4f"
+  , "483a797abc0ab182b324fb61d108a94bb2c8e3fbb96adab760d7f4681d4f42"
+  , "a3de394df4ae56ede76372bb190b07a7c8ee0a6d709e02fce1cdf7e2ecc034"
+  , "04cd28342f619172fe9ce98583ff8e4f1232eef28183c3fe3b1b4c6fad733b"
+  , "b5fcbc2ec22005c58ef1837d1683b2c6f34a26c1b2effa886b423861285c97"
+  , "ffffffffffffffff020102041f021d01e24035d936f9c80346520ffe08eee7"
+  , "5aab53fd4a6b07dc53029aa851"
+  ]
+dhPadPeerA = hex $ concat
+  [ "b5031e2d1102a913689788f835b01459be9c35bba5f339f2e11ac2a3b66078"
+  , "d7077be61f967c4e4ac380fe0ae73a80d40cb7dcfc84cec5fd3f28fef08074"
+  , "93eacefa6150f43be868d111a59f28c4fd1625cd48fca4420ca91caa372a4a"
+  , "6edb4cb2059b0762891519bb357b4637ac67e724de8e9931a71aaa09ad97ac"
+  , "1b56046a3efd874268a25c147d5664df5bbd4f266bc264b50b88b67aefb70b"
+  , "c4218f9d49757a2c6cb77b352dc48cddc60a8c340eaf46bb7139746a9e75e0"
+  , "15cb3622713785f73c779e812326af2c373434a28d1c27b2421b6c59f6280e"
+  , "467854fd725a6274f1cdf1d47cae9cbd851a778c4a494acd2811b22c5adcb7"
+  , "6b39abb41bd5e7da"
+  ]
+dhPadPeerB = hex $ concat
+  [ "126a89220e681d915d9fb9cb22f8420f770923d5e81d0b340f7c4511688d13"
+  , "4e92107fb8124a36672426a1fe39dba38e454472347298aaac48b4eaff6e37"
+  , "dd4394ba3293ee304bba4aba969e4e856a4458f7d71c5c423a3a08a01b7ebe"
+  , "587f0e90d12ab580267b4b982d792fc7410b3de152a102e88d4776e85d5a3e"
+  , "ce1415b00333a9c97693071047c063d006232d1c5c6d37f85b63cd4edc02ae"
+  , "f4095f9806bc21d65ad612242b8d1d3aa1b88b91dad1264d89367a8318d979"
+  , "1e491edd6289c541b20436c6647af0f2d60f8a87cffd77e4efaea29f75bcb0"
+  , "67ee7b4dc6bc91216ba7b32456cff5d8739c4f9c128782fdab722aa8ee1fe1"
+  , "5c81d715f88aeb19"
+  ]
+dhPadSecret = hex $ concat
+  [ "00ce799864d8059c2e77b227556aa9f7c91820d4b65fb4d45097e8f4fbbf3c"
+  , "8dd8bc9bf75c0cba9b1e5974a367bb395c070411e69b14916c6513569b419d"
+  , "79c64c49dff416aee8435750e450750dfc5b6d1d5695183b12cf2a47d7a979"
+  , "aea27bdd575c139984e54573f5d62bf7901051ed84dc02f75c1493a2712596"
+  , "f20f5a3b789d8ad902b85a36a447f3d0db556e2de7412baf9d36175809f932"
+  , "ed792739a24b2d7490db6c5e30dd170d195664bced25e092cd60ad6b08b8f5"
+  , "bc42d28b90e6ad310cfe7dbb3fc45e7cdca6cb34b78a0a0b3b88eaeacea633"
+  , "f02704df21b2129e710119104a643629fed2592261a8a38d5b78984058ee0f"
+  , "1188bbf6013c43e0"
   ]
 
 -- | X9.42 domain triple (1024-bit DSA paramgen output
@@ -4790,6 +4857,21 @@ caseDhAgree = withBackend $ \env -> do
     dhDerive env DhPlain pA (KeyDer (BS.singleton 0x00 <> BS.drop 1 dhPeerB))
   assertBool "tamper diverges" (sTam /= dhSecretAB)
 
+caseDhPadLeadingZero :: IO ()
+caseDhPadLeadingZero = withBackend $ \env -> do
+  let pA = KeyDer dhPadPrivA
+      pB = KeyDer dhPadPrivB
+      qA = KeyDer dhPadPeerA
+      qB = KeyDer dhPadPeerB
+  -- The pinned secret's top byte is zero, so a minimal-length
+  -- derive would return 255 bytes here, not 256.
+  sAB <- expectOk "derive A->B" =<< dhDerive env DhPlain pA qB
+  assertEqual "full width" 256 (BS.length sAB)
+  assertEqual "leading zero kept" 0 (BS.index sAB 0)
+  assertEqual "KAT A->B" dhPadSecret sAB
+  sBA <- expectOk "derive B->A" =<< dhDerive env DhPlain pB qA
+  assertEqual "KAT B->A" dhPadSecret sBA
+
 -- | DH keygen: PKCS#3 and X9.42 params mint parseable pairs
 -- whose halves carry the domain, and minted pairs on the same
 -- domain agree both directions at the prime width. Garbage
@@ -4811,10 +4893,10 @@ caseDhKeygen = withBackend $ \env -> do
         sAB <- expectOk (label ++ " A->B") =<< dhDerive env DhPlain (KeyDer privA) (KeyDer yB)
         sBA <- expectOk (label ++ " B->A") =<< dhDerive env DhPlain (KeyDer privB) (KeyDer yA)
         assertEqual (label ++ " commutes") sAB sBA
-        -- Minimal big-endian (no left pad): on random draws
-        -- the width is 1..w, never exactly w.
+        -- Full prime width, left-padded: every draw fills
+        -- the width exactly (a leading zero byte is kept).
         assertBool (label ++ " nonempty") (not (BS.null sAB))
-        assertBool (label ++ " within width") (BS.length sAB <= w)
+        assertEqual (label ++ " fills width") w (BS.length sAB)
   -- PKCS#3 on ffdhe2048.
   (privA, pubA) <- mint "pkcs mint A" (dhParamsDer dhPrime2048 (BS.singleton 2))
   (privB, pubB) <- mint "pkcs mint B" (dhParamsDer dhPrime2048 (BS.singleton 2))

@@ -5,6 +5,9 @@
 Behaviour changes a caller written against 0.4.0.0 can observe:
 
 - Generated keys and KEM outputs now default `CKA_DERIVE` to false, as PKCS#11 specifies; set it explicitly to derive.
+- `CKA_DERIVE` now reads `CK_FALSE` on created, unwrapped and
+  derived keys and on public keys stored by 0.4.0.0, instead of
+  `CKR_ATTRIBUTE_TYPE_INVALID`; enforcement is unchanged.
 - Fresh keys report explicit creation history. Generated keys read
   `CKA_LOCAL` true with `CKA_KEY_GEN_MECHANISM` set to the generating
   mechanism; `CKA_ALWAYS_SENSITIVE` reads true when the key was born
@@ -249,6 +252,10 @@ Behaviour changes a caller written against 0.4.0.0 can observe:
   stripped minimal-width encodings, and raw ECDSA clients
   zero-padding past the bound, both of which 0.4.0.0 verified,
   now get `CKR_SIGNATURE_LEN_RANGE`.
+- Tracing is now off by default: a config without `[trace]`, and
+  the no-`HASKOKI_CONFIG` default, no longer writes
+  `./haskoki-<pid>.jsonl` into the host process's working
+  directory. Set `[trace] enabled = true` to keep writing traces.
 
 New documents: `docs/native-qualification.md` (native shim qualification
 record: symbol separation, sanitizer runs, evidence limits) and
@@ -451,7 +458,9 @@ record: symbol separation, sanitizer runs, evidence limits) and
   public keys derived via `CKM_PUB_KEY_FROM_PRIV_KEY` (which store
   the curve OID) by the read-back value, like generated keys. A
   search with the OID used to miss the derived key; stored bytes
-  are unchanged and the C ABI still returns the OID.
+  are unchanged and the C ABI still returns the OID. The derived
+  key carries `CKA_EC_PARAMS` copied from the base when the caller
+  omits it.
 - `C_CopyObject` repeating the read-back DSA or DH public `y` in
   `CKA_VALUE` is accepted as a no-op and keeps the stored SPKI
   bytes; a different value is still refused.
@@ -554,6 +563,13 @@ record: symbol separation, sanitizer runs, evidence limits) and
   releases private key bytes with `OPENSSL_clear_free`, and the
   HMAC oversized-key hash buffer is cleansed on early exits.
   0.4.0.0 is affected.
+- `C_DeriveKey` with `CKM_DH_PKCS_DERIVE` or `CKM_X9_42_DH_DERIVE`
+  now keeps leading zero bytes, so the shared secret is always the
+  prime's byte width (PKCS #3; RFC 2631 §2.1.2). In 0.4.0.0 about
+  one derive in 256 lost a leading zero byte. A derive at the full
+  prime width (a generic secret without `CKA_VALUE_LEN`, or with
+  `CKA_VALUE_LEN` equal to the prime width) then failed with
+  `CKR_GENERAL_ERROR`. Shorter keys were unaffected.
 
 ### Security
 

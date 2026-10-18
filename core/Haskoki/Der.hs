@@ -93,6 +93,7 @@ module Haskoki.Der
   , montgomeryTable
   , montgomeryOidOfParams
   , montgomeryNameOfOid
+  , ecParamsNameOfOid
   , montgomeryWidthOfParams
   , montgomeryPrivateDer
   , montgomeryPublicDer
@@ -354,6 +355,17 @@ montgomeryNameOfOid oid = case find hit montgomeryTable of
   Nothing -> Nothing
   where
     hit (_, o, _) = oid == o
+
+-- | The engine name for a @CKA_EC_PARAMS@ DER OID across the
+-- Weierstrass, Edwards and Montgomery tables ('Nothing' for
+-- foreign OIDs). The single OID-to-name source shared by the core
+-- read view and the FFI wire decoder.
+ecParamsNameOfOid :: ByteString -> Maybe ByteString
+ecParamsNameOfOid oid = case curveNameOfOid oid of
+  Just name -> Just name
+  Nothing -> case edwardsNameOfOid oid of
+    Just name -> Just name
+    Nothing -> montgomeryNameOfOid oid
 
 -- | Coordinate width in bytes for a DER Montgomery OID.
 montgomeryWidthOfParams :: ByteString -> Maybe Int

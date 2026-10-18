@@ -135,11 +135,13 @@ presence.
   `cbits/function_tables.c`); see `docs/coverage.md`.
 - `haskoki-ctl scenario run` interprets scenarios against an owned
   in-memory model; it never controls another live process.
-- Trace files: a config with `[trace] enabled = true` writes
-  `$CWD/haskoki-<pid>.jsonl` (append-only, best-effort; failures
-  counted, never thrown). PINs, key material and message bodies
-  render redacted (kind + length only); ship trace-off configs
-  unless tracing is wanted.
+- Trace files: tracing is off by default; `[trace] enabled = true`
+  turns it on, writing `./haskoki-<pid>.jsonl` in the host
+  process's working directory, or the configured path
+  (`HASKOKI_TRACE` overrides the path). Events append without
+  rotation (best-effort; failures counted, never thrown). PINs,
+  key material and message bodies render redacted (kind + length
+  only).
 - Key storage has no encryption-at-rest: the SQLite store keeps
   token rows and object rows (attributes plus `material_blob` key
   bytes) as plain JSON/blobs (schema in

@@ -1316,10 +1316,12 @@ caseDriverDh = withBackend $ \env -> do
   direct <- case directR of
     EngineOk s -> pure s
     other -> assertFailure ("direct derive failed: " ++ show other)
-  -- Minimal big-endian (no left pad): full-width requests use
-  -- the drawn length, never a literal 256 (a short draw would
-  -- fail the request for length, not for the tested reason).
+  -- Full prime width, left-padded: the direct agreement
+  -- fills all 256 bytes exactly, so full-width requests use
+  -- that width (a short draw would fail the request for
+  -- length, not for the tested reason).
   let w = BS.length direct
+  assertEqual "direct fills prime width" 256 w
   full <- runEffect env res (FxDerive dhMech (Just aOid) Nothing (blob peerB) BS.empty w)
     >>= expectBytes
   assertEqual "driver == direct" direct full

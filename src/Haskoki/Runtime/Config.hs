@@ -268,7 +268,7 @@ defaultConfig = Config
   , cfgStorage = StorageCfg StorageMemory Nothing 5000 True
   , cfgEngine = EngineCfg EngineSynthetic False True
   , cfgAsync = AsyncCfg "logical" True 2 False
-  , cfgTrace = TraceCfg True "./haskoki-{pid}.jsonl" True 4096
+  , cfgTrace = TraceCfg False "./haskoki-{pid}.jsonl" True 4096
   , cfgControl = ControlCfg True 1048576 65536 False
   , cfgFixtures = FixturesCfg "minimal-demo" "new-store-only"
   , cfgLimits = Limits 16 1024 100000 67108864 67108864 268435456 4096 8 1024 1024
@@ -593,7 +593,7 @@ build kvs = do
   asyncOn <- getBool kvs ("async", "enabled") True
   pendingPolls <- getInt kvs ("async", "pending_polls") 2
   persistDet <- getBool kvs ("async", "persist_detached") False
-  traceOn <- getBool kvs ("trace", "enabled") True
+  traceOn <- getBool kvs ("trace", "enabled") False
   tracePath <- getStr kvs ("trace", "path") (tcPath dt)
   redact <- getBool kvs ("trace", "redact_secrets") True
   -- Config honesty: secrets are always redacted (renderer + Show),

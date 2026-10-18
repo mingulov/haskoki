@@ -1372,8 +1372,8 @@ SAN_SCHEMA = "haskoki-native-sanitizer-receipt/1"
 SAN_VARIANTS = ("san-hooks", "san-prod", "plain-hooks", "plain-prod")
 SAN_SOURCES = ("cbits/ossl4_ctx.c", "cbits/ossl4_ctx.h", "tests/c/ossl4_sanitize.c",
                SANITIZER_DRIVER)
-SAN_COMMON = ("prod-digest-cycle", "prod-env-cycle", "prod-dh-kat", "prod-ecdh",
-              "prod-xdh", "prod-aead")
+SAN_COMMON = ("prod-digest-cycle", "prod-env-cycle", "prod-dh-kat", "prod-dh-width",
+              "prod-ecdh", "prod-xdh", "prod-aead")
 SAN_SEAM = tuple(["seam-bn-named", "seam-bn-explicit"]
                  + [f"seam-derive-{m}-{d}-{k}" for k in ("ecdh", "xdh", "dh")
                     for m in ("fail", "ok") for d in ("shrink", "grow")]

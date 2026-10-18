@@ -586,9 +586,9 @@ long hsk_ossl4_pub_from_priv(OSSL_LIB_CTX *ctx, const char *propq,
  * The peer is range-checked natively (1 < y < p - 1) before any
  * agreement; out-of-range, overlong (> 4 KiB input bound), or
  * empty peers answer HSK_OSSL4_ERR_BADPEER. Returns the raw
- * shared secret length (prime byte width, left-padded by the
- * provider) with *out set, or a negative HSK_OSSL4_ERR_* code
- * (bad base DER -> HSK_OSSL4_ERR_BADKEY). */
+ * shared secret length (prime byte width, left-padded inside the
+ * provider via DH padding) with *out set, or a negative
+ * HSK_OSSL4_ERR_* code (bad base DER -> HSK_OSSL4_ERR_BADKEY). */
 long hsk_ossl4_dh_derive(OSSL_LIB_CTX *ctx, const char *propq,
                          const unsigned char *priv_der, size_t priv_len,
                          const unsigned char *peer_val, size_t peer_len,

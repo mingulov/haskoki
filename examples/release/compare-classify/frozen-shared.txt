@@ -1,6 +1,8 @@
-# frozen shared findings (v0.5 re-freeze): exact shared-findings.txt — 18 lines
-# (R9 had 22; GMAC x2 and HOTP x2 left when their message flags were withdrawn,
-# see spec/findings-ledger.json retired rows)
+# frozen shared findings (v0.5 derive-default re-freeze): exact
+# shared-findings.txt — 21 lines (18 + 3 X9.42 DH derive tests: the
+# checker generates X9.42 pairs without CKA_DERIVE=TRUE and Haskoki
+# follows PKCS#11 3.2 Table 26, so derive refuses
+# CKR_KEY_FUNCTION_NOT_PERMITTED; see spec/findings-ledger.json)
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
 failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
@@ -19,3 +21,6 @@ failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_mess
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
 failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
+failed test_x942_dh.py::TestX942DHDerive::test_derive_shared_secret
+failed test_x942_dh.py::TestX942DHDerive::test_derived_key_encrypts
+failed test_x942_dh.py::TestX942DHDerive::test_different_exchanges_produce_different_secrets

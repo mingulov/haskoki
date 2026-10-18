@@ -144,6 +144,7 @@ spec = testGroup "objects and attributes"
   , testCase "key defaults: protection ratchets on legacy keys" caseKeyEffectiveRatchets
   , testCase "key defaults: data objects unchanged" caseDataUnchanged
   , testCase "key defaults: public keys stay readable" casePublicKeysStayReadable
+  , testCase "key defaults: CKA_DERIVE reads false where absent" caseDeriveDefaultReadFalse
   , testCase "key defaults: sealed private components never match" caseRsaPrivateFindWithholds
   , testCase "key defaults: public enforcement follows reported" casePublicEnforcementFollowsReported
   , testCase "key defaults: sealed value find stands alone" caseSealedValueFindStandsAlone
@@ -1593,6 +1594,59 @@ casePublicKeysStayReadable = do
   (pcHN, _) <- runCommit m1 (findReq sid [(AttrNeverExtractable, ValBool False)])
   histN <- findHandles pcHN
   assertEqual "public misses never-extractable default" [] histN
+
+-- | Keys created without CKA_DERIVE (secret, private, public)
+-- read CK_FALSE through the read view, and find matches them on
+-- CKA_DERIVE=false while true matches none. The stored maps stay
+-- without the attribute (the legacy store shape); an explicit
+-- true still stores and reads true.
+caseDeriveDefaultReadFalse :: IO ()
+caseDeriveDefaultReadFalse = do
+  (sid, m0) <- openSession seeded
+  (pcS, m1) <- runCommit m0 (createReq sid (secretAes (BS.replicate 16 7)))
+  hSec <- commitHandle pcS
+  (pcP, m2) <- runCommit m1 (createReq sid privateRsaLegacy)
+  hPriv <- commitHandle pcP
+  (pcU, m3) <- runCommit m2 (createReq sid publicRsa)
+  hPub <- commitHandle pcU
+  -- The stored maps lack the attribute (the legacy store shape).
+  mapM_ (assertStoredAbsent m3)
+    [("secret", hSec), ("private", hPriv), ("public", hPub)]
+  -- Reads report CK_FALSE.
+  mapM_ (assertReadsFalse m3 sid)
+    [("secret", hSec), ("private", hPriv), ("public", hPub)]
+  -- Find on false matches all three; true matches none.
+  (pcF, _) <- runCommit m3 (findReq sid [(AttrDerive, ValBool False)])
+  found <- findHandles pcF
+  assertEqual "derive-false find hits" [hSec, hPriv, hPub] found
+  (pcT, _) <- runCommit m3 (findReq sid [(AttrDerive, ValBool True)])
+  foundT <- findHandles pcT
+  assertEqual "derive-true find misses" [] foundT
+  -- An explicit true still stores and reads true.
+  (pcE, m4) <- runCommit m3
+    (createReq sid (secretAes (BS.replicate 16 9) ++ [(AttrDerive, ValBool True)]))
+  hExp <- commitHandle pcE
+  case resolveHandle m4 hExp of
+    Nothing -> assertFailure "explicit handle lost"
+    Just ost -> assertEqual "explicit true stored" (Just (ValBool True))
+      (Map.lookup AttrDerive (osAttrs ost))
+  (pcER, _) <- runCommit m4 (getReq sid hExp [AttrDerive])
+  assertEqual "explicit true read code" CKR_OK (pcCode pcER)
+  assertEqual "explicit true reads"
+    [encodeValue (ValBool True)] [outBytes o | o <- pcOutputs pcER]
+  (pcEF, _) <- runCommit m4 (findReq sid [(AttrDerive, ValBool True)])
+  foundE <- findHandles pcEF
+  assertEqual "explicit true find hits" [hExp] foundE
+  where
+    assertStoredAbsent m (tag, h) = case resolveHandle m h of
+      Nothing -> assertFailure (tag ++ ": handle lost")
+      Just ost -> assertEqual (tag ++ " stored lacks derive") Nothing
+        (Map.lookup AttrDerive (osAttrs ost))
+    assertReadsFalse m sid (tag, h) = do
+      (pc, _) <- runCommit m (getReq sid h [AttrDerive])
+      assertEqual (tag ++ " derive read code") CKR_OK (pcCode pc)
+      assertEqual (tag ++ " derive reads false")
+        [encodeValue (ValBool False)] [outBytes o | o <- pcOutputs pc]
 
 -- | A sealed RSA private key withholds every private component in
 -- find, not only the value: a guessed private exponent, prime,
