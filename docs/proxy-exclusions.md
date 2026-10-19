@@ -60,7 +60,8 @@ development workspace, sha256 `ffc57ccded61426c3b8a8bc4479dbf74204aeba676219bfd3
 ## Changes after the storage-attribute fix (2026-10-16)
 
 Haskoki now reports the common storage-object attributes an object was
-created without (see the changelog). Re-probe with that fix, one fresh
+created without (see the
+[0.5.0.0 changelog at the release tag](https://github.com/mingulov/haskoki/blob/v0.5.0.0/CHANGELOG.md)). Re-probe with that fix, one fresh
 daemon per version and storage (receipt:
 `ws/evidence/v050-attr-defaults/parity-run2/artifacts/reprobe.tsv` in
 the development workspace, sha256
