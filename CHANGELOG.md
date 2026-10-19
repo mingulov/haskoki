@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.5.0.0] - Unreleased
+## [0.5.0.0] - 2026-10-19
 
 Behaviour changes a caller written against 0.4.0.0 can observe:
 

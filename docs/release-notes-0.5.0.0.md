@@ -194,7 +194,9 @@ Mechanisms and errors:
   bad signatures still fail with `CKR_SIGNATURE_INVALID`. Some
   encodings 0.4.0.0 verified are now refused: stripped DSA,
   zero-padded ECDSA past the bound, and short `CKM_RSA_PKCS`, PSS
-  and X9.31 signatures.
+  and X9.31 signatures. A wrong-length `CKM_RSA_X_509` signature
+  answered `CKR_GENERAL_ERROR` in 0.4.0.0 and now answers
+  `CKR_SIGNATURE_LEN_RANGE`.
 - DH derives keep leading zero bytes, so the shared secret is always
   the prime's byte width (in 0.4.0.0 about one derive in 256 lost a
   byte).
@@ -295,6 +297,7 @@ configures release signing; do not assume it exists. After downloading the
 archives and manifest alongside the checksums, run `sha256sum -c SHA256SUMS`.
 
 The [publishing guide](https://github.com/mingulov/haskoki/blob/v0.5.0.0/docs/publishing.md)
-explains the GitHub-only build and publication workflow. A source branch
-preparing this version does not mean its release or image has been published.
-The latest published release at the time of writing is v0.4.0.0.
+explains the GitHub-only build and publication workflow. v0.5.0.0 was
+published on October 19, 2026 as
+[v0.5.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.5.0.0)
+from source `091a222`.

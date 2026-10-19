@@ -21,7 +21,7 @@ With Docker running, paste this into a terminal:
 ```sh
 mkdir -p out
 docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:v0.4.0.0 demo
+  -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:v0.5.0.0 demo
 ```
 
 Docker downloads the image on the first run. The demo itself works offline:
@@ -35,14 +35,15 @@ demo-ok: 8/8 verifications hold
 That's the complete first run. No clone, compiler, account, PIN setup, or
 physical token is needed. Reports and disposable keys remain in `out/demo-*/`.
 
-This checkout prepares **v0.5.0.0**, adding the attribute-sensitivity
-model, sealed PQC private seeds, schema-3 stores with a migrate-once
-upgrade path, and an installed client portfolio on top of the v0.4.0.0
-demo experience. Its registry tag is available only after publication;
-the latest published release is v0.4.0.0. v0.5.0.0 is a bounded release: its
+The latest published release is
+[**v0.5.0.0**](https://github.com/mingulov/haskoki/releases/tag/v0.5.0.0)
+(October 19, 2026). It adds the attribute-sensitivity model, sealed PQC
+private seeds, schema-3 stores with a migrate-once upgrade path, and an
+installed client portfolio on top of the v0.4.0.0 demo experience.
+v0.5.0.0 is a bounded release: its
 [limitations](docs/release-notes-0.5.0.0.md#known-limitations)
 are stated up front. The
-[hands-on guide](docs/try-it.md) shows how to load a tested candidate,
+[hands-on guide](docs/try-it.md) shows how to pin the published image,
 generate a key with `pkcs11-tool`, and sign your own message.
 
 The demo image includes Haskoki, its runtime and crypto libraries, OpenSC
@@ -85,9 +86,9 @@ PKCS#11 calls on Linux. It is optional and runs separately; an
 | Investigate support or build the project | [Coverage](docs/coverage.md), [results](docs/release-results.md), [developer toolchain](docs/toolchain.md) |
 
 Haskoki exposes PKCS#11 2.40-3.2 interfaces, with 316 behavior-tested
-mechanisms out of 464 catalog entries. The v0.5.0.0 candidate image
-reports 21 documented findings on the full checker profile (the published
-v0.4.0.0 image reports 22); the short smoke profile expects zero. Neither
+mechanisms out of 464 catalog entries. The published v0.5.0.0 image
+reports 21 documented findings on the full checker profile (v0.4.0.0
+reported 22); the short smoke profile expects zero. Neither
 number establishes conformance or certification. See the [results and
 limits](docs/release-results.md) before choosing it for an integration.
 

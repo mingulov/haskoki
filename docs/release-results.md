@@ -31,7 +31,8 @@ and the derive-default re-freeze, the full profile has **21**, measured
 on the v0.5.0.0 candidate (direct: 10,973 collected, 5,430 passed, 21
 findings, 4,960 skipped, 562 expected failures; proxy: 10,973 collected,
 5,369 passed, 21 findings, 4,960 skipped, 623 expected failures; checker
-0.2.3, proxy v0.2.2). The four findings that left are listed first.
+0.2.3, proxy v0.2.2). The v0.5.0.0 release run found the same 21 on the
+published image. The four findings that left are listed first.
 
 | Family | Count | Cause |
 | --- | ---: | --- |
@@ -45,9 +46,9 @@ The set is shared by direct and proxy modes, with no proxy-only findings in
 this baseline. [Qualification notes](pkcs11-oracle-triage.md) explain the
 inputs and attribution. Findings remain visible as failed outcomes.
 
-On the v0.5.0.0 candidate the comparison accepts only **61 frozen
+On the published v0.5.0.0 image the comparison accepts only **61 frozen
 exclusions in five reason families** and **21 shared findings**, with zero
-allowed variance (the published v0.4.0.0 image's classifier accepts 83
+allowed variance (the v0.4.0.0 image's classifier accepted 83
 and 22). The
 [per-case exclusions](../examples/release/compare-classify/frozen-subset.tsv)
 and [shared finding IDs](../examples/release/compare-classify/frozen-shared.txt)
