@@ -13,8 +13,8 @@ system libraries in [host requirements](../SUPPORTED-HOSTS.md) are required.
 Extract the whole bundle so the module can find its runtime libraries.
 
 ```sh
-# v0.4.0.0 is the latest published release.
-HASKOKI_VERSION=0.4.0.0
+# v0.5.0.0 is the latest published release.
+HASKOKI_VERSION=0.5.0.0
 tar -xzf "haskoki-$HASKOKI_VERSION-linux-x86_64.tar.gz"
 HASKOKI_BUNDLE="$PWD/haskoki-$HASKOKI_VERSION"
 "$HASKOKI_BUNDLE/bin/haskoki-ctl" --version
@@ -53,14 +53,12 @@ show two ways to move it to another process.
 
 A store written by v0.4 or earlier needs one migration to schema 3 before
 v0.5 serves it. The `store check` and `store migrate` commands below need
-the v0.5 bundle: the published v0.4.0.0 bundle has `store inspect` and
-`store reset` only, so until v0.5.0.0 is published run this block from a
-candidate bundle built from this checkout. Rehearse on a copy first (see
+the v0.5 bundle installed above (the v0.4.0.0 bundle has `store inspect`
+and `store reset` only). Rehearse on a copy first (see
 Upgrade, backup and recovery in
 [operations-notes.md](operations-notes.md#upgrade-backup-and-recovery)):
 
 ```sh
-HASKOKI_BUNDLE="$PWD/dist-release/haskoki-0.5.0.0"  # candidate bundle until v0.5.0.0 is published
 mkdir -p /tmp/rehearsal /tmp/rehearsal/backups
 cp "$PWD/token.sqlite" /tmp/rehearsal/token.sqlite
 sed "s#^path = .*#path = \"/tmp/rehearsal/token.sqlite\"#" "$PWD/backend.toml" > /tmp/rehearsal/backend.toml
@@ -239,8 +237,8 @@ contract, not byte equality.
 `compare` runs the full checker profile in both modes. It intentionally
 exits 1 for documented findings. The shipped classifier checks the frozen
 exclusions and shared findings; it must exit 0 when those sets match. The
-v0.5.0.0 candidate checks 61 exclusions and 21 shared findings; the
-published v0.4.0.0 image checks 83 and 22.
+published v0.5.0.0 image checks 61 exclusions and 21 shared findings;
+v0.4.0.0 checked 83 and 22.
 From your host terminal, with the image selected in [Try Haskoki](try-it.md#choose-the-image):
 
 ```sh

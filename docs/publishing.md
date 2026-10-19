@@ -19,7 +19,12 @@ was published on October 15, 2026 from source `d35650d` (image digest
 `sha256:9c1bef4b58a95373bbbdb979107a655e85f14e5a0acc80c04586c9df5dcd9c4f`, five unsigned assets;
 [release run](https://github.com/mingulov/haskoki/actions/runs/38748844491), where one
 intermittent storage test failure on the first attempt was re-run with
-**Re-run failed jobs**). Each new release must repeat those checks on its
+**Re-run failed jobs**). The fourth release,
+[v0.5.0.0](https://github.com/mingulov/haskoki/releases/tag/v0.5.0.0),
+was published on October 19, 2026 from source `091a222` (image digest
+`sha256:2e0b73aacce0357fd8292608f1ac45cd8b81b6e3cf14c4dadba877c1fc801406`, five unsigned assets;
+[release run](https://github.com/mingulov/haskoki/actions/runs/39198914304)).
+Each new release must repeat those checks on its
 own source and artifacts.
 
 For **GitHub-only validation without publication**, open or update a pull
