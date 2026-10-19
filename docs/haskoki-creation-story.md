@@ -73,7 +73,7 @@ was published on October 9 but never announced.
 v0.3.1.0 followed on October 12 with shorter onboarding, a prepared
 shell, and hands-on client examples. v0.4.0.0 followed on October 15
 with the token provisioning lifecycle, stricter request checks, and
-refreshed guides. v0.5.0.0 is being prepared as the first public release:
+refreshed guides. v0.5.0.0 followed on October 19 as the first public release:
 new private and secret keys default to unextractable, storage moves to
 schema 3 with a migrate-once upgrade, and a 61-leg client portfolio
 exercises the release.
