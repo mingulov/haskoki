@@ -41,6 +41,9 @@ The builder supplies Ubuntu 26.04, the compiler, Cabal, pinned OpenSSL, and
 project dependencies. A non-1000 UID also needs the different username:
 the base already contains `ubuntu`. Scripts that launch the builder honor
 `HASKOKI_IMAGE`, defaulting to `haskoki-dev:ghc-9.10.3`.
+The release nm gate compiles its header-dependent fixtures inside that
+image when the host lacks the pinned headers, so no host OpenSSL
+install is required.
 Build before testing so Cabal registers the main library before running the
 separate core test package.
 
