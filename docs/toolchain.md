@@ -92,7 +92,7 @@ suites; the separate test client ships its own source archive (below).
 With the native prerequisites above, or a prepared developer image:
 
 ```sh
-HASKOKI_VERSION=0.5.0.0  # latest published release
+HASKOKI_VERSION=0.5.0.0  # example; substitute any published release
 tar -xzf "haskoki-$HASKOKI_VERSION.tar.gz"
 cd "haskoki-$HASKOKI_VERSION"
 printf 'packages: .\nallow-newer: all\n' > cabal.project
