@@ -21,14 +21,14 @@ pathlib.Path(sys.argv[1]).write_text('''schema_version = 1
 profile = "real-crypto"
 [storage]
 kind = "sqlite"
-path = ''' + json.dumps(sys.argv[2]) + '''
+path = ''' + json.dumps(sys.argv[2], ensure_ascii=False) + '''
 [engine]
 kind = "openssl"
 allow_synthetic_fallback = false
 private_library_context = true
 [trace]
 enabled = false
-''')
+''', encoding="utf-8")
 PY
 elif [ ! -r "$HASKOKI_CONFIG" ]; then
   echo "haskoki-shell: cannot read HASKOKI_CONFIG: $HASKOKI_CONFIG" >&2
