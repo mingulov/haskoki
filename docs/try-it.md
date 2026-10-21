@@ -188,7 +188,8 @@ on that branch. Download and extract the ZIP, then run in that directory:
 
 ```sh
 docker load -i demo-image.tar.gz
-HASKOKI_IMAGE=haskoki-demo:0.5.0.0
+# Use the tag docker load prints:
+HASKOKI_IMAGE=haskoki-demo:X.Y.Z.W
 ```
 
 Use the tested artifact, which is available after the demo checks finish.

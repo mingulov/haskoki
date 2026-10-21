@@ -341,7 +341,7 @@ and `PASS:` trailer from `scripts/test-consumers.sh`.
     "markers": ["Key pair generated", "ID:         0101"]},
   "source": {"sha": "<runner records the source revision>",
     "dirty": false},
-  "artifact": {"kind": "bundle", "haskoki_version": "0.5.0.0",
+  "artifact": {"kind": "bundle", "haskoki_version": "<runner records the version>",
     "bundle_sha256": "<runner records the tarball>",
     "image_id": null,
     "toolchain_record_sha256": "<runner records the record>"},
