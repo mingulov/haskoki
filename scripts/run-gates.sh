@@ -87,6 +87,8 @@ python3 scripts/check-actions-pinned.py --self-test
 python3 scripts/test-release-evidence.py
 # Release nm gate: the hook check refuses a hooked tree and fails closed.
 python3 scripts/test-release-nm-gate.py
+# Shell-helper config: the generated backend.toml names the real path.
+python3 scripts/test-shell-config.py
 # Ownership-matrix driver controls (fake binaries, no build).
 python3 scripts/test-ownership-matrix-controls.py
 # Client journeys: leg-table aggregate controls (build-free).
