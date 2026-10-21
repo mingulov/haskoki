@@ -156,6 +156,19 @@ exit 47
             self.assertIn('staging bundle via make-release.sh', result.stdout)
             self.assertIn('scripts/make-release.sh', (self.work / 'out/stage-bundle.log').read_text())
 
+    def test_builder_override_selects_custom_image(self):
+        result = self.driver('build', HASKOKI_IMAGE='custom-builder:test')
+        self.assertNotEqual(result.returncode, 0)
+        log = (self.work / 'out/stage-bundle.log').read_text()
+        self.assertIn('custom-builder:test scripts/make-release.sh', log)
+        self.assertNotIn('haskoki-dev:ghc-9.10.3', log)
+
+    def test_builder_defaults_to_canonical_image(self):
+        result = self.driver('build', HASKOKI_IMAGE='')
+        self.assertNotEqual(result.returncode, 0)
+        log = (self.work / 'out/stage-bundle.log').read_text()
+        self.assertIn('haskoki-dev:ghc-9.10.3 scripts/make-release.sh', log)
+
     def test_ambient_demo_settings_do_not_leak_into_fixture(self):
         # Ambient-environment regression: a caller exporting demo
         # settings (as the runbook does) must not change fixture
