@@ -15,8 +15,10 @@ published demo:
 HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:latest
 ```
 
-Keep that variable in your host terminal for the commands below. To run a
-particular release instead, substitute its versioned tag for `latest`.
+Keep that variable in your host terminal for the commands below. If you
+have an older copy cached, `docker pull "$HASKOKI_IMAGE"` refreshes it
+first. To run a particular release instead, substitute its versioned tag
+for `latest`.
 Each [release](https://github.com/mingulov/haskoki/releases) names its tag,
 source, and image digest, and ships a release manifest recording the exact
 source and digest. Trying an unpublished branch instead? See
