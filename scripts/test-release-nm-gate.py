@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "make-release.sh"
 OSSL_INC = Path("/opt/openssl-4.0.2/include")
 BUILDER_IMAGE = "haskoki-dev:ghc-9.10.3"
+DOCKER_TIMEOUT = 600
 
 PROBE_SO_C = "int nm_gate_probe_anchor;\n"
 PROBE_HOOKED_C = "int nm_gate_probe_anchor;\nint hsk_ossl4_test_probe;\n"
@@ -67,6 +68,28 @@ class NmGateTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("test-hook symbols", r.stdout)
 
+    def builder_image(self):
+        """Selected builder image; empty or missing selects the default,
+        matching the shell drivers' ${HASKOKI_IMAGE:-default}."""
+        return os.environ.get("HASKOKI_IMAGE") or BUILDER_IMAGE
+
+    def builder_probe_cmd(self, image=None):
+        image = image or self.builder_image()
+        return ["docker", "run", "--rm", "--network", "host", image,
+                "test", "-r", f"{OSSL_INC}/openssl/evp.h"]
+
+    def probe_builder_headers(self):
+        image = self.builder_image()
+        try:
+            r = subprocess.run(
+                self.builder_probe_cmd(image),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=DOCKER_TIMEOUT)
+        except subprocess.TimeoutExpired as e:
+            self.fail(f"builder header probe timed out: {e}")
+        self.assertEqual(r.returncode, 0,
+                         f"pinned OpenSSL 4 headers missing in builder {image}")
+
     def shim_compile_cmd(self, obj, define, inc=OSSL_INC):
         """Host cc when the pinned headers exist, else builder cc.
 
@@ -79,7 +102,7 @@ class NmGateTests(unittest.TestCase):
         if (inc / "openssl" / "evp.h").is_file():
             return (["cc", *flags, *define, "-c", "-o", str(self.work / obj),
                      str(REPO / "cbits" / "ossl4_ctx.c")], str(REPO))
-        image = os.environ.get("HASKOKI_IMAGE", BUILDER_IMAGE)
+        image = self.builder_image()
         if shutil.which("docker") is None:
             self.fail("pinned OpenSSL 4 headers missing "
                       "and no docker builder available")
@@ -92,12 +115,18 @@ class NmGateTests(unittest.TestCase):
                  "cc", *builder_flags, *define, "-c", "-o", f"/out/{obj}",
                  "cbits/ossl4_ctx.c"], str(REPO))
 
-    def compile_shim(self, obj, define):
-        cmd, cwd = self.shim_compile_cmd(obj, define)
+    def compile_shim(self, obj, define, inc=OSSL_INC):
+        # Same branch as shim_compile_cmd: without host headers the
+        # compile runs in the builder, so prove the pinned prefix
+        # exists there first. Without the probe cc would silently fall
+        # back to the image's system headers.
+        if not (inc / "openssl" / "evp.h").is_file():
+            self.probe_builder_headers()
+        cmd, cwd = self.shim_compile_cmd(obj, define, inc=inc)
         try:
             r = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, cwd=cwd, timeout=600)
+                text=True, cwd=cwd, timeout=DOCKER_TIMEOUT)
         except subprocess.TimeoutExpired as e:
             self.fail(f"shim compile timed out: {e}")
         self.assertEqual(r.returncode, 0, f"shim compile failed: {r.stdout}")
@@ -207,16 +236,82 @@ class NmGateTests(unittest.TestCase):
         bindir.mkdir()
         (bindir / "docker").write_text("#!/bin/sh\nexit 0\n")
         (bindir / "docker").chmod(0o755)
-        old_path, old_image = os.environ.get("PATH"), os.environ.get("HASKOKI_IMAGE")
+        for image in (None, ""):
+            with self.subTest(image=image):
+                old_path = os.environ.get("PATH")
+                old_image = os.environ.get("HASKOKI_IMAGE")
+                try:
+                    os.environ["PATH"] = str(bindir)
+                    if image is None:
+                        os.environ.pop("HASKOKI_IMAGE", None)
+                    else:
+                        os.environ["HASKOKI_IMAGE"] = image
+                    cmd, cwd = self.shim_compile_cmd(
+                        "prod.o", [], inc=self.work / "no-such-prefix")
+                finally:
+                    self.restore_env("PATH", old_path)
+                    self.restore_env("HASKOKI_IMAGE", old_image)
+                self.assertIn("haskoki-dev:ghc-9.10.3", cmd)
+
+    def test_builder_probe_cmd_uses_selected_image(self):
+        for image, want in (("custom-builder:test", "custom-builder:test"),
+                            ("", BUILDER_IMAGE), (None, BUILDER_IMAGE)):
+            with self.subTest(image=image):
+                old = os.environ.get("HASKOKI_IMAGE")
+                try:
+                    if image is None:
+                        os.environ.pop("HASKOKI_IMAGE", None)
+                    else:
+                        os.environ["HASKOKI_IMAGE"] = image
+                    cmd = self.builder_probe_cmd()
+                finally:
+                    self.restore_env("HASKOKI_IMAGE", old)
+                self.assertEqual(cmd[:6], ["docker", "run", "--rm",
+                                           "--network", "host", want])
+                self.assertEqual(cmd[6:], ["test", "-r",
+                                           f"{OSSL_INC}/openssl/evp.h"])
+
+    def test_builder_probe_refuses_image_without_pinned_headers(self):
+        bindir = self.work / "probe-fails"
+        bindir.mkdir()
+        fake = bindir / "docker"
+        fake.write_text("#!/bin/sh\nexit 1\n")
+        fake.chmod(0o755)
+        old_path = os.environ.get("PATH")
         try:
             os.environ["PATH"] = str(bindir)
-            os.environ.pop("HASKOKI_IMAGE", None)
-            cmd, cwd = self.shim_compile_cmd(
-                "prod.o", [], inc=self.work / "no-such-prefix")
+            with self.assertRaises(AssertionError) as ctx:
+                self.probe_builder_headers()
+        finally:
+            self.restore_env("PATH", old_path)
+        self.assertIn("missing in builder", str(ctx.exception))
+
+    def test_builder_plan_runs_probe_before_compile(self):
+        bindir = self.work / "probe-passes"
+        bindir.mkdir()
+        fake = bindir / "docker"
+        fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PROBE_LOG\"\nexit 0\n")
+        fake.chmod(0o755)
+        probe_log = self.work / "docker.log"
+        old_path = os.environ.get("PATH")
+        old_image = os.environ.get("HASKOKI_IMAGE")
+        old_log = os.environ.get("PROBE_LOG")
+        try:
+            os.environ["PATH"] = str(bindir)
+            os.environ["HASKOKI_IMAGE"] = "custom-builder:test"
+            os.environ["PROBE_LOG"] = str(probe_log)
+            self.compile_shim("prod.o", [], inc=self.work / "no-such-prefix")
         finally:
             self.restore_env("PATH", old_path)
             self.restore_env("HASKOKI_IMAGE", old_image)
-        self.assertIn("haskoki-dev:ghc-9.10.3", cmd)
+            self.restore_env("PROBE_LOG", old_log)
+        lines = probe_log.read_text().splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertIn("test -r", lines[0])
+        self.assertIn("/opt/openssl-4.0.2/include/openssl/evp.h", lines[0])
+        self.assertIn("cc -std=c11", lines[1])
+        self.assertIn("custom-builder:test", lines[0])
+        self.assertIn("custom-builder:test", lines[1])
 
     def test_shim_compile_fails_closed_without_headers_or_docker(self):
         bindir = self.work / "no-docker"
