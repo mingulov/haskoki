@@ -49,8 +49,15 @@ exit 47
                        'org.opencontainers.image.source': 'https://github.com/mingulov/haskoki',
                        'org.opencontainers.image.created': '2026-10-15T15:05:00+03:00'}
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}',
-                        FIXTURE_IMAGE=IMAGE, FIXTURE_LABELS=json.dumps(self.labels),
-                        HASKOKI_DEMO_IMAGE='fixture:owned', HASKOKI_DEMO_REVISION=SOURCE,
+                        FIXTURE_IMAGE=IMAGE, FIXTURE_LABELS=json.dumps(self.labels))
+        # The runbook exports demo settings (e.g. HASKOKI_DEMO_USE_STAGED)
+        # for the real run; the fixture must not inherit them, or the
+        # staged/build branch sees the caller's choice instead of the
+        # intended boundary (mirror test-release-evidence.py).
+        for name in [k for k in self.env if k.startswith("HASKOKI_DEMO_")]:
+            del self.env[name]
+        self.env.update(HASKOKI_DEMO_IMAGE='fixture:owned',
+                        HASKOKI_DEMO_REVISION=SOURCE,
                         HASKOKI_DEMO_TEST_OUT=str(self.work / 'out'))
         self.archive = self.work / 'demo-image.tar.gz'
         config = json.dumps({'os': 'linux', 'architecture': 'amd64',
@@ -148,6 +155,23 @@ exit 47
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('staging bundle via make-release.sh', result.stdout)
             self.assertIn('scripts/make-release.sh', (self.work / 'out/stage-bundle.log').read_text())
+
+    def test_ambient_demo_settings_do_not_leak_into_fixture(self):
+        # Ambient-environment regression: a caller exporting demo
+        # settings (as the runbook does) must not change fixture
+        # branches. Runs one hermetic leg in a polluted environment.
+        env = dict(os.environ,
+                   HASKOKI_DEMO_USE_STAGED='1',
+                   HASKOKI_DEMO_IDENTITY='bogus',
+                   HASKOKI_DEMO_ARCHIVE='bogus',
+                   HASKOKI_DEMO_REVISION='bogus',
+                   PYTHONDONTWRITEBYTECODE='1')
+        result = subprocess.run(
+            ['python3', str(Path(__file__).resolve()),
+             'ShardTests.test_default_and_build_still_stage_the_bundle'],
+            env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_failed_phase_removes_old_success_receipt(self):
         out = self.work / 'out'
