@@ -2,8 +2,8 @@
 
 You need Docker running on Linux amd64. No Haskell setup or hardware
 token is needed. The [README](../README.md#try-it-with-docker) runs the
-newest published demo; this guide uses the same commands and pins the
-exact v0.5.0.0 bytes it was written against in
+newest published demo; this guide uses the same commands. To run a
+particular release instead, pin its tag as shown in
 [Choose the image](#choose-the-image).
 
 ## Choose the image
@@ -15,17 +15,12 @@ published demo:
 HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:latest
 ```
 
-Keep that variable in your host terminal for the commands below. This guide
-was written against v0.5.0.0, published on October 19, 2026 from source
-`091a222`
-([release page](https://github.com/mingulov/haskoki/releases/tag/v0.5.0.0),
-image digest
-`sha256:2e0b73aacce0357fd8292608f1ac45cd8b81b6e3cf14c4dadba877c1fc801406`);
-substitute `HASKOKI_IMAGE=ghcr.io/mingulov/haskoki-demo:v0.5.0.0` to run
-those exact bytes instead.
-The [release manifest](https://github.com/mingulov/haskoki/releases/download/v0.5.0.0/release-manifest.json)
-records the exact source and digest. Trying an unpublished branch
-instead? See [Contributor builds](#contributor-builds).
+Keep that variable in your host terminal for the commands below. To run a
+particular release instead, substitute its versioned tag for `latest`.
+Each [release](https://github.com/mingulov/haskoki/releases) names its tag,
+source, and image digest, and ships a release manifest recording the exact
+source and digest. Trying an unpublished branch instead? See
+[Contributor builds](#contributor-builds).
 
 ## Run the demo and keep its output
 
