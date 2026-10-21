@@ -24,9 +24,10 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$PWD/out:/out" ghcr.io/mingulov/haskoki-demo:latest demo
 ```
 
-The `latest` tag always points at the newest published demo. For the exact
-qualified bytes behind this page's claims, substitute the versioned tag
-from the [releases page](https://github.com/mingulov/haskoki/releases).
+The `latest` tag always points at the newest published demo (`docker pull`
+refreshes a cached copy). For the exact qualified bytes behind this page's
+claims, substitute the versioned tag from the
+[releases page](https://github.com/mingulov/haskoki/releases).
 
 Docker downloads the image on the first run. The demo itself works offline:
 it generates keys, signs and verifies a message, checks a SHA-256 fingerprint,
