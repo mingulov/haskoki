@@ -35,6 +35,9 @@
 #                           release-bundle artifact lands there; default
 #                           unset: the driver builds it fresh via
 #                           make-release.sh in the toolchain container)
+#   HASKOKI_IMAGE         toolchain image for bundle staging and
+#                           builder-side scans
+#                           (default haskoki-dev:ghc-9.10.3)
 #
 # Exit status: 0 iff every leg holds; any deviation fails loudly.
 # Never pushes or tags anything beyond the local test tag.
@@ -65,6 +68,7 @@ VER=$(grep -m1 '^version:' haskoki.cabal | awk '{print $2}')
 [ -n "$VER" ] || fail "cannot parse version from haskoki.cabal"
 TAG="${HASKOKI_DEMO_IMAGE:-haskoki-demo:$VER}"
 STEP_TIMEOUT="${HASKOKI_DEMO_STEP_TIMEOUT:-7200}"
+BUILDER="${HASKOKI_IMAGE:-haskoki-dev:ghc-9.10.3}"
 
 if [ -n "${HASKOKI_DEMO_TEST_OUT:-}" ]; then
   OUT="$HASKOKI_DEMO_TEST_OUT"
@@ -144,10 +148,10 @@ if [ -n "${HASKOKI_DEMO_USE_STAGED:-}" ]; then
     || fail "staged bundle missing toolchain record: $STAGED_SRC"
 else
   note "staging bundle via make-release.sh"
-  docker inspect haskoki-dev:ghc-9.10.3 >/dev/null 2>&1 \
-    || fail "builder image missing (run: docker build -t haskoki-dev:ghc-9.10.3 .)"
+  docker inspect "$BUILDER" >/dev/null 2>&1 \
+    || fail "builder image missing (run: docker build -t $BUILDER .)"
   docker run --rm --network host -v "$PWD:/work" -w /work \
-    haskoki-dev:ghc-9.10.3 scripts/make-release.sh > "$OUT/stage-bundle.log" 2>&1 \
+    "$BUILDER" scripts/make-release.sh > "$OUT/stage-bundle.log" 2>&1 \
     || fail "bundle staging failed (see $OUT/stage-bundle.log)"
   tail -2 "$OUT/stage-bundle.log"
   [ -f "$STAGED_SRC/lib/libhaskoki.so" ] \
@@ -238,7 +242,7 @@ if [ "$PHASE" = build ]; then
   echo "PASS: test-demo-image.sh (build)"
   exit 0
 fi
-BUILDER_ID=$(docker inspect --format '{{.Id}}' haskoki-dev:ghc-9.10.3 2>/dev/null || echo unknown)
+BUILDER_ID=$(docker inspect --format '{{.Id}}' "$BUILDER" 2>/dev/null || echo unknown)
 echo "builder image id: $BUILDER_ID"
 
 # ---------------------------------------------------------------------------
@@ -725,7 +729,7 @@ if command -v objdump >/dev/null 2>&1; then
 else
   # Fallback: builder image carries binutils (read-only scan of the
   # extracted tree via bind mount; the demo image stays slim).
-  FLOOR=$(docker run --rm -v "$SCAN:/scan:ro" haskoki-dev:ghc-9.10.3 \
+  FLOOR=$(docker run --rm -v "$SCAN:/scan:ro" "$BUILDER" \
     sh -c '{ for f in /scan/haskoki-*/lib/*.so /scan/haskoki-*/lib/*.so.* /scan/haskoki-*/lib/ossl-modules/*.so /scan/haskoki-*/bin/haskoki-ctl /scan/proxy/pkcs11-proxy-ng /scan/proxy/*.so; do [ -f "$f" ] || continue; objdump -T "$f" 2>/dev/null | grep -o "GLIBC_[0-9.]*"; done; find /scan/p11c -name "*.so*" -type f | while IFS= read -r f; do objdump -T "$f" 2>/dev/null | grep -o "GLIBC_[0-9.]*"; done; } | sort -uV | tail -1')
 fi
 echo "measured floor: $FLOOR (want GLIBC_2.43)"
