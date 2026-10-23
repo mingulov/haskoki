@@ -6,6 +6,9 @@ newest published demo; this guide uses the same commands. To run a
 particular release instead, pin its tag as shown in
 [Choose the image](#choose-the-image).
 
+For a browser-based experiment, see [Firefox with a Haskoki client
+certificate](firefox-example.md), including its tested versions and acceptance checks.
+
 ## Choose the image
 
 Use the published image. The `latest` tag always points at the newest
