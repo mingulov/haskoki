@@ -116,8 +116,12 @@ versions, image inspection records, NSS inventories, service/browser logs,
 `pkcs11-spy.log`, and the fresh Firefox profile(s). Tests also retain
 `report.json`, authenticated and native manager screenshots on success, and a desktop screenshot
 on browser failure when available. `state.json` names the owned containers and
-records the requested image. The spy contains the public fixture PIN and
-signing inputs; use only disposable data. The demo store is not encrypted at
+records the requested token image reference and immutable IDs used to launch
+both containers. `browser-image.iid` captures this run's build result directly;
+the image inspection receipts describe the immutable images used for launch,
+even if another run retags the shared browser or candidate token tag. The spy
+contains the public fixture PIN and signing inputs; use only disposable data.
+The demo store is not encrypted at
 rest. Nothing changes host trust or a personal Firefox profile.
 
 On 2026-10-23 the companion image used Firefox ESR `153.5.1esr-1~deb13u1`, NSS
@@ -135,7 +139,7 @@ rows, and a fresh Firefox process/profile receiving nginx 400 with `NONE` after
 the token stopped. NSS internal private-key inventories were empty before and
 after authentication. Manual PIN entry and certificate selection also reached
 the accepted page; loopback noVNC HTTP, WebSocket and RFB checks passed. The
-focused Python checks passed 19 tests, and the existing demo-shard harness
+focused Python checks passed 22 tests, and the existing demo-shard harness
 passed 18 tests.
 
 Qualification applies to the recorded image/module/client bytes and versions.

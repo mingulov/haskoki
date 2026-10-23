@@ -99,9 +99,13 @@ def start(args):
     state={'run_id':run_id,'out':str(out),'containers':[], 'port':args.port,'token':token,'browser':browser,'token_image':args.token_image}
     write(out/'state.json',state)
     try:
-        build=docker('build','--platform','linux/amd64','-t',BROWSER_IMAGE,HERE,check=False,timeout=1800)
+        iidfile=out/'browser-image.iid'
+        build=docker('build','--platform','linux/amd64','--iidfile',iidfile,'-t',BROWSER_IMAGE,HERE,check=False,timeout=1800)
         (out/'build.log').write_text(build.stdout+build.stderr)
         if build.returncode: raise RuntimeError('browser image build failed; see '+str(out/'build.log'))
+        browser_image_id=iidfile.read_text().strip()
+        if not re.fullmatch(r'sha256:[a-f0-9]{64}',browser_image_id):
+            raise ValueError('browser build did not record a valid immutable image ID')
         token_info=docker('image','inspect',args.token_image,check=False)
         if token_info.returncode:
             pulled=docker('pull',args.token_image,check=False,timeout=1800)
@@ -109,18 +113,23 @@ def start(args):
             if pulled.returncode: raise RuntimeError('token image pull failed; see '+str(out/'token-pull.log'))
             token_info=docker('image','inspect',args.token_image)
         (out/'token-image.json').write_text(token_info.stdout)
-        (out/'browser-image.json').write_text(docker('image','inspect',BROWSER_IMAGE).stdout)
+        token_image_id=json.loads(token_info.stdout)[0].get('Id','')
+        if not isinstance(token_image_id,str) or not re.fullmatch(r'sha256:[a-f0-9]{64}',token_image_id):
+            raise ValueError('token inspection did not record a valid immutable image ID')
+        (out/'browser-image.json').write_text(docker('image','inspect',browser_image_id).stdout)
+        state.update(browser_image_id=browser_image_id,token_image_id=token_image_id)
+        write(out/'state.json',state)
         (out/'host-versions.txt').write_text(sys.version+'\n'+docker('version').stdout)
         uid=f'{os.getuid()}:{os.getgid()}'
         common=['-e','HASKOKI_TOKEN_IMAGE='+args.token_image,'--network','none','--user',uid,'--label',LABEL+'='+run_id,'--label',LABEL+'.out='+str(out),'-v',str(out)+':/out','-v',str(HERE)+':/example:ro']
         state['containers'].append(token); write(out/'state.json',state)
-        docker('run','-d','--platform','linux/amd64','--name',token,*common,'--entrypoint','/bin/sh',args.token_image,'/example/token.sh')
+        docker('run','-d','--platform','linux/amd64','--name',token,*common,'--entrypoint','/bin/sh',token_image_id,'/example/token.sh')
         wait_file(out,'token.ready',token)
         state['containers'].append(browser); write(out/'state.json',state)
         # Browser has its own network namespace; only noVNC reaches the host.
         browser_common=[x for x in common]
         del browser_common[2:4]
-        docker('run','-d','--platform','linux/amd64','--name',browser,*browser_common,'--shm-size','512m','-p',f'127.0.0.1:{args.port}:6080',BROWSER_IMAGE,'python3','/example/browser.py','test' if args.command=='test' else 'start')
+        docker('run','-d','--platform','linux/amd64','--name',browser,*browser_common,'--shm-size','512m','-p',f'127.0.0.1:{args.port}:6080',browser_image_id,'python3','/example/browser.py','test' if args.command=='test' else 'start')
         wait_file(out,'browser.ready',browser)
         if args.command=='test':
             wait_file(out,'phase-stop-token',browser,180)
