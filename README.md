@@ -59,6 +59,9 @@ test-vector collections are an optional download. The tested platform is
 and ARM emulation have not been qualified. Image measurements and contents
 are in [Try it](docs/try-it.md#image-contents-and-size).
 
+Try the [Firefox client-certificate experiment](docs/firefox-example.md) for a
+disposable browser desktop and explicit real-browser acceptance checks.
+
 ## Where it came from
 
 Haskoki explores a development idea: describe a token's rules in Haskell,
