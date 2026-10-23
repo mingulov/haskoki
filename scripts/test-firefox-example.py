@@ -25,6 +25,24 @@ from pathlib import Path
 with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')
 if os.environ.get('FAKE_MISSING') and sys.argv[1]=='inspect':
  print('error: no such object: '+sys.argv[-1],file=sys.stderr);sys.exit(1)
+browser_id='sha256:'+'a'*64
+token_id='sha256:'+'e'*64
+tags=Path(os.environ['CALLS']).with_name('tags.json')
+images=json.loads(tags.read_text()) if tags.exists() else {'haskoki-firefox-example:local':browser_id}
+if sys.argv[1]=='build':
+ images['haskoki-firefox-example:local']=browser_id
+ if '--iidfile' in sys.argv and os.environ.get('FAKE_IIDFILE')!='missing':
+  Path(sys.argv[sys.argv.index('--iidfile')+1]).write_text(os.environ.get('FAKE_IIDFILE',browser_id)+'\\n')
+ if os.environ.get('FAKE_RETAG_BROWSER')=='after-build': images['haskoki-firefox-example:local']='sha256:'+'b'*64
+ tags.write_text(json.dumps(images));sys.exit(0)
+if sys.argv[1:3]==['image','inspect']:
+ ref=sys.argv[-1]
+ image_id=ref if ref.startswith('sha256:') else images.get(ref,token_id)
+ print(json.dumps([{'Id':image_id,'RepoTags':[ref] if not ref.startswith('sha256:') else [],'RepoDigests':[]}]))
+ if ref=='haskoki-firefox-example:local' or ref==browser_id:
+  if os.environ.get('FAKE_RETAG_BROWSER')=='after-inspect': images['haskoki-firefox-example:local']='sha256:'+'b'*64
+ elif os.environ.get('FAKE_RETAG_TOKEN'): images[ref]='sha256:'+'f'*64
+ tags.write_text(json.dumps(images));sys.exit(0)
 if os.environ.get('FAKE_SUCCESS'):
  out=Path(os.environ['FAKE_OUT']); state=json.loads((out/'state.json').read_text())
  if sys.argv[1]=='inspect' and '-f' in sys.argv:
@@ -36,6 +54,8 @@ if os.environ.get('FAKE_SUCCESS'):
   foreign=os.environ.get('FAKE_FOREIGN_TOKEN') if sys.argv[-1].endswith('-token') and (out/'phase-stop-token').exists() else ''
   print(json.dumps([{'Id':('c'*64 if sys.argv[-1].endswith('-browser') else 'd'*64),'Config': {'Labels': {'org.haskoki.firefox.run':'foreign' if foreign=='labels' else state['run_id'], 'org.haskoki.firefox.run.out':str(out)}},'Mounts':[{'Source':'/foreign' if foreign=='mount' else str(out),'Destination':'/out'}]}]))
  if sys.argv[1] == 'run':
+  ref=sys.argv[-2] if sys.argv[-1].endswith('token.sh') else sys.argv[-4]
+  with (out/'fake-launched-images.jsonl').open('a') as f: f.write(json.dumps({'reference':ref,'Id':images.get(ref,ref)})+'\\n')
   (out/('token.ready' if sys.argv[-1].endswith('token.sh') else 'browser.ready')).touch()
   if os.environ.get('FAKE_TEST') and sys.argv[-1]=='test':
    (out/'phase-stop-token').touch();(out/'report.json').write_text(json.dumps({'passed':True}))
@@ -164,14 +184,65 @@ sys.exit(1)
         self.assertTrue(json.loads((out/'state.json').read_text())['stopped'])
         self.assertFalse(any(x[0]=='rm' for x in self.recorded()))
 
-    def test_candidate_image_override_is_recorded_and_used(self):
+    def test_retagged_candidate_launches_inspected_token_id(self):
         out=self.root/'candidate'
-        self.env.update(FAKE_SUCCESS='1',FAKE_OUT=str(out.resolve()))
+        self.env.update(FAKE_SUCCESS='1',FAKE_OUT=str(out.resolve()),FAKE_RETAG_TOKEN='1')
         result=self.run_demo('start','--out',str(out),'--token-image','example/haskoki:qualified-candidate')
         self.assertEqual(result.returncode,0,result.stderr)
         token_run=next(x for x in self.recorded() if x[0]=='run')
-        self.assertIn('example/haskoki:qualified-candidate',token_run)
-        self.assertEqual(json.loads((out/'state.json').read_text())['token_image'],'example/haskoki:qualified-candidate')
+        self.assertEqual(token_run[-2],'sha256:'+'e'*64)
+        state=json.loads((out/'state.json').read_text())
+        self.assertEqual(state['token_image'],'example/haskoki:qualified-candidate')
+        self.assertEqual(state['token_image_id'],'sha256:'+'e'*64)
+        self.assertEqual(json.loads((out/'token-image.json').read_text())[0]['Id'],'sha256:'+'e'*64)
+        launched=json.loads((out/'fake-launched-images.jsonl').read_text().splitlines()[0])
+        self.assertEqual(launched['Id'],'sha256:'+'e'*64)
+
+    def test_retagged_browser_launches_this_builds_immutable_id(self):
+        for moment in ('after-build','after-inspect'):
+            with self.subTest(moment=moment):
+                out=self.root/moment
+                self.env.update(FAKE_SUCCESS='1',FAKE_OUT=str(out.resolve()),FAKE_RETAG_BROWSER=moment)
+                result=self.run_demo('start','--out',str(out))
+                self.assertEqual(result.returncode,0,result.stderr)
+                calls=self.recorded()
+                browser_run=[x for x in calls if x[0]=='run'][1]
+                self.assertEqual(browser_run[-4],'sha256:'+'a'*64)
+                build=next(x for x in calls if x[0]=='build')
+                iidfile=Path(build[build.index('--iidfile')+1])
+                self.assertEqual(iidfile.parent,out)
+                self.assertEqual(iidfile.read_text().strip(),'sha256:'+'a'*64)
+                self.assertIn(['image','inspect','sha256:'+'a'*64],calls)
+                self.assertEqual(json.loads((out/'browser-image.json').read_text())[0]['Id'],'sha256:'+'a'*64)
+                self.assertEqual(json.loads((out/'state.json').read_text())['browser_image_id'],'sha256:'+'a'*64)
+                launched=json.loads((out/'fake-launched-images.jsonl').read_text().splitlines()[1])
+                self.assertEqual(launched['Id'],'sha256:'+'a'*64)
+                self.calls.unlink()
+
+    def test_missing_or_invalid_build_iid_fails_with_retained_artifacts(self):
+        for value in ('missing','','haskoki-firefox-example:local','sha256:1234'):
+            with self.subTest(value=value):
+                out=self.root/('invalid-iid-'+str(len(value)))
+                self.env.update(FAKE_SUCCESS='1',FAKE_TEST='1',FAKE_OUT=str(out.resolve()),FAKE_IIDFILE=value)
+                result=self.run_demo('test','--out',str(out))
+                self.assertNotEqual(result.returncode,0)
+                self.assertFalse(any(x[0]=='run' for x in self.recorded()))
+                self.assertTrue((out/'build.log').exists())
+                report=json.loads((out/'report.json').read_text())
+                self.assertFalse(report['passed'])
+                self.assertEqual(report['stage'],'launcher')
+                state=json.loads((out/'state.json').read_text())
+                self.assertTrue(state['stopped'])
+                self.assertEqual(state['containers'],[])
+                self.calls.unlink()
+
+    def test_stop_accepts_legacy_state_without_image_ids(self):
+        out=self.root/'legacy';out.mkdir()
+        (out/'state.json').write_text(json.dumps({'run_id':'a'*32,'out':str(out.resolve()),'containers':['haskoki-firefox-old-token'],'port':6080}))
+        self.env.update(FAKE_SUCCESS='1',FAKE_OUT=str(out.resolve()))
+        result=self.run_demo('stop','--out',str(out))
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual([x for x in self.recorded() if x[0]=='rm'],[['rm','-f','d'*64]])
 
     def test_failed_acceptance_is_reported_before_phase_timeout(self):
         spec=importlib.util.spec_from_file_location('firefox_demo',SCRIPT)
