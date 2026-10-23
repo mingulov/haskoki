@@ -32,29 +32,33 @@ def read_state(out):
         raise ValueError('invalid container state')
     return state
 
+def inspect_owned(out, state, name, missing_ok=False):
+    inspected=docker('inspect',name,check=False)
+    if inspected.returncode:
+        if missing_ok and re.search(r'\bno such (?:object|container)\b',inspected.stderr,re.I):
+            return None
+        raise RuntimeError(inspected.stderr or 'container inspection failed')
+    info=json.loads(inspected.stdout)[0]
+    labels=info.get('Config',{}).get('Labels',{}) or {}
+    mounts=info.get('Mounts',[])
+    if labels.get(LABEL)!=state['run_id'] or labels.get(LABEL+'.out')!=str(out) or not any(m.get('Source')==str(out) and m.get('Destination')=='/out' for m in mounts):
+        raise ValueError('container ownership validation failed: '+name)
+    container_id=info.get('Id','')
+    if not isinstance(container_id,str) or not re.fullmatch('[a-f0-9]{64}',container_id):
+        raise ValueError('container ownership has no immutable container ID: '+name)
+    return info
+
 def remove_owned(out, state):
     # Validate the complete set before removing any. Names from state are untrusted.
-    owned = []
+    owned=[]
     for name in state['containers']:
-        inspected = docker('inspect', name, check=False)
-        if inspected.returncode:
-            if re.search(r'\bno such (?:object|container)\b',inspected.stderr,re.I):
-                continue
-            raise RuntimeError(inspected.stderr or 'container inspection failed')
-        info = json.loads(inspected.stdout)[0]
-        labels = info.get('Config',{}).get('Labels',{}) or {}
-        mounts = info.get('Mounts',[])
-        if labels.get(LABEL) != state['run_id'] or labels.get(LABEL+'.out') != str(out) or not any(m.get('Source') == str(out) and m.get('Destination') == '/out' for m in mounts):
-            raise ValueError('container ownership validation failed: '+name)
-        container_id=info.get('Id','')
-        if not isinstance(container_id,str) or not re.fullmatch('[a-f0-9]{64}',container_id):
-            raise ValueError('container ownership has no immutable container ID: '+name)
-        owned.append((name,container_id))
+        info=inspect_owned(out,state,name,missing_ok=True)
+        if info is not None: owned.append((name,info['Id']))
     for name,container_id in owned:
-        logs = docker('logs', container_id, check=False)
+        logs=docker('logs',container_id,check=False)
         (out/(name+'.log')).write_text(logs.stdout+logs.stderr)
         docker('rm','-f',container_id)
-    state['stopped'] = True
+    state['stopped']=True
     write(out/'state.json',state)
 
 def port(value):
@@ -64,17 +68,22 @@ def port(value):
     except ValueError: pass
     raise argparse.ArgumentTypeError('port must be between 1 and 65535')
 
-def wait_file(out, name, container, timeout=120):
+def check_running(container):
+    status=docker('inspect','-f','{{.State.Running}}',container)
+    if status.stdout.strip()!='true':
+        logs=docker('logs',container,check=False)
+        raise RuntimeError('container exited: '+logs.stdout+logs.stderr)
+
+def wait_file(out, name, container, timeout=120, live=True):
     end=time.monotonic()+timeout
     while time.monotonic()<end:
-        if (out/name).exists(): return
+        if (out/name).exists():
+            if live: check_running(container)
+            return
         if (out/'test.done').exists():
             report=json.loads((out/'report.json').read_text())
             raise RuntimeError('browser acceptance failed: '+report.get('error','unknown failure'))
-        status=docker('inspect','-f','{{.State.Running}}',container)
-        if status.stdout.strip() != 'true':
-            logs=docker('logs',container,check=False)
-            raise RuntimeError('container exited: '+logs.stdout+logs.stderr)
+        check_running(container)
         time.sleep(.5)
     raise TimeoutError('waiting for '+name)
 
@@ -115,14 +124,17 @@ def start(args):
         wait_file(out,'browser.ready',browser)
         if args.command=='test':
             wait_file(out,'phase-stop-token',browser,180)
-            docker('stop','-t','10',token)
+            token_info=inspect_owned(out,state,token)
+            docker('stop','-t','10',token_info['Id'])
             (out/'token.stopped').touch()
-            wait_file(out,'test.done',browser,180)
+            wait_file(out,'test.done',browser,180,live=False)
             report=json.loads((out/'report.json').read_text())
             if not report.get('passed'): raise RuntimeError('Firefox acceptance failed; see '+str(out/'report.json'))
             print('PASS: real Firefox acceptance; '+str(out/'report.json'))
             remove_owned(out,state)
         else:
+            token_info=inspect_owned(out,state,token)
+            check_running(token_info['Id'])
             print(f'Firefox desktop: http://127.0.0.1:{args.port}/vnc.html?autoconnect=1&resize=scale\nDemo PIN: 1234\nArtifacts: {out}')
             print('Stop: '+shlex.join([sys.executable,str(HERE/'demo.py'),'stop','--out',str(out)]))
     except BaseException as error:

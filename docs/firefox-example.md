@@ -135,7 +135,7 @@ rows, and a fresh Firefox process/profile receiving nginx 400 with `NONE` after
 the token stopped. NSS internal private-key inventories were empty before and
 after authentication. Manual PIN entry and certificate selection also reached
 the accepted page; loopback noVNC HTTP, WebSocket and RFB checks passed. The
-focused Python checks passed 13 tests, and the existing demo-shard harness
+focused Python checks passed 19 tests, and the existing demo-shard harness
 passed 18 tests.
 
 Qualification applies to the recorded image/module/client bytes and versions.
