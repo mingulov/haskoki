@@ -27,9 +27,19 @@ if os.environ.get('FAKE_MISSING') and sys.argv[1]=='inspect':
  print('error: no such object: '+sys.argv[-1],file=sys.stderr);sys.exit(1)
 if os.environ.get('FAKE_SUCCESS'):
  out=Path(os.environ['FAKE_OUT']); state=json.loads((out/'state.json').read_text())
+ if sys.argv[1]=='inspect' and '-f' in sys.argv:
+  token=sys.argv[-1].endswith('-token') or sys.argv[-1]=='d'*64
+  dead_token=token and (os.environ.get('FAKE_DEAD_TOKEN_AT')=='token-ready' or (os.environ.get('FAKE_DEAD_TOKEN_AT')=='browser-ready' and (out/'browser.ready').exists()))
+  dead_browser=not token and (os.environ.get('FAKE_DEAD_BROWSER') or (os.environ.get('FAKE_DONE_BROWSER_EXITED') and (out/'test.done').exists()))
+  print('false' if dead_token or dead_browser else 'true');sys.exit(0)
  if sys.argv[1] == 'inspect':
-  print(json.dumps([{'Id':('c'*64 if sys.argv[-1].endswith('-browser') else 'd'*64),'Config': {'Labels': {'org.haskoki.firefox.run':state['run_id'], 'org.haskoki.firefox.run.out':str(out)}},'Mounts':[{'Source':str(out),'Destination':'/out'}]}]))
- if sys.argv[1] == 'run': (out/('token.ready' if sys.argv[-1].endswith('token.sh') else 'browser.ready')).touch()
+  foreign=os.environ.get('FAKE_FOREIGN_TOKEN') if sys.argv[-1].endswith('-token') and (out/'phase-stop-token').exists() else ''
+  print(json.dumps([{'Id':('c'*64 if sys.argv[-1].endswith('-browser') else 'd'*64),'Config': {'Labels': {'org.haskoki.firefox.run':'foreign' if foreign=='labels' else state['run_id'], 'org.haskoki.firefox.run.out':str(out)}},'Mounts':[{'Source':'/foreign' if foreign=='mount' else str(out),'Destination':'/out'}]}]))
+ if sys.argv[1] == 'run':
+  (out/('token.ready' if sys.argv[-1].endswith('token.sh') else 'browser.ready')).touch()
+  if os.environ.get('FAKE_TEST') and sys.argv[-1]=='test':
+   (out/'phase-stop-token').touch();(out/'report.json').write_text(json.dumps({'passed':True}))
+ if sys.argv[1]=='stop': (out/'test.done').touch()
  sys.exit(0)
 if sys.argv[1] == 'inspect':
  print(json.dumps([{'Config': {'Labels': {'org.haskoki.firefox.run': 'foreign'}}}]))
@@ -93,6 +103,57 @@ sys.exit(1)
         self.assertTrue(json.loads((out/'state.json').read_text())['stopped'])
         removed=[x for x in self.recorded() if x[0]=='rm']
         self.assertEqual(removed,[['rm','-f','d'*64],['rm','-f','c'*64]])
+
+    def test_negative_control_stops_validated_immutable_token_id(self):
+        out=self.root/'test-stop'
+        self.env.update(FAKE_SUCCESS='1',FAKE_TEST='1',FAKE_OUT=str(out.resolve()))
+        result=self.run_demo('test','--out',str(out))
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual([c for c in self.recorded() if c[0]=='stop'],[['stop','-t','10','d'*64]])
+
+    def test_negative_control_refuses_replaced_token_labels_or_mount(self):
+        for mismatch in ('labels','mount'):
+            with self.subTest(mismatch=mismatch):
+                out=self.root/mismatch
+                self.env.update(FAKE_SUCCESS='1',FAKE_TEST='1',FAKE_OUT=str(out.resolve()),FAKE_FOREIGN_TOKEN=mismatch)
+                result=self.run_demo('test','--out',str(out))
+                self.assertNotEqual(result.returncode,0,result.stderr)
+                self.assertIn('ownership',result.stderr)
+                self.assertFalse(any(c[0]=='stop' for c in self.recorded()))
+                self.calls.unlink()
+
+    def test_token_ready_marker_requires_live_service(self):
+        out=self.root/'dead-token'
+        self.env.update(FAKE_SUCCESS='1',FAKE_OUT=str(out.resolve()),FAKE_DEAD_TOKEN_AT='token-ready')
+        result=self.run_demo('start','--out',str(out))
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('container exited',result.stderr)
+        self.assertNotIn('Firefox desktop:',result.stdout)
+        self.assertEqual(len([c for c in self.recorded() if c[0]=='run']),1)
+
+    def test_interactive_success_rechecks_token_after_browser_ready(self):
+        out=self.root/'token-dies-while-browser-starts'
+        self.env.update(FAKE_SUCCESS='1',FAKE_OUT=str(out.resolve()),FAKE_DEAD_TOKEN_AT='browser-ready')
+        result=self.run_demo('start','--out',str(out))
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('container exited',result.stderr)
+        self.assertNotIn('Firefox desktop:',result.stdout)
+        self.assertEqual(len([c for c in self.recorded() if c[0]=='run']),2)
+
+    def test_browser_ready_marker_requires_live_service(self):
+        out=self.root/'dead-browser'
+        self.env.update(FAKE_SUCCESS='1',FAKE_OUT=str(out.resolve()),FAKE_DEAD_BROWSER='1')
+        result=self.run_demo('start','--out',str(out))
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('container exited',result.stderr)
+        self.assertNotIn('Firefox desktop:',result.stdout)
+
+    def test_terminal_test_receipt_may_outlive_browser(self):
+        out=self.root/'completed-browser'
+        self.env.update(FAKE_SUCCESS='1',FAKE_TEST='1',FAKE_OUT=str(out.resolve()),FAKE_DONE_BROWSER_EXITED='1')
+        result=self.run_demo('test','--out',str(out))
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertTrue(json.loads((out/'report.json').read_text())['passed'])
 
     def test_repeat_stop_accepts_actual_lowercase_missing_container_error(self):
         out=self.root/'missing';out.mkdir()
