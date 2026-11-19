@@ -1311,6 +1311,9 @@ def self_test():
         with redirect_stdout(buf):
             rc = scan_log(root / "absent.log")
         expect("scan-log-missing-fails-closed", rc == 1, buf.getvalue())
+        with redirect_stdout(io.StringIO()):
+            rc = main(["--scan-log", ""])
+        expect("scan-log-empty-path-fails-closed", rc == 1)
 
     if fails:
         print(f"test-execution self-test: FAIL ({', '.join(fails)})")
@@ -1355,7 +1358,7 @@ def main(argv=None):
             return 1
         return join_suite(root, inv, args.suite, args.list_tests,
                           args.result, args.out)
-    if args.scan_log:
+    if args.scan_log is not None:
         return scan_log(args.scan_log)
     if args.collect:
         if not args.build_root or not args.dir or not args.result:
