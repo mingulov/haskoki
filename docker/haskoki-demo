@@ -60,7 +60,7 @@ Commands:
             encrypt/decrypt (RSA-OAEP SHA256) of fixed PUBLIC fixtures,
             plus a pinned SHA-256 digest anchor. Human summary plus a
             JSON report under /out.
-  check     run pkcs11-check v0.2.3 (doctor gate, then the test lane)
+  check     run pkcs11-check v0.3.0 (doctor gate, then the test lane)
             against the bundle directly or via the loopback proxy shim.
             Exit 0 only on runs with zero findings; any finding lists
             separately and exits 1. Smoke/full profiles are FROZEN (R4).

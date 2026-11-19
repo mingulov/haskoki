@@ -432,7 +432,7 @@ def _quote_tracking_agrees(raw: str) -> bool:
     the naive comment strip desyncs on this line — the stripped
     `code` cannot be trusted — so the line is non-subset.
     Balanced embedded pairs (`!= 'true'`, `hashFiles('...')`,
-    `|| 'v0.2.1'`) toggle the naive tracker twice and cut
+    `|| 'v0.3.0'`) toggle the naive tracker twice and cut
     nothing, so both trackers agree and the line stays admitted:
     they are explicitly supported. (The naive strip itself is
     unchanged: Dockerfile shell text NEEDS naive quote handling,

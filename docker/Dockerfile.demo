@@ -22,7 +22,7 @@
 # Stages: proxy (pinned Rust recipe from
 # scripts/test-proxy-parity.sh, PROXY_COMMIT default = the qualified
 # v0.2.2 commit SHA); checker
-# (pkcs11-check v0.2.3 + pkcs11-tool); runtime (slim: staged bundle
+# (pkcs11-check v0.3.0 + pkcs11-tool); runtime (slim: staged bundle
 # tree + proxy binaries + checker + entrypoint ONLY, no toolchains).
 #
 # Checker profiles are FROZEN (R4); the compare parity subset is FROZEN
@@ -123,7 +123,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && echo "proxy static checks: daemon runs, shim exports discovery surface"
 
 # ---------------------------------------------------------------------------
-# Stage: checker. pkcs11-check v0.2.3 (venv) + pkcs11-tool (opensc).
+# Stage: checker. pkcs11-check v0.3.0 (venv) + pkcs11-tool (opensc).
 # The venv installs from the committed hash lock
 # (docker/checker-requirements.txt, compiled from
 # docker/checker-requirements.in) with `pip install
@@ -155,9 +155,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
          --only-binary=:all: \
          -r /tmp/checker-requirements.txt \
     && cp /tmp/checker-requirements.txt /opt/p11c/requirements.txt \
-    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.3$' \
+    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.3\.0$' \
     && /opt/p11c/bin/pip freeze > /opt/p11c/freeze.txt \
-    && { echo "pkcs11-check = 0.2.3 (PyPI pin)"; \
+    && { echo "pkcs11-check = 0.3.0 (PyPI pin)"; \
          echo -n "python3 = "; python3 --version; \
          echo -n "opensc = "; dpkg-query -W -f='${Version}' opensc; echo; \
        } > /opt/p11c/versions.txt \
@@ -232,7 +232,7 @@ RUN chmod +x /usr/local/bin/haskoki-demo /usr/local/bin/haskoki-shell \
     && SO="$ART/lib/libhaskoki.so" \
     && ldd "$SO" > /tmp/ldd-so.txt 2>&1 \
     && ! grep -q "not found" /tmp/ldd-so.txt \
-    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.2\.3$' \
+    && /opt/p11c/bin/pkcs11-check version | grep -q 'pkcs11-check 0\.3\.0$' \
     && command -v pkcs11-tool \
     && command -v p11-kit \
     && dpkg-query -W opensc p11-kit p11-kit-modules python3 > /opt/haskoki/image-tools.txt \

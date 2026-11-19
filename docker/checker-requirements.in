@@ -1,9 +1,9 @@
-# pkcs11-check oracle pin (qualified 0.2.3, FINAL-34).
+# pkcs11-check oracle pin (qualified 0.3.0, FINAL-34).
 # Compiled: pip-compile --generate-hashes docker/checker-requirements.in
 # Transitive pins frozen to the last shipped image set
 # (docs/dependency-inventory.md) so the lock changes enforcement only,
 # not bytes: hypothesis/iniconfig/typer held below current PyPI tip.
-pkcs11-check==0.2.3
+pkcs11-check==0.3.0
 hypothesis==6.168.4
 iniconfig==2.3.0
 typer==0.27.2

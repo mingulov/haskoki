@@ -5,13 +5,13 @@
 # with: pip-compile --generate-hashes --no-header --no-annotate
 #   --output-file=docker/checker-requirements.txt
 #   docker/checker-requirements.in
-# (pip-tools 7.6.1, 2026-10-07). Re-compile after any reviewed
+# (pip-tools 7.6.1, 2026-11-19). Re-compile after any reviewed
 # requalification of the checker pin; the Dockerfile checker stage
 # installs with `pip install --require-hashes --only-binary=:all: -r`
 # and fails closed on any float or hash mismatch — --only-binary
 # additionally refuses sdist-only resolution, whose isolated-build
 # deps (--require-hashes does not cover them) would otherwise run
-# unbound. Qualified checker: 0.2.3.
+# unbound. Qualified checker: 0.3.0.
 annotated-doc==0.0.5 \
     --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101 \
     --hash=sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb
@@ -283,9 +283,9 @@ mdurl==0.1.2 \
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
-pkcs11-check==0.2.3 \
-    --hash=sha256:58ac3451ae0dba207a48affa460309e4024c2ec7aefb04ef73062f420fdcffec \
-    --hash=sha256:694edf45fd634bddce16329ece68687870f9434ba815bd5fef90befa109bb412
+pkcs11-check==0.3.0 \
+    --hash=sha256:bc3b77b527537977c9f37a2eea34cf048b70a3f0da3512ca564ce079b3a064bd \
+    --hash=sha256:e1232481f0cf99f262a37cbed750ba67f82748592a465f4189b4613780ff2194
 pluggy==1.6.0 \
     --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3 \
     --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746

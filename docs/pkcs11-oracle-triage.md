@@ -24,7 +24,7 @@ The easiest route is the image's `check` command in
 [Try Haskoki](try-it.md#check-the-token). For a native reproduction, first
 install the bundle in the [developer environment](toolchain.md). Install
 the checker using the **Checkout framework** and `uv sync` steps in
-[CI](../.github/workflows/ci.yml), whose default framework ref is `v0.2.1`.
+[CI](../.github/workflows/ci.yml), whose default framework ref is `v0.3.0`.
 Then run from the repository root with that environment:
 
 ```sh
