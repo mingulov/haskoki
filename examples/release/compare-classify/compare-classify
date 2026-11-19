@@ -34,6 +34,7 @@ SELF=$(dirname "$0")
 DATA=${HASKOKI_COMPARE_CLASSIFY_DATA:-$SELF}
 SUBSET="$DATA/frozen-subset.tsv"
 SHARED="$DATA/frozen-shared.txt"
+FLAKY="$DATA/frozen-flaky.txt"
 
 usage() {
   cat <<'EOF'
@@ -46,7 +47,8 @@ Usage:
 compare`. Raw files are never modified; classification.txt and
 classification.json are written beside them.
 
-Exit: 0 frozen set reproduced exactly (65 known + shared 49/49,
+Exit: 0 frozen set reproduced exactly (65 known + shared 49/49, plus
+any byte-exact frozen-flaky.txt lines),
 zero unexpected/direct-only/flaky/missing) / 1 drift / 2 usage
 or infrastructure failure.
 EOF
@@ -64,13 +66,14 @@ RUN=$1
 [ -f "$RUN/shared-findings.txt" ] || fail "no shared-findings.txt file in $RUN"
 [ -f "$SUBSET" ] || fail "missing frozen data: $SUBSET"
 [ -f "$SHARED" ] || fail "missing frozen data: $SHARED"
+[ -f "$FLAKY" ] || fail "missing frozen data: $FLAKY"
 command -v python3 >/dev/null 2>&1 || fail "python3 missing"
 
-python3 - "$RUN" "$SUBSET" "$SHARED" <<'PY'
+python3 - "$RUN" "$SUBSET" "$SHARED" "$FLAKY" <<'PY'
 import json, sys
 from collections import Counter
 
-run, subset_path, shared_path = sys.argv[1:4]
+run, subset_path, shared_path, flaky_path = sys.argv[1:5]
 
 # v0.5 re-freeze: family G-inversion retired (all 22 rows converged when
 # the provider fixes landed: stale-handle 0x60 and mechanism-parameter
@@ -153,14 +156,20 @@ if len(want_shared) != 49:
           % len(want_shared))
     sys.exit(2)
 
+flaky_exact = set(l for l in read_lines(flaky_path)
+                  if l and not l.startswith("#"))
+
 got_diff = read_lines(run + "/diff.txt")
 got_shared = read_lines(run + "/shared-findings.txt")
 
-known, direct_only, flaky, unexpected = [], [], [], []
+known, direct_only, flaky, flaky_accepted, unexpected = [], [], [], [], []
 for line in got_diff:
     if line in frozen:
         fam = frozen[line]
         known.append({"family": fam, "reason": REASONS[fam], "line": line})
+        continue
+    if line in flaky_exact:
+        flaky_accepted.append(line)
         continue
     parts = line.split(" ", 2)
     if len(parts) == 3 and "absent" in parts[:2]:
@@ -191,6 +200,7 @@ try:
             n = sum(1 for k in known if k["family"] == fam)
             f.write("  %s: %d\n" % (fam, n))
         for label, bucket in (("direct-only", direct_only), ("flaky", flaky),
+                              ("flaky-accepted", flaky_accepted),
                               ("unexpected-difference", unexpected),
                               ("missing-known", missing),
                               ("shared-missing", shared_missing),
@@ -211,6 +221,7 @@ try:
                 "known_difference": len(known),
                 "direct_only": len(direct_only),
                 "flaky": len(flaky),
+                "flaky_accepted": len(flaky_accepted),
                 "unexpected_difference": len(unexpected),
                 "missing_known": len(missing),
                 "duplicate_diff_lines": len(dupes),
@@ -221,6 +232,7 @@ try:
             "known": known,
             "direct_only": direct_only,
             "flaky": flaky,
+            "flaky_accepted": flaky_accepted,
             "unexpected_difference": unexpected,
             "missing_known": missing,
             "shared_missing": shared_missing,
@@ -242,7 +254,7 @@ if drift:
              shared_exact, run))
     sys.exit(1)
 print("compare-classify-ok: %d known-difference + shared %d/%d exact; "
-      "zero unexpected/direct-only/flaky/missing; report: "
+      "zero unexpected/direct-only/flaky/missing; flaky_accepted: %d; report: "
       "%s/classification.json" % (len(known), len(got_shared),
-                                  len(want_shared), run))
+                                  len(want_shared), len(flaky_accepted), run))
 PY
