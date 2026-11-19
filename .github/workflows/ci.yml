@@ -253,7 +253,20 @@ jobs:
           # packaging time; run the same check on every build, before
           # the suite, so a regression fails here instead of at release.
           scripts/make-release.sh --check-hooks-only "$(cabal list-bin haskoki-ctl)" 'main|hs_main'
-          cabal test all 2>&1 | tee haskell-test.log
+          # Suite inventory guard: the storage suite runs separately
+          # below as non-root; a ninth suite must be placed
+          # explicitly, never silently folded into either leg.
+          test "$(grep -h '^test-suite' haskoki.cabal client/haskoki-client.cabal | wc -l)" = "8" \
+            || { echo "suite inventory changed: place the new suite explicitly"; exit 2; }
+          cabal test haskoki-client-tests haskoki-core-tests haskoki-tests haskoki-prop-tests haskoki-engine-tests haskoki-model-tests haskoki-logout-oracle-tests 2>&1 | tee haskell-test.log
+          # Storage permission cases assert only as non-root (R-04):
+          # this container defaults to root, under which they print
+          # skip markers instead of asserting. Run that suite as a
+          # uid-1001 user matching the mounted workspace owner.
+          id -u runner >/dev/null 2>&1 || useradd -u 1001 -M runner
+          chown -R 1001 dist-newstyle "$CABAL_DIR"
+          su runner -s /bin/bash -c 'export HOME="$GITHUB_WORKSPACE" && cabal test haskoki-storage-tests --test-show-details=direct' 2>&1 | tee -a haskell-test.log
+          python3 scripts/check-test-execution.py --scan-log haskell-test.log
       - name: Benchmark self-test
         run: |
           set -euo pipefail

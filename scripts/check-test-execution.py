@@ -389,6 +389,35 @@ def join_suite(root, inventory_path, suite, list_path, result, out_path):
     return 0
 
 
+SILENT_SKIP_MARKER = "does not deny root"
+
+
+def scan_log(log_path):
+    """Fail when a suite log shows root-skip markers (silent passes).
+
+    The five storage permission cases print this marker instead of
+    asserting when they run as root; a passing suite that contains
+    it proved nothing for those cases. Returns 0 iff the log has no
+    marker lines.
+    """
+    try:
+        text = Path(log_path).read_text(encoding="utf-8",
+                                        errors="replace")
+    except OSError as e:
+        print("test-execution scan-log: FAIL (cannot read %s: %s)"
+              % (log_path, e))
+        return 1
+    hits = [ln for ln in text.splitlines() if SILENT_SKIP_MARKER in ln]
+    if hits:
+        print("test-execution scan-log: FAIL (%d silent skip(s): "
+              "run the storage suite as non-root)" % len(hits))
+        for ln in hits[:10]:
+            print("  hit: %s" % ln.strip()[:160])
+        return 1
+    print("test-execution scan-log: OK (no silent skips)")
+    return 0
+
+
 HPC_EXCLUSION_CLASSES = ("deprecated-stub", "zero-tick-reexport", "unlinked")
 
 
@@ -1257,6 +1286,32 @@ def self_test():
                "suite-a" in logged,
                buf.getvalue() + logged)
 
+        # Scan-log: root-skip markers fail, clean logs pass,
+        # missing logs fail closed.
+        skip_log = root / "with-skips.log"
+        skip_log.write_text(
+            "haskoki-storage-tests\n"
+            "  probe: skipped: chmod 000 does not deny root\n"
+            "  other: skipped the read-only check: mode 0555/0444 "
+            "does not deny root\n"
+            "All 504 tests passed\n")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = scan_log(skip_log)
+        expect("scan-log-flags-markers",
+               rc == 1 and buf.getvalue().count("does not deny root") == 2,
+               buf.getvalue())
+        clean_log = root / "clean.log"
+        clean_log.write_text("haskoki-storage-tests\nAll 504 tests passed\n")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = scan_log(clean_log)
+        expect("scan-log-clean-passes", rc == 0, buf.getvalue())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = scan_log(root / "absent.log")
+        expect("scan-log-missing-fails-closed", rc == 1, buf.getvalue())
+
     if fails:
         print(f"test-execution self-test: FAIL ({', '.join(fails)})")
         return 1
@@ -1274,6 +1329,7 @@ def main(argv=None):
     ap.add_argument("--list-tests", default=None)
     ap.add_argument("--result", default=None)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--scan-log", default=None)
     ap.add_argument("--collect", action="store_true")
     ap.add_argument("--build-root", default=None)
     ap.add_argument("--dir", default=None)
@@ -1299,6 +1355,8 @@ def main(argv=None):
             return 1
         return join_suite(root, inv, args.suite, args.list_tests,
                           args.result, args.out)
+    if args.scan_log:
+        return scan_log(args.scan_log)
     if args.collect:
         if not args.build_root or not args.dir or not args.result:
             print("test-execution collect: FAIL (--collect wants "
