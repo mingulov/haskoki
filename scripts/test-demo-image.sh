@@ -533,10 +533,11 @@ grep -v '^#' "$CC_DATA/frozen-shared.txt" > "$OUT/exp-shared.txt"
 # may be present or absent (proven measurement variance, see the
 # file); any line naming a flaky id in any other form fails loud.
 [ -f "$CC_DATA/frozen-flaky.txt" ] || fail "missing $CC_DATA/frozen-flaky.txt"
-set +e
-grep -v -x -F -f "$CC_DATA/frozen-flaky.txt" "$RUN_DIR/diff.txt" > "$OUT/diff.stable"
-rc=$?
-set -e
+# No set-toggles here: the driver runs set -u only, and errexit would
+# kill the drift controls below (their exit-1 standalone commands are
+# the expected signal, captured via rc=$? on the next line).
+rc=0
+grep -v -x -F -f "$CC_DATA/frozen-flaky.txt" "$RUN_DIR/diff.txt" > "$OUT/diff.stable" || rc=$?
 [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || fail "flaky strip failed (grep exit $rc)"
 while IFS= read -r flaky; do
   case "$flaky" in ''|'#'*) continue;; esac
