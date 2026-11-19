@@ -30,7 +30,9 @@ checker fix.
 ## Pending upstream reports
 
 Recorded for filing against the checker. The finding stays in the frozen
-shared set until the checker pin changes.
+shared set until the checker pin changes. Both entries below resolved in
+checker 0.3.0 (all 19 cases pass on re-run 2026-11-19, CI run 44530783308);
+their ledger rows retired with the 0.3.0 re-freeze.
 
 **BLAKE2B HMAC wrong-key-type tests use a valid key type.**
 `test_registry_message_{sign,verify}_wrong_key_type[BLAKE2B_*_HMAC{,_GENERAL}]`
@@ -50,7 +52,8 @@ generic-secret key signs and verifies BLAKE2B-256-HMAC against an independent
 oracle, and an AES key is refused with `CKR_KEY_TYPE_INCONSISTENT`
 (`tests/c/consumer_roundtrip.c`, "blake2b-key-type"). Filed upstream as
 [BLAKE2B message-API wrong-key-type helper,
-#53](https://github.com/mingulov/pkcs11-check/issues/53).
+#53](https://github.com/mingulov/pkcs11-check/issues/53). **Resolved in
+0.3.0:** all 16 cases pass; no provider change was needed.
 
 **X9.42 DH derive tests assume `CKA_DERIVE` defaults to true.**
 `test_x942_dh.py::TestX942DHDerive::{test_derive_shared_secret,
@@ -64,7 +67,10 @@ affected. Suggested correction: set `CKA_DERIVE=TRUE` on the private half
 the X9.42 tests derive with. Haskoki pins the parameter refusals natively
 with a derive-capable base (`tests/c/consumer_x942_derive.c`). Filed
 upstream as [X9.42 DH derive tests assume CKA_DERIVE defaults to true,
-#62](https://github.com/mingulov/pkcs11-check/issues/62).
+#62](https://github.com/mingulov/pkcs11-check/issues/62). **Resolved in
+0.3.0:** all 3 cases pass with our Table-26 refusal unchanged
+(pin-only change on our side; consistent with the suggested setup
+correction). Refusal pinned by `tests/c/consumer_x942_derive.c`.
 
 ## Public issue reports
 
@@ -78,12 +84,12 @@ All three reports were closed on October 5, 2026. Their public threads
 retain the original inputs and comparisons. They describe historical
 checker versions, not unresolved findings in every later release.
 
-One report is open. [Async child results,
+No open reports remain. [Async child results,
 #49](https://github.com/mingulov/pkcs11-check/issues/49): the
-`ckr_v32_raw` async probes pass a ctypes character buffer where the
-binding declares unsigned bytes, so they fail before `C_AsyncGetID` is
-called. It covers the two async findings in the current set; nothing new
-needs filing for them.
+`ckr_v32_raw` async probes passed a ctypes character buffer where the
+binding declares unsigned bytes, so they failed before `C_AsyncGetID` was
+called. **Resolved in 0.3.0:** both cases pass; the binding fix is
+upstream, no provider change was needed.
 
 ## Remaining recipe and provider boundaries
 
