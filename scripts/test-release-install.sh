@@ -50,6 +50,10 @@
 # this environment, so the flag is what lets the in-container apt
 # reach the network), and an apt failure fails loudly with a clear
 # message instead of falling through to `cc: not found`.
+# Apt itself is bounded per attempt (acquire timeouts + `timeout`
+# wrappers, up to 3 attempts with per-attempt markers): a stalled
+# mirror fails loudly with log tails instead of hanging silently
+# until the outer 300s KILL (2026-11-19 bundle failure).
 #
 # Exit status: 0 iff both legs pass on the bare image.
 set -u
@@ -98,18 +102,25 @@ timeout -s KILL 300 docker run --rm --network host \
     set -u
     echo "--- container: $(cat /etc/os-release 2>/dev/null | grep -m1 PRETTY_NAME) / $(ldd --version | head -1)"
     echo "--- installing documented deps (gcc for smoke build, libgmp10/libffi8/libnuma1 system libs):"
-    if ! apt-get update -qq > /tmp/apt-update.log 2>&1; then
-      echo "FAIL: apt-get failed (update step; network or image drift — see tail below)"
+    echo "--- apt is bounded (45s update / 90s install per attempt, up to 3 attempts): a stalled mirror fails loudly, never hangs silently to the outer timeout"
+    apt_try=1
+    while [ "$apt_try" -le 3 ]; do
+      echo "--- apt attempt $apt_try/3:"
+      if timeout -s KILL 45 apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 update > /tmp/apt-update.log 2>&1 \
+      && DEBIAN_FRONTEND=noninteractive timeout -s KILL 90 apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 install -y -qq gcc libc6-dev libgmp10 libffi8 libnuma1 > /tmp/apt-install.log 2>&1; then
+        echo "apt attempt $apt_try succeeded"
+        tail -1 /tmp/apt-update.log
+        tail -1 /tmp/apt-install.log
+        break
+      fi
+      echo "apt attempt $apt_try failed; update tail:"
       tail -5 /tmp/apt-update.log
-      exit 1
-    fi
-    tail -1 /tmp/apt-update.log
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc libc6-dev libgmp10 libffi8 libnuma1 > /tmp/apt-install.log 2>&1; then
-      echo "FAIL: apt-get failed (install step; cannot build the smoke in-container — see tail below)"
-      tail -5 /tmp/apt-install.log
-      exit 1
-    fi
-    tail -1 /tmp/apt-install.log
+      echo "install tail:"
+      tail -5 /tmp/apt-install.log 2>/dev/null || true
+      apt_try=$((apt_try + 1))
+      sleep 5
+    done
+    [ "$apt_try" -le 3 ] || { echo "FAIL: apt-get failed after 3 attempts (stalled mirror or image drift)"; exit 1; }
     unset LD_LIBRARY_PATH
     echo "--- env hygiene: LD_LIBRARY_PATH=[${LD_LIBRARY_PATH-unset}] (must be unset)"
     [ -z "${LD_LIBRARY_PATH:-}" ] || { echo "FAIL: LD_LIBRARY_PATH leaked into the proof env"; exit 1; }
@@ -167,18 +178,25 @@ timeout -s KILL 300 docker run --rm --network host \
     set -u
     echo "--- container: $(cat /etc/os-release 2>/dev/null | grep -m1 PRETTY_NAME) / $(ldd --version | head -1)"
     echo "--- installing RUNTIME-ONLY deps (system libs; no compiler in this leg):"
-    if ! apt-get update -qq > /tmp/apt-update.log 2>&1; then
-      echo "FAIL: apt-get failed (update step; network or image drift — see tail below)"
+    echo "--- apt is bounded (45s update / 90s install per attempt, up to 3 attempts): a stalled mirror fails loudly, never hangs silently to the outer timeout"
+    apt_try=1
+    while [ "$apt_try" -le 3 ]; do
+      echo "--- apt attempt $apt_try/3:"
+      if timeout -s KILL 45 apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 update > /tmp/apt-update.log 2>&1 \
+      && DEBIAN_FRONTEND=noninteractive timeout -s KILL 90 apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 install -y -qq libgmp10 libffi8 libnuma1 > /tmp/apt-install.log 2>&1; then
+        echo "apt attempt $apt_try succeeded"
+        tail -1 /tmp/apt-update.log
+        tail -1 /tmp/apt-install.log
+        break
+      fi
+      echo "apt attempt $apt_try failed; update tail:"
       tail -5 /tmp/apt-update.log
-      exit 1
-    fi
-    tail -1 /tmp/apt-update.log
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libgmp10 libffi8 libnuma1 > /tmp/apt-install.log 2>&1; then
-      echo "FAIL: apt-get failed (install step; cannot install runtime libs — see tail below)"
-      tail -5 /tmp/apt-install.log
-      exit 1
-    fi
-    tail -1 /tmp/apt-install.log
+      echo "install tail:"
+      tail -5 /tmp/apt-install.log 2>/dev/null || true
+      apt_try=$((apt_try + 1))
+      sleep 5
+    done
+    [ "$apt_try" -le 3 ] || { echo "FAIL: apt-get failed after 3 attempts (stalled mirror or image drift)"; exit 1; }
     unset LD_LIBRARY_PATH
     echo "--- env hygiene: LD_LIBRARY_PATH=[${LD_LIBRARY_PATH-unset}] (must be unset)"
     [ -z "${LD_LIBRARY_PATH:-}" ] || { echo "FAIL: LD_LIBRARY_PATH leaked into the proof env"; exit 1; }
