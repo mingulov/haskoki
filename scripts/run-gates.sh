@@ -158,7 +158,7 @@ if [ "$rc" -eq 0 ]; then echo "GATES: GHC warnings in the clean build (norm is z
 echo "=== hook gate + cabal test all (pinned container) ==="
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "scripts/make-release.sh --check-hooks-only \"\$(cabal list-bin haskoki-ctl)\" 'main|hs_main'"
 set +e
-timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all 2>&1 | tee haskell-test.log
+timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all --test-show-details=direct 2>&1 | tee haskell-test.log
 rc=("${PIPESTATUS[@]}")
 set -e
 test "${rc[0]}" -eq 0 || { echo "GATES: cabal test failed (see haskell-test.log)"; exit 1; }

@@ -256,7 +256,7 @@ jobs:
           # Suite inventory guard: the storage suite runs separately
           # below as non-root; a ninth suite must be placed
           # explicitly, never silently folded into either leg.
-          test "$(grep -h '^test-suite' haskoki.cabal client/haskoki-client.cabal | wc -l)" = "8" \
+          test "$(grep -hi '^test-suite' haskoki.cabal client/haskoki-client.cabal | wc -l)" = "8" \
             || { echo "suite inventory changed: place the new suite explicitly"; exit 2; }
           cabal test haskoki-client-tests haskoki-core-tests haskoki-tests haskoki-prop-tests haskoki-engine-tests haskoki-model-tests haskoki-logout-oracle-tests 2>&1 | tee haskell-test.log
           # Storage permission cases assert only as non-root (R-04):
