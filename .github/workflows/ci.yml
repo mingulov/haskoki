@@ -193,7 +193,7 @@ jobs:
           for g in check-core-boundary check-mechanisms check-denominators \
               check-attributes check-ossl4-surface check-version check-ckr \
               check-seed-honesty check-warnings-zero check-docs \
-              check-fork-stance check-test-wiring check-test-evidence check-test-execution \
+              check-fork-stance check-gates-parity check-test-wiring check-test-evidence check-test-execution \
               check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
               check-smoke-surface check-history-codes check-sealed-callwork check-ossl4-laziness check-actions-pinned \
@@ -212,6 +212,7 @@ jobs:
           # F-4..F-8 fix-round regression: evasive-form negative
           # controls + F-6/F-7 structural asserts (durable, stdlib-only).
           python3 scripts/check-actions-pinned.py --self-test
+          python3 scripts/check-gates-parity.py --self-test
           python3 scripts/check-test-evidence.py --self-test
           python3 scripts/check-test-wiring.py --self-test
           python3 scripts/check-test-execution.py --self-test

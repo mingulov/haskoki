@@ -2,18 +2,20 @@
 # Gate runner: static gates + full cabal test + release evidence,
 # the ONE entry point whose pass means a passing release story.
 #
-# Gate count: 25 static gates —
-# core-boundary, mechanisms, denominators, attributes, ossl4-surface,
-# version, ckr, seed-honesty, plus warnings-zero, docs,
-# fork-stance, test-wiring, test-evidence, test-execution,
-# coverage-boundary,
-# coverage-fresh, release-pivots, loader-norm,
-# history-codes, sealed-callwork, actions-pinned, release-evidence-fixtures,
-# journey-engine, journey-driver
-# and funnel-cwd (wired here) — then a forced `cabal build all`
-# plus `cabal test all` in the pinned toolchain container, then the
-# release-evidence manifest (15 container + 2 host drivers + release
-# build + clean-container install; nested children run in-parent).
+# Static region (parity-gated by check-gates-parity.py, which runs
+# first): every CI `Static gates` invocation, plus three intentional
+# local extras (release-evidence runner fixtures, journey engine +
+# driver self-tests — those run in other CI jobs too). Then a forced
+# clean build with the zero-warning norm, the hook gate, `cabal test
+# all`, the benchmark self-test and an sdist build (all in the
+# pinned toolchain container), the executed test-tree join,
+# funnel-cwd (needs the built tests), and the release-evidence
+# manifest (15 container + 2 host drivers + release build +
+# clean-container install; nested children run in-parent).
+#
+# Known CI-only coverage (not run here): unpacked-sdist build+test
+# (the sdist itself builds above; the unpacked rebuild runs in CI
+# bundle on every PR).
 #
 # Order matters twice: the forced build runs BEFORE the tests (a fresh
 # `cabal test all` can run haskoki-core-tests before the sibling main
@@ -34,7 +36,9 @@
 # the FULL 15-driver manifest; the PR subset never replaces it.
 #
 #   Run (from haskoki/, on the HOST):
-#     bash scripts/run-gates.sh
+#     bash scripts/run-gates.sh [--static-only]
+#   --static-only runs the parity gate plus the static region and
+#   stops before the container build: a fast dev smoke, NOT a pass.
 #   Env (passed through to the evidence manifest):
 #     HASKOKI_PROXY_DIR     host dir with the canonical proxy pair
 #     HASKOKI_EVIDENCE_DIR  evidence root (default ./dist-release-evidence/<utc-stamp>)
@@ -43,7 +47,25 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 IMAGE="${HASKOKI_IMAGE:-haskoki-dev:ghc-9.10.3}"
 export HASKOKI_IMAGE="$IMAGE"
-echo "=== static gates (1-24, build-free) ==="
+# Tree-state contract: dev runs record HEAD + tracked dirtiness and
+# warn; release-evidence runs set HASKOKI_REQUIRE_CLEAN_TREE=1 and
+# fail closed on tracked modifications (untracked scratch never
+# qualifies or disqualifies).
+echo "--- tree: $(git rev-parse HEAD 2>/dev/null || echo 'not a git checkout')"
+if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+  if [ "${HASKOKI_REQUIRE_CLEAN_TREE:-0}" = "1" ]; then
+    echo "GATES: refusing to qualify a dirty tree (tracked modifications present)"
+    exit 2
+  fi
+  echo "GATES: warning: dirty tree — results are dev-only"
+  git status --porcelain --untracked-files=no | head -n 20
+fi
+for tool in python3 git docker openssl; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "GATES: $tool required but not found (host prerequisite)"; exit 2; }
+done
+echo "=== static gates (build-free; parity first) ==="
+python3 scripts/check-gates-parity.py
+python3 scripts/check-gates-parity.py --self-test
 python3 scripts/check-core-boundary.py
 python3 scripts/check-mechanisms.py
 python3 scripts/check-denominators.py
@@ -67,7 +89,11 @@ python3 scripts/publish-coverage.py --check
 python3 scripts/check-release-pivots.py
 python3 scripts/check-findings-ledger.py
 python3 scripts/check-findings-ledger.py --self-test
+python3 scripts/check-qualification-wiring.py
+python3 scripts/check-qualification-wiring.py --self-test
 python3 scripts/check-loader-norm.py
+python3 scripts/check-release-install-flags.py
+python3 scripts/check-smoke-surface.py
 python3 scripts/check-history-codes.py
 python3 scripts/check-history-codes.py --self-test
 python3 scripts/check-sealed-callwork.py
@@ -79,6 +105,8 @@ python3 scripts/check-actions-pinned.py
 # explicitly so hpc/prop-nightly cannot drift to a mutable tag.
 python3 scripts/check-actions-pinned.py .github/workflows/hpc.yml
 python3 scripts/check-actions-pinned.py .github/workflows/prop-nightly.yml
+python3 scripts/check-actions-pinned.py .github/workflows/qualification.yml
+python3 scripts/check-actions-pinned.py .github/workflows/haskell-reference.yml
 # F-4..F-8 fix-round regression (durable, stdlib-only): evasive-form
 # negative controls + F-6/F-7 structural asserts. Same --self-test
 # the CI static-gates step runs.
@@ -91,12 +119,35 @@ python3 scripts/test-release-nm-gate.py
 python3 scripts/test-shell-config.py
 # Ownership-matrix driver controls (fake binaries, no build).
 python3 scripts/test-ownership-matrix-controls.py
+python3 scripts/test-release-request.py
+python3 scripts/test-release-workflow.py
+python3 scripts/test-demo-shards.py
 # Client journeys: leg-table aggregate controls (build-free).
 python3 -I tests/journeys/journeys.py --self-test
 sh scripts/test-client-journeys.sh --self-test
-echo "=== forced build + cabal test all (pinned container) ==="
-timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal build all --enable-tests
+if [ "${1:-}" = "--static-only" ]; then
+  echo "GATES: static-only smoke done (NOT a full pass: build, suites, evidence skipped)"
+  exit 0
+fi
+echo "=== forced clean build + warnings norm (pinned container) ==="
+# Clean-checkout semantics mirror CI (dist-newstyle never cached):
+# warnings cannot hide behind a skipped rebuild.
+set +e
+timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "cabal update && cabal clean && cabal build all --enable-tests --enable-benchmarks" 2>&1 | tee haskell-build.log
+rc=${PIPESTATUS[0]}
+set -e
+test "$rc" -eq 0 || { echo "GATES: clean build failed (see haskell-build.log)"; exit 1; }
+# Zero-warning norm (mirrors CI Build and test): grep exit 1 (no
+# match) passes; any other grep exit fails the gate too.
+rc=0
+grep -F 'warning: [GHC-' haskell-build.log || rc=$?
+if [ "$rc" -eq 0 ]; then echo "GATES: GHC warnings in the clean build (norm is zero)"; exit 1; elif [ "$rc" -ne 1 ]; then echo "GATES: warning scan failed (grep exit $rc)"; exit "$rc"; fi
+echo "=== hook gate + cabal test all (pinned container) ==="
+timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "scripts/make-release.sh --check-hooks-only \"\$(cabal list-bin haskoki-ctl)\" 'main|hs_main'"
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all
+echo "=== benchmark self-test + sdist build (exact build above) ==="
+timeout -s KILL 600 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "BENCH_BIN=\$(cabal list-bin bench:buffered-updates) && test -x \"\$BENCH_BIN\" && \"\$BENCH_BIN\" --self-test"
+timeout -s KILL 600 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "cabal sdist"
 echo "=== executed test-tree join (builder context, needs the built suites) ==="
 # The container run above exited 0, so every suite passed; the join
 # binds that success to the reviewed intended groups. Suite binaries

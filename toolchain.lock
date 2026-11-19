@@ -1,9 +1,13 @@
 # haskoki toolchain lock (GHC 9.10.3; frozen 2026-09-24; image re-pinned 2026-10-04).
 #
 # The environment is the Docker image below. It carries the full
-# toolchain plus prebuilt project deps and baked passing tests, so a fresh
-# machine needs only Docker + `docker load`.
-# Rebuild:  cd haskoki && docker build -t <image> .
+# toolchain plus prebuilt project deps and baked passing tests.
+# Setup on a fresh machine is a local build (no registry push exists):
+#   cd haskoki && docker build -t haskoki-dev:ghc-9.10.3 .
+# Cost (measured 2026-11-19, 8 vCPU / 30 GB RAM, empty Docker cache):
+# ~77 min wall, 4.09 GB image. Rebuilds from a newer tree differ in
+# id/size from the canonical [image] record below; that record keeps
+# the 2026-10-04 build it was verified against.
 # Re-verify: docker run --rm <image> bash -c 'cd /work && cabal test all'
 
 [image]
@@ -24,7 +28,7 @@ ghcup = n/a (default toolchain uses OS packages)
 cabal-install = 3.12.1.0
 gcc = 15.2.0 (Ubuntu 26.04.1; container: build-essential on ubuntu:26.04)
 ld = GNU ld 2.46 (GNU Binutils for Ubuntu)
-glibc = 2.43 (Ubuntu GLIBC 2.43-2ubuntu2.4; x86-64)
+glibc = 2.43 (Ubuntu GLIBC 2.43-2ubuntu2.7; x86-64; re-verified in rebuilt image 2026-11-19, was 2ubuntu2.4)
 
 [boot-libraries]
 base = 4.20.2.0
@@ -42,17 +46,18 @@ tasty-hunit = 0.10.2
 freeze-file = cabal.project.freeze
 
 [verified]
-cabal-test = PASS (core 260/260, tests 2/2, storage 58/58, engine 368/368, prop 58/58, model 1279/1279; rebuilt builder bind-mount, 2026-10-04)
-cabal-test-image = PASS (in-image /work during build + re-run, 2026-10-04; same counts)
+cabal-test = PASS (client 16/16, logout-oracle 10/10, tests 2/2, core 376/376, prop 70/70, model 1719/1719, storage 504/504, engine 411/411 = 3108/8 suites; in-image /work during build, tree 2d624d3, 2026-11-19)
+cabal-test-image = PASS (same run as cabal-test above; image id sha256:67f9e48d30636cc3d2814404f7b1432c964f69f414e1430e8a18b69b3d221960)
+cold-build = ~77 min wall (empty Docker cache, 8 vCPU / 30 GB RAM x86-64, 2026-11-19, tree 2d624d3; step-time sum 4623 s)
 warnings = EMPTY (forced native build, 0 warnings)
-make-release = PASS (rebuilt builder, 2026-10-04; 24 bundled libHS; host deps system-only incl. libffi/libnuma; glibc floor GLIBC_2.43; static-libcrypto + provider-origin gates passing)
+make-release = PASS (bind-mount in rebuilt image, tree b4fa52a + bundle-apt fix, 2026-11-19; 95M artifact; 24 bundled libHS; static libcrypto link; closure + record gates passing)
 
 [openssl-freeze]
 # Loader-proof facts for the toolchain (GHC 9.10.3). The
 # supported-loader policy below is the whole story.
 flib = foreign-library haskoki, type native-shared
 soname = libhaskoki.so
-so-path = dist-newstyle/build/x86_64-linux/ghc-9.10.3/haskoki-0.3.0.0/f/haskoki/build/haskoki/libhaskoki.so
+so-path = dist-newstyle/build/x86_64-linux/ghc-9.10.3/haskoki-0.5.0.0/f/haskoki/build/haskoki/libhaskoki.so
 ghc-options-flib = -Wall -threaded
 cc-options-flib = -Wall -Wextra -std=c11 -pthread
 ld-options-flib = -Wl,-z,nodelete -pthread
