@@ -157,7 +157,13 @@ grep -F 'warning: [GHC-' haskell-build.log || rc=$?
 if [ "$rc" -eq 0 ]; then echo "GATES: GHC warnings in the clean build (norm is zero)"; exit 1; elif [ "$rc" -ne 1 ]; then echo "GATES: warning scan failed (grep exit $rc)"; exit "$rc"; fi
 echo "=== hook gate + cabal test all (pinned container) ==="
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "scripts/make-release.sh --check-hooks-only \"\$(cabal list-bin haskoki-ctl)\" 'main|hs_main'"
-timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all
+set +e
+timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" cabal test all 2>&1 | tee haskell-test.log
+rc=("${PIPESTATUS[@]}")
+set -e
+test "${rc[0]}" -eq 0 || { echo "GATES: cabal test failed (see haskell-test.log)"; exit 1; }
+test "${rc[1]}" -eq 0 || { echo "GATES: test log write failed"; exit 1; }
+python3 scripts/check-test-execution.py --scan-log haskell-test.log
 echo "=== benchmark self-test + sdist build (exact build above) ==="
 timeout -s KILL 600 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "BENCH_BIN=\$(cabal list-bin bench:buffered-updates) && test -x \"\$BENCH_BIN\" && \"\$BENCH_BIN\" --self-test"
 timeout -s KILL 600 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "cabal sdist"
