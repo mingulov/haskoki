@@ -44,6 +44,10 @@
 #     HASKOKI_EVIDENCE_DIR  evidence root (default ./dist-release-evidence/<utc-stamp>)
 #     HASKOKI_IMAGE         toolchain image (default haskoki-dev:ghc-9.10.3)
 set -euo pipefail
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "GATES: run-gates.sh requires bash (uses PIPESTATUS); got ${0}" >&2
+  exit 2
+fi
 cd "$(dirname "$0")/.."
 if [ -n "${1:-}" ] && [ "$1" != "--static-only" ]; then
   echo "usage: bash scripts/run-gates.sh [--static-only]" >&2
@@ -142,10 +146,10 @@ echo "=== forced clean build + warnings norm (pinned container) ==="
 # warnings cannot hide behind a skipped rebuild.
 set +e
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "cabal update && cabal clean && cabal build all --enable-tests --enable-benchmarks" 2>&1 | tee haskell-build.log
-rc0=${PIPESTATUS[0]}; rc1=${PIPESTATUS[1]}
+rc=("${PIPESTATUS[@]}")
 set -e
-test "$rc0" -eq 0 || { echo "GATES: clean build failed (see haskell-build.log)"; exit 1; }
-test "$rc1" -eq 0 || { echo "GATES: build log write failed (log untrustworthy)"; exit 1; }
+test "${rc[0]}" -eq 0 || { echo "GATES: clean build failed (see haskell-build.log)"; exit 1; }
+test "${rc[1]}" -eq 0 || { echo "GATES: build log write failed (log untrustworthy)"; exit 1; }
 # Zero-warning norm (mirrors CI Build and test): grep exit 1 (no
 # match) passes; any other grep exit fails the gate too.
 rc=0
