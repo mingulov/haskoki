@@ -2731,7 +2731,7 @@ FIXTURE_LEGS = {
             "package": "default-jdk-headless",
             "package_version": "2:1.25-77",
             "runtime_argv": ["java", "-version"],
-            "runtime_version": "25.0.5.0.3",
+            "runtime_version": "25.0.5.1",
             "compile_target": "17",
         },
         "runner": {
@@ -2863,7 +2863,7 @@ FIXTURE_CLIENTS = {
                 "compile_target": None},
     "java": {"name": "java", "package": "default-jdk-headless",
              "package_version": "2:1.25-77",
-             "runtime_version": "25.0.5.0.3",
+             "runtime_version": "25.0.5.1",
              "compile_target": "17"},
     "runner": {"name": "runner", "package": None,
                "package_version": None, "runtime_version": None,
