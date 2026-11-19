@@ -38,7 +38,7 @@ runtime is the first line of the probe output.
 | --- | --- | --- | --- | --- | --- |
 | OpenSC (`pkcs11-tool`) | `opensc` | `0.27.0~rc1-1` | `dpkg-query` | `0.27.0~rc1-1` | ordinary management |
 | GnuTLS (`p11tool`) | `gnutls-bin` | `3.8.12-2ubuntu1.1` | `p11tool --version` | `p11tool 3.8.12` | bounded acceptance |
-| Java (SunPKCS11 + SunEC) | `default-jdk-headless` | `2:1.25-77` | `java -version` | `25.0.4.1` | bounded acceptance |
+| Java (SunPKCS11 + SunEC) | `default-jdk-headless` | `2:1.25-77` | `java -version` | `25.0.5.0.3` | bounded acceptance |
 | OpenSSL (verifier family) | `openssl` | `3.5.5-1ubuntu3.7` | `openssl version` | `OpenSSL 3.5.5` | independent verification |
 
 Native and runner legs carry null pins by design: they are built
