@@ -40,8 +40,8 @@ means editing this list and the ledger together.
 
 Provider-owned finding/exclusion rows must be provider-fix,
 supported-refusal whose `source` cites normative text (contains "PKCS#11" and
-a section reference), or target-gap naming the release work that closes
-them (0.3.0 re-freeze: newly-probed pre-existing behaviors tracked for
+a section reference), or target-gap whose `target` names 0.6.0 release
+work (0.3.0 re-freeze: newly-probed pre-existing behaviors tracked for
 0.6.0 P-07); nothing else is accepted for them.
 
 Usage: python3 scripts/check-findings-ledger.py [--self-test]
@@ -240,10 +240,15 @@ def validate(ledger, src, counts=COUNTS, repo=REPO):
                     errs.append("%s: provider-owned supported-refusal needs "
                                 "a source citing PKCS#11 normative section"
                                 % rid)
-            elif d not in ("provider-fix", "target-gap"):
+            elif d == "target-gap":
+                if "0.6.0" not in r["target"]:
+                    errs.append("%s: provider-owned %s target-gap must name "
+                                "its release work (got target without 0.6.0)"
+                                % (rid, r["kind"]))
+            else:
                 errs.append("%s: provider-owned %s must be provider-fix, "
-                            "supported-refusal, or target-gap (got %s)"
-                            % (rid, r["kind"], d))
+                            "supported-refusal, or release-tracked "
+                            "target-gap (got %s)" % (rid, r["kind"], d))
     errs += validate_retired(ledger, src, seen, repo)
     return errs
 
@@ -471,6 +476,10 @@ def self_test():
     r2[i]["test"] = "none: relabelled"
     r2[i]["receipt"] = "none: relabelled"
     expect("provider-owned-exclusion-target-gap", validate(with_rows(r2), src))
+    r2[i]["target"] += " tracked for 0.6.0 P-07"
+    if validate(with_rows(r2), src):
+        print("FAIL control release-tracked-target-gap was rejected")
+        bad += 1
     r2 = copy.deepcopy(rows)
     r2[i]["decision"] = "supported-refusal"
     r2[i]["test"] = "none: relabelled"
