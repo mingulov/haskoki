@@ -1,0 +1,13 @@
+# Known-flaky compare lines: present-or-absent WITHOUT failing.
+# Every line below must match byte-exactly when present; any other
+# form of the same id fails loud (modified-flaky guard). Flakiness
+# here means proven measurement variance across identical inputs,
+# never an unexamined diff.
+# ecdsa-timing-variance: ECDSA timing CV measurement flips between
+# passed and skipped/xfail (CV 2.1-3.5, "informational, needs deeper
+# Minerva analysis") on identical module bytes: absent in CI run
+# 44530783308, present in 44586184975 (twice), absent in a local run
+# of the CI-built image (2026-11-19). Checker-side collection
+# variance on shared runners. Follow-up: upstream report and/or
+# Minerva-grade analysis (0.6.0 P-07 triage input).
+skipped passed security/test_cve_regression.py::TestECDSATimingBasic::test_ecdsa_timing_variance

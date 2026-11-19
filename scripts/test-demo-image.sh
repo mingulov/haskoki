@@ -529,7 +529,26 @@ grep -v '^#' "$CC_DATA/frozen-shared.txt" > "$OUT/exp-shared.txt"
 # R9 strict (codex I4): flaky bounds are historical (older pin) —
 # v0.2.2 measured no flips, so the freeze asserts the measured
 # verdicts exactly; any variance fails loud and re-opens §4.
-check_stable_core "compare diff" "$OUT/exp-diff.txt" "$RUN_DIR/diff.txt"
+# Known-flaky allowance: lines byte-identical to frozen-flaky.txt
+# may be present or absent (proven measurement variance, see the
+# file); any line naming a flaky id in any other form fails loud.
+[ -f "$CC_DATA/frozen-flaky.txt" ] || fail "missing $CC_DATA/frozen-flaky.txt"
+set +e
+grep -v -x -F -f "$CC_DATA/frozen-flaky.txt" "$RUN_DIR/diff.txt" > "$OUT/diff.stable"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || fail "flaky strip failed (grep exit $rc)"
+while IFS= read -r flaky; do
+  case "$flaky" in ''|'#'*) continue;; esac
+  nid=$(printf '%s' "$flaky" | cut -d' ' -f3-)
+  if grep -F -- "$nid" "$RUN_DIR/diff.txt" | grep -v -x -F -e "$flaky" | grep -q .; then
+    fail "flaky id changed form (was: $flaky)"
+  fi
+done < "$CC_DATA/frozen-flaky.txt"
+if grep -q -x -F -f "$CC_DATA/frozen-flaky.txt" "$RUN_DIR/diff.txt"; then
+  echo "compare: known-flaky line(s) present, absorbed per frozen-flaky.txt"
+fi
+check_stable_core "compare diff" "$OUT/exp-diff.txt" "$OUT/diff.stable"
 if ! diff -u "$OUT/exp-shared.txt" "$RUN_DIR/shared-findings.txt"; then
   fail "compare shared set differs from the exact expected set"
 fi
@@ -569,6 +588,7 @@ grep -q 'compare-classify-ok: 65 known-difference + shared 49/49 exact' \
 python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
 import json, sys
 c = json.load(open(sys.argv[1]))["counts"]
+assert c.pop("flaky_accepted") in (0, 1), c
 assert c == {"known_difference": 65, "direct_only": 0, "flaky": 0,
              "unexpected_difference": 0, "missing_known": 0,
              "duplicate_diff_lines": 0, "shared_expected": 49,
