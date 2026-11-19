@@ -349,60 +349,116 @@ if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
-failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
-failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_384_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_512_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_160_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-failed test_x942_dh.py::TestX942DHDerive::test_derive_shared_secret
-failed test_x942_dh.py::TestX942DHDerive::test_derived_key_encrypts
-failed test_x942_dh.py::TestX942DHDerive::test_different_exchanges_produce_different_secrets
+failed test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp160r1]
+failed test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp224k1]
+failed test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp160r1]
+failed test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp224k1]
+failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_160_HMAC]
+failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_256_HMAC]
+failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_384_HMAC]
+failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_512_HMAC]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_sha1_derive_des_parity
+failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_dsa_44]
+failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_kem_512]
+failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[slh_dsa_sha2_128s]
+failed test_object.py::TestAttributeValueEncodings::test_private_ec_family_value_raw_known_material[ec]
+failed test_object.py::TestAttributeValueEncodings::test_private_ec_family_value_raw_known_material[edwards]
+failed test_object.py::TestAttributeValueEncodings::test_private_ec_family_value_raw_known_material[ml_dsa_44]
+failed test_object.py::TestAttributeValueEncodings::test_private_ec_family_value_raw_known_material[montgomery]
+failed test_object.py::TestAttributeValueEncodings::test_private_value_generated_imported_equivalent
+failed test_object.py::TestAttributeValueEncodings::test_public_value_absent[ec]
+failed test_object.py::TestAttributeValueEncodings::test_public_value_absent[edwards]
+failed test_object.py::TestAttributeValueEncodings::test_public_value_absent[montgomery]
+failed test_object.py::TestAttributeValueEncodings::test_public_value_absent[rsa]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[dh-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[ec-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[edwards-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[mldsa-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[mlkem-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[montgomery-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[slhdsa-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[x942-import-unsealed]
 EOF
-[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 21 ] || fail "driver: want 21 expected direct findings"
+[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 49 ] || fail "driver: want 49 expected direct findings"
 if ! diff -u "$OUT/exp-full-direct.txt" "$RUN_DIR/findings.txt"; then
-  fail "check direct/full findings differ from the exact expected 21"
+  fail "check direct/full findings differ from the exact expected 49"
 fi
-echo "check direct/full: exact 21 findings match"
+echo "check direct/full: exact 49 findings match"
 
 run_check proxy full 1
 RUN_DIR=$(latest_run "check-proxy-full")
 cat > "$OUT/exp-full-proxy.txt" <<'EOF'
-failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_empty_selector
-failed ckr/test_ckr_v32_raw.py::TestAsyncErrors::test_async_get_id_no_operation
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_384_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_512_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_sign_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_160_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_160_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_256_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_384_HMAC_GENERAL]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC]
-failed test_mech_message.py::TestRegistryMessageWrongKeyType::test_registry_message_verify_wrong_key_type[BLAKE2B_512_HMAC_GENERAL]
-failed test_x942_dh.py::TestX942DHDerive::test_derive_shared_secret
-failed test_x942_dh.py::TestX942DHDerive::test_derived_key_encrypts
-failed test_x942_dh.py::TestX942DHDerive::test_different_exchanges_produce_different_secrets
+failed test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp160r1]
+failed test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp224k1]
+failed test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp160r1]
+failed test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp224k1]
+failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_160_HMAC]
+failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_256_HMAC]
+failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_384_HMAC]
+failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_512_HMAC]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-CDMF]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES2]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES3]
+failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES]
+failed test_misc_kdf.py::TestDerivedDesParity::test_sha1_derive_des_parity
+failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_dsa_44]
+failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_kem_512]
+failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[slh_dsa_sha2_128s]
+failed test_object.py::TestAttributeValueEncodings::test_private_ec_family_value_raw_known_material[ec]
+failed test_object.py::TestAttributeValueEncodings::test_private_ec_family_value_raw_known_material[edwards]
+failed test_object.py::TestAttributeValueEncodings::test_private_ec_family_value_raw_known_material[ml_dsa_44]
+failed test_object.py::TestAttributeValueEncodings::test_private_ec_family_value_raw_known_material[montgomery]
+failed test_object.py::TestAttributeValueEncodings::test_private_value_generated_imported_equivalent
+failed test_object.py::TestAttributeValueEncodings::test_public_value_absent[ec]
+failed test_object.py::TestAttributeValueEncodings::test_public_value_absent[edwards]
+failed test_object.py::TestAttributeValueEncodings::test_public_value_absent[montgomery]
+failed test_object.py::TestAttributeValueEncodings::test_public_value_absent[rsa]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[dh-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[ec-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[edwards-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[mldsa-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[mlkem-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[montgomery-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[slhdsa-import-unsealed]
+failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[x942-import-unsealed]
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 21 ] || fail "driver: want 21 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 49 ] || fail "driver: want 49 stable-core proxy findings"
 # R5 strict (codex I4): the failed pair's {pass, fail} bound is
 # historical (older pin) — v0.2.0 never demonstrated the flip, so
 # no failure form is suppressed here; any variance fails loud and
@@ -430,6 +486,13 @@ if [ "$PHASE" = all ] || [ "$PHASE" = compare ]; then
 # new diff lines); the shared set grew 18 -> 21 with the three
 # X9.42 DH derive findings (checker-side CKA_DERIVE default
 # assumption, ledgered as checker-fix).
+# 0.3.0 checker re-freeze: the exclusion core grows 61 -> 65 with
+# family F-collection x4 (async error collection + destroyed-handle
+# collection now diverge by topology); the shared set is replaced
+# 21 -> 49 (all 21 old ids pass at 0.3.0: 16 BLAKE2B + 2 async +
+# 3 X9.42 checker-side fixes verified by re-run; 49 new ids in
+# DES-parity, attribute-encoding, sensitivity, EC-width, and BLAKE2
+# families, ledgered per family with 0.6.0 triage pointers).
 # Parity-eligible = every other collected id (default-eligible;
 # the freeze is this exclusion list, not an 11k allowlist). Flaky
 # ids assert their measured v0.2.2 verdicts with NO variance
@@ -457,12 +520,12 @@ rows = [l for l in open(sys.argv[1]).read().splitlines()
         if l and not l.startswith("#")]
 c = Counter(l.split("\t", 1)[0] for l in rows)
 want = {"A-msg-init-0x71": 34, "B-blowfish": 20, "C-tls12": 2,
-        "D-wtls": 3, "E-boundary": 2}
-assert len(rows) == 61 and dict(c) == want, (len(rows), dict(c))
+        "D-wtls": 3, "E-boundary": 2, "F-collection": 4}
+assert len(rows) == 65 and dict(c) == want, (len(rows), dict(c))
 PY
 grep -v '^#' "$CC_DATA/frozen-subset.tsv" | cut -f2- > "$OUT/exp-diff.txt"
 grep -v '^#' "$CC_DATA/frozen-shared.txt" > "$OUT/exp-shared.txt"
-[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 61 ] || fail "driver: want 61 stable-core diff lines"
+[ "$(wc -l < "$OUT/exp-diff.txt")" -eq 65 ] || fail "driver: want 65 stable-core diff lines"
 # R9 strict (codex I4): flaky bounds are historical (older pin) —
 # v0.2.2 measured no flips, so the freeze asserts the measured
 # verdicts exactly; any variance fails loud and re-opens §4.
@@ -500,16 +563,16 @@ timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
   "/out/$CC_RUN" > "$OUT/classify.log" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] || fail "in-image compare-classify exited $rc, want 0"
-grep -q 'compare-classify-ok: 61 known-difference + shared 21/21 exact' \
+grep -q 'compare-classify-ok: 65 known-difference + shared 49/49 exact' \
   "$OUT/classify.log" || fail "compare-classify ok marker missing"
 [ -f "$RUN_DIR/classification.json" ] || fail "classification.json missing"
 python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
 import json, sys
 c = json.load(open(sys.argv[1]))["counts"]
-assert c == {"known_difference": 61, "direct_only": 0, "flaky": 0,
+assert c == {"known_difference": 65, "direct_only": 0, "flaky": 0,
              "unexpected_difference": 0, "missing_known": 0,
-             "duplicate_diff_lines": 0, "shared_expected": 21,
-             "shared_actual": 21, "shared_exact": True}, c
+             "duplicate_diff_lines": 0, "shared_expected": 49,
+             "shared_actual": 49, "shared_exact": True}, c
 PY
 # Drift controls on run-dir copies (the raw run dir is untouched):
 # an injected line must surface as unexpected=1, a removed frozen
@@ -771,7 +834,7 @@ this driver. Four proxy-lane timing-flaky test ids carry historical
 bounds (R5 report section 4; a fifth id is transcript-stable) but
 no variance allowance on this pin — any line outside the stable
 core fails the driver loudly. The parity subset is frozen (v0.5 re-freeze):
-61 compare exclusions in 5 reasoned families, strict.
+65 compare exclusions in 6 reasoned families, strict.
 Functional reproducibility = same versions + same outcomes above.
 EOF
 cat "$OUT/reproducibility-note.txt"

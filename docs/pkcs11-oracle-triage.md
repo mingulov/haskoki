@@ -46,13 +46,16 @@ pin differs from the image's checker pin; keep their results separate.
 
 ## Current demo findings
 
-The frozen full profile has 21 findings shared by direct and proxy modes (v0.5 re-freeze plus the derive-default delta; the GMAC and HOTP message-init findings of earlier baselines are resolved):
+The frozen full profile has 49 findings shared by direct and proxy modes (0.3.0 re-freeze, CI run 44530783308; the 21 v0.5 ids all pass at 0.3.0 — 16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run, rows retired):
 
 | Family | Count | Interpretation |
 | --- | ---: | --- |
-| BLAKE2B key type | 16 | Checker defect. Its wrong-key test uses a generic-secret key, but PKCS#11 3.1 sections 6.33.3 to 6.36.3 list "generic secret or CKK_BLAKE2B_n_HMAC" for these mechanisms, so Haskoki correctly accepts it. A native leg pins the acceptance and the refusal of a key type outside the list ([upstream report](pkcs11-check-upstream-issues.md#pending-upstream-reports)) |
-| Async child results | 2 | A checker child passes a ctypes character buffer where its declared binding expects unsigned bytes; it fails before the module call |
-| X9.42 derive default | 3 | Checker assumption. It generates X9.42 pairs without `CKA_DERIVE=TRUE`, while Haskoki follows PKCS#11 3.2 Table 26 (new keys default false). A native consumer pins the parameter refusals with a derive-capable base ([upstream report](pkcs11-check-upstream-issues.md#pending-upstream-reports)) |
+| DES parity on derive | 21 | Provider gap (was unscheduled for 0.5): derived DES/DES2/DES3/CDMF key bytes lack odd-parity adjustment. Targeted for 0.6.0 |
+| Attribute value encodings | 8 | Provider limitation: reads return DER/textual forms instead of raw bytes (R-08 DER row) |
+| Public CKA_VALUE exposure | 4 | Provider over-exposure: EC/Edwards public keys expose CKA_VALUE though their tables define none; removal needs a consumer-impact review |
+| Sealed-component reads | 8 | Provider gap, probably DER-family: unsealed import reads report impossible lengths (size/bytes mismatch) |
+| ECDSA subgroup width | 4 | Checker suspect: expects 42/58 bytes where 2*nLen gives 40/56, consistent with nLen = bitlen//8+1 (sect409k1 passes); needs an independent scalar confirmation |
+| BLAKE2 generic-secret KAT | 4 | Provider-side, import path: 85 sibling BLAKE2 tests pass, so the primitive is sound; only generic-secret-keyed message KATs mismatch |
 
 The AES-GCM and AES-GMAC message flags were withdrawn because those routes
 have no normative message-parameter shape. HOTP also advertises no message

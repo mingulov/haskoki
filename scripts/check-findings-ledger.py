@@ -38,9 +38,11 @@ and its gap-analysis disposition table, plus target gaps recorded after the
 v0.5 provider fixes) is outside this repository; adding a TODO category
 means editing this list and the ledger together.
 
-Provider-owned finding/exclusion rows must be provider-fix, or
+Provider-owned finding/exclusion rows must be provider-fix,
 supported-refusal whose `source` cites normative text (contains "PKCS#11" and
-a section reference); nothing else is accepted for them.
+a section reference), or target-gap naming the release work that closes
+them (0.3.0 re-freeze: newly-probed pre-existing behaviors tracked for
+0.6.0 P-07); nothing else is accepted for them.
 
 Usage: python3 scripts/check-findings-ledger.py [--self-test]
 """
@@ -69,13 +71,13 @@ FIELDS = ["id", "kind", "dimension", "source", "input", "expected",
           "checker_pin"]
 DIMENSIONS = ["checker", "c-routing", "planner", "catalog", "todo"]
 EXCL_FAMILIES = ["A-msg-init-0x71", "B-blowfish", "C-tls12", "D-wtls",
-                 "E-boundary"]
+                 "E-boundary", "F-collection"]
 
-COUNTS = {"finding": 21, "exclusion": 61, "c-function": 11,
+COUNTS = {"finding": 49, "exclusion": 65, "c-function": 11,
           "planner-function": 21, "mechanism-planned": 57,
           "unsupported": 89, "n-a": 2}
 
-RETIRED_COUNTS = {"finding": 4, "exclusion": 22}
+RETIRED_COUNTS = {"finding": 25, "exclusion": 22}
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 TODO_IDS = [
@@ -238,9 +240,10 @@ def validate(ledger, src, counts=COUNTS, repo=REPO):
                     errs.append("%s: provider-owned supported-refusal needs "
                                 "a source citing PKCS#11 normative section"
                                 % rid)
-            elif d != "provider-fix":
-                errs.append("%s: provider-owned %s must be provider-fix or "
-                            "supported-refusal (got %s)" % (rid, r["kind"], d))
+            elif d not in ("provider-fix", "target-gap"):
+                errs.append("%s: provider-owned %s must be provider-fix, "
+                            "supported-refusal, or target-gap (got %s)"
+                            % (rid, r["kind"], d))
     errs += validate_retired(ledger, src, seen, repo)
     return errs
 
@@ -265,8 +268,12 @@ def validate_retired(ledger, src, seen, repo):
             errs.append("retired %s: kind must be finding or exclusion" % rid)
         if rid in src.get(r["kind"], set()):
             errs.append("retired %s: still in the frozen source" % rid)
-        if r["decision"] != "provider-fix" or r["owner"] != "provider":
-            errs.append("retired %s: must be a provider-fix provider row" % rid)
+        pair = (r["decision"], r["owner"])
+        if pair not in (("provider-fix", "provider"),
+                        ("checker-fix", "checker")):
+            errs.append("retired %s: must be a provider-fix provider row "
+                        "or a checker-fix checker row (upstream fix "
+                        "verified by re-run at the new pin)" % rid)
         for f in ("test", "receipt"):
             v = r[f]
             if not isinstance(v, str) or v.startswith(("pending", "none")):
@@ -357,8 +364,8 @@ def run_gate():
     if errs:
         return 1
     n = len(json.loads(LEDGER.read_text())["rows"])
-    print("findings-ledger: ok (%d rows; 21 findings, 61 exclusions, "
-          "11 C refusals, 21 planner, 57/89/2 mechanisms; 26 retired)" % n)
+    print("findings-ledger: ok (%d rows; 49 findings, 65 exclusions, "
+          "11 C refusals, 21 planner, 57/89/2 mechanisms; 47 retired)" % n)
     return 0
 
 
