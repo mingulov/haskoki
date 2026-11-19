@@ -106,8 +106,8 @@ timeout -s KILL 300 docker run --rm --network host \
     apt_try=1
     while [ "$apt_try" -le 3 ]; do
       echo "--- apt attempt $apt_try/3:"
-      if timeout -s KILL 45 apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 update > /tmp/apt-update.log 2>&1 \
-      && DEBIAN_FRONTEND=noninteractive timeout -s KILL 90 apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 install -y -qq gcc libc6-dev libgmp10 libffi8 libnuma1 > /tmp/apt-install.log 2>&1; then
+      if timeout -s KILL 45 apt-get update -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 > /tmp/apt-update.log 2>&1 \
+      && DEBIAN_FRONTEND=noninteractive timeout -s KILL 90 apt-get install -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 -y -qq gcc libc6-dev libgmp10 libffi8 libnuma1 > /tmp/apt-install.log 2>&1; then
         echo "apt attempt $apt_try succeeded"
         tail -1 /tmp/apt-update.log
         tail -1 /tmp/apt-install.log
@@ -182,8 +182,8 @@ timeout -s KILL 300 docker run --rm --network host \
     apt_try=1
     while [ "$apt_try" -le 3 ]; do
       echo "--- apt attempt $apt_try/3:"
-      if timeout -s KILL 45 apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 update > /tmp/apt-update.log 2>&1 \
-      && DEBIAN_FRONTEND=noninteractive timeout -s KILL 90 apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 install -y -qq libgmp10 libffi8 libnuma1 > /tmp/apt-install.log 2>&1; then
+      if timeout -s KILL 45 apt-get update -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 > /tmp/apt-update.log 2>&1 \
+      && DEBIAN_FRONTEND=noninteractive timeout -s KILL 90 apt-get install -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 -y -qq libgmp10 libffi8 libnuma1 > /tmp/apt-install.log 2>&1; then
         echo "apt attempt $apt_try succeeded"
         tail -1 /tmp/apt-update.log
         tail -1 /tmp/apt-install.log
