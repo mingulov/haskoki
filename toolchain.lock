@@ -5,9 +5,10 @@
 # Setup on a fresh machine is a local build (no registry push exists):
 #   cd haskoki && docker build -t haskoki-dev:ghc-9.10.3 .
 # Cost (measured 2026-11-19, 8 vCPU / 30 GB RAM, empty Docker cache):
-# ~77 min wall, 4.09 GB image. Rebuilds from a newer tree differ in
-# id/size from the canonical [image] record below; that record keeps
-# the 2026-10-04 build it was verified against.
+# ~77 min wall, 4.09 GB image, builder glibc 2.43-2ubuntu2.7.
+# Rebuilds from a newer tree differ in id/size/patch-levels from the
+# canonical [image]/[tools] records below; those keep the 2026-10-04
+# build (glibc 2.43-2ubuntu2.4) they were verified against.
 # Re-verify: docker run --rm <image> bash -c 'cd /work && cabal test all'
 
 [image]
@@ -28,7 +29,7 @@ ghcup = n/a (default toolchain uses OS packages)
 cabal-install = 3.12.1.0
 gcc = 15.2.0 (Ubuntu 26.04.1; container: build-essential on ubuntu:26.04)
 ld = GNU ld 2.46 (GNU Binutils for Ubuntu)
-glibc = 2.43 (Ubuntu GLIBC 2.43-2ubuntu2.7; x86-64; re-verified in rebuilt image 2026-11-19, was 2ubuntu2.4)
+glibc = 2.43 (Ubuntu GLIBC 2.43-2ubuntu2.4; x86-64)
 
 [boot-libraries]
 base = 4.20.2.0

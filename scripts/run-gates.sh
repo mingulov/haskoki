@@ -45,6 +45,10 @@
 #     HASKOKI_IMAGE         toolchain image (default haskoki-dev:ghc-9.10.3)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [ -n "${1:-}" ] && [ "$1" != "--static-only" ]; then
+  echo "usage: bash scripts/run-gates.sh [--static-only]" >&2
+  exit 2
+fi
 IMAGE="${HASKOKI_IMAGE:-haskoki-dev:ghc-9.10.3}"
 export HASKOKI_IMAGE="$IMAGE"
 # Tree-state contract: dev runs record HEAD + tracked dirtiness and
@@ -52,15 +56,19 @@ export HASKOKI_IMAGE="$IMAGE"
 # fail closed on tracked modifications (untracked scratch never
 # qualifies or disqualifies).
 echo "--- tree: $(git rev-parse HEAD 2>/dev/null || echo 'not a git checkout')"
-if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+if ! dirt="$(git status --porcelain --untracked-files=no 2>/dev/null)"; then
+  echo "GATES: cannot read tree state"
+  exit 2
+fi
+if [ -n "$dirt" ]; then
   if [ "${HASKOKI_REQUIRE_CLEAN_TREE:-0}" = "1" ]; then
     echo "GATES: refusing to qualify a dirty tree (tracked modifications present)"
     exit 2
   fi
   echo "GATES: warning: dirty tree — results are dev-only"
-  git status --porcelain --untracked-files=no | head -n 20
+  printf '%s\n' "$dirt" | head -n 20 || true
 fi
-for tool in python3 git docker openssl; do
+for tool in python3 git docker openssl cc nm strip timeout; do
   command -v "$tool" >/dev/null 2>&1 || { echo "GATES: $tool required but not found (host prerequisite)"; exit 2; }
 done
 echo "=== static gates (build-free; parity first) ==="
@@ -134,9 +142,10 @@ echo "=== forced clean build + warnings norm (pinned container) ==="
 # warnings cannot hide behind a skipped rebuild.
 set +e
 timeout -s KILL 2400 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "cabal update && cabal clean && cabal build all --enable-tests --enable-benchmarks" 2>&1 | tee haskell-build.log
-rc=${PIPESTATUS[0]}
+rc0=${PIPESTATUS[0]}; rc1=${PIPESTATUS[1]}
 set -e
-test "$rc" -eq 0 || { echo "GATES: clean build failed (see haskell-build.log)"; exit 1; }
+test "$rc0" -eq 0 || { echo "GATES: clean build failed (see haskell-build.log)"; exit 1; }
+test "$rc1" -eq 0 || { echo "GATES: build log write failed (log untrustworthy)"; exit 1; }
 # Zero-warning norm (mirrors CI Build and test): grep exit 1 (no
 # match) passes; any other grep exit fails the gate too.
 rc=0
