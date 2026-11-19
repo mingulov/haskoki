@@ -215,9 +215,9 @@ class WorkflowTests(unittest.TestCase):
 
     def test_release_uses_qualified_checker_while_builds_can_override_it(self):
         expression = field(section(self.text, "env", 0), "FRAMEWORK_REF", 2)
-        self.assertEqual(evaluate(expression, "workflow_dispatch", "refs/heads/main", "release", "topic"), "v0.2.1")
+        self.assertEqual(evaluate(expression, "workflow_dispatch", "refs/heads/main", "release", "topic"), "v0.3.0")
         self.assertEqual(evaluate(expression, "workflow_dispatch", "refs/heads/main", "build", "topic"), "topic")
-        self.assertEqual(evaluate(expression, "push", "refs/tags/v0.3.0.0", "", ""), "v0.2.1")
+        self.assertEqual(evaluate(expression, "push", "refs/tags/v0.3.0.0", "", ""), "v0.3.0")
 
 
 if __name__ == "__main__":

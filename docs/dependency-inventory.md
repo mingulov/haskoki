@@ -96,7 +96,7 @@ metadata (verified: `pkcs11-check` carries `licenses/`).
 | mdurl 0.1.2 | MIT (classifier) |
 | packaging 26.3 | Apache-2.0 OR BSD-2-Clause |
 | pip 25.1.1 | MIT |
-| pkcs11_check 0.2.3 | MIT OR Apache-2.0 |
+| pkcs11_check 0.3.0 | MIT OR Apache-2.0 |
 | pluggy 1.6.0 | MIT |
 | psutil 7.2.2 | BSD-3-Clause |
 | py_cpuinfo2 10.1.1 | MIT |
