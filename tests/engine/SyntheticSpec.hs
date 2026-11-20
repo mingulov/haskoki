@@ -126,7 +126,7 @@ spec = testGroup "synthetic engine"
   , testCase "forceCaps covers every String and Int field" caseForceCapsCoverage
   , testCase "driver bridge answers over synthetic" caseDriverBridge
   , testCase "Verify backend failure keeps its category" caseVerifyCategory
-  , testCase "Verify category fix stays general-error" caseVerifyNeutral
+  , testCase "Verify bad key interprets per function" caseVerifyBadKeyCell
   , testCase "KEM generation and encaps roundtrip" caseKemRoundtrip
   , testCase "Digest widths per algorithm" caseDigestWidths
   , testCase "Multipart final honors the init alg" caseMultipartAlg
@@ -1156,18 +1156,19 @@ caseVerifyCategory = withSynth "11" $ \env -> do
   assertEqual "category preserved"
     (GotCryptoError (CryptoBadKey "key" "empty key material")) r
 
--- | Guard: the category fix is code-neutral — the
--- preserved category still interprets to 'CKR_GENERAL_ERROR'
--- (mismatch verdicts stay verdicts; see the bridge roundtrip).
-caseVerifyNeutral :: IO ()
-caseVerifyNeutral = withSynth "11" $ \env -> do
+-- | Guard: the preserved category routes to the per-function
+-- cell — a bad verify key interprets to 'CKR_FUNCTION_FAILED'
+-- (OASIS 5.15 lists it; mismatch verdicts stay verdicts; see
+-- the bridge roundtrip).
+caseVerifyBadKeyCell :: IO ()
+caseVerifyBadKeyCell = withSynth "11" $ \env -> do
   let resolve _ = Just (KeyBytes BS.empty)
       oid = Just (ObjectId 7)
   r <- runEffect env resolve
     (FxVerify (MechanismId 0x251) oid BS.empty "hello" "tag")
   case r of
-    GotCryptoError e -> assertEqual "still general-error"
-      CKR_GENERAL_ERROR (cryptoCode F_Verify e)
+    GotCryptoError e -> assertEqual "verify badkey failed"
+      CKR_FUNCTION_FAILED (cryptoCode F_Verify e)
     other -> assertFailure ("expected crypto error, got " ++ show other)
 
 caseDriverBridge :: IO ()

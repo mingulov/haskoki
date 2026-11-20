@@ -50,7 +50,6 @@ import Foreign.StablePtr
   , newStablePtr
   )
 import Foreign.Storable (peek, poke)
-import System.Posix.Process (getProcessID)
 
 import Haskoki.FFI.Exports (returnCodeToRV)
 import Haskoki.Runtime.Async (AsyncTable, newAsyncTable)
@@ -63,7 +62,6 @@ import Haskoki.Runtime.Config
   ( Config (..)
   , ControlCfg (..)
   , Limits (..)
-  , TraceCfg (..)
   , newConfigCell
   , resolveOnce
   )
@@ -82,7 +80,7 @@ import Haskoki.Runtime.Events
   , newEventQueue
   , newTokenRegistry
   )
-import Haskoki.Runtime.Trace (Tracer, drainTracer, newTracer)
+import Haskoki.Runtime.Trace (Tracer, drainTracer, newFileTracer)
 import Haskoki.Types (ReturnCode (..), SlotId (..))
 
 -- | Typed return code to @CK_RV@ (single authority:
@@ -227,29 +225,11 @@ buildInstance cfg = mask_ $ do
     at <- newAsyncTable (max 8 (limJobs limits))
     reg <- newTokenRegistry eq at
     let ctl = cfgControl cfg
-    tr <- newTracer (max 8 (tcQueueLimit (cfgTrace cfg))) (fileSink cfg) False
+    tr <- newFileTracer (cfgTrace cfg)
     cs <- newControlState cfg reg at (ccTestEnabled ctl) False
     setControlTracer cs tr
     pure (Instance cfg slots eq reg at cs tr))
     `onException` closeSlotEvents slots
-
--- | Append-only trace sink (best effort; failures are counted by the
--- tracer, never thrown). @\{pid\}@ in the path expands to the pid.
-fileSink :: Config -> BS.ByteString -> IO (Either String ())
-fileSink cfg line
-  | not (tcEnabled (cfgTrace cfg)) = pure (Right ())
-  | otherwise = do
-      pid <- getProcessID
-      let path = expandPid (tcPath (cfgTrace cfg)) (fromIntegral pid)
-      r <- try (BS.appendFile path (line <> BS.singleton 0x0A))
-      case r of
-        Right () -> pure (Right ())
-        Left (ex :: SomeException) -> pure (Left (show ex))
-  where
-    expandPid [] _ = []
-    expandPid ('{' : 'p' : 'i' : 'd' : '}' : rest) pid =
-      show (pid :: Int) ++ expandPid rest pid
-    expandPid (c : rest) pid = c : expandPid rest pid
 
 -- | Close: take the cell once, unbind the serving owner, and atomically close
 -- the shared service/discard flags before C releases any Standard resources.

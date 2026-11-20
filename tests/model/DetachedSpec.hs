@@ -3212,14 +3212,14 @@ caseJoinedPollFailed = do
   (p2, merr0) <- pollJoined dcA run (lgEnv gen) tableA JobSign jA
   case p2 of
     PollTerminal (TermFailed code _) ->
-      assertEqual "poll fails general" CKR_GENERAL_ERROR code
+      assertEqual "poll fails failed" CKR_FUNCTION_FAILED code
     other -> assertFailure ("expected poll failure, got " ++ show other)
   assertEqual "poll mark clean" Nothing merr0
   (del, _) <- newCapture
   jc <- completeJoined dcA (lgEnv gen) tableA JobSign jA del (\_ -> pure ())
   case jcOutcome jc of
     CompleteAlready (TermFailed code _) ->
-      assertEqual "complete observes failed" CKR_GENERAL_ERROR code
+      assertEqual "complete observes failed" CKR_FUNCTION_FAILED code
     other -> assertFailure ("expected already-failed, got " ++ show other)
   assertEqual "mark clean" Nothing (jcMarkError jc)
   outB <- joinJob dcB (lgEnv gen) tableB (signJoin pid sid)

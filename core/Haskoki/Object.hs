@@ -1661,6 +1661,7 @@ planGetAttributes model st h wanted = case resolveHandle model h of
         , rejDelta = StateDelta []
         , rejReleases = []
         , rejReasons = reasons
+        , rejCause = Nothing
         }
   where
     statusOf :: AttributeResult -> String
@@ -1677,6 +1678,7 @@ templateReject code why = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = [why]
+  , rejCause = Nothing
   }
 
 -- | An unresolvable-handle rejection.
@@ -1687,4 +1689,5 @@ invalidHandle why = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = [why]
+  , rejCause = Nothing
   }

@@ -98,6 +98,7 @@ import Haskoki.Operation
   , hasSingleAuthPendingOp
   , initMessageOperation
   , initOperation
+  , keptCause
   , kindOccupied
   , lookupSingle
   , msgFamilyKind
@@ -379,6 +380,7 @@ missingSession = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = ["unknown session"]
+  , rejCause = Nothing
   }
 
 -- | Reject malformed arguments (shared by 'planCall' and
@@ -390,6 +392,7 @@ badArgs why = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = [why]
+  , rejCause = Nothing
   }
 
 -- | Reject an admission denial (shared by 'planCall' and
@@ -401,6 +404,7 @@ admissionDenied deny = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = ["admission denied: " ++ show deny]
+  , rejCause = Nothing
   }
 
 -- | Reject a function 'planCall' never plans: key-management
@@ -420,6 +424,7 @@ notPlannedHere fid = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = ["not planned through planCall: " ++ show fid]
+  , rejCause = Nothing
   }
 
 -- | Run a decoded step against a known session id: unknown
@@ -468,6 +473,7 @@ planDecoded rules model dreq = case dreq of
           , rejDelta = StateDelta []
           , rejReleases = []
           , rejReasons = ["no cipher shape for mechanism"]
+          , rejCause = Nothing
           }
         Just cshape ->
           let key = fmap (\h -> KeyPolicy h permits auth) mkey
@@ -481,6 +487,7 @@ planDecoded rules model dreq = case dreq of
               , rejDelta = StateDelta []
               , rejReleases = []
               , rejReasons = ioReasons outcome
+              , rejCause = Nothing
               }
             else if op == OpDigest
               then Execute
@@ -515,6 +522,7 @@ planDecoded rules model dreq = case dreq of
           , rejDelta = StateDelta []
           , rejReleases = []
           , rejReasons = ["no cipher shape for mechanism"]
+          , rejCause = Nothing
           }
         Just cshape ->
           let key = fmap (\h -> KeyPolicy h permits auth) mkey
@@ -528,6 +536,7 @@ planDecoded rules model dreq = case dreq of
               , rejDelta = StateDelta []
               , rejReleases = []
               , rejReasons = ioReasons outcome
+              , rejCause = Nothing
               }
             else if op == OpDigest
               then Execute
@@ -576,6 +585,7 @@ planOpenSession rules model req =
           , rejDelta = StateDelta []
           , rejReleases = []
           , rejReasons = ["admission denied: " ++ show deny]
+          , rejCause = Nothing
           }
         Right () ->
           let sid = SessionId (mNextSession model)
@@ -686,6 +696,7 @@ planLogin rules model req st =
           , rejDelta = StateDelta []
           , rejReleases = []
           , rejReasons = ["no token in slot"]
+          , rejCause = Nothing
           }
         Just auth ->
           let roExists = any ssReadOnly (sessionsOnSlot model slot)
@@ -701,6 +712,7 @@ planLogin rules model req st =
                     , rejDelta = StateDelta lops
                     , rejReleases = lrels
                     , rejReasons = ["login denied: " ++ show deny]
+                    , rejCause = Nothing
                     }
               | otherwise -> Reject Rejection
               { rejCode = denyCode deny
@@ -708,6 +720,7 @@ planLogin rules model req st =
               , rejDelta = StateDelta (counterOps slot auth auth')
               , rejReleases = []
               , rejReasons = ["login denied: " ++ show deny]
+              , rejCause = Nothing
               }
             LoginGranted auth' granted ->
               let others = case kind of
@@ -756,6 +769,7 @@ planLogout model st =
       , rejDelta = StateDelta []
       , rejReleases = []
       , rejReasons = ["no token in slot"]
+      , rejCause = Nothing
       }
     Just auth -> case logoutToken auth of
       (_, False) -> Reject Rejection
@@ -764,6 +778,7 @@ planLogout model st =
         , rejDelta = StateDelta []
         , rejReleases = []
         , rejReasons = ["token not logged in"]
+        , rejCause = Nothing
         }
       (auth', True) ->
         let (ops, releases) = logoutTransition model slot auth'
@@ -851,6 +866,7 @@ planInitToken model req =
         , rejDelta = StateDelta []
         , rejReleases = []
         , rejReasons = ["no token in slot"]
+        , rejCause = Nothing
         }
       Just _ -> case verdict of
         Just PinIncorrect -> Reject Rejection
@@ -859,6 +875,7 @@ planInitToken model req =
           , rejDelta = StateDelta []
           , rejReleases = []
           , rejReasons = ["SO PIN mismatch: reinit refused"]
+          , rejCause = Nothing
           }
         _ ->
           let destroys =
@@ -928,6 +945,7 @@ planInitPin model st =
       , rejDelta = StateDelta []
       , rejReleases = []
       , rejReasons = ["no token in slot"]
+      , rejCause = Nothing
       }
     Just auth
       | ssReadOnly st || ssLogin st /= LoginSO -> Reject Rejection
@@ -936,6 +954,7 @@ planInitPin model st =
           , rejDelta = StateDelta []
           , rejReleases = []
           , rejReasons = ["init-pin requires a read/write SO session"]
+          , rejCause = Nothing
           }
       | otherwise ->
           let auth' = auth { taUserAttempts = 0, taUserLocked = False }
@@ -988,6 +1007,7 @@ planSetPin rules model req st =
             , rejDelta = StateDelta []
             , rejReleases = []
             , rejReasons = ["no token in slot"]
+            , rejCause = Nothing
             }
           Just auth ->
             let limit = epMaxPinAttempts (effectivePolicy rules)
@@ -1004,6 +1024,7 @@ planSetPin rules model req st =
                 , rejDelta = StateDelta []
                 , rejReleases = []
                 , rejReasons = ["set-pin needs a read/write session"]
+                , rejCause = Nothing
                 }
               else if kindIsSO /= (ssLogin st == LoginSO)
                 then badArgs "set-pin role contradicts the session login"
@@ -1014,6 +1035,7 @@ planSetPin rules model req st =
                     , rejDelta = StateDelta []
                     , rejReleases = []
                     , rejReasons = ["set-pin denied: role locked"]
+                    , rejCause = Nothing
                     }
                   else case pin of
                     PinIncorrect ->
@@ -1030,6 +1052,7 @@ planSetPin rules model req st =
                         , rejDelta = StateDelta [DeltaSetTokenAuth slot auth']
                         , rejReleases = []
                         , rejReasons = ["set-pin denied: old PIN incorrect"]
+                        , rejCause = Nothing
                         }
                     PinCorrect ->
                       let auth' = case kind of
@@ -1105,6 +1128,7 @@ rejectArgs why = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = [why]
+  , rejCause = Nothing
   }
 
 -- | The reservation label for a routed step.
@@ -1220,6 +1244,7 @@ packStep req st kind ops' st' outcome
       , rejDelta = StateDelta (opsDelta ++ loginDelta)
       , rejReleases = soReleases outcome
       , rejReasons = soReasons outcome
+      , rejCause = Nothing
       }
   | otherwise = case soEffects outcome of
       [] -> case soPlan outcome of
@@ -1238,6 +1263,7 @@ packStep req st kind ops' st' outcome
             , rejDelta = StateDelta (opsDelta ++ loginDelta)
             , rejReleases = []
             , rejReasons = ["unencodable output plan"]
+            , rejCause = Nothing
             }
         Nothing -> Immediate PreparedCommit
           { pcCode = CKR_OK
@@ -1272,6 +1298,7 @@ packStep req st kind ops' st' outcome
               , rejDelta = StateDelta (opsDelta ++ loginDelta)
               , rejReleases = soReleases outcome
               , rejReasons = ["data calls need exactly one byte output region"]
+              , rejCause = Nothing
               }
         Just (name, intent) -> Execute
           (Reservation
@@ -1287,6 +1314,7 @@ packStep req st kind ops' st' outcome
         , rejDelta = StateDelta (opsDelta ++ loginDelta)
         , rejReleases = []
         , rejReasons = ["planner emitted multiple effects"]
+        , rejCause = Nothing
         }
   where
     opsDelta = [DeltaSetSessionOps (ssId st) ops' | ops' /= ssOps st]
@@ -1333,6 +1361,7 @@ planMessageInit rules model req fam st = case decodeInitInput (reqInput req) of
         , rejDelta = StateDelta []
         , rejReleases = []
         , rejReasons = ["no cipher shape for mechanism"]
+        , rejCause = Nothing
         }
       Just cshape ->
         let key = fmap (\h -> KeyPolicy h permits auth) (reqHandle req)
@@ -1354,6 +1383,7 @@ planMessageInit rules model req fam st = case decodeInitInput (reqInput req) of
             , rejDelta = StateDelta []
             , rejReleases = []
             , rejReasons = ioReasons outcome
+            , rejCause = Nothing
             }
 
 -- | Plan a message-begin: decode the per-message parameters and open
@@ -1409,6 +1439,7 @@ finishEffect _rules model res result =
       , rejDelta = StateDelta []
       , rejReleases = staleReleases result
       , rejReasons = ["stale reservation: " ++ show stale]
+      , rejCause = Nothing
       }
     Nothing -> case resStep res of
       Nothing -> legacy result
@@ -1443,6 +1474,7 @@ finishEffect _rules model res result =
       , rejDelta = StateDelta []
       , rejReleases = []
       , rejReasons = ["backend failure: " ++ show f]
+      , rejCause = Nothing
       }
 
 -- | Releases for a stale finish: a resource answer whose
@@ -1460,11 +1492,12 @@ staleReleases _ = []
 finishStep :: Model -> CryptoStep -> EngineResult -> Either Rejection PreparedCommit
 finishStep model step result = case runFinisher step (toCrypto result) of
   Nothing -> Left (stepRejection CKR_GENERAL_ERROR (csOps step) []
-    ["no finisher for " ++ show (csFunction step)])
+    ["no finisher for " ++ show (csFunction step)] Nothing)
   Just (ops'', outcome) -> case soPlan outcome of
     Just plan -> case planToOutputs plan of
       Nothing -> Left (stepRejection CKR_GENERAL_ERROR ops'' []
-        ("unencodable output plan" : soReasons outcome))
+        ("unencodable output plan" : soReasons outcome)
+        (keptCause (csFunction step) (toCrypto result) CKR_GENERAL_ERROR))
       Just outs -> Right PreparedCommit
         { pcCode = soCode outcome
         , pcDelta = StateDelta (stepDelta ops'')
@@ -1483,14 +1516,16 @@ finishStep model step result = case runFinisher step (toCrypto result) of
           , pcReasons = soReasons outcome
           }
       | otherwise -> Left (stepRejection (soCode outcome) ops''
-          (soReleases outcome) (soReasons outcome))
+          (soReleases outcome) (soReasons outcome)
+          (keptCause (csFunction step) (toCrypto result) (soCode outcome)))
   where
-    stepRejection code ops'' releases reasons = Rejection
+    stepRejection code ops'' releases reasons cause = Rejection
       { rejCode = code
       , rejOutputs = []
       , rejDelta = StateDelta (stepDelta ops'')
       , rejReleases = releases
       , rejReasons = reasons
+      , rejCause = cause
       }
     stepDelta ops'' =
       [DeltaSetSessionOps sid ops'' | Just ops'' /= fmap ssOps mst]

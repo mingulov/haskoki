@@ -417,7 +417,9 @@ planDerive rules model st mech baseH blob
         Left deny -> KeyDenied deny
         Right (ost, mat)
           | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoPrivateKey) ->
-              KeyDenied (KeyDeny CKR_TEMPLATE_INCONSISTENT
+              -- Unified with the agreement arms (ECDH/DH refuse a
+              -- non-private base the same way): OASIS 5.18.5.
+              KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
                 "pub-from-priv base is not a private key")
           | otherwise -> case Map.lookup AttrKeyType (osAttrs ost) of
               Just (ValULong kty)
@@ -708,7 +710,7 @@ planDerive rules model st mech baseH blob
                           "derived total exceeds the IKE ceiling"
                           (FxDerive mech (Just (osId ost)) mAux ikeBlob BS.empty)
                           Nothing
-                          CKR_ARGUMENTS_BAD
+                          CKR_KEY_SIZE_RANGE
   | Just r <- byteOpsRecipeFor mech = case decodeDeriveParams blob of
       Nothing -> KeyDenied (KeyDeny CKR_ARGUMENTS_BAD
         "malformed derive arguments")
@@ -1390,7 +1392,7 @@ byteOpsBaseOkState ost = case Map.lookup AttrKeyType (osAttrs ost) of
 -- iterating rows cap at the prf+ counter capacity.
 ikeCeiling :: IkeKind -> Word8 -> Maybe Int
 ikeCeiling kind prf = case kind of
-  Ike2PrfPlus -> Just maxIkeOutput
+  Ike2PrfPlus -> blockCeiling
   Ike1Extended -> Just maxIkeOutput
   IkePrf -> digestWidth
   Ike1Prf -> digestWidth
@@ -1398,6 +1400,14 @@ ikeCeiling kind prf = case kind of
     digestWidth = do
       stem <- kdfCodeDigest (fromIntegral prf)
       kdfDigestWidth stem
+    -- prf+ runs a single-byte counter: 255 blocks of the hash
+    -- width. The flat cap over-admits small hashes (SHA-256
+    -- tops out at 8160, not 16320); the backend refuses past
+    -- the counter capacity, so the planner must too.
+    blockCeiling = do
+      stem <- kdfCodeDigest (fromIntegral prf)
+      hLen <- kdfDigestWidth stem
+      pure (255 * hLen)
 
 -- | Base/peer curve agreement: a mismatch denies only when BOTH
 -- sides scan as DER EC keys on different curves. Unscannable sides

@@ -325,8 +325,13 @@ casePlan = do
   expectDeny "junk params" CKR_ARGUMENTS_BAD
     (planDerive defaultRules m testSession plusMech baseHandle
       (encodeDeriveParams "junk" [derivedTmpl 32]))
+  -- The prf+ ceiling is per-PRF (255 blocks of the hash width):
+  -- SHA-256 tops out at 8160, below the flat 16320 cap.
+  expectDeny "prf-plus small-hash ceiling" CKR_KEY_SIZE_RANGE
+    (planDerive defaultRules m testSession plusMech baseHandle
+      (encodeDeriveParams plusFrame [derivedTmpl 9000]))
   -- Output past the ceiling refuses typed.
-  expectDeny "over ceiling" CKR_ARGUMENTS_BAD
+  expectDeny "over ceiling" CKR_KEY_SIZE_RANGE
     (planDerive defaultRules m testSession plusMech baseHandle
       (encodeDeriveParams plusFrame [derivedTmpl (maxIkeOutput + 1)]))
   -- A non-derive-marked base refuses typed.

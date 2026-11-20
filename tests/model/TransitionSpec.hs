@@ -45,7 +45,9 @@ import Haskoki.Model
 import Haskoki.Operation
   ( CipherDir (..)
   , CipherSpec (..)
+  , CryptoCause (..)
   , CryptoEffect (..)
+  , CryptoError (..)
   , CryptoResult (..)
   , InitArgs (..)
   , InitOutcome (..)
@@ -69,6 +71,7 @@ import Haskoki.Operation
   , mkSlotCommon
   )
 import Haskoki.Operation.Cipher (planCipherFinal, planCipherOneShot, planCipherUpdate)
+import Haskoki.Operation.Digest (planDigestOneShot)
 import Haskoki.Operation.Message
   ( MsgBegin (..)
   , MsgNext (..)
@@ -152,6 +155,7 @@ spec = testGroup "model transitions"
   [ testCase "missing session rejects with no output and no mutation" caseMissingSession
   , testCase "known session plans digest execution" caseKnownSession
   , testCase "error outcome carries required effects" caseErrorWithEffects
+  , testCase "finished kept failures carry a trace cause" caseFinishCause
   , testCase "stale reservation rejects without retry" caseStaleReservation
   , testCase "legacy resource finish carries its release" caseLegacyResourceRelease
   , testCase "silent step scoped to digest streaming" caseSilentStepScope
@@ -355,12 +359,68 @@ caseErrorWithEffects = do
         , rejDelta = StateDelta [DeltaBumpGeneration (SessionId 1) (Generation 2)]
         , rejReleases = []
         , rejReasons = ["partial attribute-style result"]
+        , rejCause = Nothing
         }
   assertBool "outputs carried" (not (null (rejOutputs rej)))
   case publishDelta oneSessionModel (rejDelta rej) of
     Left fault -> fail ("delta should apply: " ++ show fault)
     Right m' ->
       assertBool "delta applied" (mSessions m' /= mSessions oneSessionModel)
+
+causeEnv :: OpEnv
+causeEnv = OpEnv
+  { oeRegistry = curatedRegistry
+  , oeCaps = mkCapabilities [(sha256Mech, OpDigest)]
+  , oeModel = oneSessionModel
+  }
+
+causeDigestArgs :: InitArgs
+causeDigestArgs = InitArgs
+  { iaOp = OpDigest
+  , iaMech = sha256Mech
+  , iaParams = ""
+  , iaKey = Nothing
+  , iaCipher = Nothing
+  , iaRecover = Nothing
+  }
+
+caseFinishCause :: IO ()
+caseFinishCause = do
+  -- A kept failure through a finishing leg carries its cause.
+  st <- case Map.lookup (SessionId 1) (mSessions oneSessionModel) of
+    Just s -> pure s
+    Nothing -> fail "session 1 missing from oneSessionModel"
+  let (ops0, out0) = initOperation causeEnv emptySessionOps st causeDigestArgs
+  assertEqual "init ok" CKR_OK (ioCode out0)
+  let (ops1, _, _) = planDigestOneShot ops0 st "digest" "hello"
+      step = (finisherProbeStep F_Digest) { csOps = ops1 }
+      res = Reservation "digest" [] Nothing (Just step)
+  case finishEffect defaultRules oneSessionModel res
+      (EngineFail (BackendNative "op" 7 "why")) of
+    Left rej -> do
+      assertEqual "kept code" CKR_GENERAL_ERROR (rejCode rej)
+      assertEqual "kept cause"
+        (Just (CryptoCause F_Digest (CryptoNative "op" 7 "why"))) (rejCause rej)
+    Right _ -> fail "expected rejection"
+  -- A defensive collapse carries no cause (not a kept leg).
+  case finishEffect defaultRules oneSessionModel res
+      (EngineFail (BackendBadKey "op" "why")) of
+    Left rej -> do
+      assertEqual "defensive code" CKR_GENERAL_ERROR (rejCode rej)
+      assertEqual "defensive no cause" Nothing (rejCause rej)
+    Right _ -> fail "expected rejection"
+  -- No finishing leg, no cause (routing failure, not selection).
+  let resInit = Reservation "sign-init" [] Nothing (Just (finisherProbeStep F_SignInit))
+  case finishEffect defaultRules oneSessionModel resInit
+      (EngineFail (BackendNative "op" 7 "why")) of
+    Left rej -> assertEqual "unrouted no cause" Nothing (rejCause rej)
+    Right _ -> fail "expected rejection"
+  -- Stepless legacy failures carry no cause (no function to name).
+  let resBare = Reservation "bare" [] Nothing Nothing
+  case finishEffect defaultRules oneSessionModel resBare
+      (EngineFail (BackendNative "op" 7 "why")) of
+    Left rej -> assertEqual "stepless no cause" Nothing (rejCause rej)
+    Right _ -> fail "expected rejection"
 
 caseStaleReservation :: IO ()
 caseStaleReservation = do

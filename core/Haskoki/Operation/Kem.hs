@@ -203,6 +203,7 @@ planKemEncaps model st mech h alg tmpl intent
                         , rejDelta = StateDelta []
                         , rejReleases = []
                         , rejReasons = ["short buffer; no key created"]
+                        , rejCause = Nothing
                         })
                     | otherwise -> KeyEffect
                         (PwEncaps po ctLen (kemSsLen alg))

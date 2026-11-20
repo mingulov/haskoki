@@ -96,7 +96,7 @@ import Haskoki.Operation.Derive
   , planDerive
   , pubPrivMech
   )
-import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
+import Haskoki.Operation.Effect (CryptoCause (..), CryptoEffect (..), CryptoError (..), CryptoResult (..))
 import Haskoki.Operation.Kem
   ( KemAlg (..)
   , kemCtLen
@@ -343,7 +343,7 @@ import Haskoki.Registry.Generated
   , ckm_SSL3_KEY_AND_MAC_DERIVE
   )
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
-import Haskoki.Request (OutputIntent (..), OutputRegion (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Transition (publishDelta)
@@ -441,6 +441,7 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "pub-from-priv EC finds by read-back params through the FFI codec" casePubPrivEcFindByReadback
   , testCase "pub-from-priv EC copies EC_PARAMS from the base" casePubPrivEcParamsCopy
   , testCase "pub-from-priv refusals: scope, class, params, templates" casePubPrivRefusals
+  , testCase "finished key failures carry a trace cause" caseFinishWorkCause
   , testCase "HKDF info codec round-trips mode/salt/context" caseHkdfInfoCodec
   , testCase "Decaps recovers the secret as one handle" caseKemDecaps
   , testCase "KEM key/ciphertext mismatches fail closed" caseKemMismatch
@@ -5497,7 +5498,7 @@ casePubPrivRefusals = withSynth $ \_answer -> do
     [(AttrClass, ValULong ckoPublicKey), (AttrKeyType, ValULong ckkRsa), (AttrToken, ValBool False)]
     "opaque-rsa-pub"
   c4 <- denyCode m5 pubH blob0
-  assertEqual "class code" CKR_TEMPLATE_INCONSISTENT c4
+  assertEqual "class code" CKR_KEY_TYPE_INCONSISTENT c4
   -- Non-empty params refuse.
   c5 <- denyCode m5 rsaH (encodeDeriveParams "params" [rsaTmpl])
   assertEqual "params code" CKR_ARGUMENTS_BAD c5
@@ -5524,6 +5525,25 @@ casePubPrivRefusals = withSynth $ \_answer -> do
   -- Unknown handles refuse.
   c10 <- denyCode m5 (ExternalHandle 99999) blob0
   assertEqual "handle code" CKR_KEY_HANDLE_INVALID c10
+
+caseFinishWorkCause :: IO ()
+caseFinishWorkCause = do
+  m0 <- seedModel
+  st <- getSession m0
+  let pw = PwDerive [] []
+  -- A kept failure through the key finisher carries its cause.
+  case finishWork m0 st pw (GotCryptoError (CryptoNative "op" 7 "why")) of
+    Reject rej -> do
+      assertEqual "kept code" CKR_GENERAL_ERROR (rejCode rej)
+      assertEqual "kept cause"
+        (Just (CryptoCause F_DeriveKey (CryptoNative "op" 7 "why"))) (rejCause rej)
+    other -> fail ("expected rejection, got: " ++ show other)
+  -- A distinct cell carries no cause.
+  case finishWork m0 st pw (GotCryptoError (CryptoBadKey "op" "why")) of
+    Reject rej -> do
+      assertEqual "distinct code" CKR_KEY_TYPE_INCONSISTENT (rejCode rej)
+      assertEqual "distinct no cause" Nothing (rejCause rej)
+    other -> fail ("expected rejection, got: " ++ show other)
 
 caseHkdfInfoCodec :: IO ()
 caseHkdfInfoCodec = do
@@ -7008,7 +7028,7 @@ caseIkePlans = do
   case planDerive defaultRules m2 st ikePlusMech baseH
       (encodeDeriveParams fPlus [kid (fromIntegral (maxIkeOutput + 1))]) of
     KeyDenied (KeyDeny code _) ->
-      assertEqual "ceiling code" CKR_ARGUMENTS_BAD code
+      assertEqual "ceiling code" CKR_KEY_SIZE_RANGE code
     other -> assertFailure ("over-ceiling must deny, got: " ++ show other)
 
 caseRealIkeVector :: IO ()
@@ -8468,7 +8488,7 @@ caseRealAesKem = withRealEnv $ \env -> do
         other -> assertFailure ("must be a bad key, got: " ++ show other)
       case finishWork m1 st pw res of
         Reject r -> do
-          assertEqual "code" CKR_GENERAL_ERROR (rejCode r)
+          assertEqual "code" CKR_FUNCTION_FAILED (rejCode r)
           assertEqual "zero objects" (StateDelta []) (rejDelta r)
         other -> assertFailure ("must reject, got: " ++ show other)
     other -> assertFailure ("must plan an effect, got: " ++ show other)

@@ -6,12 +6,18 @@ counter, sink failure never changes the CKR, drops-as-failure mode.
 module TraceSpec (spec) where
 
 import qualified Data.ByteString.Char8 as BC8
+import Control.Concurrent (myThreadId, throwTo)
+import Control.Exception (AsyncException (..), SomeException, fromException, try)
 import Data.IORef (newIORef, readIORef, modifyIORef')
 import Data.List (isInfixOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
+import Haskoki.Operation (CryptoCause (..), CryptoError (..), functionCName)
+import Haskoki.Outcome (Rejection (..), StateDelta (..))
+import Haskoki.Request (FunctionId (..))
 import Haskoki.Runtime.Trace
+import Haskoki.Types (JobId (..), ReturnCode (..))
 
 spec :: TestTree
 spec = testGroup "Trace"
@@ -20,6 +26,11 @@ spec = testGroup "Trace"
   , testCase "bounded queue + dropped counter under flood" caseFlood
   , testCase "sink failure leaves the CKR unchanged" caseSinkFailure
   , testCase "drops-as-failure fails the harness run" caseDropsAsFailure
+  , testCase "kept failure emits one cause row" caseKeptRow
+  , testCase "kept job failure tags mode and job" caseKeptJobRow
+  , testCase "causeless rejection emits nothing" caseNoCauseNoRow
+  , testCase "function identities name their C entries" caseCNames
+  , testCase "sync-try never swallows cancellation" caseTrySyncAsync
   ]
 
 ids :: TraceIds
@@ -111,3 +122,90 @@ caseDropsAsFailure = do
   mapM_ (\_ -> emitTrace tr3 ev 0 >> pure ()) [1 .. 10 :: Int]
   ok3 <- runHarnessChecked tr3
   assertBool "non-strict mode tolerates counted drops" ok3
+
+collectingTracer :: IO (Tracer, IO [String])
+collectingTracer = do
+  ref <- newIORef []
+  tr <- newTracer 64 (\l -> modifyIORef' ref (BC8.unpack l :) >> pure (Right ())) False
+  pure (tr, reverse <$> readIORef ref)
+
+caseKeptRow :: IO ()
+caseKeptRow = do
+  (tr, rows) <- collectingTracer
+  emitKeptFailure tr (CryptoCause F_SignFinal (CryptoNative "op" 7 "why"))
+  rep <- drainTracer tr
+  assertEqual "one row written" 1 (drWritten rep)
+  ls <- rows
+  case ls of
+    [line] -> do
+      mapM_ (\k -> assertBool ("row carries " ++ k) (k `isInfixOf` line))
+        [ "\"function\":\"C_SignFinal\"", "\"ckr\":5"
+        , "\"reason\":\"CryptoNative(op,7,why)\""
+        , "\"disposition\":\"rejected\"", "\"mode\":\"sync\""
+        , "\"job\":null"
+        ]
+    other -> fail ("expected exactly one row, got: " ++ show (length other))
+
+caseKeptJobRow :: IO ()
+caseKeptJobRow = do
+  (tr, rows) <- collectingTracer
+  emitKeptJobFailure tr (AsyncTableId 2) (JobId 9) (CryptoCause F_DigestFinal (CryptoFailed "boom"))
+  rep <- drainTracer tr
+  assertEqual "one row written" 1 (drWritten rep)
+  ls <- rows
+  case ls of
+    [line] -> do
+      mapM_ (\k -> assertBool ("row carries " ++ k) (k `isInfixOf` line))
+        [ "\"function\":\"C_DigestFinal\"", "\"mode\":\"async\""
+        , "\"job\":\"j9@t2\"", "CryptoFailed"
+        ]
+    other -> fail ("expected exactly one row, got: " ++ show (length other))
+
+caseNoCauseNoRow :: IO ()
+caseNoCauseNoRow = do
+  (tr, rows) <- collectingTracer
+  let rej = Rejection
+        { rejCode = CKR_FUNCTION_FAILED
+        , rejOutputs = []
+        , rejDelta = StateDelta []
+        , rejReleases = []
+        , rejReasons = ["distinct cell"]
+        , rejCause = Nothing
+        }
+  emitRejectionCause tr rej
+  rep <- drainTracer tr
+  assertEqual "nothing written" 0 (drWritten rep)
+  ls <- rows
+  assertEqual "no rows collected" [] ls
+
+caseCNames :: IO ()
+caseCNames = do
+  assertEqual "sign final" "C_SignFinal" (functionCName F_SignFinal)
+  assertEqual "digest" "C_Digest" (functionCName F_Digest)
+  assertEqual "dual" "C_DigestEncryptUpdate" (functionCName F_DigestEncryptUpdate)
+  assertEqual "encapsulate" "C_EncapsulateKey" (functionCName F_EncapsulateKey)
+  assertEqual "get info" "C_GetInfo" (functionCName F_GetInfo)
+  -- Every identity mirrors its C entry: a future non-F_ ctor
+  -- breaks this sweep and forces a naming decision here.
+  mapM_ (\fid -> case functionCName fid of
+    'C' : '_' : _ -> pure ()
+    other -> fail ("non-C name for " ++ show fid ++ ": " ++ other))
+    [minBound .. maxBound]
+
+caseTrySyncAsync :: IO ()
+caseTrySyncAsync = do
+  r1 <- trySync (ioError (userError "boom") >> pure ())
+  case r1 of
+    Left _ -> pure ()
+    Right _ -> fail "sync failure must return Left"
+  r2 <- trySync (pure (42 :: Int))
+  case r2 of
+    Right 42 -> pure ()
+    _ -> fail "success must return Right"
+  r3 <- try (trySync (myThreadId >>= \t -> throwTo t ThreadKilled >> pure ()))
+    :: IO (Either SomeException (Either SomeException ()))
+  case r3 of
+    Left ex -> case (fromException ex :: Maybe AsyncException) of
+      Just _ -> pure ()
+      Nothing -> fail ("expected async, got sync: " ++ show ex)
+    Right _ -> fail "cancellation was swallowed"

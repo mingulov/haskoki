@@ -15,8 +15,10 @@ import Control.Exception (bracket, finally)
 import Control.Monad (forM, forM_, replicateM, when)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as BC8
 import Data.Char (digitToInt, isHexDigit)
 import Data.IORef (IORef, newIORef, readIORef, modifyIORef', writeIORef)
+import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import Data.Word (Word64, Word8)
@@ -105,6 +107,8 @@ import Haskoki.FFI.Standard
 import Haskoki.Model (Model (..), SessionState (..), lookupSession)
 import Haskoki.Operation
   ( CryptoEffect (..)
+  , CryptoError (..)
+  , CryptoResult (..)
   , DigestStream (..)
   , SlotKind (..)
   , OpAuth (..)
@@ -146,6 +150,7 @@ import Haskoki.Runtime.Async
   , AsyncWork (..)
   , PollOutcome (..)
   , StartDeny (..)
+  , TerminalState (..)
   , completeJob
   , deliveredCount
   , inspectJob
@@ -179,8 +184,10 @@ import Haskoki.Runtime.Lifecycle
   , publish
   , sameEnv
   , seatToken
+  , setEnvTracer
   , snapshotModel
   )
+import Haskoki.Runtime.Trace (drainTracer, newTracer)
 import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Types
   ( EngineResourceId (..)
@@ -197,6 +204,7 @@ import Haskoki.Types
 spec :: MVar () -> TestTree
 spec envLock = testGroup "Async engine"
   [ testCase "planned digest completes shaped with KAT bytes" (counted "m3-async-engine" "planned-digest-completes-shaped-with-kat-bytes" (caseDigestShaped))
+  , testCase "driven kept failure emits one cause row" (counted "m3-async-engine" "driven-kept-failure-emits-one-cause-row" (caseDriveEmitsKeptCauseOnce))
   , testCase "hmac sign completes with RFC 4231 bytes" (counted "m3-async-engine" "hmac-sign-completes-with-rfc-4231-bytes" (caseHmacSign))
   , testCase "call mismatch refused before the engine runner" (counted "m3-async-engine" "call-mismatch-refused-before-the-engine-runner" (caseCallMismatchEngine))
   , testCase "new return codes pin to header values" (counted "m3-async-engine" "new-return-codes-pin-to-header-values" (caseRvPins))
@@ -361,6 +369,53 @@ caseDigestShaped = withBackend $ \be -> do
       (lookupSingle (ssOps st2) SlotDigest)
   _ <- pure (j0, table)
   pure ()
+
+caseDriveEmitsKeptCauseOnce :: IO ()
+caseDriveEmitsKeptCauseOnce = withBackend $ \be -> do
+  (env, st) <- openSessionEnv
+  rows <- newIORef []
+  tr <- newTracer 64 (\l -> modifyIORef' rows (BC8.unpack l :) >> pure (Right ())) False
+  setEnvTracer env tr
+  table <- newAsyncTable 4
+  enableAsyncSession table (ssId st)
+  (res, eff) <- planDigestJob env st
+  cw <- case checkedCallWork (ssId st) res eff of
+    Right c -> pure c
+    Left mm -> assertFailure ("digest pair must check: " ++ show mm)
+  let req = JobRequest
+        { jrSession = ssId st
+        , jrFunction = JobDigest
+        , jrWork = WorkCall cw
+        , jrTicks = 1
+        , jrCapacity = 32
+        }
+  Right j0 <- startJob table req
+  let run _ = pure (GotCryptoError (CryptoFailed "boom"))
+  p <- pollJob run env table JobDigest j0
+  case p of
+    PollTerminal (TermFailed code _) ->
+      assertEqual "terminal code" CKR_GENERAL_ERROR code
+    other -> assertFailure ("expected terminal failure, got: " ++ show other)
+  _ <- drainTracer tr
+  ls <- reverse <$> readIORef rows
+  assertEqual "one cause row" 1 (length ls)
+  case ls of
+    [line] -> do
+      assertBool "names the entry" ("C_Digest" `isInfixOf` line)
+      assertBool "async mode" ("\"mode\":\"async\"" `isInfixOf` line)
+      assertBool "names the ctor" ("CryptoFailed" `isInfixOf` line)
+      assertBool "table-qualified job" ("\"job\":\"j0@t" `isInfixOf` line)
+    other -> fail ("expected exactly one row, got: " ++ show (length other))
+  -- A second observation emits nothing more.
+  p2 <- pollJob run env table JobDigest j0
+  case p2 of
+    PollTerminal (TermFailed _ _) -> pure ()
+    other -> assertFailure ("expected terminal again, got: " ++ show other)
+  (del, _) <- newCapture
+  _ <- completeJob env table JobDigest j0 del (drainOne be)
+  _ <- drainTracer tr
+  ls2 <- reverse <$> readIORef rows
+  assertEqual "still one row" 1 (length ls2)
 
 caseHmacSign :: IO ()
 caseHmacSign = withBackend $ \be -> do

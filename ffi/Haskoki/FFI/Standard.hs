@@ -76,6 +76,7 @@ module Haskoki.FFI.Standard
   , openStdInstanceWithNotify
   , openStdStore
   , openStdStoreWith
+  , publishRejectionE
   , NativeNotify, SessionNotify (..), NotifyDecision (..), NotifyInvoker
   , invokeNativeNotify, dispatchSessionNotifyWith
   , registerSessionNotify, retireSessionNotify, surrenderDigest
@@ -474,6 +475,7 @@ import Haskoki.Runtime.Config
 import Haskoki.Runtime.Lifecycle
   ( Env
   , defaultInitArgs
+  , emitEnvRejectionCause
   , envRules
   , initialize
   , newEnv
@@ -482,6 +484,7 @@ import Haskoki.Runtime.Lifecycle
   , restoreStoreState
   , rulesFromConfig
   , seatToken
+  , setEnvTracer
   , snapshotModel
   , snapshotPresence
   , withHeldModel
@@ -508,6 +511,7 @@ import Haskoki.Runtime.Storage
   , tokensWithoutCredentials
   )
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
+import Haskoki.Runtime.Trace (Tracer)
 import Haskoki.Session
   ( AdmitDeny
   , EffectivePolicy (..)
@@ -778,6 +782,7 @@ haskokiStdOpen cell = guardedPtr $ do
             (Just (PresenceOwner (snapshotSlots (siSlots inst))
               (setStdTokenPresence inst)))
         , saUnbindPresenceOwner = bindPresenceOwner (instControl ops) Nothing
+        , saTracer = Just (instTracer ops)
         }
       (instConfig ops) (instSlots ops)
 
@@ -796,6 +801,7 @@ data StdAcquisition = StdAcquisition
   , saAssemble :: !(StdInstance -> IO (StablePtr StdInstance))
   , saBindPresenceOwner :: !(StdInstance -> IO ())
   , saUnbindPresenceOwner :: !(IO ())
+  , saTracer :: !(Maybe Tracer)
   }
 
 -- | Production acquisition steps.
@@ -809,6 +815,7 @@ stdAcquisition = StdAcquisition
   , saAssemble = newStablePtr
   , saBindPresenceOwner = const (pure ())
   , saUnbindPresenceOwner = pure ()
+  , saTracer = Nothing
   }
 
 -- | Open an owned instance from a RESOLVED config: fresh 'Env',
@@ -856,6 +863,9 @@ openStdInstanceWithNotify
 openStdInstanceWithNotify sa cfg slots invoker = guardedSyncPtr $ mask $ \restore -> do
   let acquire = do
         env <- newEnv (rulesFromConfig cfg)
+        case saTracer sa of
+          Just tr -> setEnvTracer env tr
+          Nothing -> pure ()
         ini <- restore (saInit sa env)
         case ini of
           OutcomeErr _ -> pure nullStable
@@ -2073,6 +2083,7 @@ publishRejectionE :: StdInstance -> Rejection -> IO (Either ModelFault ())
 publishRejectionE inst rej = do
   pr <- publishStd inst (rejDelta rej)
   drainReleases (siBackend inst) (rejReleases rej)
+  emitEnvRejectionCause (siEnv inst) rej
   pure pr
 
 -- | The InitToken publish outcome: committed, refused for a

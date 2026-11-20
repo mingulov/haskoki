@@ -94,6 +94,7 @@ module Haskoki.FFI.Async
   , closeStoreBoxSlotWith
   , asyncLiveHandles
   , asyncCloseCtx
+  , publishRejection
   , allocJobHandle
   , freeJobHandle
   , resolveJobHandle
@@ -245,10 +246,12 @@ import Haskoki.Runtime.Detached
   , pollJoined
   , retireLiveTableFor
   )
-import Haskoki.Runtime.Config (Config, newConfigCell, resolveOnce)
+import Haskoki.Runtime.Config (Config (cfgTrace), newConfigCell, resolveOnce)
 import Haskoki.Runtime.Lifecycle
   ( Env
   , defaultInitArgs
+  , drainEnvTracer
+  , emitEnvRejectionCause
   , envRules
   , initialize
   , newEnv
@@ -256,6 +259,7 @@ import Haskoki.Runtime.Lifecycle
   , restoreStoreState
   , rulesFromConfig
   , seatToken
+  , setEnvTracer
   , snapshotModel
   )
 import Haskoki.Runtime.Storage
@@ -267,6 +271,7 @@ import Haskoki.Runtime.Storage
   , emptyDelta
   )
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
+import Haskoki.Runtime.Trace (newFileTracer)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session (tokenAuthNew)
 import Haskoki.Transition (finishEffect, planCall, planDecoded)
@@ -1344,6 +1349,8 @@ openAsyncCtxWith
 openAsyncCtxWith acq cfg = guardedAcquire $ mask $ \restore -> do
   retryResidue acq
   env <- newEnv (rulesFromConfig cfg)
+  tr <- newFileTracer (cfgTrace cfg)
+  setEnvTracer env tr
   ini <- aaInit acq env
   case ini of
     OutcomeErr _ -> pure (Left AcquireRefused)
@@ -1587,6 +1594,7 @@ drainClaimedCtx acq ctx = do
   live <- readIORef (acLive ctx)
   mapM_ drainOne (Set.toList live)
   aaCloseBackend acq (acBackend ctx)
+  drainEnvTracer (acEnv ctx)
   where
     drainOne :: Ptr () -> IO ()
     drainOne key = do
@@ -1635,6 +1643,7 @@ publishRejection :: Env -> BackendEnv OpenSSL4 -> Rejection -> IO ()
 publishRejection env be rej = do
   _ <- publish env (rejDelta rej)
   drainReleases be (rejReleases rej)
+  emitEnvRejectionCause env rej
 
 -- | The context session when the caller named it, else nothing.
 checkSession :: AsyncCtx -> CULong -> Maybe SessionId
@@ -2147,6 +2156,8 @@ openAsyncCtxOnWith acq cfg box
       retryResidue acq
       b <- deRefStablePtr box
       env <- newEnv (rulesFromConfig cfg)
+      tr <- newFileTracer (cfgTrace cfg)
+      setEnvTracer env tr
       ini <- aaInit acq env
       case ini of
         OutcomeErr _ -> pure (Left AcquireRefused)

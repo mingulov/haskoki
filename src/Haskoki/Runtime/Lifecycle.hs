@@ -35,6 +35,10 @@ module Haskoki.Runtime.Lifecycle
   , rulesFromConfig
   , envGate
   , envAdapter
+  , envTracer
+  , setEnvTracer
+  , emitEnvRejectionCause
+  , drainEnvTracer
   , sameEnv
   , initialize
   , finalize
@@ -92,6 +96,7 @@ import Haskoki.Model
   )
 import Haskoki.Outcome
   ( ModelFault (..)
+  , Rejection
   , Reservation (..)
   , ResourceRelease
   , RevisionDep
@@ -111,6 +116,7 @@ import Haskoki.Runtime.Storage
   , TokenRecord (..)
   , reserveRestoredIds
   )
+import Haskoki.Runtime.Trace (Tracer, drainTracer, emitRejectionCause)
 import Haskoki.Session (AdmitDeny (..), admitToken)
 import Haskoki.Transition (publishDelta, reservationStale)
 import Haskoki.Types
@@ -219,6 +225,7 @@ data Env = Env
   , envModel :: !(TVar Model)
   , envProvider :: !(TVar ProviderState)
   , envAdapter :: !MutexAdapter
+  , envTracer :: !(TVar (Maybe Tracer))
   }
 
 -- | Build a fresh environment: default provider state, empty model,
@@ -235,13 +242,43 @@ newEnvWith rules hooks = do
   model <- newTVarIO emptyModel
   provider <- newTVarIO ProviderFresh
   adapter <- newMutexAdapter hooks
+  tracer <- newTVarIO Nothing
   pure Env
     { envRules = rules
     , envGate = gate
     , envModel = model
     , envProvider = provider
     , envAdapter = adapter
+    , envTracer = tracer
     }
+
+-- | Attach a trace sink to an environment (open paths call this
+-- once their tracer exists; a traceless env emits nothing).
+setEnvTracer :: Env -> Tracer -> IO ()
+setEnvTracer env tr = atomically (writeTVar (envTracer env) (Just tr))
+
+-- | Emit a rejection's kept-general-error cause through the
+-- environment's tracer, if any. Call after publish and resource
+-- release; a traceless env or a causeless rejection emits
+-- nothing.
+emitEnvRejectionCause :: Env -> Rejection -> IO ()
+emitEnvRejectionCause env rej = do
+  mTr <- readTVarIO (envTracer env)
+  case mTr of
+    Just tr -> emitRejectionCause tr rej
+    Nothing -> pure ()
+
+-- | Drain the environment's tracer, if any. Close paths call
+-- this after calls quiesce; best effort (drain failures are
+-- counted, never thrown).
+drainEnvTracer :: Env -> IO ()
+drainEnvTracer env = do
+  mTr <- readTVarIO (envTracer env)
+  case mTr of
+    Just tr -> do
+      _ <- drainTracer tr
+      pure ()
+    Nothing -> pure ()
 
 -- | Env identity: whether two handles borrow the same environment.
 sameEnv :: Env -> Env -> Bool
