@@ -5253,7 +5253,7 @@
    "receipt": "docs/pkcs11-oracle-triage.md",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5272,7 +5272,7 @@
    "receipt": "docs/pkcs11-oracle-triage.md",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5291,7 +5291,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5310,7 +5310,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5329,7 +5329,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5348,7 +5348,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5367,7 +5367,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5386,7 +5386,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5405,7 +5405,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5424,7 +5424,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5443,7 +5443,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5462,7 +5462,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5481,7 +5481,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5500,7 +5500,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5519,7 +5519,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5538,7 +5538,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5557,7 +5557,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5576,7 +5576,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md::Pending upstream reports",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5595,7 +5595,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5614,7 +5614,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   },
@@ -5633,7 +5633,7 @@
    "receipt": "docs/pkcs11-check-upstream-issues.md",
    "checker_pin": "pkcs11-check 0.2.3 (demo image); framework v0.2.1 (CI lanes); unchanged in 0.5.0.0 (ruling 7)",
    "retired_by": [
-    "568f56513fceb04d18346b61c68bb803dccda514"
+    "9d675276c130107acf36ec32e256fc4dbaae4cec"
    ],
    "refreeze_evidence": "0.3.0 re-freeze (compare-20261119T135220Z-1-wAnToJ / check-direct-full-20261119T135223Z-1-MsMr9e, CI run 44530783308): id passes at 0.3.0 (16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run)"
   }
