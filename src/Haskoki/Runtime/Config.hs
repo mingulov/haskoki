@@ -304,14 +304,14 @@ data KeyClass = Enforced | Refused | EnforcedRefused | Reserved
 configKeyCatalog :: [(TomlKey, KeyClass)]
 configKeyCatalog =
   [ (("", "schema_version"), Enforced)
-  , (("", "profile"), Enforced)
-  , (("", "interfaces"), Enforced)
+  , (("", "profile"), Reserved)
+  , (("", "interfaces"), Reserved)
   , (("", "seed"), Refused)
   , (("storage", "kind"), Enforced)
   , (("storage", "path"), EnforcedRefused)
   , (("storage", "busy_timeout_ms"), Refused)
   , (("storage", "exclusive_provider_ownership"), Refused)
-  , (("engine", "kind"), Enforced)
+  , (("engine", "kind"), Reserved)
   , (("engine", "allow_synthetic_fallback"), Refused)
   , (("engine", "private_library_context"), Refused)
   , (("async", "executor"), Enforced)

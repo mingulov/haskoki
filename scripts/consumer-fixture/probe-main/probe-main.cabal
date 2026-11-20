@@ -10,7 +10,7 @@ build-type:         Simple
 -- probes sharing a project cannot fail independently). Imports
 -- the stub facade through the main library; must FAIL with a
 -- dependency-resolution error. Pre-exposure-decision this
--- compiled (RED); post-decision it must not resolve.
+-- compiled pre-decision; post-decision it must not resolve.
 executable probe
   main-is:          Main.hs
   build-depends:

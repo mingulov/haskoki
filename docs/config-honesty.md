@@ -20,14 +20,14 @@ regardless of the process locale; undecodable bytes answer
 | Setting | Behavior | Rule | Test | Effective |
 |---|---|---|---|---|
 | `schema_version` | E | must be 1 (`Config.hs` build) | `ConfigHonestySpec` schema refusal | 1 only, load gate (config loader; both) |
-| `profile` | E | 3 names validated + reported | `ConfigHonestySpec` + `CtlSpec` capabilities | one of 3 names, validated plus reported (report-only; no behavior selects on it) |
-| `interfaces` | E | subset validated + reported (declarative; no native path gates on it — scope note below) | `ConfigHonestySpec` bad/empty/reported | declared set, gates nothing (report-only; C_GetInterface and C_GetInterfaceList serve 3.2, 3.1 and 3.0 regardless; 2.40 is served via C_GetFunctionList) |
+| `profile` | D | reserved: 3 names validated + reported; no behavior selects on it | `ConfigHonestySpec` class + `reserved-profile` line | label only, validated plus reported (config-not-policy; Ctl reporting reads it for the label plus the demo-maximal target mark) |
+| `interfaces` | D | reserved: subset validated + reported; gates nothing (scope note below) | `ConfigHonestySpec` bad/empty/reported + `reserved-interfaces` line | declared set, gates nothing (config-not-policy; C_GetInterface and C_GetInterfaceList serve 3.2, 3.1 and 3.0 regardless; 2.40 is served via C_GetFunctionList) |
 | `seed` | R | reserved placeholder: only 1234; does not seed native crypto | `ConfigHonestySpec` seed refusal | 1234 only, read by nothing (config loader; both) |
 | `storage.kind` | E | routes the store (`openStdStore`) | `FfiAsyncSpec` success/bad-sqlite | memory or sqlite, routes the store (native open) |
 | `storage.path` | E/R | sqlite opens it; memory+path refused (ignored otherwise) | `FfiAsyncSpec` + `ConfigHonestySpec` memory-path refusal | sqlite opens it; memory plus path refuses (native open) |
 | `storage.busy_timeout_ms` | R | pinned 5000 at open; only 5000 accepted | `ConfigHonestySpec` busy refusal | 5000 only (native sqlite open; pinned busy timeout) |
 | `storage.exclusive_provider_ownership` | R | always single-writer O_EXCL; `false` refused | `ConfigHonestySpec` exclusive refusal | true only (native store create; always single-writer O_EXCL) |
-| `engine.kind` | E | validated + selects the reported active catalog; native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `CtlSpec` capabilities + native-scope | synthetic or openssl, reported catalog only (report-only; native always binds OpenSSL4) |
+| `engine.kind` | D | reserved: validated selector + reported active catalog; native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `ConfigHonestySpec` class + `reserved-engine` line; `CtlSpec` native-scope | synthetic or openssl, reported catalog only (config-not-policy; native always binds OpenSSL4) |
 | `engine.allow_synthetic_fallback` | R | no fallback exists; `true` refused | `ConfigHonestySpec` fallback refusal | false only, read by nothing (config loader; both) |
 | `engine.private_library_context` | R | native OpenSSL4 always opens a private libctx; `false` refused, default `true` | `ConfigHonestySpec` privctx refusal + default | true only (native OpenSSL4 open; always private libctx) |
 | `async.executor` | E | must be `"logical"` | `ConfigHonestySpec` executor refusal | "logical" only, load gate (config loader; both) |
@@ -89,6 +89,11 @@ rejected as unknown.
   lifetime) with no setting effect. Both values parse (fixtures use
   both); the `reserved-async` capabilities line (below) discloses
   the reservation.
+- `profile`, `interfaces`, `engine.kind`: validated labels that
+  select no behavior (read-site audit, ADR-22: only `Ctl.hs`
+  reporting reads them). All documented values parse; the
+  `reserved-profile`, `reserved-interfaces` and `reserved-engine`
+  capabilities lines (below) disclose the reservation.
 
 Capabilities disclosure lines (pinned verbatim by tests):
 
@@ -101,6 +106,12 @@ Capabilities disclosure lines (pinned verbatim by tests):
 - `reserved-limits: transcript_bytes/aggregate_payload_bytes/
   attribute_depth reserved (parse+report, no enforcement effect;
   buffer_bytes/attribute_entries: see template-bounds)`
+- `reserved-profile: profile reserved (validated label, reported
+  only; no behavior selects on it)`
+- `reserved-interfaces: interfaces reserved (validated subset,
+  reported only; native serves all interfaces regardless)`
+- `reserved-engine: engine.kind reserved (validated selector,
+  reported catalog only; native always binds OpenSSL4)`
 
 ## Unsupported values
 
@@ -161,8 +172,10 @@ marked `E` above change behavior, and `R` rows accept a single pinned
 value. The `D` (reserved) rows (`limits.buffer_bytes`,
 `limits.attribute_entries`, `limits.attribute_depth`,
 `limits.transcript_bytes`, `limits.aggregate_payload_bytes`,
-`async.persist_detached`) are reported but are not enforced limits: the
-effective attribute bounds are the fixed constants in `template-bounds`,
+`async.persist_detached`, plus `profile`, `interfaces` and
+`engine.kind`, which are validated labels selecting no behavior)
+are reported but are not enforced limits: the effective attribute
+bounds are the fixed constants in `template-bounds`,
 and no transcript, aggregate-payload or depth bound exists. Read the
 `capabilities` report, not the configuration file, for what is in force.
 The per-key inventory of configured value, effective value and
