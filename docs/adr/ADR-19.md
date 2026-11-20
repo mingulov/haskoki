@@ -12,5 +12,5 @@ duplicate mappings are replaced; a literal-RV gate enforces
 constructor coverage + numeric parity while independent ABI
 oracle pins stay allowlisted.
 
-**Open:** exact generated output paths (decided in Task 2
-Step 1). Flips to Accepted in the Task 2 commit.
+**Open:** exact generated output paths (decided in the RV-generation
+task's first step). Flips to Accepted in that task's commit.
