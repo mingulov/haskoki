@@ -85,6 +85,11 @@ import Haskoki.Runtime.Events
 import Haskoki.Runtime.Trace (Tracer, drainTracer, newTracer)
 import Haskoki.Types (ReturnCode (..), SlotId (..))
 
+-- | Typed return code to @CK_RV@ (single authority:
+-- 'returnCodeToRV'; no literals at use sites).
+rvOf :: ReturnCode -> CULong
+rvOf = CULong . fromIntegral . returnCodeToRV
+
 -- ---------------------------------------------------------------------------
 -- Instance
 -- ---------------------------------------------------------------------------
@@ -114,7 +119,7 @@ guarded body = do
   r <- try body
   case r of
     Right rv -> pure rv
-    Left (_ :: SomeException) -> pure (CULong 5)
+    Left (_ :: SomeException) -> pure (rvOf CKR_GENERAL_ERROR)
 
 -- ---------------------------------------------------------------------------
 -- Liveness cell
@@ -287,11 +292,11 @@ haskokiInstanceClose ptr = do
 withInstance :: StablePtr InstanceCell -> (Instance -> IO CULong) -> IO CULong
 withInstance ptr k = guarded $ do
   if castStablePtrToPtr ptr == nullPtr
-    then pure (CULong 5)
+    then pure (rvOf CKR_GENERAL_ERROR)
     else do
       mInst <- readLiveInstance ptr
       case mInst of
-        Nothing -> pure (CULong 0x190)
+        Nothing -> pure (rvOf CKR_CRYPTOKI_NOT_INITIALIZED)
         Just inst -> k inst
 
 -- | Claim one serving indication from the captured interval. Mask through the
@@ -301,13 +306,13 @@ withInstance ptr k = guarded $ do
 haskokiWaitForSlotEvent :: StablePtr InstanceCell -> CULong -> Ptr CULong -> IO CULong
 haskokiWaitForSlotEvent ptr flags pSlot = withInstance ptr $ \inst ->
   if pSlot == nullPtr || flags .&. complement ckfDontBlock /= 0
-    then pure (CULong 7)
+    then pure (rvOf CKR_ARGUMENTS_BAD)
     else mask_ $ do
       result <- waitSlot (instSlots inst) (if flags == ckfDontBlock then DontBlock else Block)
       case result of
-        SlotReady (SlotId slot) -> poke pSlot (fromIntegral slot) >> pure (CULong 0)
-        SlotNoEvent -> pure (CULong 8)
-        SlotWaitClosed -> pure (CULong 0x190)
+        SlotReady (SlotId slot) -> poke pSlot (fromIntegral slot) >> pure (rvOf CKR_OK)
+        SlotNoEvent -> pure (rvOf CKR_NO_EVENT)
+        SlotWaitClosed -> pure (rvOf CKR_CRYPTOKI_NOT_INITIALIZED)
 
 -- | The @HASKOKI_Control@ body: budget convention first (null
 -- response pointer = pure query; short capacity = required +
@@ -317,9 +322,9 @@ haskokiControl
   -> IO CULong
 haskokiControl ptr pReq (CULong reqLen) pResp pLen = withInstance ptr $ \inst -> do
   if pLen == nullPtr
-    then pure (CULong 7)
+    then pure (rvOf CKR_ARGUMENTS_BAD)
     else if pReq == nullPtr && reqLen /= 0
-      then pure (CULong 7)
+      then pure (rvOf CKR_ARGUMENTS_BAD)
       else do
         req <- if reqLen == 0
           then pure BS.empty

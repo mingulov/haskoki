@@ -94,6 +94,7 @@ import Haskoki.Request
   , OutputRegion (..)
   , Request (..)
   )
+import Haskoki.ReturnCode.Generated (returnCodeToRV)
 import Haskoki.Runtime.Config (Config, newConfigCell, resolveOnce)
 import Haskoki.Session (AdmitDeny)
 import Haskoki.Runtime.Lifecycle
@@ -130,15 +131,6 @@ import Haskoki.Types
 -- over C-owned atomic liveness state; no Haskell global remains.
 -- Behavior matrix pinned by @tests\/c\/loader.c@ case @T00D@.
 
--- CK_RV mirrors (unsigned long values from PKCS#11 v2.40;
--- the generator produces these from byte-pinned headers).
-ckrOK :: Word32
-ckrOK = 0x00000000
-ckrBufferTooSmall :: Word32
-ckrBufferTooSmall = 0x00000150
-ckrGeneralError :: Word32
-ckrGeneralError = 0x00000005
-
 toRV :: Word32 -> CULong
 toRV = CULong . fromIntegral
 
@@ -150,65 +142,11 @@ guarded body = do
   r <- try body
   case r of
     Right rv -> pure rv
-    Left (_ :: SomeException) -> pure (toRV ckrGeneralError)
+    Left (_ :: SomeException) -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
 
 -- ---------------------------------------------------------------------------
 -- Routed crypto exports (digest proof path)
 -- ---------------------------------------------------------------------------
-
--- | Pinned @CK_RV@ values (PKCS#11 v2.40) for every core return
--- code. The generator covers the C tables; the Haskell side
--- mirrors them here.
-returnCodeToRV :: ReturnCode -> Word32
-returnCodeToRV code = case code of
-  CKR_OK -> 0x00000000
-  CKR_HOST_MEMORY -> 0x00000002
-  CKR_FUNCTION_CANCELED -> 0x00000050
-  CKR_PENDING -> 0x00000204
-  CKR_SESSION_ASYNC_NOT_SUPPORTED -> 0x00000205
-  CKR_GENERAL_ERROR -> 0x00000005
-  CKR_ARGUMENTS_BAD -> 0x00000007
-  CKR_BUFFER_TOO_SMALL -> 0x00000150
-  CKR_SESSION_HANDLE_INVALID -> 0x000000B3
-  CKR_SESSION_COUNT -> 0x000000B1
-  CKR_SESSION_READ_ONLY_EXISTS -> 0x000000B7
-  CKR_SESSION_READ_ONLY -> 0x000000B5
-  CKR_TOKEN_NOT_PRESENT -> 0x000000E0
-  CKR_USER_ALREADY_LOGGED_IN -> 0x00000100
-  CKR_USER_ANOTHER_ALREADY_LOGGED_IN -> 0x00000104
-  CKR_USER_NOT_LOGGED_IN -> 0x00000101
-  CKR_PIN_INCORRECT -> 0x000000A0
-  CKR_PIN_LOCKED -> 0x000000A4
-  CKR_CRYPTOKI_NOT_INITIALIZED -> 0x00000190
-  CKR_CRYPTOKI_ALREADY_INITIALIZED -> 0x00000191
-  CKR_OBJECT_HANDLE_INVALID -> 0x00000082
-  CKR_KEY_HANDLE_INVALID -> 0x00000060
-  CKR_ATTRIBUTE_SENSITIVE -> 0x00000011
-  CKR_ATTRIBUTE_TYPE_INVALID -> 0x00000012
-  CKR_ATTRIBUTE_READ_ONLY -> 0x00000010
-  CKR_ATTRIBUTE_VALUE_INVALID -> 0x00000013
-  CKR_ACTION_PROHIBITED -> 0x0000001B
-  CKR_TEMPLATE_INCOMPLETE -> 0x000000D0
-  CKR_TEMPLATE_INCONSISTENT -> 0x000000D1
-  CKR_MECHANISM_INVALID -> 0x00000070
-  CKR_MECHANISM_PARAM_INVALID -> 0x00000071
-  CKR_OPERATION_ACTIVE -> 0x00000090
-  CKR_OPERATION_NOT_INITIALIZED -> 0x00000091
-  CKR_SIGNATURE_INVALID -> 0x000000C0
-  CKR_SIGNATURE_LEN_RANGE -> 0x000000C1
-  CKR_KEY_FUNCTION_NOT_PERMITTED -> 0x00000068
-  CKR_KEY_TYPE_INCONSISTENT -> 0x00000063
-  CKR_WRAPPING_KEY_TYPE_INCONSISTENT -> 0x00000115
-  CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT -> 0x000000F2
-  CKR_CURVE_NOT_SUPPORTED -> 0x00000140
-  CKR_KEY_SIZE_RANGE -> 0x00000062
-  CKR_DATA_LEN_RANGE -> 0x00000021
-  CKR_ENCRYPTED_DATA_INVALID -> 0x00000040
-  CKR_ENCRYPTED_DATA_LEN_RANGE -> 0x00000041
-  CKR_KEY_UNEXTRACTABLE -> 0x0000006A
-  CKR_KEY_NOT_WRAPPABLE -> 0x00000069
-  CKR_STATE_UNSAVEABLE -> 0x00000180
-  CKR_SAVED_STATE_INVALID -> 0x00000160
 
 rvOf :: ReturnCode -> CULong
 rvOf = toRV . returnCodeToRV
@@ -272,7 +210,7 @@ guardedUnit body = do
 withCtx :: StablePtr CryptoCtx -> (CryptoCtx -> IO CULong) -> IO CULong
 withCtx ctx k = guarded $ do
   if castStablePtrToPtr ctx == nullPtr
-    then pure (toRV ckrGeneralError)
+    then pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
     else deRefStablePtr ctx >>= k
 
 -- | Injectable acquisition steps for the routed-crypto open
@@ -425,7 +363,7 @@ haskokiCryptoDigestInit ctx hSession (CULong mech) pParams (CULong paramsLen) =
             Immediate pc -> do
               pr <- publishCommit (ccEnv c) (ccBackend c) pc
               pure $ case pr of
-                Left _ -> toRV ckrGeneralError
+                Left _ -> toRV (returnCodeToRV CKR_GENERAL_ERROR)
                 Right () -> rvOf (pcCode pc)
             Reject rej -> do
               publishRejection (ccEnv c) (ccBackend c) rej
@@ -440,7 +378,7 @@ haskokiCryptoDigestInit ctx hSession (CULong mech) pParams (CULong paramsLen) =
                 Right pc -> do
                   pr <- publishCommit (ccEnv c) (ccBackend c) pc
                   pure $ case pr of
-                    Left _ -> toRV ckrGeneralError
+                    Left _ -> toRV (returnCodeToRV CKR_GENERAL_ERROR)
                     Right () -> rvOf (pcCode pc)
 
 -- | Routed @C_Digest@: decode, plan, execute through the production
@@ -485,7 +423,7 @@ runBuffered c sid input pDigest pDigestLen cap = do
     Immediate pc -> do
       pr <- publishCommit (ccEnv c) (ccBackend c) pc
       case pr of
-        Left _ -> pure (toRV ckrGeneralError)
+        Left _ -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
         Right () -> encodeCommit pDigest pDigestLen cap sid (ccEnv c) pc
     Execute res eff -> case eff of
       EffectCrypto fx -> do
@@ -500,7 +438,7 @@ runBuffered c sid input pDigest pDigestLen cap = do
           Right pc -> do
             pr <- publishCommit (ccEnv c) (ccBackend c) pc
             case pr of
-              Left _ -> pure (toRV ckrGeneralError)
+              Left _ -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
               Right () -> encodeCommit pDigest pDigestLen cap sid (ccEnv c) pc
 
 -- | Encode a digest commit: exact bytes land in the caller buffer
@@ -514,23 +452,23 @@ encodeCommit pDigest pDigestLen cap sid env pc
       [] -> do
         m <- snapshotModel env
         case stagedDigestLen m sid of
-          Nothing -> pure (toRV ckrGeneralError)
+          Nothing -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
           Just n -> do
             _ <- encodeLength pDigestLen n
-            pure (toRV ckrBufferTooSmall)
-      _ -> pure (toRV ckrGeneralError)
+            pure (toRV (returnCodeToRV CKR_BUFFER_TOO_SMALL))
+      _ -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
   | pcCode pc /= CKR_OK = pure (rvOf (pcCode pc))
   | otherwise = case traverse nativeToWrite (pcOutputs pc) of
-      Nothing -> pure (toRV ckrGeneralError)
-      Just [] -> pure (toRV ckrGeneralError)
+      Nothing -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
+      Just [] -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
       Just writes -> do
         let bufs = [BoundBuffer (twPath w) pDigest cap | w <- writes]
         reps <- encodeWrites bufs writes
         if all ((== CKR_OK) . erCode) reps
           then do
             _ <- encodeLength pDigestLen (sum (map erWritten reps))
-            pure (toRV ckrOK)
-          else pure (toRV ckrGeneralError)
+            pure (toRV (returnCodeToRV CKR_OK))
+          else pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
 
 -- | The staged digest length from live model state, if the slot
 -- holds staged output.
@@ -559,7 +497,7 @@ runQuery c sid input pLen = do
     Immediate pc -> do
       pr <- publishCommit (ccEnv c) (ccBackend c) pc
       case pr of
-        Left _ -> pure (toRV ckrGeneralError)
+        Left _ -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
         Right () -> reportQuery c sid pLen
     Execute res eff -> case eff of
       EffectCrypto fx -> do
@@ -575,7 +513,7 @@ runQuery c sid input pLen = do
             | pcCode pc == CKR_BUFFER_TOO_SMALL -> do
                 pr <- publishCommit (ccEnv c) (ccBackend c) pc
                 case pr of
-                  Left _ -> pure (toRV ckrGeneralError)
+                  Left _ -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
                   Right () -> reportQuery c sid pLen
             | otherwise -> do
                 _ <- publishCommit (ccEnv c) (ccBackend c) pc
@@ -587,12 +525,12 @@ reportQuery :: CryptoCtx -> SessionId -> Ptr CULong -> IO CULong
 reportQuery c sid pLen = do
   m <- snapshotModel (ccEnv c)
   case lookupSession m sid of
-    Nothing -> pure (toRV ckrGeneralError)
+    Nothing -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
     Just _ -> case stagedDigestLen m sid of
-      Nothing -> pure (toRV ckrGeneralError)
+      Nothing -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
       Just n -> do
         _ <- encodeLength pLen n
-        pure (toRV ckrOK)
+        pure (toRV (returnCodeToRV CKR_OK))
 
 -- | Report a plan-level short buffer: re-read the staged digest
 -- length (a short retry keeps the slot). No staging: fail closed.
@@ -600,7 +538,7 @@ reportShortLength :: CryptoCtx -> SessionId -> Ptr CULong -> IO CULong
 reportShortLength c sid pLen = do
   m <- snapshotModel (ccEnv c)
   case stagedDigestLen m sid of
-    Nothing -> pure (toRV ckrGeneralError)
+    Nothing -> pure (toRV (returnCodeToRV CKR_GENERAL_ERROR))
     Just n -> do
       _ <- encodeLength pLen n
-      pure (toRV ckrBufferTooSmall)
+      pure (toRV (returnCodeToRV CKR_BUFFER_TOO_SMALL))

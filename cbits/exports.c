@@ -44,6 +44,7 @@
 /* NULL_PTR comes from the vendored PD header (always defined). */
 #include "pkcs11.h"
 #include "abi_generated.h"
+#include "rv_served.inc"
 #include "abi_probe.h"
 #include "notify_guard.h"
 #include "async_trampoline.h"

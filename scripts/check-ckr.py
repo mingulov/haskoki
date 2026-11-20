@@ -43,7 +43,10 @@ def main():
         r"ckr[A-Za-z0-9_']* :: CULong\n"
         r"ckr[A-Za-z0-9_']* = CULong 0x([0-9A-Fa-f]+)")
     found = pat.findall(text)
-    check(len(found) >= 1, "no documented CKR_ literals found (convention?)")
+    # Zero literals is the healthy state after the R-07b cutover
+    # (literals live generated in Haskoki.ReturnCode.Generated);
+    # check-rv-generated.py is the authority for literal-freedom.
+    # Any literal found must still satisfy the convention below.
     for name, doc_hex, lit_hex in found:
         check(name in defs, f"{name}: not a locked-header CKR_")
         if name in defs:

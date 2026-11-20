@@ -73,7 +73,8 @@ import qualified Data.Sequence as Seq
 import Data.Word (Word32, Word64)
 
 import Haskoki.Runtime.Async (AsyncTable, CancelOutcome (..), cancelJob, sessionJobs)
-import Haskoki.Types (SessionId, SlotId)
+import Haskoki.ReturnCode.Generated (returnCodeToRV)
+import Haskoki.Types (ReturnCode (..), SessionId, SlotId)
 
 -- ---------------------------------------------------------------------------
 -- Slot events
@@ -147,9 +148,9 @@ data WaitOutcome
 -- | Source-correct @CK_RV@ for each outcome: @CKR_OK@,
 -- @CKR_NO_EVENT@ (@0x08@), @CKR_CRYPTOKI_NOT_INITIALIZED@ (@0x190@).
 waitCode :: WaitOutcome -> Word32
-waitCode (WaitEvent _) = 0x00000000
-waitCode WaitNoEvent = 0x00000008
-waitCode WaitFinalized = 0x00000190
+waitCode (WaitEvent _) = returnCodeToRV CKR_OK
+waitCode WaitNoEvent = returnCodeToRV CKR_NO_EVENT
+waitCode WaitFinalized = returnCodeToRV CKR_CRYPTOKI_NOT_INITIALIZED
 
 -- | Blocking wait: the head event, or 'WaitFinalized' once the queue
 -- finalizes. Sleeps in STM (@retry@); no polling, no threads.

@@ -103,6 +103,8 @@ python3 scripts/check-findings-ledger.py
 python3 scripts/check-findings-ledger.py --self-test
 python3 scripts/check-planner-join.py
 python3 scripts/check-planner-join.py --self-test
+python3 scripts/check-rv-generated.py
+python3 scripts/check-rv-generated.py --self-test
 python3 scripts/check-qualification-wiring.py
 python3 scripts/check-qualification-wiring.py --self-test
 python3 scripts/check-loader-norm.py
