@@ -276,6 +276,7 @@ import Haskoki.Operation.KeyManagement
   , PendingWork (..)
   , finishWork
   , keyPairCompatible
+  , workFunction
   )
 import Haskoki.Operation.State (sessionOpsBytes)
 import Haskoki.Outcome
@@ -292,7 +293,7 @@ import Haskoki.Outcome
 import Haskoki.Output (maxOutputBytes)
 import Haskoki.Registry.Generated (generatedInventory)
 import Haskoki.Registry.Types (MechanismId (..))
-import Haskoki.Request (OutputRegion (..))
+import Haskoki.Request (FunctionId (..), OutputRegion (..))
 import Haskoki.Runtime.Attach (AsyncTableId (..))
 import Haskoki.Runtime.Lifecycle (Env, checkReservation, envRules, publish, snapshotModel)
 import Haskoki.Transition (finishEffect)
@@ -319,6 +320,31 @@ data JobFunction
   | JobGenKey
   | JobGenKeyPair
   deriving (Eq, Ord, Show, Enum, Bounded)
+
+-- | Family representative for async error attribution: the
+-- fallback when a job carries no checked inner work (unstepped
+-- call work reaches the drive on unchecked submit paths).
+-- Checked jobs attribute exactly through 'jobExactFid'. If the
+-- per-function error cells ever distinguish within a family, this
+-- mapping (not the call sites) is the place that records the call.
+jobFunctionToFid :: JobFunction -> FunctionId
+jobFunctionToFid func = case func of
+  JobSign -> F_Sign
+  JobDigest -> F_Digest
+  JobGenKey -> F_GenerateKey
+  JobGenKeyPair -> F_GenerateKeyPair
+
+-- | Exact error attribution for a job: checked call work carries
+-- its pinned step (phase-exact function, e.g. a final step
+-- attributes as the final entry, not the family head); key work
+-- carries its 'PendingWork' shape. Unstepped call work (possible
+-- on unchecked submit paths) falls back to the family head.
+jobExactFid :: Job -> FunctionId
+jobExactFid job = case jbWork job of
+  WorkCall w -> case resStep (callWorkReservation w) of
+    Just step -> csFunction step
+    Nothing -> jobFunctionToFid (jbFunction job)
+  WorkKey _ pw _ -> workFunction pw
 
 -- | One planned unit of async work: the reservation that guards its
 -- commit plus the effect the drive step runs. 'WorkCall' finishes
@@ -1209,8 +1235,8 @@ driveJob run env table jid job
           (EvFail CKR_GENERAL_ERROR "resource answer to a bytes job") st e
           (TermFailed CKR_GENERAL_ERROR "resource answer to a bytes job")
         GotCryptoError err -> failDrive
-          (EvFail (interpretError (TyCrypto err)) (show err)) st e
-          (TermFailed (interpretError (TyCrypto err)) (show err))
+          (EvFail (interpretError (jobExactFid job) (TyCrypto err)) (show err)) st e
+          (TermFailed (interpretError (jobExactFid job) (TyCrypto err)) (show err))
     -- Fail a drive step through 'stepJob', reporting the coded reason.
     failDrive :: JobEvent -> JobState -> Word64 -> TerminalState -> IO PollOutcome
     failDrive ev st e t = case stepJob ev st e of
@@ -1249,7 +1275,7 @@ completeJob env table func jid del release =
         -- transition decision: the shape is read here, the failure
         -- commits through 'stepJob' against the current record.
         JobReady other ->
-          let why = "non-bytes held result: " ++ heldTag other
+          let why = "non-bytes held result: " ++ heldTag (jobExactFid job) other
           in case stepJob (EvFail CKR_GENERAL_ERROR why)
               (jbState job) (jbEpoch job) of
             Right s -> do
@@ -1258,12 +1284,12 @@ completeJob env table func jid del release =
             Left _ -> pure (CompleteAlready (TermFailed CKR_GENERAL_ERROR
               "stepJob EvFail breached its contract"))
   where
-    heldTag :: CryptoResult -> String
-    heldTag (GotBytes _) = "bytes"
-    heldTag (GotValid _) = "verdict"
-    heldTag (GotResource _) = "resource"
-    heldTag GotUnit = "unit"
-    heldTag (GotCryptoError e) = show (interpretError (TyCrypto e))
+    heldTag :: FunctionId -> CryptoResult -> String
+    heldTag _ (GotBytes _) = "bytes"
+    heldTag _ (GotValid _) = "verdict"
+    heldTag _ (GotResource _) = "resource"
+    heldTag _ GotUnit = "unit"
+    heldTag fid (GotCryptoError e) = show (interpretError fid (TyCrypto e))
 
 -- | The byte-payload length a completion would deliver: the raw
 -- bytes for 'CompBytes', zero for handle shapes (handles land in
@@ -1975,7 +2001,7 @@ toSnapshot job = JobSnapshot
       JobReady GotUnit -> SnapReady BS.empty
       JobReady (GotValid _) -> SnapHeld "verdict"
       JobReady (GotResource _) -> SnapHeld "resource"
-      JobReady (GotCryptoError e) -> SnapHeld (show (interpretError (TyCrypto e)))
+      JobReady (GotCryptoError e) -> SnapHeld (show (interpretError (jobExactFid job) (TyCrypto e)))
       JobTerminal t -> SnapTerminal t
   , jsCapacity = jbCapacity job
   , jsSession = jbSession job

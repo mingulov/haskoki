@@ -84,7 +84,7 @@ import Haskoki.Operation.Cipher (pkcs7Pad, pkcs7Unpad)
 import Haskoki.Output (OpDisposition (..), OutputPlan (..), ResultDisposition (..), planOneShot)
 import Haskoki.Recipe.Gcm (gcmParamsValid, gcmRecipeFor)
 import Haskoki.Registry.Types (MechanismId)
-import Haskoki.Request (OutputIntent)
+import Haskoki.Request (FunctionId (..), OutputIntent)
 import Haskoki.Types (ReturnCode (..))
 
 -- ---------------------------------------------------------------------------
@@ -703,26 +703,26 @@ runVerifyOneShot ops st fam params input witness = case withMessageSlot ops fam 
 -- driver-protocol violation terminates the message while the outer
 -- context survives for the next message.
 finishMessage
-  :: MsgFamily -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> MsgFamily -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishMessage fam ops kind name result intent
+finishMessage fid fam ops kind name result intent
   | kind /= msgFamilyKind fam =
       (ops, denyOutcome (mkDeny CKR_ARGUMENTS_BAD
         "slot kind mismatches the message family"))
   | otherwise = case withMessageSlot ops fam of
       Left d -> (ops, denyOutcome d)
       Right ms -> case fam of
-        MsgEncrypt -> runFinishBytes ops ms name result intent
-        MsgDecrypt -> runFinishDecrypt ops ms name result intent
-        MsgSign -> runFinishBytes ops ms name result intent
-        MsgVerify -> runFinishVerify ops ms name result
+        MsgEncrypt -> runFinishBytes fid ops ms name result intent
+        MsgDecrypt -> runFinishDecrypt fid ops ms name result intent
+        MsgSign -> runFinishBytes fid ops ms name result intent
+        MsgVerify -> runFinishVerify fid ops ms name result
 
 -- | Finish a bytes-producing message (encrypt in slice A): stage
 -- the driver bytes, or terminate the message on any failure.
 runFinishBytes
-  :: SessionOps -> MsgState -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> MsgState -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-runFinishBytes ops ms name result intent = case stagedOf (msCommon ms) of
+runFinishBytes fid ops ms name result intent = case stagedOf (msCommon ms) of
   Just _ -> (ops, denyOutcome (mkDeny CKR_GENERAL_ERROR
     "message output already staged; use retry"))
   Nothing -> case msInner ms of
@@ -754,7 +754,7 @@ runFinishBytes ops ms name result intent = case stagedOf (msCommon ms) of
             "driver answered a message step with a feed unit"))
       GotCryptoError err ->
         ( storeMessage ops (abortMessage ms)
-        , denyOutcome (mkDeny (interpretError (TyCrypto err))
+        , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
             ("message crypto failed: " ++ show err)))
 
 -- | Finish a decrypt message: strip padding (padded) or check
@@ -762,9 +762,9 @@ runFinishBytes ops ms name result intent = case stagedOf (msCommon ms) of
 -- verdict-shaped results, and crypto failures all terminate the
 -- message while the outer context survives.
 runFinishDecrypt
-  :: SessionOps -> MsgState -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> MsgState -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-runFinishDecrypt ops ms name result intent = case stagedOf (msCommon ms) of
+runFinishDecrypt fid ops ms name result intent = case stagedOf (msCommon ms) of
   Just _ -> (ops, denyOutcome (mkDeny CKR_GENERAL_ERROR
     "message output already staged; use retry"))
   Nothing -> case msInner ms of
@@ -817,7 +817,7 @@ runFinishDecrypt ops ms name result intent = case stagedOf (msCommon ms) of
               "driver answered a message step with a feed unit"))
         GotCryptoError err ->
           ( storeMessage ops (abortMessage ms)
-          , denyOutcome (mkDeny (interpretError (TyCrypto err))
+          , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
               ("message crypto failed: " ++ show err)))
   where
     stagePlain plain =
@@ -848,9 +848,9 @@ verdictPlan name code why = OutputPlan
 -- every path terminates the message while the outer context
 -- survives.
 runFinishVerify
-  :: SessionOps -> MsgState -> String -> CryptoResult
+  :: FunctionId -> SessionOps -> MsgState -> String -> CryptoResult
   -> (SessionOps, StepOutcome)
-runFinishVerify ops ms name result = case stagedOf (msCommon ms) of
+runFinishVerify fid ops ms name result = case stagedOf (msCommon ms) of
   Just _ -> (ops, denyOutcome (mkDeny CKR_GENERAL_ERROR
     "message output already staged; use retry"))
   Nothing -> case msInner ms of
@@ -881,7 +881,7 @@ runFinishVerify ops ms name result = case stagedOf (msCommon ms) of
             "driver answered a verify step with a feed unit"))
       GotCryptoError err ->
         ( storeMessage ops (abortMessage ms)
-        , denyOutcome (mkDeny (interpretError (TyCrypto err))
+        , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
             ("message crypto failed: " ++ show err)))
 
 -- | Retry a staged message output with a fresh intent. Success

@@ -283,7 +283,7 @@ caseTwoMessages = do
       assertEqual "end-next binds empty aad" BS.empty aad
       -- Padded "hello, world" (12 bytes) to one 16-byte block.
       assertEqual "end-next input is padded concat" 16 (BS.length input)
-      let (ops4, fin1) = finishMessage MsgEncrypt ops3 SlotEncrypt "ct1"
+      let (ops4, fin1) = finishMessage F_EncryptMessageNext MsgEncrypt ops3 SlotEncrypt "ct1"
             (runMessageEffect (FxMessageCipher dir aesCbcMech Nothing BS.empty aad input))
             (IntentBuffer 64)
       assertEqual "message-1 finish ok" CKR_OK (soCode fin1)
@@ -299,7 +299,7 @@ caseTwoMessages = do
   assertEqual "one-shot plans ok" CKR_OK (soCode o1)
   ops6 <- case soEffects o1 of
     [fx@(FxMessageCipher _ _ _ _ _ _)] -> do
-      let (opsS, short) = finishMessage MsgEncrypt ops5 SlotEncrypt "ct2"
+      let (opsS, short) = finishMessage F_EncryptMessage MsgEncrypt ops5 SlotEncrypt "ct2"
             (runMessageEffect fx) (IntentBuffer 2)
       assertEqual "short buffer" CKR_BUFFER_TOO_SMALL (soCode short)
       assertEqual "short keeps the outer slot" [SlotEncrypt] (activeSlots opsS)
@@ -398,7 +398,7 @@ caseMessageOrdering = do
   assertEqual "end ok" CKR_OK (soCode nEnd)
   ops4 <- case soEffects nEnd of
     [fx] -> do
-      let (o, fin) = finishMessage MsgEncrypt ops3 SlotEncrypt "ct"
+      let (o, fin) = finishMessage F_EncryptMessageNext MsgEncrypt ops3 SlotEncrypt "ct"
             (runMessageEffect fx) (IntentBuffer 64)
       assertEqual "finish ok" CKR_OK (soCode fin)
       pure o
@@ -408,7 +408,7 @@ caseMessageOrdering = do
         (MsgOneShotCipher BS.empty BS.empty "second")
   ops6 <- case soEffects o1 of
     [fx] -> do
-      let (o, short) = finishMessage MsgEncrypt ops5 SlotEncrypt "ct2"
+      let (o, short) = finishMessage F_EncryptMessage MsgEncrypt ops5 SlotEncrypt "ct2"
             (runMessageEffect fx) (IntentBuffer 1)
       assertEqual "short buffer" CKR_BUFFER_TOO_SMALL (soCode short)
       pure o
@@ -426,11 +426,11 @@ caseMessageOrdering = do
   -- Finish with no message output pending.
   let (ops9, _) =
         initMessageOperation MsgEncrypt testEnv emptySessionOps testSession encryptArgs
-      (_, finIdle) = finishMessage MsgEncrypt ops9 SlotEncrypt "ct"
+      (_, finIdle) = finishMessage F_EncryptMessage MsgEncrypt ops9 SlotEncrypt "ct"
         (GotBytes "junk") (IntentBuffer 64)
   assertEqual "finish while idle" CKR_OPERATION_NOT_INITIALIZED (soCode finIdle)
   -- Wrong slot kind for the family.
-  let (_, finKind) = finishMessage MsgEncrypt ops9 SlotDecrypt "ct"
+  let (_, finKind) = finishMessage F_EncryptMessage MsgEncrypt ops9 SlotDecrypt "ct"
         (GotBytes "junk") (IntentBuffer 64)
   assertEqual "finish kind mismatch" CKR_ARGUMENTS_BAD (soCode finKind)
   -- A retry with nothing staged.
@@ -457,7 +457,7 @@ caseMessageErrorKeepsOuter = do
         (MsgNextCipher BS.empty "doomed" True)
   assertEqual "end plans" 1 (length (soEffects nEnd))
   -- The same driver failure that frees a classic slot only ends the message.
-  let (ops3, failed) = finishMessage MsgEncrypt ops2 SlotEncrypt "ct"
+  let (ops3, failed) = finishMessage F_EncryptMessageNext MsgEncrypt ops2 SlotEncrypt "ct"
         (GotCryptoError (CryptoFailed "boom")) (IntentBuffer 64)
   assertEqual "message crypto failure code" CKR_GENERAL_ERROR (soCode failed)
   assertEqual "outer slot survives the message error" [SlotEncrypt] (activeSlots ops3)
@@ -470,7 +470,7 @@ caseMessageErrorKeepsOuter = do
         (MsgNextCipher BS.empty "recovered" True)
   ops6 <- case soEffects nEnd2 of
     [fx] -> do
-      let (o, fin) = finishMessage MsgEncrypt ops5 SlotEncrypt "ct2"
+      let (o, fin) = finishMessage F_EncryptMessageNext MsgEncrypt ops5 SlotEncrypt "ct2"
             (runMessageEffect fx) (IntentBuffer 64)
       assertEqual "recovery message ok" CKR_OK (soCode fin)
       assertEqual "one delivery counted" (Just 1) (deliveredCount (lookupMessage o SlotEncrypt))
@@ -481,7 +481,7 @@ caseMessageErrorKeepsOuter = do
         (MsgOneShotCipher BS.empty BS.empty "mismatch")
   case soEffects o2 of
     [fx] -> do
-      let (o, bad) = finishMessage MsgEncrypt ops8 SlotEncrypt "ct3"
+      let (o, bad) = finishMessage F_EncryptMessage MsgEncrypt ops8 SlotEncrypt "ct3"
             (runMessageEffect fx `asVerdict` GotValid True) (IntentBuffer 64)
       assertEqual "verdict on bytes family" CKR_GENERAL_ERROR (soCode bad)
       assertEqual "slot survives violation" [SlotEncrypt] (activeSlots o)
@@ -490,7 +490,7 @@ caseMessageErrorKeepsOuter = do
   let (opsC0, _) = initOperation testEnv emptySessionOps testSession encryptArgs
       (opsC1, _, c1) = planCipherOneShot opsC0 testSession SlotEncrypt "ct" "classic"
   assertEqual "classic one-shot plans" 1 (length (soEffects c1))
-  let (opsC2, cFailed) = finishCipher opsC1 SlotEncrypt "ct"
+  let (opsC2, cFailed) = finishCipher F_Encrypt opsC1 SlotEncrypt "ct"
         (GotCryptoError (CryptoFailed "boom")) (IntentBuffer 64)
   assertEqual "classic failure code" CKR_GENERAL_ERROR (soCode cFailed)
   assertEqual "classic failure frees the slot" [] (activeSlots opsC2)
@@ -618,7 +618,7 @@ caseMessageAad = do
   -- first message, then begin a fresh one.
   (ops4, st4) <- case soEffects nEnd of
     [fx] -> do
-      let (o, fin) = finishMessage MsgEncrypt ops3 SlotEncrypt "ct"
+      let (o, fin) = finishMessage F_EncryptMessageNext MsgEncrypt ops3 SlotEncrypt "ct"
             (runMessageEffect fx) (IntentBuffer 64)
       assertEqual "first aad message ok" CKR_OK (soCode fin)
       let (ob, sb, b2) = planMessageBegin o st2 MsgEncrypt beginA
@@ -663,7 +663,7 @@ caseClassicMessageMixing = do
         (MsgOneShotCipher BS.empty BS.empty "staged")
   case soEffects o1 of
     [fx] -> do
-      let (ops3, short) = finishMessage MsgEncrypt ops2 SlotEncrypt "ct"
+      let (ops3, short) = finishMessage F_EncryptMessage MsgEncrypt ops2 SlotEncrypt "ct"
             (runMessageEffect fx) (IntentBuffer 1)
       assertEqual "short buffer" CKR_BUFFER_TOO_SMALL (soCode short)
       let (ops4, classic) = retryStaged ops3 SlotEncrypt (IntentBuffer 64)
@@ -699,7 +699,7 @@ caseDecryptVertical = do
         (MsgOneShotCipher BS.empty BS.empty "secret-msg")
   ct <- case soEffects oE of
     [fx] -> do
-      let (o, fin) = finishMessage MsgEncrypt ops1 SlotEncrypt "ct"
+      let (o, fin) = finishMessage F_EncryptMessage MsgEncrypt ops1 SlotEncrypt "ct"
             (runMessageEffect fx) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       case stagedPayload fin of
@@ -714,7 +714,7 @@ caseDecryptVertical = do
     [fx@(FxMessageCipher dir _ _ _ _ input)] -> do
       assertEqual "decrypt direction" DirDecrypt dir
       assertEqual "decrypt effect input is raw" ctBytes input
-      let (o, fin) = finishMessage MsgDecrypt ops3 SlotDecrypt "pt"
+      let (o, fin) = finishMessage F_DecryptMessage MsgDecrypt ops3 SlotDecrypt "pt"
             (runMessageEffect fx) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip plaintext" (Just "secret-msg") (stagedPayload fin)
@@ -735,7 +735,7 @@ caseDecryptVertical = do
   -- Corrupt padding terminates the message, never the outer context.
   ops8 <- case soEffects nEnd of
     [_] -> do
-      let (o, bad) = finishMessage MsgDecrypt ops7 SlotDecrypt "pt"
+      let (o, bad) = finishMessage F_DecryptMessageNext MsgDecrypt ops7 SlotDecrypt "pt"
             (GotBytes "junk!!") (IntentBuffer 64)
       assertEqual "bad pad code" CKR_ENCRYPTED_DATA_INVALID (soCode bad)
       assertEqual "slot survives bad pad" [SlotEncrypt, SlotDecrypt] (activeSlots o)
@@ -747,7 +747,7 @@ caseDecryptVertical = do
       (opsV, _, nEndU) = planMessageNext opsU stU MsgDecrypt
         (MsgNextCipher BS.empty ctBytes True)
   assertEqual "end plans" 1 (length (soEffects nEndU))
-  let (opsW, ragged) = finishMessage MsgDecrypt opsV SlotDecrypt "pt"
+  let (opsW, ragged) = finishMessage F_DecryptMessageNext MsgDecrypt opsV SlotDecrypt "pt"
         (GotBytes "short!") (IntentBuffer 64)
   -- "short!" is 6 bytes: not block-aligned, and no valid pad framing.
   assertEqual "ragged answer code" CKR_ENCRYPTED_DATA_INVALID (soCode ragged)
@@ -761,7 +761,7 @@ caseDecryptVertical = do
   assertEqual "unpadded decrypt plans" 1 (length (soEffects oP))
   case soEffects oP of
     [fx] -> do
-      let (o, fin) = finishMessage MsgDecrypt opsQ SlotDecrypt "pt"
+      let (o, fin) = finishMessage F_DecryptMessage MsgDecrypt opsQ SlotDecrypt "pt"
             (runMessageEffect fx) (IntentBuffer 64)
       assertEqual "aligned ok" CKR_OK (soCode fin)
       assertEqual "aligned staged" (Just "87654321") (stagedPayload fin)
@@ -769,7 +769,7 @@ caseDecryptVertical = do
             (MsgOneShotCipher BS.empty BS.empty "12345678")
       case soEffects oP2 of
         [_] -> do
-          let (o3, rag) = finishMessage MsgDecrypt o2 SlotDecrypt "pt"
+          let (o3, rag) = finishMessage F_DecryptMessage MsgDecrypt o2 SlotDecrypt "pt"
                 (GotBytes "short") (IntentBuffer 64)
           assertEqual "ragged code" CKR_ENCRYPTED_DATA_LEN_RANGE (soCode rag)
           assertEqual "slot kept" [SlotDecrypt] (activeSlots o3)
@@ -797,7 +797,7 @@ caseSignVertical = do
   (sig, ops4) <- case soEffects nEnd of
     [fx@(FxMessageSign _ _ _ input)] -> do
       assertEqual "sign input is the concatenation" "hello, world" input
-      let (o, fin) = finishMessage MsgSign ops3 SlotSign "sig"
+      let (o, fin) = finishMessage F_SignMessageNext MsgSign ops3 SlotSign "sig"
             (runMessageSignEffect fx) (IntentBuffer 64)
       assertEqual "sign finish ok" CKR_OK (soCode fin)
       assertEqual "sign keeps the slot" [SlotSign] (activeSlots o)
@@ -810,7 +810,7 @@ caseSignVertical = do
         (MsgOneShotSign BS.empty "hello, world")
   case soEffects o1 of
     [fx] -> do
-      let (o, fin) = finishMessage MsgSign ops5 SlotSign "sig2"
+      let (o, fin) = finishMessage F_SignMessage MsgSign ops5 SlotSign "sig2"
             (runMessageSignEffect fx) (IntentBuffer 2)
       assertEqual "short sign buffer" CKR_BUFFER_TOO_SMALL (soCode fin)
       let (o2, retry) = retryMessageStaged MsgSign o SlotSign (IntentBuffer 64)
@@ -842,7 +842,7 @@ caseVerifyVertical = do
     [fx@(FxMessageVerify _ _ _ input sig)] -> do
       assertEqual "verify input" "attested" input
       assertEqual "verify witness" witness sig
-      let (o, fin) = finishMessage MsgVerify ops1 SlotVerify "vrf"
+      let (o, fin) = finishMessage F_VerifyMessage MsgVerify ops1 SlotVerify "vrf"
             (runMessageVerifyEffect fx) (IntentBuffer 64)
       assertEqual "valid witness" CKR_OK (soCode fin)
       assertEqual "verdict keeps the slot" [SlotVerify] (activeSlots o)
@@ -857,7 +857,7 @@ caseVerifyVertical = do
   assertEqual "verify end plans" 1 (length (soEffects nEnd))
   ops5 <- case soEffects nEnd of
     [fx] -> do
-      let (o, fin) = finishMessage MsgVerify ops4 SlotVerify "vrf"
+      let (o, fin) = finishMessage F_VerifyMessageNext MsgVerify ops4 SlotVerify "vrf"
             (runMessageVerifyEffect fx) (IntentBuffer 64)
       assertEqual "mismatch code" CKR_SIGNATURE_INVALID (soCode fin)
       assertEqual "slot survives mismatch" [SlotVerify] (activeSlots o)
@@ -892,7 +892,7 @@ caseVerifyVertical = do
         (MsgOneShotVerify BS.empty "attested" witness)
   case soEffects o3 of
     [_] -> do
-      let (o, bad) = finishMessage MsgVerify ops12 SlotVerify "vrf"
+      let (o, bad) = finishMessage F_VerifyMessage MsgVerify ops12 SlotVerify "vrf"
             (GotBytes "junk") (IntentBuffer 64)
       assertEqual "bytes on verify" CKR_GENERAL_ERROR (soCode bad)
       assertEqual "slot survives" [SlotVerify] (activeSlots o)
@@ -1076,7 +1076,7 @@ caseToyAeadEndToEnd = do
       assertEqual "nonce bound" nonce params
       assertEqual "aad bound" aad boundAad
       assertEqual "input bound padded" ("payload-data" <> BS.replicate 4 4) input
-      let (o, fin) = finishMessage MsgEncrypt ops1 SlotEncrypt "ct"
+      let (o, fin) = finishMessage F_EncryptMessage MsgEncrypt ops1 SlotEncrypt "ct"
             (runToyAeadEncrypt fx) (IntentBuffer 64)
       assertEqual "aead encrypt ok" CKR_OK (soCode fin)
       case stagedPayload fin of
@@ -1095,7 +1095,7 @@ caseToyAeadEndToEnd = do
         (MsgOneShotCipher nonce aad blobBytes)
   ops4 <- case soEffects oD of
     [fx] -> do
-      let (o, fin) = finishMessage MsgDecrypt ops3 SlotDecrypt "pt"
+      let (o, fin) = finishMessage F_DecryptMessage MsgDecrypt ops3 SlotDecrypt "pt"
             (runToyAeadDecrypt fx) (IntentBuffer 64)
       assertEqual "aead decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip" (Just "payload-data") (stagedPayload fin)
@@ -1107,7 +1107,7 @@ caseToyAeadEndToEnd = do
         (MsgOneShotCipher nonce aad tampered)
   ops6 <- case soEffects oT of
     [fx] -> do
-      let (o, bad) = finishMessage MsgDecrypt ops5 SlotDecrypt "pt"
+      let (o, bad) = finishMessage F_DecryptMessage MsgDecrypt ops5 SlotDecrypt "pt"
             (runToyAeadDecrypt fx) (IntentBuffer 64)
       assertEqual "tag mismatch code" CKR_GENERAL_ERROR (soCode bad)
       assertEqual "context survives" [SlotEncrypt, SlotDecrypt] (activeSlots o)
@@ -1118,7 +1118,7 @@ caseToyAeadEndToEnd = do
         (MsgOneShotCipher nonce "forged-header" blobBytes)
   case soEffects oA of
     [fx] -> do
-      let (o, bad) = finishMessage MsgDecrypt ops7 SlotDecrypt "pt"
+      let (o, bad) = finishMessage F_DecryptMessage MsgDecrypt ops7 SlotDecrypt "pt"
             (runToyAeadDecrypt fx) (IntentBuffer 64)
       assertEqual "aad mismatch code" CKR_GENERAL_ERROR (soCode bad)
       assertEqual "context survives aad" [SlotEncrypt, SlotDecrypt] (activeSlots o)

@@ -48,7 +48,7 @@ import Haskoki.Operation
   )
 import Haskoki.Operation.Digest (finishDigestInit)
 import Haskoki.Registry (MechanismId (..), Operation (..))
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Snapshot
   ( RestoreKeys (..)
@@ -174,7 +174,7 @@ caseRefinishStaged = do
   let sc = setStaged (Just sampleStaged)
             (setBuffered "kept" sampleCommon)
       ops0 = insertOp (mkActiveDigest sc) emptySessionOps
-      (ops1, step) = finishDigestInit ops0 SlotDigest "digest"
+      (ops1, step) = finishDigestInit F_DigestInit ops0 SlotDigest "digest"
         (GotResource (EngineResourceId 9)) IntentNull
   assertEqual "ack code" CKR_OK (soCode step)
   case lookupSingle ops1 SlotDigest of

@@ -150,7 +150,7 @@ import Haskoki.Registry
   , mkCapabilities
   , registerDescriptor
   )
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( EngineResourceId (..)
@@ -919,7 +919,7 @@ caseDigestMultipart = do
   case soEffects finPlan of
     [FxDigestConsume rid] -> do
       assertEqual "final consumes the stream" streamRid rid
-      let (ops4, finOut) = finishDigest ops3 SlotDigest "digest"
+      let (ops4, finOut) = finishDigest F_DigestFinal ops3 SlotDigest "digest"
             (GotBytes (toyDigest "hello, world")) (IntentBuffer 64)
       assertEqual "final ok" CKR_OK (soCode finOut)
       assertEqual "final frees the slot" [] (activeSlots ops4)
@@ -960,7 +960,7 @@ caseDigestFinalConsumes = do
   case soEffects finPlan of
     [FxDigestConsume rid] -> do
       assertEqual "final consumes the stream" streamRid rid
-      let (ops4, finOut) = finishDigest ops3 SlotDigest "digest"
+      let (ops4, finOut) = finishDigest F_DigestFinal ops3 SlotDigest "digest"
             (GotBytes (toyDigest "hello, world")) (IntentBuffer 64)
       assertEqual "final ok" CKR_OK (soCode finOut)
       assertEqual "final frees the slot" [] (activeSlots ops4)
@@ -986,7 +986,7 @@ caseDigestShortRetry = do
     [fx@(FxDigest _ _)] -> pure (runDigestEffect fx)
     other -> assertFailure ("expected one digest effect, got " ++ show other)
   -- toyDigest "abc" is 4 bytes; a 2-byte buffer is short.
-  let (ops2, short) = finishDigest ops1 SlotDigest "digest" res (IntentBuffer 2)
+  let (ops2, short) = finishDigest F_Digest ops1 SlotDigest "digest" res (IntentBuffer 2)
   assertEqual "short buffer" CKR_BUFFER_TOO_SMALL (soCode short)
   assertEqual "short buffer keeps the slot" [SlotDigest] (activeSlots ops2)
   let (ops3, retry) = retryStaged ops2 SlotDigest (IntentBuffer 64)
@@ -998,7 +998,7 @@ caseDigestFailureTerminates = do
   let (ops0, _) = initOperation testEnv emptySessionOps testSession digestArgs
   let (ops1, _, one) = planDigestOneShot ops0 testSession "digest" "abc"
   assertEqual "one-shot plans" 1 (length (soEffects one))
-  let (ops2, failed) = finishDigest ops1 SlotDigest "digest"
+  let (ops2, failed) = finishDigest F_Digest ops1 SlotDigest "digest"
         (GotCryptoError (CryptoFailed "boom")) (IntentBuffer 64)
   assertEqual "failure code" CKR_GENERAL_ERROR (soCode failed)
   assertEqual "failure frees the slot" [] (activeSlots ops2)
@@ -1006,7 +1006,7 @@ caseDigestFailureTerminates = do
   let (ops3, _) = initOperation testEnv emptySessionOps testSession digestArgs
   let (ops4, _, one2) = planDigestOneShot ops3 testSession "digest" "abc"
   assertEqual "one-shot plans again" 1 (length (soEffects one2))
-  let (ops5, bad) = finishDigest ops4 SlotDigest "digest"
+  let (ops5, bad) = finishDigest F_Digest ops4 SlotDigest "digest"
         (GotValid True) (IntentBuffer 64)
   assertEqual "verdict for digest fails" CKR_GENERAL_ERROR (soCode bad)
   assertEqual "violation frees the slot" [] (activeSlots ops5)
@@ -1132,7 +1132,7 @@ caseCipherMultipart = do
     [fx@(FxCipher DirEncrypt mech _ _ input)] -> do
       assertEqual "update mechanism" aesCbcMech mech
       assertEqual "update streams one block" 16 (BS.length input)
-      let (opsU, finU) = finishCipherUpdate ops2 SlotEncrypt "cipher"
+      let (opsU, finU) = finishCipherUpdate F_EncryptUpdate ops2 SlotEncrypt "cipher"
             (runStream fx) (IntentBuffer 128)
       assertEqual "update finish ok" CKR_OK (soCode finU)
       assertEqual "update keeps the slot" [SlotEncrypt] (activeSlots opsU)
@@ -1148,7 +1148,7 @@ caseCipherMultipart = do
       assertEqual "effect mechanism" aesCbcMech mech
       assertEqual "final input is padded retained" 16 (BS.length input)
       assertBool "block aligned" (BS.length input `mod` 16 == 0)
-      let (ops4, fin) = finishCipher ops3 SlotEncrypt "cipher"
+      let (ops4, fin) = finishCipher F_EncryptFinal ops3 SlotEncrypt "cipher"
             (runStream (FxCipher DirEncrypt mech Nothing BS.empty input))
             (IntentBuffer 128)
       assertEqual "final ok" CKR_OK (soCode fin)
@@ -1162,7 +1162,7 @@ caseCipherMultipart = do
   let (ops6, _, o1) = planCipherOneShot ops5 testSession SlotEncrypt "cipher" msg
   oneCt <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
-      let (_, fin) = finishCipher ops6 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops6 SlotEncrypt "cipher"
             (runStream fx) (IntentBuffer 128)
       case stagedBytes fin of
         Just ct -> pure ct
@@ -1437,7 +1437,7 @@ caseEncryptChainsFromAnswer = do
   -- The finisher advances the chaining value from the answer and
   -- keeps the slot open on the retained suffix.
   let answer = BS.pack [100 .. 115]
-      (ops2, fin) = finishCipherUpdate ops1 SlotEncrypt "cipher"
+      (ops2, fin) = finishCipherUpdate F_EncryptUpdate ops1 SlotEncrypt "cipher"
         (GotBytes answer) (IntentBuffer 128)
   assertEqual "update finish ok" CKR_OK (soCode fin)
   assertEqual "update keeps the slot" [SlotEncrypt] (activeSlots ops2)
@@ -1447,7 +1447,7 @@ caseEncryptChainsFromAnswer = do
   assertEqual "chaining value is the answer block" (Just answer) (chainIvOf sc2)
   assertEqual "retained suffix" 15 (BS.length (bufferedOf sc2))
   -- A short answer terminates instead of chaining garbage.
-  let (ops3, badFin) = finishCipherUpdate ops1 SlotEncrypt "cipher"
+  let (ops3, badFin) = finishCipherUpdate F_EncryptUpdate ops1 SlotEncrypt "cipher"
         (GotBytes "short") (IntentBuffer 128)
   assertEqual "short answer fails closed" CKR_GENERAL_ERROR (soCode badFin)
   assertEqual "short answer terminates" [] (activeSlots ops3)
@@ -1459,7 +1459,7 @@ caseCipherRoundtrip = do
   let (ops1, _, o1) = planCipherOneShot ops0 testSession SlotEncrypt "cipher" msg
   ct <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
-      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher"
             (runCipherEffect fx) (IntentBuffer 128)
       case stagedBytes fin of
         Just ct -> pure ct
@@ -1472,7 +1472,7 @@ caseCipherRoundtrip = do
   case soEffects o2 of
     [fx@(FxCipher DirDecrypt _ _ _ input)] -> do
       assertEqual "decrypt input is the full block" ct input
-      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+      let (ops4, fin) = finishCipher F_Decrypt ops3 SlotDecrypt "plain"
             (runCipherEffect fx) (IntentBuffer 128)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip recovers" (Just msg) (stagedBytes fin)
@@ -1509,7 +1509,7 @@ caseCipherLengths = do
   let noPadDec = decryptArgs { iaCipher = Just (CipherSpec 16 False) }
   let (ops5, _) = initOperation testEnv emptySessionOps testSession noPadDec
   let (ops6, _, _) = planCipherOneShot ops5 testSession SlotDecrypt "plain" "short"
-  let (ops7, fin) = finishCipher ops6 SlotDecrypt "plain"
+  let (ops7, fin) = finishCipher F_Decrypt ops6 SlotDecrypt "plain"
         (GotBytes "short") (IntentBuffer 128)
   assertEqual "ragged decrypt answer" CKR_ENCRYPTED_DATA_LEN_RANGE (soCode fin)
   assertEqual "length failure frees" [] (activeSlots ops7)
@@ -1557,7 +1557,7 @@ caseCtsFloor = do
   -- Decrypt finish stages ragged answers at/above the floor.
   let (opsG, _) = initOperation ctsEnv emptySessionOps testSession ctsDecArgs
   let (opsH, _, _) = planCipherOneShot opsG testSession SlotDecrypt "plain" ragged21
-  let (opsI, fin) = finishCipher opsH SlotDecrypt "plain"
+  let (opsI, fin) = finishCipher F_Decrypt opsH SlotDecrypt "plain"
         (GotBytes ragged21) (IntentBuffer 128)
   assertEqual "cts ragged decrypt stages" CKR_OK (soCode fin)
   assertEqual "cts decrypt stages bytes" (Just ragged21) (stagedBytes fin)
@@ -1565,7 +1565,7 @@ caseCtsFloor = do
   -- ... and refuses answers below the floor.
   let (opsJ, _) = initOperation ctsEnv emptySessionOps testSession ctsDecArgs
   let (opsK, _, _) = planCipherOneShot opsJ testSession SlotDecrypt "plain" "short"
-  let (opsL, finS) = finishCipher opsK SlotDecrypt "plain"
+  let (opsL, finS) = finishCipher F_Decrypt opsK SlotDecrypt "plain"
         (GotBytes "short") (IntentBuffer 128)
   assertEqual "cts short decrypt refused" CKR_ENCRYPTED_DATA_LEN_RANGE (soCode finS)
   assertEqual "cts short decrypt frees" [] (activeSlots opsL)
@@ -1601,7 +1601,7 @@ caseAesStreamFloor = do
       assertEqual "update streams one block" 16 (BS.length input)
       pure (runCipherEffect fx)
     other -> assertFailure ("expected one update effect, got " ++ show other)
-  let (ops2, finU) = finishCipherUpdate ops1 SlotEncrypt "cipher" updAns (IntentBuffer 128)
+  let (ops2, finU) = finishCipherUpdate F_EncryptUpdate ops1 SlotEncrypt "cipher" updAns (IntentBuffer 128)
   assertEqual "update finish ok" CKR_OK (soCode finU)
   let (ops3, _, u2) = planCipherUpdate ops2 testSession SlotEncrypt "ghij" Nothing
   assertEqual "cfb128 tail update ok" CKR_OK (soCode u2)
@@ -1631,7 +1631,7 @@ caseAesStreamFloor = do
   let (opsD, _) = initOperation streamEnv emptySessionOps testSession
         ((streamArgs aesCfb8Mech) { iaOp = OpDecrypt })
   let (opsF, _, _) = planCipherOneShot opsD testSession SlotDecrypt "plain" "X"
-  let (opsG, fin) = finishCipher opsF SlotDecrypt "plain"
+  let (opsG, fin) = finishCipher F_Decrypt opsF SlotDecrypt "plain"
         (GotBytes "X") (IntentBuffer 128)
   assertEqual "cfb8 1-byte decrypt stages" CKR_OK (soCode fin)
   assertEqual "decrypt stages bytes" (Just "X") (stagedBytes fin)
@@ -1644,7 +1644,7 @@ caseCipherBadPad = do
         (BS.replicate 16 0)
   assertEqual "decrypt plans" 1 (length (soEffects o1))
   -- A zero last byte is never valid PKCS#7.
-  let (ops2, fin) = finishCipher ops1 SlotDecrypt "plain"
+  let (ops2, fin) = finishCipher F_Decrypt ops1 SlotDecrypt "plain"
         (GotBytes (BS.replicate 15 0x41 <> BS.singleton 0)) (IntentBuffer 128)
   assertEqual "bad pad code" CKR_ENCRYPTED_DATA_INVALID (soCode fin)
   assertEqual "bad pad frees the slot" [] (activeSlots ops2)
@@ -1656,7 +1656,7 @@ caseCipherShortFail = do
   res <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> pure (runCipherEffect fx)
     other -> assertFailure ("expected one cipher effect, got " ++ show other)
-  let (ops2, short) = finishCipher ops1 SlotEncrypt "cipher" res (IntentBuffer 4)
+  let (ops2, short) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher" res (IntentBuffer 4)
   assertEqual "short buffer" CKR_BUFFER_TOO_SMALL (soCode short)
   assertEqual "short keeps the slot" [SlotEncrypt] (activeSlots ops2)
   let (ops3, retry) = retryStaged ops2 SlotEncrypt (IntentBuffer 128)
@@ -1666,7 +1666,7 @@ caseCipherShortFail = do
   let (ops4, _) = initOperation testEnv emptySessionOps testSession encryptArgs
   let (ops5, _, o2) = planCipherOneShot ops4 testSession SlotEncrypt "cipher" "data"
   assertEqual "plans" 1 (length (soEffects o2))
-  let (ops6, failed) = finishCipher ops5 SlotEncrypt "cipher"
+  let (ops6, failed) = finishCipher F_Encrypt ops5 SlotEncrypt "cipher"
         (GotCryptoError (CryptoFailed "boom")) (IntentBuffer 128)
   assertEqual "failure code" CKR_GENERAL_ERROR (soCode failed)
   assertEqual "failure frees" [] (activeSlots ops6)
@@ -1680,7 +1680,7 @@ caseEmptyQueryStages = do
   let (ops0, _) = initOperation testEnv emptySessionOps testSession noPadDec
   let (ops1, _, o1) = planCipherOneShot ops0 testSession SlotDecrypt "plain" BS.empty
   assertEqual "empty plans" 1 (length (soEffects o1))
-  let (ops2, query) = finishCipher ops1 SlotDecrypt "plain"
+  let (ops2, query) = finishCipher F_Decrypt ops1 SlotDecrypt "plain"
         (GotBytes BS.empty) IntentNull
   assertEqual "query stages" CKR_BUFFER_TOO_SMALL (soCode query)
   assertEqual "query keeps the slot" [SlotDecrypt] (activeSlots ops2)
@@ -1690,7 +1690,7 @@ caseEmptyQueryStages = do
   -- A re-query re-reports instead of completing.
   let (ops4, _) = initOperation testEnv emptySessionOps testSession noPadDec
   let (ops5, _, _) = planCipherOneShot ops4 testSession SlotDecrypt "plain" BS.empty
-  let (ops6, q2) = finishCipher ops5 SlotDecrypt "plain"
+  let (ops6, q2) = finishCipher F_Decrypt ops5 SlotDecrypt "plain"
         (GotBytes BS.empty) IntentNull
   assertEqual "second query stages" CKR_BUFFER_TOO_SMALL (soCode q2)
   let (ops7, q3) = retryStaged ops6 SlotDecrypt IntentNull
@@ -1813,7 +1813,7 @@ caseCipherCorruptShape = do
   let (ops2, _, finOut) = planCipherFinal encOps testSession SlotEncrypt "cipher"
   assertEqual "final code" CKR_GENERAL_ERROR (soCode finOut)
   assertEqual "final frees the slot" [] (activeSlots ops2)
-  let (ops3, decOut) = finishCipher decOps SlotDecrypt "cipher"
+  let (ops3, decOut) = finishCipher F_Decrypt decOps SlotDecrypt "cipher"
         (GotBytes (BS.replicate 16 0x44)) (IntentBuffer 64)
   assertEqual "decrypt finish code" CKR_GENERAL_ERROR (soCode decOut)
   assertEqual "decrypt finish frees the slot" [] (activeSlots ops3)
@@ -2129,7 +2129,7 @@ caseSignRoundtrip = do
     [fx@(FxSign mech _ _ input)] -> do
       assertEqual "effect mechanism" hmacMech mech
       assertEqual "effect input concatenated" "hello, world" input
-      let (ops4, fin) = finishSign ops3 SlotSign "signature"
+      let (ops4, fin) = finishSign F_SignFinal ops3 SlotSign "signature"
             (runSignEffect fx) (IntentBuffer 64)
       assertEqual "sign ok" CKR_OK (soCode fin)
       assertEqual "sign frees" [] (activeSlots ops4)
@@ -2150,7 +2150,7 @@ caseSignRoundtrip = do
     [fx@(FxVerify _ _ _ input wit)] -> do
       assertEqual "verify input concatenated" "hello, world" input
       assertEqual "verify witness carried" sig wit
-      let (ops9, fin) = finishVerify ops8 SlotVerify "verify"
+      let (ops9, fin) = finishVerify F_VerifyFinal ops8 SlotVerify "verify"
             (runVerifyEffect fx) (IntentBuffer 0)
       assertEqual "verify ok" CKR_OK (soCode fin)
       assertEqual "verify frees" [] (activeSlots ops9)
@@ -2205,7 +2205,7 @@ caseVerifyMismatch = do
   let (ops0, _) = initOperation signEnv emptySessionOps testSession verifyArgs
   let (ops1, _, o1) = planVerifyOneShot ops0 testSession "verify" "data" "wrong!!"
   assertEqual "verify plans" 1 (length (soEffects o1))
-  let (ops2, fin) = finishVerify ops1 SlotVerify "verify"
+  let (ops2, fin) = finishVerify F_Verify ops1 SlotVerify "verify"
         (GotValid False) (IntentBuffer 0)
   assertEqual "mismatch code" CKR_SIGNATURE_INVALID (soCode fin)
   assertEqual "mismatch frees" [] (activeSlots ops2)
@@ -2242,7 +2242,7 @@ caseSignShortFail = do
   res <- case soEffects o1 of
     [fx@(FxSign _ _ _ _)] -> pure (runSignEffect fx)
     other -> assertFailure ("expected one sign effect, got " ++ show other)
-  let (ops2, short) = finishSign ops1 SlotSign "signature" res (IntentBuffer 2)
+  let (ops2, short) = finishSign F_Sign ops1 SlotSign "signature" res (IntentBuffer 2)
   assertEqual "short buffer" CKR_BUFFER_TOO_SMALL (soCode short)
   assertEqual "short keeps" [SlotSign] (activeSlots ops2)
   let (ops3, retry) = retryStaged ops2 SlotSign (IntentBuffer 64)
@@ -2251,7 +2251,7 @@ caseSignShortFail = do
   let (ops4, _) = initOperation signEnv emptySessionOps testSession signArgs
   let (ops5, _, o2) = planSignOneShot ops4 testSession "signature" "message"
   assertEqual "plans" 1 (length (soEffects o2))
-  let (ops6, failed) = finishSign ops5 SlotSign "signature"
+  let (ops6, failed) = finishSign F_Sign ops5 SlotSign "signature"
         (GotCryptoError (CryptoFailed "boom")) (IntentBuffer 64)
   assertEqual "failure code" CKR_GENERAL_ERROR (soCode failed)
   assertEqual "failure frees" [] (activeSlots ops6)
@@ -2266,7 +2266,7 @@ caseRecoverRoundtrip = do
     [fx@(FxSignRecover _ _ _ input tagLen)] -> do
       assertEqual "effect input" msg input
       assertEqual "effect tag width" 32 tagLen
-      let (ops2, fin) = finishSignRecover ops1 SlotSign "block"
+      let (ops2, fin) = finishSignRecover F_SignRecover ops1 SlotSign "block"
             (runSignRecoverEffect fx) (IntentBuffer 128)
       assertEqual "sign-recover ok" CKR_OK (soCode fin)
       assertEqual "sign-recover frees" [] (activeSlots ops2)
@@ -2282,7 +2282,7 @@ caseRecoverRoundtrip = do
     [fx@(FxVerifyRecover _ _ _ sig tagLen)] -> do
       assertEqual "effect sig" block sig
       assertEqual "effect tag width" 32 tagLen
-      let (ops5, fin) = finishVerifyRecover ops4 SlotVerify "data"
+      let (ops5, fin) = finishVerifyRecover F_VerifyRecover ops4 SlotVerify "data"
             (runVerifyRecoverEffect fx) (IntentBuffer 128)
       assertEqual "verify-recover ok" CKR_OK (soCode fin)
       assertEqual "data recovered" (Just msg) (stagedBytes fin)
@@ -2318,7 +2318,7 @@ caseRecoverTampered = do
   let block = "some-data" <> BS.replicate 32 0xFF
   let (ops1, _, o1) = planVerifyRecoverOneShot ops0 testSession "data" block
   assertEqual "tampered plans" 1 (length (soEffects o1))
-  let (ops2, fin) = finishVerifyRecover ops1 SlotVerify "data"
+  let (ops2, fin) = finishVerifyRecover F_VerifyRecover ops1 SlotVerify "data"
         (GotValid False) (IntentBuffer 128)
   assertEqual "tampered code" CKR_SIGNATURE_INVALID (soCode fin)
   assertEqual "tampered frees" [] (activeSlots ops2)
@@ -2426,7 +2426,7 @@ caseDualFinal = do
       assertEqual "digest input" msg dIn
       assertEqual "cipher mechanism" aesCbcMech cMech
       assertEqual "cipher input padded" 32 (BS.length cIn)
-      let (ops4, fin) = finishDual ops3 "digest" "cipher"
+      let (ops4, fin) = finishDual F_DigestEncryptUpdate ops3 "digest" "cipher"
             (runDigestEffect (FxDigest dMech dIn))
             (runStream (FxCipher DirEncrypt cMech Nothing BS.empty cIn))
             (IntentBuffer 64) (IntentBuffer 128)
@@ -2445,7 +2445,7 @@ caseDualFinal = do
   dOut <- case soEffects df of
     [FxDigestConsume rid] -> do
       assertEqual "single final consumes the stream" streamRid rid
-      let (_, fin) = finishDigest dOps3 SlotDigest "digest"
+      let (_, fin) = finishDigest F_DigestFinal dOps3 SlotDigest "digest"
             (GotBytes (toyDigest msg)) (IntentBuffer 64)
       case stagedBytes fin of
         Just b -> pure b
@@ -2457,7 +2457,7 @@ caseDualFinal = do
   streamOut <- case soEffects cu of
     [fx@(FxCipher DirEncrypt _ _ _ input)] -> do
       assertEqual "update streams one block" 16 (BS.length input)
-      let (cOpsU, finU) = finishCipherUpdate cOps2 SlotEncrypt "cipher"
+      let (cOpsU, finU) = finishCipherUpdate F_EncryptUpdate cOps2 SlotEncrypt "cipher"
             (runStream fx) (IntentBuffer 128)
       assertEqual "update finish ok" CKR_OK (soCode finU)
       case stagedBytes finU of
@@ -2468,7 +2468,7 @@ caseDualFinal = do
   let (cOps3, _, cf) = planCipherFinal cOpsU testSession SlotEncrypt "cipher"
   cOut <- case soEffects cf of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
-      let (_, fin) = finishCipher cOps3 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_EncryptFinal cOps3 SlotEncrypt "cipher"
             (runStream fx) (IntentBuffer 128)
       case stagedBytes fin of
         Just b -> pure (updBytes <> b)
@@ -2484,7 +2484,7 @@ caseDualDecryptTail = do
   let (eOps1, _, eo) = planCipherOneShot eOps0 testSession SlotEncrypt "cipher" msg
   ct <- case soEffects eo of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
-      let (_, fin) = finishCipher eOps1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt eOps1 SlotEncrypt "cipher"
             (runCipherEffect fx) (IntentBuffer 128)
       case stagedBytes fin of
         Just b -> pure b
@@ -2501,7 +2501,7 @@ caseDualDecryptTail = do
     [FxDigest _ dIn, FxCipher DirDecrypt _ _ _ cIn] -> do
       assertEqual "digest covers all ct" ct dIn
       assertEqual "decrypt covers all ct" ct cIn
-      let (_, fin) = finishDual ops3 "digest" "plain"
+      let (_, fin) = finishDual F_DecryptDigestUpdate ops3 "digest" "plain"
             (runDigestEffect (FxDigest sha256Mech dIn))
             (runCipherEffect (FxCipher DirDecrypt aesCbcMech Nothing BS.empty cIn))
             (IntentBuffer 64) (IntentBuffer 128)
@@ -2515,7 +2515,7 @@ caseDualDecryptTail = do
   let (dOps1, _, do_) = planDigestOneShot dOps0 testSession "digest" ct
   dOut <- case soEffects do_ of
     [fx@(FxDigest _ _)] -> do
-      let (_, fin) = finishDigest dOps1 SlotDigest "digest"
+      let (_, fin) = finishDigest F_Digest dOps1 SlotDigest "digest"
             (runDigestEffect fx) (IntentBuffer 64)
       case stagedBytes fin of
         Just b -> pure b
@@ -2525,7 +2525,7 @@ caseDualDecryptTail = do
   let (cOps1, _, co) = planCipherOneShot cOps0 testSession SlotDecrypt "plain" ct
   cOut <- case soEffects co of
     [fx@(FxCipher DirDecrypt _ _ _ _)] -> do
-      let (_, fin) = finishCipher cOps1 SlotDecrypt "plain"
+      let (_, fin) = finishCipher F_Decrypt cOps1 SlotDecrypt "plain"
             (runCipherEffect fx) (IntentBuffer 128)
       case stagedBytes fin of
         Just b -> pure b
@@ -2548,7 +2548,7 @@ caseDualShortRetry = do
       pure (dRes, cRes, expectBytes dRes, expectBytes cRes)
     other -> assertFailure ("expected two effects, got " ++ show other)
   -- Digest fits; the cipher tail does not.
-  let (ops3, short) = finishDual ops2 "digest" "cipher" dRes cRes
+  let (ops3, short) = finishDual F_DigestEncryptUpdate ops2 "digest" "cipher" dRes cRes
         (IntentBuffer 64) (IntentBuffer 4)
   assertEqual "short code" CKR_BUFFER_TOO_SMALL (soCode short)
   assertBool "dual kept" (hasDual ops3)
@@ -2580,7 +2580,7 @@ caseDualFailure = do
   let (ops1, _, _) = planDualUpdate ops0 testSession "data"
   let (ops2, _, fout) = planDualFinal ops1 testSession
   assertEqual "dual plans two" 2 (length (soEffects fout))
-  let (ops3, failed) = finishDual ops2 "digest" "cipher"
+  let (ops3, failed) = finishDual F_DigestEncryptUpdate ops2 "digest" "cipher"
         (GotCryptoError (CryptoFailed "boom")) (GotBytes "ct")
         (IntentBuffer 64) (IntentBuffer 64)
   assertEqual "digest failure code" CKR_GENERAL_ERROR (soCode failed)
@@ -2591,7 +2591,7 @@ caseDualFailure = do
   let (ops5, _, _) = planDualUpdate ops4 testSession (BS.replicate 16 0)
   let (ops6, _, f2) = planDualFinal ops5 testSession
   assertEqual "dual decrypt plans two" 2 (length (soEffects f2))
-  let (ops7, badPad) = finishDual ops6 "digest" "plain"
+  let (ops7, badPad) = finishDual F_DecryptDigestUpdate ops6 "digest" "plain"
         (GotBytes "digest") (GotBytes (BS.replicate 15 1 <> BS.singleton 0))
         (IntentBuffer 64) (IntentBuffer 64)
   assertEqual "dual bad pad code" CKR_ENCRYPTED_DATA_INVALID (soCode badPad)
@@ -2716,7 +2716,7 @@ casePreflightCipherOneShot = do
       (ops1, _, one) = planCipherOneShot ops0 testSession SlotEncrypt "ct" full
   assertEqual "boundary one-shot plans" CKR_OK (soCode one)
   assertEqual "boundary plans one effect" 1 (length (soEffects one))
-  let (ops2, short) = finishCipher ops1 SlotEncrypt "ct"
+  let (ops2, short) = finishCipher F_Encrypt ops1 SlotEncrypt "ct"
         (GotBytes (BS.replicate 32 0xAB)) (IntentBuffer 2)
   assertEqual "short buffer stages" CKR_BUFFER_TOO_SMALL (soCode short)
   let (ops3, retry) = retryStaged ops2 SlotEncrypt (IntentBuffer 64)

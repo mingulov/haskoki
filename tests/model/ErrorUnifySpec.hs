@@ -20,6 +20,7 @@ import Haskoki.Engine.Driver
   )
 import Haskoki.Operation (CryptoError (..), CryptoResult (..), cryptoCode)
 import qualified Haskoki.Outcome as O
+import Haskoki.Request (FunctionId (..))
 import qualified Haskoki.Transition as T
 import Haskoki.Types (EngineResourceId (..), ReturnCode (..))
 
@@ -136,20 +137,21 @@ caseAuthTyped =
     (O.EngineFail (O.BackendAuthFailed "tag-op"))
     (encodeResult (GotCryptoError (CryptoAuthFailed "tag-op")))
 
+-- Representative function id (F_GetInfo, arbitrary): the interpreter ignores it, so these collapsing pins evaluate under one id; they expand per function when the per-function error cells land.
 caseNewCodes :: IO ()
 caseNewCodes = do
   assertEqual "bad param code" CKR_GENERAL_ERROR
-    (cryptoCode (CryptoBadParam "op" "why"))
+    (cryptoCode F_GetInfo (CryptoBadParam "op" "why"))
   assertEqual "mech param invalid code" CKR_MECHANISM_PARAM_INVALID
-    (cryptoCode (CryptoMechParamInvalid "op" "why"))
+    (cryptoCode F_GetInfo (CryptoMechParamInvalid "op" "why"))
   assertEqual "invalid state code" CKR_GENERAL_ERROR
-    (cryptoCode (CryptoInvalidState "op" "why"))
+    (cryptoCode F_GetInfo (CryptoInvalidState "op" "why"))
   assertEqual "native code" CKR_GENERAL_ERROR
-    (cryptoCode (CryptoNative "op" 7 "why"))
+    (cryptoCode F_GetInfo (CryptoNative "op" 7 "why"))
   assertEqual "resource gone code" CKR_GENERAL_ERROR
-    (cryptoCode (CryptoResourceGone "op" (EngineResourceId 9)))
+    (cryptoCode F_GetInfo (CryptoResourceGone "op" (EngineResourceId 9)))
   assertEqual "siglen code" CKR_SIGNATURE_LEN_RANGE
-    (cryptoCode (CryptoSigLenRange "op"))
+    (cryptoCode F_GetInfo (CryptoSigLenRange "op"))
 
 caseRoundTripCrypto :: IO ()
 caseRoundTripCrypto = do

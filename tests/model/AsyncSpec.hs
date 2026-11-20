@@ -2335,7 +2335,7 @@ caseCipherSlicesIndependent = do
   -- (1) Encrypt-update finish: the CBC tail of a 1 MiB driver
   -- answer must be an independent copy.
   let raw = BS.replicate mib 0xAB
-      (opsE, finE) = finishCipherUpdate
+      (opsE, finE) = finishCipherUpdate F_EncryptUpdate
         (cbcSlotOps DirEncrypt OpEncrypt) SlotEncrypt "cbc-tail"
         (GotBytes raw) (IntentBuffer (4 * fromIntegral mib))
   assertEqual "encrypt finish ok" CKR_OK (soCode finE)

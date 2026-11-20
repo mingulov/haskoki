@@ -58,7 +58,7 @@ import Haskoki.Output
   , ResultDisposition (..)
   , planOneShot
   )
-import Haskoki.Request (OutputIntent)
+import Haskoki.Request (FunctionId (..), OutputIntent)
 import Haskoki.Types (Consumption (..), OpState (..), ReturnCode (..))
 
 -- | Buffered multipart bytes of both dual sides, if a dual is active.
@@ -205,9 +205,9 @@ finishSide name bytes intent =
 -- both outputs through one merged plan. Both sides must stage
 -- before the dual frees; any failure terminates the whole dual.
 finishDual
-  :: SessionOps -> String -> String -> CryptoResult -> CryptoResult
+  :: FunctionId -> SessionOps -> String -> String -> CryptoResult -> CryptoResult
   -> OutputIntent -> OutputIntent -> (SessionOps, StepOutcome)
-finishDual ops dName cName dRes cRes dIntent cIntent =
+finishDual fid ops dName cName dRes cRes dIntent cIntent =
   case dualOf ops of
     Nothing -> (ops, denyOutcome (mkDeny CKR_OPERATION_NOT_INITIALIZED
       "no dual operation is active"))
@@ -215,7 +215,7 @@ finishDual ops dName cName dRes cRes dIntent cIntent =
       Just _ -> (ops, denyOutcome (mkDeny CKR_GENERAL_ERROR
         "dual outputs already staged; use retry"))
       Nothing -> case dRes of
-        GotCryptoError err -> kill (interpretError (TyCrypto err))
+        GotCryptoError err -> kill (interpretError fid (TyCrypto err))
           ("dual digest crypto failed: " ++ show err)
         GotValid _ -> kill CKR_GENERAL_ERROR
           "driver answered a dual digest with a verdict"
@@ -225,7 +225,7 @@ finishDual ops dName cName dRes cRes dIntent cIntent =
         GotUnit -> kill CKR_GENERAL_ERROR
           "driver answered a dual digest with a feed unit"
         GotBytes dBytes -> case cRes of
-          GotCryptoError err -> kill (interpretError (TyCrypto err))
+          GotCryptoError err -> kill (interpretError fid (TyCrypto err))
             ("dual cipher crypto failed: " ++ show err)
           GotValid _ -> kill CKR_GENERAL_ERROR
             "driver answered a dual cipher step with a verdict"

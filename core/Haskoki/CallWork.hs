@@ -205,6 +205,17 @@ callFunctionSlot fid = case fid of
   F_InitToken -> Nothing
   F_InitPIN -> Nothing
   F_SetPIN -> Nothing
+  F_GenerateKey -> Nothing
+  F_GenerateKeyPair -> Nothing
+  F_DeriveKey -> Nothing
+  F_WrapKey -> Nothing
+  F_UnwrapKey -> Nothing
+  F_EncapsulateKey -> Nothing
+  F_DecapsulateKey -> Nothing
+  F_DigestEncryptUpdate -> Nothing
+  F_DecryptDigestUpdate -> Nothing
+  F_SignEncryptUpdate -> Nothing
+  F_DecryptVerifyUpdate -> Nothing
 
 -- | Whether a finishing function accepts one planned effect: the
 -- exact per-function shape sets the planners emit (the producing
@@ -285,6 +296,17 @@ callFunctionEffect fid fx =
     F_InitToken -> False
     F_InitPIN -> False
     F_SetPIN -> False
+    F_GenerateKey -> False
+    F_GenerateKeyPair -> False
+    F_DeriveKey -> False
+    F_WrapKey -> False
+    F_UnwrapKey -> False
+    F_EncapsulateKey -> False
+    F_DecapsulateKey -> False
+    F_DigestEncryptUpdate -> False
+    F_DecryptDigestUpdate -> False
+    F_SignEncryptUpdate -> False
+    F_DecryptVerifyUpdate -> False
 
 -- | Check one (submitting session, reservation, effect) triple into
 -- executable call work: the step must exist, its session must be
@@ -390,6 +412,17 @@ callFunctionFamily fid = case fid of
   F_InitToken -> FamilyOther
   F_InitPIN -> FamilyOther
   F_SetPIN -> FamilyOther
+  F_GenerateKey -> FamilyOther
+  F_GenerateKeyPair -> FamilyOther
+  F_DeriveKey -> FamilyOther
+  F_WrapKey -> FamilyOther
+  F_UnwrapKey -> FamilyOther
+  F_EncapsulateKey -> FamilyOther
+  F_DecapsulateKey -> FamilyOther
+  F_DigestEncryptUpdate -> FamilyOther
+  F_DecryptDigestUpdate -> FamilyOther
+  F_SignEncryptUpdate -> FamilyOther
+  F_DecryptVerifyUpdate -> FamilyOther
 
 -- | The serving family of checked call work: the pinned step's
 -- function family, or 'FamilyOther' for unstepped fixture work

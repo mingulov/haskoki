@@ -32,6 +32,7 @@ import qualified Data.ByteString as BS
 
 import Haskoki.Operation.State (CipherDir (..))
 import Haskoki.Registry (MechanismId)
+import Haskoki.Request (FunctionId (..))
 import Haskoki.Types
   ( EngineResourceId
   , ObjectId
@@ -59,9 +60,11 @@ data CryptoError
   deriving (Eq, Show)
 
 -- | Return code for a reported crypto failure: the crypto leg of
--- the single edge interpreter ('interpretError').
-cryptoCode :: CryptoError -> ReturnCode
-cryptoCode e = interpretError (TyCrypto e)
+-- the single edge interpreter ('interpretError'). The 'FunctionId'
+-- is threaded but not yet consulted (the per-function error cells
+-- consult it); behavior is identical for every function.
+cryptoCode :: FunctionId -> CryptoError -> ReturnCode
+cryptoCode _fid e = interpretError _fid (TyCrypto e)
 
 -- | Typed denial detail: the matchable category behind a
 -- denial, carrying the diagnostic message. Every producer classifies
@@ -180,8 +183,8 @@ data TypedError
 -- 'TyCrypto'). Every crypto-to-code leg routes through here
 -- (pinned by the funnel test). Every case maps to the code its
 -- collapse produced (see tests/fixtures/error-code-snapshot.txt).
-interpretError :: TypedError -> ReturnCode
-interpretError terr = case terr of
+interpretError :: FunctionId -> TypedError -> ReturnCode
+interpretError _fid terr = case terr of
   TyDeny d -> sdCode d
   TyCrypto e -> case e of
     CryptoFailed _ -> CKR_GENERAL_ERROR

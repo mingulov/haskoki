@@ -28,6 +28,7 @@ import Haskoki.Operation
   )
 import qualified Haskoki.Outcome as O
 import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCapabilities)
+import Haskoki.Request (FunctionId (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
@@ -112,6 +113,7 @@ encodeTag err = case encodeResult (GotCryptoError err) of
   O.EngineFail f -> failureTag f
   _ -> "unexpected-success"
 
+-- Representative function id (F_GetInfo, arbitrary): the interpreter ignores it, so these collapsing pins evaluate under one id; they expand per function when the per-function error cells land.
 caseCryptoCode :: IO ()
 caseCryptoCode = do
   snap <- loadSnapshot
@@ -121,7 +123,7 @@ caseCryptoCode = do
         , CryptoBadKey "o" "x"
         , CryptoAuthFailed "x"
         ]
-  mapM_ (\e -> expect snap ("cryptoCode." ++ cryptoTag e) (show (cryptoCode e))) errs
+  mapM_ (\e -> expect snap ("cryptoCode." ++ cryptoTag e) (show (cryptoCode F_GetInfo e))) errs
   -- The snapshot must pin exactly these four original ctors.
   assertEqual "cryptoCode row count" 4
     (length (filter ("cryptoCode." `isPrefixOfStr`) (Map.keys snap)))

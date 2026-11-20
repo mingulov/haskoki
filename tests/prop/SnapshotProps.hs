@@ -71,7 +71,7 @@ import Haskoki.Registry
   , curatedRegistry
   , mkCapabilities
   )
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Snapshot
   ( RestoreError (..)
@@ -271,7 +271,7 @@ finishStaged st canned = do
   let (ops1, _, oneOut) = planDigestOneShot (ssOps st) st "digest" "hello"
   assertEqual "one-shot code" CKR_OK (soCode oneOut)
   let (ops2, shortOut) =
-        finishDigest ops1 SlotDigest "digest" (GotBytes canned) (IntentBuffer 2)
+        finishDigest F_Digest ops1 SlotDigest "digest" (GotBytes canned) (IntentBuffer 2)
   assertEqual "staged code" CKR_BUFFER_TOO_SMALL (soCode shortOut)
   pure st { ssOps = ops2 }
 
@@ -313,7 +313,7 @@ caseFreedSmall = mapM_ check [0, 1, 2]
       let (ops1, _, oneOut) = planDigestOneShot (ssOps stA) stA "digest" "hello"
       assertEqual "one-shot code" CKR_OK (soCode oneOut)
       let (ops2, finOut) =
-            finishDigest ops1 SlotDigest "digest"
+            finishDigest F_Digest ops1 SlotDigest "digest"
               (GotBytes (BS.replicate size 0xAB)) (IntentBuffer 2)
       assertEqual ("finish code size=" ++ show size) CKR_OK (soCode finOut)
       assertEqual ("slot freed size=" ++ show size) Nothing

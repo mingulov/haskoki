@@ -100,6 +100,7 @@ import Haskoki.Recipe.TlsPrf (encodeTlsPrfParams)
 import Haskoki.Recipe.Otp (encodeHotpParams)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Registry.Generated (mustGeneratedId)
+import Haskoki.Request (FunctionId (..))
 import Haskoki.Types (EngineResourceId (..), ObjectId (..), ReturnCode (..))
 
 spec :: TestTree
@@ -1166,7 +1167,7 @@ caseVerifyNeutral = withSynth "11" $ \env -> do
     (FxVerify (MechanismId 0x251) oid BS.empty "hello" "tag")
   case r of
     GotCryptoError e -> assertEqual "still general-error"
-      CKR_GENERAL_ERROR (cryptoCode e)
+      CKR_GENERAL_ERROR (cryptoCode F_Verify e)
     other -> assertFailure ("expected crypto error, got " ++ show other)
 
 caseDriverBridge :: IO ()

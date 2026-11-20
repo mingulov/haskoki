@@ -54,7 +54,7 @@ import Haskoki.Registry
   , curatedRegistry
   , mkCapabilities
   )
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( EngineResourceId (..)
@@ -275,14 +275,16 @@ runCmd (ops, st) cmd = case cmd of
     in ((soCode step, occupied ops'), (ops', st'))
   DCFinishInit rid ->
     let (ops', step) =
-          finishDigestInit ops SlotDigest "digest" (GotResource rid) (IntentBuffer 64)
+          finishDigestInit F_DigestInit ops SlotDigest "digest" (GotResource rid) (IntentBuffer 64)
     in ((soCode step, occupied ops'), (ops', st))
   DCFinishFeed ok ->
     let (ops', step) =
-          finishDigestFeed ops SlotDigest "digest" (feedResult ok) (IntentBuffer 64)
+          finishDigestFeed F_DigestUpdate ops SlotDigest "digest" (feedResult ok) (IntentBuffer 64)
     in ((soCode step, occupied ops'), (ops', st))
+  -- Representative id (F_GetInfo, arbitrary): DCFinish abstracts the one-shot and final legs;
+  -- the legs split per function when the error cells do.
   DCFinish bs intent ->
-    let (ops', step) = finishDigest ops SlotDigest "digest" (GotBytes bs) intent
+    let (ops', step) = finishDigest F_GetInfo ops SlotDigest "digest" (GotBytes bs) intent
     in ((soCode step, occupied ops'), (ops', st))
   DCRetry intent ->
     let (ops', step) = retryStaged ops SlotDigest intent

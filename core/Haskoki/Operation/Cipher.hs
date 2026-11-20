@@ -80,7 +80,7 @@ import Haskoki.Operation
 import Haskoki.Outcome (ResourceRelease)
 import Haskoki.Output (OutputPlan (..), planOneShot)
 import Haskoki.Registry (MechanismId)
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Recipe.Cipher (BlockCipherRecipe (..), cipherRecipeFor, ctrNextImage, ctrRecipeFor)
 import Haskoki.Types (Consumption (..), OpState (..))
 import Haskoki.Types (ReturnCode (..))
@@ -465,9 +465,9 @@ feedDualTail ops dir sc _tail
 -- pads, ragged answers, verdict-shaped results, and crypto
 -- failures all terminate the slot.
 finishCipher
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishCipher ops kind name result intent = case withCipherSlot ops kind of
+finishCipher fid ops kind name result intent = case withCipherSlot ops kind of
   Left d -> (ops, denyOutcome d)
   Right (dir, sc, spec) -> case stagedOf sc of
     Just _ -> (ops, denyOutcome (mkDeny CKR_GENERAL_ERROR
@@ -542,7 +542,7 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
               "driver answered a cipher step with a feed unit"))
         GotCryptoError err ->
           ( removeSingle kind ops
-          , denyOutcome (mkDeny (interpretError (TyCrypto err))
+          , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
               ("cipher crypto failed: " ++ show err)))
 
 -- | Finish a planned cipher update: write the streamed chunk through
@@ -555,9 +555,9 @@ finishCipher ops kind name result intent = case withCipherSlot ops kind of
 -- null intent (queries never execute) — terminates the slot
 -- instead of releasing bytes.
 finishCipherUpdate
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishCipherUpdate ops kind name result intent = case withCipherSlot ops kind of
+finishCipherUpdate fid ops kind name result intent = case withCipherSlot ops kind of
   Left d -> (ops, denyOutcome d)
   Right (dir, sc, spec) -> case stagedOf sc of
     Just _ -> (ops, denyOutcome (mkDeny CKR_GENERAL_ERROR
@@ -612,7 +612,7 @@ finishCipherUpdate ops kind name result intent = case withCipherSlot ops kind of
                 "cipher update answer exceeds the checked output cap"))
         GotCryptoError err ->
           ( removeSingle kind ops
-          , denyOutcome (mkDeny (interpretError (TyCrypto err))
+          , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
               ("cipher update crypto failed: " ++ show err)))
         _ ->
           ( removeSingle kind ops

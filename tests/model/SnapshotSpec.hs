@@ -80,7 +80,7 @@ import Haskoki.Registry
   , curatedRegistry
   , mkCapabilities
   )
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Snapshot
   ( RestoreError (..)
@@ -246,7 +246,7 @@ caseFinalizeEquals = do
   stU0 <- initDigest (mkSession (SessionId 1))
   let (opsU1, _, oneU) = planDigestOneShot (ssOps stU0) stU0 "digest" "hello"
   assertEqual "one-shot code" CKR_OK (soCode oneU)
-  let (opsU2, shortU) = finishDigest opsU1 SlotDigest "digest"
+  let (opsU2, shortU) = finishDigest F_Digest opsU1 SlotDigest "digest"
         (GotBytes cannedDigest) (IntentBuffer 2)
   assertEqual "short code" CKR_BUFFER_TOO_SMALL (soCode shortU)
   let (opsU3, retryU) = retryStaged opsU2 SlotDigest (IntentBuffer 64)
@@ -254,7 +254,7 @@ caseFinalizeEquals = do
   -- Save/restore between the short finish and the retry.
   stA <- initDigest (mkSession (SessionId 1))
   let (opsA1, _, _) = planDigestOneShot (ssOps stA) stA "digest" "hello"
-  let (opsA2, _) = finishDigest opsA1 SlotDigest "digest"
+  let (opsA2, _) = finishDigest F_Digest opsA1 SlotDigest "digest"
         (GotBytes cannedDigest) (IntentBuffer 2)
   bytes <- case saveOperation defaultQuotas emptyModel
       (stA { ssOps = opsA2 }) Pkcs11_3_2 (SaveSlot SlotDigest) of
@@ -357,7 +357,7 @@ caseMidStreamRoundtrip = do
     [_] -> pure ()
     other -> assertFailure ("expected one update effect, got " ++ show other)
   let answer = BS.pack [200 .. 215]
-      (ops3, finU) = finishCipherUpdate ops2 SlotEncrypt "cipher"
+      (ops3, finU) = finishCipherUpdate F_EncryptUpdate ops2 SlotEncrypt "cipher"
         (GotBytes answer) (IntentBuffer 128)
   assertEqual "update finish ok" CKR_OK (soCode finU)
   let stA = stA1 { ssOps = ops3 }
@@ -662,7 +662,7 @@ stagedDigest = do
   stA <- initPlusUpdate (mkSession (SessionId 1)) "hello "
   let (opsF, stF, fin) = planDigestFinal (ssOps stA) stA "digest"
   assertEqual "final code" CKR_OK (soCode fin)
-  let (opsS, out) = finishDigest opsF SlotDigest "digest"
+  let (opsS, out) = finishDigest F_DigestFinal opsF SlotDigest "digest"
         (GotBytes (BS.replicate 40 0xAA)) (IntentBuffer 2)
   assertEqual "short code" CKR_BUFFER_TOO_SMALL (soCode out)
   pure stF { ssOps = opsS }

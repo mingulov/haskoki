@@ -31,7 +31,7 @@ import Haskoki.Operation
   )
 import Haskoki.Operation.Cipher (finishCipher)
 import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCapabilities)
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( Generation (..)
@@ -135,7 +135,7 @@ caseInitCarry = do
 caseDataCarry :: IO ()
 caseDataCarry = do
   -- A cipher final with no active slot denies through the finisher.
-  let (_, o) = finishCipher emptySessionOps SlotEncrypt "probe"
+  let (_, o) = finishCipher F_EncryptFinal emptySessionOps SlotEncrypt "probe"
         (GotBytes "junk") (IntentBuffer 128)
   assertEqual "data-call deny code" CKR_OPERATION_NOT_INITIALIZED (soCode o)
   case soDeny o of
