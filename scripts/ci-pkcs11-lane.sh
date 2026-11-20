@@ -21,8 +21,14 @@
 #
 # Env:
 #   PKCS11_CHECK          pkcs11-check entry point, words allowed
-#                         (default: pkcs11-check; CI passes
-#                         "uv run --project pkcs11-check pkcs11-check")
+#                         (default: pkcs11-check). Ignored for launching
+#                         when PKCS11_CHECK_DIR is set (noted on stdout).
+#   PKCS11_CHECK_DIR      checker checkout dir for gated runs: the lane
+#                         launches "uv run --project DIR pkcs11-check" and
+#                         records DIR's HEAD (must be clean) at
+#                         provenance.framework.commit in the results.
+#                         Unset (ad-hoc runs): no envelope is written and
+#                         the baseline gate will refuse the results.
 #   HASKOKI_CONFIG        backend config (default: scripts/ci-backend.toml)
 #   PKCS11_CHECK_DATA_DIR vector data root (kat lane requires content)
 #   PKCS11_CHECK_PIN      user PIN (default 1234, the demo token PIN)
@@ -57,7 +63,30 @@ export HASKOKI_CONFIG="$CFG"
 # closure from its own directory ($ORIGIN RUNPATH). Deliberately left
 # unset here so the lane proves the bundle is self-resolving.
 
+CHECKER_DIR="${PKCS11_CHECK_DIR:-}"
+CHECKER_SHA=""
+if [ -n "$CHECKER_DIR" ]; then
+  [ -d "$CHECKER_DIR" ] || fail "PKCS11_CHECK_DIR is not a directory: $CHECKER_DIR"
+  CHECKER_DIR=$(cd "$CHECKER_DIR" && pwd) || fail "cannot resolve $CHECKER_DIR"
+  # A single directory binds the recorded SHA to the launched checker:
+  # it must be the checker project root and git-clean, so the SHA
+  # identifies repeatable content. Container-proof git invocation
+  # (check-findings-ledger.py precedent: safe.directory).
+  [ -e "$CHECKER_DIR/.git" ] || fail "$CHECKER_DIR is not a git checkout"
+  [ -f "$CHECKER_DIR/pyproject.toml" ] || fail "$CHECKER_DIR has no pyproject.toml (not the checker root?)"
+  [ -d "$CHECKER_DIR/src/pkcs11_check" ] || fail "$CHECKER_DIR has no src/pkcs11_check (not the checker root?)"
+  [ -z "$(git -c safe.directory="$CHECKER_DIR" -C "$CHECKER_DIR" status --porcelain)" ] \
+    || fail "checker checkout $CHECKER_DIR is dirty (gated runs need a clean tree)"
+  CHECKER_SHA=$(git -c safe.directory="$CHECKER_DIR" -C "$CHECKER_DIR" rev-parse HEAD) \
+    || fail "cannot resolve checker HEAD in $CHECKER_DIR"
+  echo "checker: $CHECKER_DIR @ $CHECKER_SHA"
+fi
+
 P11="${PKCS11_CHECK:-pkcs11-check}"
+if [ -n "$CHECKER_DIR" ]; then
+  [ -z "${PKCS11_CHECK:-}" ] || echo "note: PKCS11_CHECK_DIR takes precedence over PKCS11_CHECK for gated runs"
+  P11="uv run --project $CHECKER_DIR pkcs11-check"
+fi
 PIN="${PKCS11_CHECK_PIN:-1234}"
 SO_PIN="${PKCS11_CHECK_SO_PIN:-5678}"
 
@@ -101,4 +130,27 @@ print("lane summary: %d tests - %d passed, %d failed, %d crashed, "
           g("total", 0), g("passed", 0), g("failed", 0), g("crashed", 0),
           g("timeout", 0), g("xfailed", 0), g("skipped", 0)))
 PY
+if [ -n "$CHECKER_DIR" ]; then
+  CHECKER_SHA="$CHECKER_SHA" OUT="$OUT" python3 - <<'PY' || fail "cannot record checker SHA in $OUT"
+import json, os, sys
+path = os.environ["OUT"]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    fw = data["provenance"]["framework"]
+    fw["commit"] = os.environ["CHECKER_SHA"]
+    fw["commit_source"] = "ci-pkcs11-lane.sh PKCS11_CHECK_DIR rev-parse"
+    tmp = path + ".envelope-tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+        f.write("\n")
+    os.replace(tmp, path)
+except (OSError, ValueError, KeyError, TypeError) as e:
+    print("envelope write failed: %s" % e, file=sys.stderr)
+    sys.exit(1)
+PY
+  echo "envelope: checker $CHECKER_SHA recorded in $OUT"
+else
+  echo "note: no PKCS11_CHECK_DIR: results carry no checker SHA (the baseline gate will refuse them)"
+fi
 echo "PASS: ci-pkcs11-lane.sh ($LANE; findings in $OUT)"

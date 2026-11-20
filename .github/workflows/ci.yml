@@ -1070,7 +1070,7 @@ jobs:
           set -euo pipefail
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates curl python3 libgmp10 libffi8 libnuma1
+            ca-certificates curl git python3 libgmp10 libffi8 libnuma1
           # setup-uv cannot provision inside the job container (node
           # actions run on the host): install a pinned uv the same
           # URL + SHA256 way as the OpenSSL prefix.
@@ -1099,8 +1099,12 @@ jobs:
       - name: Run fast lane
         run: |
           ART=$(echo dist-release/haskoki-*)
-          PKCS11_CHECK="uv run --project pkcs11-check pkcs11-check" \
+          PKCS11_CHECK_DIR=pkcs11-check \
             bash scripts/ci-pkcs11-lane.sh fast "$ART" pkcs11-fast-results.json
+      - name: Diff against frozen baseline
+        run: |
+          python3 scripts/check-pkcs11-baseline.py pkcs11-fast-results.json \
+            spec/pkcs11-check/baseline-fast-289cc4ef6c3a498994c18c7d6a37543c6bc597be-openssl-memory.json
       - name: Summarize results
         if: always()
         run: |
