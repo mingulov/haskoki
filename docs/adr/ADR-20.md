@@ -15,4 +15,4 @@ per-function rows. GENERAL_ERROR retention, if any, needs
 its own verdict with trace reachability.
 
 **Open:** the GENERAL_ERROR retention verdict (decided in
-Task 4). Flips to Accepted in the Task 4 commit.
+the per-function-errors task). Flips to Accepted in that task's commit.
