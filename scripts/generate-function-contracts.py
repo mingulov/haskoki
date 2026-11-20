@@ -13,7 +13,7 @@ Writes (deterministic bytes, no timestamps):
                                   gap) vs not-applicable (justified)
 
 STDLIB ONLY. Run on HOST python3 from anywhere:
-  python3 scripts/generate-function-contracts.py
+  python3 scripts/generate-function-contracts.py [OUT]
 
 Contract criterion:
   * planned-with-behavior: a caller-visible entry exists (a planCall
@@ -234,9 +234,9 @@ PLANNED = {
                     ("test-loader.sh", "tests/c/loader.c")]),
     "C_GetFunctionList": ("c-table:discovery",
                           [("test-loader.sh", "tests/c/loader.c")]),
-    "C_GetMechanismList": ("c-table:on_GetMechanismList",
+    "C_GetMechanismList": ("c-table:std_GetMechanismList",
                            [("test-loader.sh", "tests/c/loader.c")]),
-    "C_GetMechanismInfo": ("c-table:on_GetMechanismInfo",
+    "C_GetMechanismInfo": ("c-table:std_GetMechanismInfo",
                            [("test-loader.sh", "tests/c/loader.c")]),
     "C_WaitForSlotEvent": ("haskoki-export:haskoki_wait_for_slot_event",
                            # Retained private FIFO/callback proofs, not public
@@ -407,13 +407,20 @@ NOT_APPLICABLE = {
                          "CKR_FUNCTION_NOT_PARALLEL (loader pin)"),
 }
 
+# planCall rows whose C site provably never consumes planning (the arm
+# is model-only): C_GetInfo serves static bytes without entering
+# Haskell (function_tables.c on_GetInfo comment); C_GetSlotList's FFI
+# export snapshots live state with zero plan calls (traced). Curated:
+# extend only with equivalent proof, never by guess.
+MODEL_ONLY = frozenset({"C_GetInfo", "C_GetSlotList"})
+
 # T-06 refusal evidence: every UNSUPPORTED/NOT_APPLICABLE row points at
 # the suite+spec proving its current routing — behavior suites for
 # above-planner-served rows, refusal pins in tests/c/consumer_errors.c
 # for stub rows. Same linkage validation as PLANNED evidence.
 REFUSAL_EVIDENCE = {
     "C_CloseAllSessions": [("test-consumers.sh",
-                            "tests/c/consumer_multitoken.c")],
+                            "tests/c/consumer_discovery.c")],
     "C_GetOperationState": [("test-consumers.sh",
                              "tests/c/consumer_errors.c")],
     "C_SetOperationState": [("test-consumers.sh",
@@ -424,19 +431,23 @@ REFUSAL_EVIDENCE = {
     "C_FindObjectsFinal": [("test-consumers.sh",
                             "tests/c/consumer_find_sealed.c")],
     "C_GenerateKey": [("haskoki-model-tests",
-                       "tests/model/KeyManagementSpec.hs")],
+                       "tests/model/KeyManagementSpec.hs"),
+                      ("test-consumers.sh",
+                       "tests/c/consumer_roundtrip.c")],
     "C_GenerateKeyPair": [("haskoki-model-tests",
-                           "tests/model/KeyManagementSpec.hs")],
+                           "tests/model/KeyManagementSpec.hs"),
+                          ("test-consumers.sh",
+                           "tests/c/consumer_roundtrip.c")],
     "C_DeriveKey": [("haskoki-model-tests",
-                     "tests/model/KeyManagementSpec.hs")],
+                     "tests/model/KeyManagementSpec.hs"),
+                    ("test-consumers.sh",
+                     "tests/c/consumer_derive_atomic.c")],
     "C_SeedRandom": [("test-consumers.sh",
                       "tests/c/consumer_roundtrip.c")],
     "C_GenerateRandom": [("test-consumers.sh",
                           "tests/c/consumer_roundtrip.c")],
-    "C_GetFunctionStatus": [("test-consumers.sh",
-                             "tests/c/consumer_errors.c")],
-    "C_CancelFunction": [("test-consumers.sh",
-                          "tests/c/consumer_errors.c")],
+    "C_GetFunctionStatus": [("test-loader.sh", "tests/c/loader.c")],
+    "C_CancelFunction": [("test-loader.sh", "tests/c/loader.c")],
     "C_LoginUser": [("test-consumers.sh", "tests/c/consumer_errors.c")],
     "C_EncapsulateKey": [("haskoki-model-tests",
                           "tests/model/KeyManagementSpec.hs"),
@@ -486,7 +497,8 @@ def _load_wiring():
     return mod
 
 
-def main():
+def main(out_path=None):
+    out = Path(out_path) if out_path else OUT_PATH
     try:
         abi = json.loads(ABI_PATH.read_text())
     except Exception as e:  # noqa: BLE001 - reported, not hidden
@@ -544,6 +556,15 @@ def main():
         for suite, rel in ev:
             if not (REPO / rel).exists():
                 fail(f"{name}: evidence file missing: {rel} (suite {suite})")
+            if suite in drivers and suite not in inv:
+                # Driver-run legs: the cited file must be a C leg; the
+                # driver executes every leg to pass, and whether the leg
+                # exercises this row is reviewer-checked against the
+                # reason text (name-mention heuristics false-positive
+                # on routed/macro-dispatched legs). Non-C files
+                # (READMEs, stray docs) cannot witness.
+                if not (rel.startswith("tests/c/") and rel.endswith(".c")):
+                    fail(f"{name}: C evidence {rel} is not a C leg")
             if suite in TASK_LABEL_OWNERS:
                 owner = TASK_LABEL_OWNERS[suite]
                 if owner not in drivers:
@@ -590,45 +611,61 @@ def main():
         check_evidence(name, ev)
     # c_route join: planner token from the entry + C handler parsed
     # from the routed tables. Every contract function routes exactly
-    # once; planCall FunctionIds must exist in Request.hs.
+    # once; planCall FunctionIds must exist in Request.hs. Comments
+    # are stripped before parsing so quoted assignments cannot count.
+    def _decomment(text):
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        return re.sub(r"//[^\n]*", "", text)
+
     table_src = (REPO / "cbits" / "function_tables.c").read_text()
     stubs_src = (REPO / "cbits" / "abi_stubs.inc").read_text()
     c_sites = {}
     for m in re.finditer(r"\.([A-Za-z0-9_]+)\s*=\s*([A-Za-z0-9_]+)",
-                         table_src):
+                         _decomment(table_src)):
         if m.group(1) in names32:
             c_sites.setdefault(m.group(1), []).append(
                 ("c-table", m.group(2)))
     for m in re.finditer(r"\(T\)->([A-Za-z0-9_]+)\s*=\s*([A-Za-z0-9_]+)",
-                         stubs_src):
+                         _decomment(stubs_src)):
         if m.group(1) in names32:
             c_sites.setdefault(m.group(1), []).append(
                 ("abi-stubs", m.group(2)))
+    for name in sorted(names32):
+        if len(c_sites.get(name, [])) != 1:
+            fail(f"{name}: routes {len(c_sites.get(name, []))}x in C "
+                 f"tables, want exactly 1")
+    if set(MODEL_ONLY) - names32:
+        fail(f"MODEL_ONLY names unknown functions: "
+             f"{sorted(set(MODEL_ONLY) - names32)}")
     ctor_src = (REPO / "core" / "Haskoki" / "Request.hs").read_text()
     ctors = set(re.findall(r"^\s*[|=]\s*(F_[A-Za-z0-9_]+)",
                            ctor_src, re.M))
-    c_text = table_src + stubs_src + \
-        (REPO / "cbits" / "exports.c").read_text()
+    # Handler definition check runs against assignment-stripped text
+    # so the routing assignment itself cannot satisfy it.
+    c_defs = _decomment(table_src + stubs_src)
+    c_defs = re.sub(r"\.[A-Za-z0-9_]+\s*=\s*[A-Za-z0-9_]+", "", c_defs)
+    c_defs = re.sub(r"\(T\)->[A-Za-z0-9_]+\s*=\s*[A-Za-z0-9_]+", "", c_defs)
+    c_defs += (REPO / "cbits" / "exports.c").read_text()
 
-    def planner_token(entry):
+    def planner_token(name, entry):
         if entry.startswith("planCall:"):
-            return entry
-        if ":F_" in entry:
-            return "plan:" + entry.split(":", 1)[1]
-        if entry == "none":
+            tok = entry
+        elif ":F_" in entry:
+            tok = "plan:" + entry.split(":", 1)[1]
+        elif entry == "none":
             return "no-plan"
-        return "above-planner"
+        else:
+            return "above-planner"
+        if name in MODEL_ONLY:
+            tok += " (model-only)"
+        return tok
 
     def c_route_for(name, entry):
-        sites = c_sites.get(name, [])
-        if len(sites) != 1:
-            fail(f"{name}: routes {len(sites)}x in C tables, want exactly 1")
-        src, handler = sites[0]
-        if not re.search(r"\b%s\b" % re.escape(handler), c_text):
-            fail(f"{name}: C handler {handler} not found in cbits")
-        tok = planner_token(entry)
-        if tok.startswith("planCall:"):
-            fid = tok.split(":", 1)[1]
+        src, handler = c_sites[name][0]
+        if not re.search(r"\b%s\b" % re.escape(handler), c_defs):
+            fail(f"{name}: C handler {handler} has no definition in cbits")
+        tok = planner_token(name, entry)
+        for fid in re.findall(r"F_[A-Za-z0-9_]+", tok):
             if fid not in ctors:
                 fail(f"{name}: FunctionId {fid} not in Request.hs")
         return "%s + %s:%s" % (tok, src, handler)
@@ -687,7 +724,7 @@ def main():
                        "classification edits land in this generator's "
                        "PLANNED/UNSUPPORTED/NOT_APPLICABLE tables."),
     }
-    OUT_PATH.write_text(json.dumps(doc, indent=2) + "\n")
+    out.write_text(json.dumps(doc, indent=2) + "\n")
     n_planned = len(PLANNED)
     print(f"generate-function-contracts: 104 functions "
           f"({n_planned} planned, {len(UNSUPPORTED)} unsupported, "
@@ -696,4 +733,9 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Optional positional out path (self-tests generate to tmp files so
+    # the battery never touches the tree); default writes OUT_PATH.
+    if len(sys.argv) > 2:
+        print("usage: generate-function-contracts.py [OUT]", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main(sys.argv[1] if len(sys.argv) == 2 else None))
