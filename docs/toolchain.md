@@ -44,7 +44,7 @@ the base already contains `ubuntu`. Scripts that launch the builder honor
 The release nm gate compiles its header-dependent fixtures inside that
 image when the host lacks the pinned headers, so no host OpenSSL
 install is required.
-Build before testing so Cabal registers the main library before running the
+Build before testing so Cabal registers the implementation libraries before running the
 separate core test package.
 
 ## Optional native build on Ubuntu 26.04

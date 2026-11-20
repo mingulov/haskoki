@@ -197,7 +197,7 @@ jobs:
               check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
               check-smoke-surface check-history-codes check-sealed-callwork check-ossl4-laziness check-actions-pinned \
-              check-qualification-wiring check-findings-ledger check-planner-join check-rv-generated; do
+              check-qualification-wiring check-findings-ledger check-planner-join check-rv-generated check-exposure; do
             python3 scripts/$g.py
           done
           python3 scripts/check-history-codes.py --self-test
@@ -221,6 +221,7 @@ jobs:
           python3 scripts/check-findings-ledger.py --self-test
           python3 scripts/check-planner-join.py --self-test
           python3 scripts/check-rv-generated.py --self-test
+          python3 scripts/check-exposure.py --self-test
           python3 scripts/check-seed-honesty.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
@@ -269,6 +270,10 @@ jobs:
           chown -R 1001 dist-newstyle "$CABAL_DIR"
           su runner -s /bin/bash -c 'export HOME="$GITHUB_WORKSPACE" && cabal test haskoki-storage-tests --test-show-details=direct' 2>&1 | tee -a haskell-test.log
           python3 scripts/check-test-execution.py --scan-log haskell-test.log
+      - name: Out-of-tree consumer check
+        run: |
+          set -euo pipefail
+          bash scripts/check-consumer.sh
       - name: Benchmark self-test
         run: |
           set -euo pipefail

@@ -35,7 +35,7 @@ Its important choices are:
   suite runners and test helpers. Pass their `mix/` parent to `--hpcdir`.
 - Derive the two library unit IDs and use `--include=<unitid>:` with the
   trailing colon to select the whole library.
-- Exclude `Haskoki.PKCS11` and the generated `Paths_haskoki` module in the
+- Exclude the generated `Paths_haskoki` module in the
   per-library report and markup commands.
 
 ## Module reconciliation
@@ -48,10 +48,10 @@ module that no report shows is handled in one of three ways:
 
 - **Excluded**: [`tests/hpc-exclusions.json`](../tests/hpc-exclusions.json)
   lists it with a class (`deprecated-stub`, `zero-tick-reexport` or
-  `unlinked`), a reason and a review date. Today that is only
-  `Haskoki.PKCS11`.
+  `unlinked`), a reason and a review date. Today the list is empty
+  (the facade exclusion left with the deleted stub).
 - **Classified**: its `.mix` file has no ticks, so there is nothing to
-  cover. Pure re-export modules such as `Haskoki` and `Haskoki.Runtime`
+  cover. Pure re-export modules such as `Haskoki.Runtime`
   land here, under `classified` with class `zero-tick-reexport`.
 - **Gap**: anything else, including a `.mix` the checker cannot parse.
 
@@ -59,8 +59,8 @@ An exclusion whose module shows up in a report again, or is no longer
 compiled, is a stale-exclusion gap. Any gap fails the workflow; coverage
 percentages stay informational.
 
-Scope: the reconciled modules are those of `haskoki-core` and the main
-`haskoki` library. The separate `haskoki-client` package (`client/`) is
+Scope: the reconciled modules are those of `haskoki-core` and
+`haskoki-internal`. The separate `haskoki-client` package (`client/`) is
 not reconciled module by module, because the workflow writes no report
 for it; its test suite still has to produce a `.tix` file like every
 other suite.

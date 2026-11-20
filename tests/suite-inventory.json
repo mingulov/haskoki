@@ -717,12 +717,12 @@
         "haskoki scaffold"
       ],
       "allowed_imports": {
-        "Haskoki": ["Outcome", "Pkcs11Version", "ReturnCode"],
+        "Haskoki.Types": ["Outcome", "Pkcs11Version", "ReturnCode"],
         "Test.Tasty": ["TestTree", "defaultMain", "testGroup"],
         "Test.Tasty.HUnit": ["assertBool", "testCase"]
       },
       "allowed_dotdot": {
-        "Haskoki": ["Outcome", "Pkcs11Version", "ReturnCode"]
+        "Haskoki.Types": ["Outcome", "Pkcs11Version", "ReturnCode"]
       },
       "executed_by": [
         {
