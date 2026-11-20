@@ -75,7 +75,9 @@ if [ -n "$CHECKER_DIR" ]; then
   [ -e "$CHECKER_DIR/.git" ] || fail "$CHECKER_DIR is not a git checkout"
   [ -f "$CHECKER_DIR/pyproject.toml" ] || fail "$CHECKER_DIR has no pyproject.toml (not the checker root?)"
   [ -d "$CHECKER_DIR/src/pkcs11_check" ] || fail "$CHECKER_DIR has no src/pkcs11_check (not the checker root?)"
-  [ -z "$(git -c safe.directory="$CHECKER_DIR" -C "$CHECKER_DIR" status --porcelain)" ] \
+  GIT_STATUS_OUT=$(git -c safe.directory="$CHECKER_DIR" -C "$CHECKER_DIR" status --porcelain) \
+    || fail "cannot inspect cleanliness of $CHECKER_DIR"
+  [ -z "$GIT_STATUS_OUT" ] \
     || fail "checker checkout $CHECKER_DIR is dirty (gated runs need a clean tree)"
   CHECKER_SHA=$(git -c safe.directory="$CHECKER_DIR" -C "$CHECKER_DIR" rev-parse HEAD) \
     || fail "cannot resolve checker HEAD in $CHECKER_DIR"
@@ -85,8 +87,17 @@ fi
 P11="${PKCS11_CHECK:-pkcs11-check}"
 if [ -n "$CHECKER_DIR" ]; then
   [ -z "${PKCS11_CHECK:-}" ] || echo "note: PKCS11_CHECK_DIR takes precedence over PKCS11_CHECK for gated runs"
-  P11="uv run --project $CHECKER_DIR pkcs11-check"
 fi
+
+run_p11() {
+  if [ -n "$CHECKER_DIR" ]; then
+    uv run --project "$CHECKER_DIR" pkcs11-check "$@"
+  else
+    # Word-split entry point is the ad-hoc interface.
+    # shellcheck disable=SC2086
+    $P11 "$@"
+  fi
+}
 PIN="${PKCS11_CHECK_PIN:-1234}"
 SO_PIN="${PKCS11_CHECK_SO_PIN:-5678}"
 
@@ -94,9 +105,7 @@ echo "lane: $LANE"
 echo "module: $SO"
 echo "config: $CFG"
 
-# Word-split entry point is the interface.
-# shellcheck disable=SC2086
-$P11 doctor --module "$SO" || fail "doctor failed (module must load + seat token)"
+run_p11 doctor --module "$SO" || fail "doctor failed (module must load + seat token)"
 
 if [ "$LANE" = "kat" ]; then
   DATA="${PKCS11_CHECK_DATA_DIR:-}"
@@ -111,44 +120,66 @@ fi
 echo "marker: $MARKER"
 
 RC=0
-# Word-split entry point + extra args are the interface.
+# Fresh output only: the checker writes a unique staging file, never $OUT
+# directly, so a failed run cannot stamp or re-read a stale report.
+STAGE="$OUT.stage.$$"
+rm -f "$STAGE"
+trap 'rm -f "$STAGE"' EXIT
+# Word-split extra args are the interface.
 # shellcheck disable=SC2086
-$P11 test --module "$SO" --slot 0 --isolation auto --timeout 180 \
-  --marker "$MARKER" --output json --output-file "$OUT" \
+run_p11 test --module "$SO" --slot 0 --isolation auto --timeout 180 \
+  --marker "$MARKER" --output json --output-file "$STAGE" \
   --pin "$PIN" --so-pin "$SO_PIN" ${PKCS11_CHECK_EXTRA_ARGS:-} || RC=$?
 echo "pkcs11-check exit code: $RC"
-# 0 = all pass; 1 = provider findings (expected, captured in $OUT).
+# 0 = all pass; 1 = provider findings (expected, captured fresh).
 # >= 2 = setup/usage error: the run never happened, fail loudly.
-[ "$RC" -ge 2 ] && fail "pkcs11-check setup error (rc=$RC)"
-[ -f "$OUT" ] || fail "missing results file: $OUT"
-python3 - "$OUT" <<'PY' || fail "cannot parse results file"
-import json, sys
-s = json.load(open(sys.argv[1])).get("summary", {})
-g = s.get
-print("lane summary: %d tests - %d passed, %d failed, %d crashed, "
-      "%d timeout, %d xfailed, %d skipped" % (
-          g("total", 0), g("passed", 0), g("failed", 0), g("crashed", 0),
-          g("timeout", 0), g("xfailed", 0), g("skipped", 0)))
-PY
-if [ -n "$CHECKER_DIR" ]; then
-  CHECKER_SHA="$CHECKER_SHA" OUT="$OUT" python3 - <<'PY' || fail "cannot record checker SHA in $OUT"
+if [ "$RC" -ge 2 ]; then
+  rm -f "$STAGE" "$OUT"
+  fail "pkcs11-check setup error (rc=$RC)"
+fi
+if [ ! -f "$STAGE" ]; then
+  rm -f "$STAGE" "$OUT"
+  fail "checker produced no fresh results (stale output removed)"
+fi
+CHECKER_SHA="$CHECKER_SHA" STAGE="$STAGE" OUT="$OUT" python3 - <<'PY' || { rm -f "$STAGE" "$OUT"; fail "cannot publish results to $OUT"; }
 import json, os, sys
-path = os.environ["OUT"]
+stage, out, sha = (os.environ["STAGE"], os.environ["OUT"],
+                   os.environ["CHECKER_SHA"])
 try:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(stage, "r", encoding="utf-8") as f:
         data = json.load(f)
-    fw = data["provenance"]["framework"]
-    fw["commit"] = os.environ["CHECKER_SHA"]
-    fw["commit_source"] = "ci-pkcs11-lane.sh PKCS11_CHECK_DIR rev-parse"
-    tmp = path + ".envelope-tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    if data.get("tool") != "pkcs11-check" or data.get("kind") != "test-run":
+        print("staging is not a pkcs11-check test-run report",
+              file=sys.stderr)
+        sys.exit(1)
+    s = data.get("summary", {})
+    g = s.get
+    print("lane summary: %d tests - %d passed, %d failed, %d crashed, "
+          "%d timeout, %d xfailed, %d skipped" % (
+              g("total", 0), g("passed", 0), g("failed", 0), g("crashed", 0),
+              g("timeout", 0), g("xfailed", 0), g("skipped", 0)))
+    if sha:
+        fw = data["provenance"]["framework"]
+        if not isinstance(fw, dict):
+            print("staging provenance.framework is not an object",
+                  file=sys.stderr)
+            sys.exit(1)
+        stamped = fw.get("commit")
+        if stamped and stamped != sha:
+            print("staging carries foreign checker commit %s "
+                  "(launched %s)" % (stamped, sha), file=sys.stderr)
+            sys.exit(1)
+        fw["commit"] = sha
+        fw["commit_source"] = "ci-pkcs11-lane.sh PKCS11_CHECK_DIR rev-parse"
+    with open(stage, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=1)
         f.write("\n")
-    os.replace(tmp, path)
+    os.replace(stage, out)
 except (OSError, ValueError, KeyError, TypeError) as e:
-    print("envelope write failed: %s" % e, file=sys.stderr)
+    print("cannot publish results: %s" % e, file=sys.stderr)
     sys.exit(1)
 PY
+if [ -n "$CHECKER_DIR" ]; then
   echo "envelope: checker $CHECKER_SHA recorded in $OUT"
 else
   echo "note: no PKCS11_CHECK_DIR: results carry no checker SHA (the baseline gate will refuse them)"
