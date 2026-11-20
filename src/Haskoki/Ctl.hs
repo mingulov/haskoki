@@ -81,6 +81,7 @@ import Haskoki.Runtime.Events
   )
 import Haskoki.Registry (MechanismId (..), Operation (..), behaviorIds, behaviorRoutes, curatedRegistry)
 import Haskoki.Registry.Generated (generatedIdByName, generatedInventory)
+import Haskoki.ReturnCode.Generated (returnCodeToRV)
 import Haskoki.Session (ActiveLogin (..))
 import Haskoki.Runtime.Trace
   ( DrainReport (..)
@@ -90,7 +91,7 @@ import Haskoki.Runtime.Trace
   , emitTrace
   , newTracer
   )
-import Haskoki.Types (SessionId (..), SlotId (..))
+import Haskoki.Types (ReturnCode (..), SessionId (..), SlotId (..))
 
 -- ---------------------------------------------------------------------------
 -- Exit + help
@@ -556,7 +557,8 @@ execStep :: Config -> TokenRegistry -> Tracer -> Runner -> Int -> RunStep -> IO 
 execStep cfg reg tr rn i st
   | isLifecycleGated (rsAction st) = case lifecycleRefusal rn of
       Just refusal -> do
-        emit tr (refusalFunction (rsAction st)) 0x190 (rsAction st)
+        emit tr (refusalFunction (rsAction st))
+          (fromIntegral (returnCodeToRV CKR_CRYPTOKI_NOT_INITIALIZED)) (rsAction st)
         pure (Right (rn, refusal, ""))
       Nothing -> execVerb cfg reg tr rn i st
   | otherwise = execVerb cfg reg tr rn i st
@@ -673,9 +675,14 @@ execVerb cfg reg tr rn i st = case rsAction st of
               -- positive capacity is accepted without comparing
               -- it against the payload length.
               | cap == 0 -> do
-                  emit tr "C_Sign" 0x150 ("session=" ++ name)
+                  emit tr "C_Sign"
+                    (fromIntegral (returnCodeToRV CKR_BUFFER_TOO_SMALL)) ("session=" ++ name)
                   pure (Right (rn, StepReturn "CKR_BUFFER_TOO_SMALL", "bytes=" ++ show len ++ " capacity=0"))
               | inFault rn i -> do
+                  -- CLI-only fault trace value (CKR_DEVICE_ERROR is
+                  -- deliberately NOT a served code; see the
+                  -- provider-authored scope note in
+                  -- scripts/check-rv-generated.py).
                   emit tr "C_Sign" 0x30 ("session=" ++ name)
                   pure (Right (rn, StepReturn "CKR_DEVICE_ERROR", ""))
               | otherwise -> do

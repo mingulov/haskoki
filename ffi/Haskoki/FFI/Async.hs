@@ -378,8 +378,6 @@ asyncLiveHandles ctx = Set.size <$> readIORef (acLive ctx)
 -- Export boundary helpers (mirroring Haskoki.FFI.Exports)
 -- ---------------------------------------------------------------------------
 
-toRV :: Word64 -> CULong
-toRV = CULong
 
 rvOf :: ReturnCode -> CULong
 rvOf = CULong . fromIntegral . returnCodeToRV

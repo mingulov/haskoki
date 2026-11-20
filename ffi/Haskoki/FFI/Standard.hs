@@ -4129,7 +4129,7 @@ withDigestSurrender inst sid synchronous = mask $ \restore -> do
   case decision of
     NotifyContinue -> restore synchronous `onException` cleanup
     NotifyCancel -> refuse (stdRvOf CKR_FUNCTION_CANCELED)
-    NotifyFailed -> refuse 0x06
+    NotifyFailed -> refuse (stdRvOf CKR_FUNCTION_FAILED)
 
 -- | The worker copies the decoded input. Mask the handle-to-binding handoff;
 -- if publication cannot finish, cancel through that same worker before unwind.

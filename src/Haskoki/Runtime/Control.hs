@@ -386,9 +386,9 @@ data ControlFailure
 
 controlFailureRV :: ControlFailure -> Word64
 controlFailureRV failure = case failure of
-  ControlInvalid _ -> 0x07
-  ControlUnavailable -> 0x190
-  ControlPublishFault _ -> 0x06
+  ControlInvalid _ -> fromIntegral (returnCodeToRV CKR_ARGUMENTS_BAD)
+  ControlUnavailable -> fromIntegral (returnCodeToRV CKR_CRYPTOKI_NOT_INITIALIZED)
+  ControlPublishFault _ -> fromIntegral (returnCodeToRV CKR_FUNCTION_FAILED)
 
 failureText :: ControlFailure -> String
 failureText failure = case failure of
