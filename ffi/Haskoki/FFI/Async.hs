@@ -389,7 +389,7 @@ guarded body = do
   r <- try body
   case r of
     Right rv -> pure rv
-    Left (_ :: SomeException) -> pure (toRV 0x05)
+    Left (_ :: SomeException) -> pure (rvOf CKR_GENERAL_ERROR)
 
 guardedPtr :: IO (StablePtr a) -> IO (StablePtr a)
 guardedPtr body = do
@@ -421,7 +421,7 @@ withCtx :: StablePtr AsyncCtx -> (AsyncCtx -> IO CULong) -> IO CULong
 withCtx ctx k = guarded $ mask $ \restore -> do
   mC <- enterCtx ctx
   case mC of
-    Nothing -> pure (toRV 0x05)
+    Nothing -> pure (rvOf CKR_GENERAL_ERROR)
     Just c -> restore (k c) `finally` exitTableUse (acTable c)
 
 -- | One registry entry: a live owned context behind its table, a
@@ -1665,7 +1665,7 @@ haskokiAsyncDigestInit ctx hSession (CULong mech) pParams (CULong paramsLen) =
             Immediate pc -> do
               pr <- publishCommit (acEnv c) (acBackend c) pc
               pure $ case pr of
-                Left _ -> toRV 0x05
+                Left _ -> rvOf CKR_GENERAL_ERROR
                 Right () -> rvOf (pcCode pc)
             Reject rej -> do
               publishRejection (acEnv c) (acBackend c) rej
@@ -1680,7 +1680,7 @@ haskokiAsyncDigestInit ctx hSession (CULong mech) pParams (CULong paramsLen) =
                 Right pc -> do
                   pr <- publishCommit (acEnv c) (acBackend c) pc
                   pure $ case pr of
-                    Left _ -> toRV 0x05
+                    Left _ -> rvOf CKR_GENERAL_ERROR
                     Right () -> rvOf (pcCode pc)
 
 -- | Submit an attached job. Accepted submissions report

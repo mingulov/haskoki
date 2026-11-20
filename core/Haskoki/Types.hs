@@ -33,6 +33,10 @@ module Haskoki.Types
 
 import Data.Word (Word32)
 
+-- Re-exported: the type lives generated in
+-- Haskoki.ReturnCode.Generated (single authority).
+import Haskoki.ReturnCode.Generated (ReturnCode (..))
+
 -- | Identifies a token slot. Distinct from session and object identifiers
 -- by construction.
 newtype SlotId = SlotId { unSlotId :: Int }
@@ -86,66 +90,6 @@ data Pkcs11Version
   | Pkcs11_3_1
   | Pkcs11_3_2
   deriving (Eq, Ord, Show, Enum, Bounded)
-
--- | Call return codes needed by the pure core. The full @CK_RV@
--- enumeration is generated from byte-pinned headers; this type only
--- carries what core planning can produce. Later work extends it.
---
--- Async codes: 'CKR_HOST_MEMORY' and 'CKR_FUNCTION_CANCELED' are
--- pinned in all four vendored headers; 'CKR_PENDING' and
--- 'CKR_SESSION_ASYNC_NOT_SUPPORTED' are PKCS#11 3.2 codes, pinned
--- in @spec\/vendor\/pkcs11.h@ only (the async facility
--- is itself 3.2).
-data ReturnCode
-  = CKR_OK
-  | CKR_HOST_MEMORY
-  | CKR_FUNCTION_CANCELED
-  | CKR_PENDING
-  | CKR_SESSION_ASYNC_NOT_SUPPORTED
-  | CKR_GENERAL_ERROR
-  | CKR_ARGUMENTS_BAD
-  | CKR_BUFFER_TOO_SMALL
-  | CKR_SESSION_HANDLE_INVALID
-  | CKR_SESSION_COUNT
-  | CKR_SESSION_READ_ONLY_EXISTS
-  | CKR_SESSION_READ_ONLY
-  | CKR_TOKEN_NOT_PRESENT
-  | CKR_USER_ALREADY_LOGGED_IN
-  | CKR_USER_ANOTHER_ALREADY_LOGGED_IN
-  | CKR_USER_NOT_LOGGED_IN
-  | CKR_PIN_INCORRECT
-  | CKR_PIN_LOCKED
-  | CKR_CRYPTOKI_NOT_INITIALIZED
-  | CKR_CRYPTOKI_ALREADY_INITIALIZED
-  | CKR_OBJECT_HANDLE_INVALID
-  | CKR_KEY_HANDLE_INVALID
-  | CKR_ATTRIBUTE_SENSITIVE
-  | CKR_ATTRIBUTE_TYPE_INVALID
-  | CKR_ATTRIBUTE_READ_ONLY
-  | CKR_ATTRIBUTE_VALUE_INVALID
-  | CKR_ACTION_PROHIBITED
-  | CKR_TEMPLATE_INCOMPLETE
-  | CKR_TEMPLATE_INCONSISTENT
-  | CKR_MECHANISM_INVALID
-  | CKR_MECHANISM_PARAM_INVALID
-  | CKR_OPERATION_ACTIVE
-  | CKR_OPERATION_NOT_INITIALIZED
-  | CKR_SIGNATURE_INVALID
-  | CKR_SIGNATURE_LEN_RANGE
-  | CKR_KEY_FUNCTION_NOT_PERMITTED
-  | CKR_KEY_TYPE_INCONSISTENT
-  | CKR_WRAPPING_KEY_TYPE_INCONSISTENT
-  | CKR_UNWRAPPING_KEY_TYPE_INCONSISTENT
-  | CKR_CURVE_NOT_SUPPORTED
-  | CKR_KEY_SIZE_RANGE
-  | CKR_DATA_LEN_RANGE
-  | CKR_ENCRYPTED_DATA_INVALID
-  | CKR_ENCRYPTED_DATA_LEN_RANGE
-  | CKR_KEY_UNEXTRACTABLE
-  | CKR_KEY_NOT_WRAPPABLE
-  | CKR_STATE_UNSAVEABLE
-  | CKR_SAVED_STATE_INVALID
-  deriving (Eq, Show)
 
 -- | How many times a one-shot operation consumed its input.
 -- (Moved from 'Haskoki.Output': operation staging shares this

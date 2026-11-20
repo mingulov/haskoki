@@ -751,7 +751,7 @@ guardedRV body = do
   r <- try body
   case r of
     Right rv -> pure rv
-    Left (_ :: SomeException) -> pure (CULong 5)
+    Left (_ :: SomeException) -> pure (stdRvOf CKR_GENERAL_ERROR)
 
 -- | Core return code to @CK_RV@.
 stdRvOf :: ReturnCode -> CULong
@@ -762,7 +762,7 @@ stdRvOf = CULong . fromIntegral . returnCodeToRV
 withStdCtx :: StablePtr StdInstance -> (StdInstance -> IO CULong) -> IO CULong
 withStdCtx ctx k = guardedRV $ do
   if castStablePtrToPtr ctx == nullPtr
-    then pure (CULong 5)
+    then pure (stdRvOf CKR_GENERAL_ERROR)
     else deRefStablePtr ctx >>= k
 
 -- | Production acquisition borrows the already resolved config and hub from
@@ -2212,58 +2212,57 @@ requireSession inst sid = do
 
 -- ---------------------------------------------------------------------------
 -- FFI-only CK_RV values (pinned by spec/vendor/pkcs11.h).
--- The pure core never produces these (it has no slot universe and
--- no serial/parallel distinction); the boundary owns them, with
--- the control-entry raw-code precedent.
+-- Boundary CK_RV aliases over the generated mapping (the pure core
+-- types every served code; these names keep call sites readable).
 -- ---------------------------------------------------------------------------
 
 -- | @CKR_SLOT_ID_INVALID@ (0x03).
 ckrSlotIdInvalid :: CULong
-ckrSlotIdInvalid = CULong 0x03
+ckrSlotIdInvalid = stdRvOf CKR_SLOT_ID_INVALID
 
 -- | @CKR_ARGUMENTS_BAD@ (0x07).
 ckrArgsBad :: CULong
-ckrArgsBad = CULong 0x07
+ckrArgsBad = stdRvOf CKR_ARGUMENTS_BAD
 
 -- | @CKR_BUFFER_TOO_SMALL@ (0x150).
 ckrBufferTooSmall :: CULong
-ckrBufferTooSmall = CULong 0x150
+ckrBufferTooSmall = stdRvOf CKR_BUFFER_TOO_SMALL
 
 -- | @CKR_GENERAL_ERROR@ (0x05).
 ckrGeneralError :: CULong
-ckrGeneralError = CULong 0x05
+ckrGeneralError = stdRvOf CKR_GENERAL_ERROR
 
 -- | @CKR_OK@ (0x00).
 ckrOk :: CULong
-ckrOk = CULong 0x00
+ckrOk = stdRvOf CKR_OK
 
 -- | @CKR_TEMPLATE_INCONSISTENT@ (0xD1).
 ckrTemplateInconsistent :: CULong
-ckrTemplateInconsistent = CULong 0xD1
+ckrTemplateInconsistent = stdRvOf CKR_TEMPLATE_INCONSISTENT
 
 -- | @CKR_ATTRIBUTE_TYPE_INVALID@ (0x12).
 ckrAttrTypeInvalid :: CULong
-ckrAttrTypeInvalid = CULong 0x12
+ckrAttrTypeInvalid = stdRvOf CKR_ATTRIBUTE_TYPE_INVALID
 
 -- | @CKR_ATTRIBUTE_SENSITIVE@ (0x11).
 ckrAttrSensitive :: CULong
-ckrAttrSensitive = CULong 0x11
+ckrAttrSensitive = stdRvOf CKR_ATTRIBUTE_SENSITIVE
 
 -- | @CKR_USER_TYPE_INVALID@ (0x103).
 ckrUserTypeInvalid :: CULong
-ckrUserTypeInvalid = CULong 0x103
+ckrUserTypeInvalid = stdRvOf CKR_USER_TYPE_INVALID
 
 -- | @CKR_SESSION_EXISTS@ (0xB6).
 ckrSessionExists :: CULong
-ckrSessionExists = CULong 0xB6
+ckrSessionExists = stdRvOf CKR_SESSION_EXISTS
 
 -- | @CKR_PIN_LEN_RANGE@ (0xA2).
 ckrPinLenRange :: CULong
-ckrPinLenRange = CULong 0xA2
+ckrPinLenRange = stdRvOf CKR_PIN_LEN_RANGE
 
 -- | @CKR_USER_PIN_NOT_INITIALIZED@ (0x102).
 ckrUserPinNotInitialized :: CULong
-ckrUserPinNotInitialized = CULong 0x102
+ckrUserPinNotInitialized = stdRvOf CKR_USER_PIN_NOT_INITIALIZED
 
 -- ---------------------------------------------------------------------------
 -- slot list, sessions, session info, token liveness

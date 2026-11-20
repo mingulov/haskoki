@@ -103,6 +103,7 @@ library haskoki-core
   exposed-modules:
     Haskoki.Types
     Haskoki.Request
+    Haskoki.ReturnCode.Generated
     Haskoki.Outcome
     Haskoki.CallWork
     Haskoki.Model
