@@ -80,7 +80,7 @@ import Haskoki.Output
 import Haskoki.Recipe.Dsa (dsaRawFloorFor)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Registry.Generated (ckm_RSA_PKCS, ckm_RSA_X_509)
-import Haskoki.Request (OutputIntent)
+import Haskoki.Request (FunctionId (..), OutputIntent)
 import Haskoki.Types (ReturnCode (..))
 
 -- ---------------------------------------------------------------------------
@@ -274,9 +274,9 @@ planSignFinal ops st _name = case withPlainSlot ops SlotSign of
 -- | Finish a planned sign final or one-shot: stage the signature, or
 -- terminate on any failure or driver-protocol violation.
 finishSign
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishSign ops kind name result intent
+finishSign fid ops kind name result intent
   | kind /= SlotSign =
       (ops, denyOutcome (mkDeny CKR_ARGUMENTS_BAD "not a sign slot"))
   | otherwise = case withPlainSlot ops SlotSign of
@@ -309,7 +309,7 @@ finishSign ops kind name result intent
                 "driver answered a sign step with a feed unit"))
           GotCryptoError err ->
             ( removeSingle SlotSign ops
-            , denyOutcome (mkDeny (interpretError (TyCrypto err))
+            , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
                 ("sign crypto failed: " ++ show err)))
 
 -- ---------------------------------------------------------------------------
@@ -398,9 +398,9 @@ planVerifyFinal ops st _name sig = case withPlainSlot ops SlotVerify of
 -- where a verdict belongs are a driver-protocol violation; all paths
 -- terminate the slot.
 finishVerify
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishVerify ops kind name result _intent
+finishVerify fid ops kind name result _intent
   | kind /= SlotVerify =
       (ops, denyOutcome (mkDeny CKR_ARGUMENTS_BAD "not a verify slot"))
   | otherwise = case withPlainSlot ops SlotVerify of
@@ -430,7 +430,7 @@ finishVerify ops kind name result _intent
               "driver answered a verify step with a feed unit"))
         GotCryptoError err ->
           ( removeSingle SlotVerify ops
-          , denyOutcome (mkDeny (interpretError (TyCrypto err))
+          , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
               ("verify crypto failed: " ++ show err)))
 
 -- ---------------------------------------------------------------------------
@@ -489,9 +489,9 @@ planSignRecoverOneShot ops st _name input =
 -- (the raw-RSA composition: the block is the signature, not an
 -- assembled @data \|\| tag@ pair).
 finishSignRecover
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishSignRecover ops kind name result intent
+finishSignRecover fid ops kind name result intent
   | kind /= SlotSign =
       (ops, denyOutcome (mkDeny CKR_ARGUMENTS_BAD "not a sign slot"))
   | otherwise = case withRecoverSlot ops SlotSign RoleSignRecover of
@@ -533,7 +533,7 @@ finishSignRecover ops kind name result intent
                 "driver answered a sign-recover step with a feed unit"))
           GotCryptoError err ->
             ( removeSingle SlotSign ops
-            , denyOutcome (mkDeny (interpretError (TyCrypto err))
+            , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
                 ("sign-recover crypto failed: " ++ show err)))
 
 -- ---------------------------------------------------------------------------
@@ -604,9 +604,9 @@ planVerifyRecoverOneShot ops st _name sig =
 -- positive verdict is a driver-protocol violation (there is nothing
 -- to stage); all paths terminate the slot.
 finishVerifyRecover
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishVerifyRecover ops kind name result intent
+finishVerifyRecover fid ops kind name result intent
   | kind /= SlotVerify =
       (ops, denyOutcome (mkDeny CKR_ARGUMENTS_BAD "not a verify slot"))
   | otherwise = case withRecoverSlot ops SlotVerify RoleVerifyRecover of
@@ -645,5 +645,5 @@ finishVerifyRecover ops kind name result intent
                 "driver answered a verify-recover step with a feed unit"))
           GotCryptoError err ->
             ( removeSingle SlotVerify ops
-            , denyOutcome (mkDeny (interpretError (TyCrypto err))
+            , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
                 ("verify-recover crypto failed: " ++ show err)))

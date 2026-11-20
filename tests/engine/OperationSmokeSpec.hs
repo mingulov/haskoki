@@ -114,7 +114,7 @@ import Haskoki.Registry
   , curatedRegistry
   , mkCapabilities
   )
-import Haskoki.Request (OutputIntent (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( EngineResourceId
@@ -632,7 +632,7 @@ caseSha256Slot = withBackend $ \env -> do
       out <- case eOut of
         EngineOk b -> pure b
         EngineFail err -> assertFailure ("digestFinal failed: " ++ show err)
-      let (ops4, fin) = finishDigest ops3 SlotDigest "digest"
+      let (ops4, fin) = finishDigest F_DigestFinal ops3 SlotDigest "digest"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "final ok" CKR_OK (soCode fin)
       assertEqual "multipart digest matches FIPS" (Just sha256Long)
@@ -682,7 +682,7 @@ caseHmacSlot = withBackend $ \env -> do
   tag <- case soEffects o1 of
     [fx@(FxSign _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishSign ops1 SlotSign "tag"
+      let (_, fin) = finishSign F_Sign ops1 SlotSign "tag"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "sign ok" CKR_OK (soCode fin)
       case stagedBytes fin of
@@ -696,7 +696,7 @@ caseHmacSlot = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       res <- runRealEffect env fx
-      let (ops4, fin) = finishVerify ops3 SlotVerify "verify"
+      let (ops4, fin) = finishVerify F_Verify ops3 SlotVerify "verify"
             res (IntentBuffer 0)
       assertEqual "verify ok" CKR_OK (soCode fin)
       assertEqual "slot freed" [] (activeSlots ops4)
@@ -708,7 +708,7 @@ caseHmacSlot = withBackend $ \env -> do
   case soEffects o3 of
     [fx] -> do
       res <- runRealEffect env fx
-      let (_, fin) = finishVerify ops6 SlotVerify "verify"
+      let (_, fin) = finishVerify F_Verify ops6 SlotVerify "verify"
             res (IntentBuffer 0)
       assertEqual "tampered invalid" CKR_SIGNATURE_INVALID
         (soCode fin)
@@ -724,7 +724,7 @@ caseAesKatSlot = withBackend $ \env -> do
   ct <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       case stagedBytes fin of
@@ -739,7 +739,7 @@ caseAesKatSlot = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       out <- expectBytes env fx
-      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+      let (ops4, fin) = finishCipher F_Decrypt ops3 SlotDecrypt "plain"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip recovers" (Just aes256Pt) (stagedBytes fin)
@@ -758,7 +758,7 @@ caseAesCtrSlot = withBackend $ \env -> do
   ct <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       case stagedBytes fin of
@@ -773,7 +773,7 @@ caseAesCtrSlot = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       out <- expectBytes env fx
-      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+      let (ops4, fin) = finishCipher F_Decrypt ops3 SlotDecrypt "plain"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip recovers" (Just msg) (stagedBytes fin)
@@ -795,7 +795,7 @@ caseAesCtsSlot = withBackend $ \env -> do
   ct <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       case stagedBytes fin of
@@ -810,7 +810,7 @@ caseAesCtsSlot = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       out <- expectBytes env fx
-      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+      let (ops4, fin) = finishCipher F_Decrypt ops3 SlotDecrypt "plain"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip recovers" (Just msg) (stagedBytes fin)
@@ -837,7 +837,7 @@ streamSlot mech msg = withBackend $ \env -> do
   ct <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       case stagedBytes fin of
@@ -852,7 +852,7 @@ streamSlot mech msg = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       out <- expectBytes env fx
-      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+      let (ops4, fin) = finishCipher F_Decrypt ops3 SlotDecrypt "plain"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip recovers" (Just msg) (stagedBytes fin)
@@ -881,7 +881,7 @@ caseAesXtsSlot = withBackend $ \env -> do
   ct <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       case stagedBytes fin of
@@ -896,7 +896,7 @@ caseAesXtsSlot = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       out <- expectBytes env fx
-      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+      let (ops4, fin) = finishCipher F_Decrypt ops3 SlotDecrypt "plain"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip recovers" (Just msg) (stagedBytes fin)
@@ -918,7 +918,7 @@ wrapSlot mech msg wantCtLen = withBackend $ \env -> do
   ct <- case soEffects o1 of
     [fx@(FxCipher DirEncrypt _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       case stagedBytes fin of
@@ -933,7 +933,7 @@ wrapSlot mech msg wantCtLen = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       out <- expectBytes env fx
-      let (ops4, fin) = finishCipher ops3 SlotDecrypt "plain"
+      let (ops4, fin) = finishCipher F_Decrypt ops3 SlotDecrypt "plain"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip recovers" (Just msg) (stagedBytes fin)
@@ -951,7 +951,7 @@ caseAesPadSlot = withBackend $ \env -> do
   ct <- case soEffects o1 of
     [fx] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishCipher ops1 SlotEncrypt "cipher"
+      let (_, fin) = finishCipher F_Encrypt ops1 SlotEncrypt "cipher"
             (GotBytes out) (IntentBuffer 64)
       case stagedBytes fin of
         Just c -> pure c
@@ -965,7 +965,7 @@ caseAesPadSlot = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishCipher ops3 SlotDecrypt "plain"
+      let (_, fin) = finishCipher F_Decrypt ops3 SlotDecrypt "plain"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "pad tail strips" (Just msg) (stagedBytes fin)
@@ -980,7 +980,7 @@ caseEcdsaSlot = withBackend $ \env -> do
   sig <- case soEffects o1 of
     [fx@(FxSign _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (_, fin) = finishSign ops1 SlotSign "sig"
+      let (_, fin) = finishSign F_Sign ops1 SlotSign "sig"
             (GotBytes out) (IntentBuffer 128)
       assertEqual "sign ok" CKR_OK (soCode fin)
       case stagedBytes fin of
@@ -993,7 +993,7 @@ caseEcdsaSlot = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       res <- runRealEffect env fx
-      let (_, fin) = finishVerify ops3 SlotVerify "verify"
+      let (_, fin) = finishVerify F_Verify ops3 SlotVerify "verify"
             res (IntentBuffer 0)
       assertEqual "fresh sig verifies" CKR_OK (soCode fin)
     other -> assertFailure ("expected one verify effect, got " ++ show other)
@@ -1004,7 +1004,7 @@ caseEcdsaSlot = withBackend $ \env -> do
   case soEffects o3 of
     [fx] -> do
       res <- runRealEffect env fx
-      let (_, fin) = finishVerify ops5 SlotVerify "verify"
+      let (_, fin) = finishVerify F_Verify ops5 SlotVerify "verify"
             res (IntentBuffer 0)
       assertEqual "fixed RAW vector verifies" CKR_OK (soCode fin)
     other -> assertFailure ("expected one verify effect, got " ++ show other)
@@ -1015,7 +1015,7 @@ caseEcdsaSlot = withBackend $ \env -> do
   case soEffects o4 of
     [fx] -> do
       res <- runRealEffect env fx
-      let (_, fin) = finishVerify ops7 SlotVerify "verify"
+      let (_, fin) = finishVerify F_Verify ops7 SlotVerify "verify"
             res (IntentBuffer 0)
       assertEqual "flipped RAW invalid" CKR_SIGNATURE_INVALID
         (soCode fin)
@@ -1034,7 +1034,7 @@ caseDualSlot = withBackend $ \env -> do
     [fxD@(FxDigest _ _), fxC@(FxCipher DirEncrypt _ _ _ _)] -> do
       dOut <- expectBytes env fxD
       cOut <- expectBytes env fxC
-      let (ops3, fin) = finishDual ops2 "digest" "cipher"
+      let (ops3, fin) = finishDual F_DigestEncryptUpdate ops2 "digest" "cipher"
             (GotBytes dOut) (GotBytes cOut) (IntentBuffer 64) (IntentBuffer 64)
       assertEqual "dual final ok" CKR_OK (soCode fin)
       assertBool "dual freed" (not (hasDual ops3))
@@ -1079,7 +1079,7 @@ caseMessageAesKat = withBackend $ \env -> do
   ops2 <- case soEffects o1 of
     [fx@(FxMessageCipher _ _ _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (o, fin) = finishMessage MsgEncrypt ops1 SlotEncrypt "ct"
+      let (o, fin) = finishMessage F_EncryptMessage MsgEncrypt ops1 SlotEncrypt "ct"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       assertEqual "KAT ciphertext" (Just aes256Ct) (stagedBytes fin)
@@ -1096,7 +1096,7 @@ caseMessageAesKat = withBackend $ \env -> do
   ops6 <- case soEffects nEnd of
     [fx] -> do
       out <- expectBytes env fx
-      let (o, fin) = finishMessage MsgEncrypt ops5 SlotEncrypt "ct"
+      let (o, fin) = finishMessage F_EncryptMessageNext MsgEncrypt ops5 SlotEncrypt "ct"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "multipart matches KAT" (Just aes256Ct) (stagedBytes fin)
       pure o
@@ -1112,7 +1112,7 @@ caseMessageAesKat = withBackend $ \env -> do
   opsD2 <- case soEffects oD of
     [fx] -> do
       out <- expectBytes env fx
-      let (o, fin) = finishMessage MsgDecrypt opsD1 SlotDecrypt "pt"
+      let (o, fin) = finishMessage F_DecryptMessage MsgDecrypt opsD1 SlotDecrypt "pt"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip" (Just aes256Pt) (stagedBytes fin)
@@ -1126,7 +1126,7 @@ caseMessageAesKat = withBackend $ \env -> do
     [fx@(FxMessageCipher _ _ _ _ aad _)] -> do
       assertEqual "aad bound" "aad" aad
       res <- runRealEffect env fx
-      let (o, bad) = finishMessage MsgDecrypt opsD3 SlotDecrypt "pt"
+      let (o, bad) = finishMessage F_DecryptMessage MsgDecrypt opsD3 SlotDecrypt "pt"
             res (IntentBuffer 64)
       assertEqual "unsupported maps to mechanism-invalid" CKR_MECHANISM_INVALID (soCode bad)
       assertEqual "context survives" [SlotDecrypt] (activeSlots o)
@@ -1145,7 +1145,7 @@ caseMessageHmac = withBackend $ \env -> do
   tag <- case soEffects nEnd of
     [fx@(FxMessageSign _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (o, fin) = finishMessage MsgSign ops3 SlotSign "tag"
+      let (o, fin) = finishMessage F_SignMessageNext MsgSign ops3 SlotSign "tag"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "sign ok" CKR_OK (soCode fin)
       assertEqual "slot kept" [SlotSign] (activeSlots o)
@@ -1161,7 +1161,7 @@ caseMessageHmac = withBackend $ \env -> do
   ops6 <- case soEffects o1 of
     [fx] -> do
       res <- runRealEffect env fx
-      let (o, fin) = finishMessage MsgVerify ops5 SlotVerify "vrf"
+      let (o, fin) = finishMessage F_VerifyMessage MsgVerify ops5 SlotVerify "vrf"
             res (IntentBuffer 0)
       assertEqual "verify ok" CKR_OK (soCode fin)
       assertEqual "slot kept" [SlotVerify] (activeSlots o)
@@ -1174,7 +1174,7 @@ caseMessageHmac = withBackend $ \env -> do
   case soEffects nBad of
     [fx] -> do
       res <- runRealEffect env fx
-      let (o, fin) = finishMessage MsgVerify ops8 SlotVerify "vrf"
+      let (o, fin) = finishMessage F_VerifyMessageNext MsgVerify ops8 SlotVerify "vrf"
             res (IntentBuffer 0)
       assertEqual "tampered invalid" CKR_SIGNATURE_INVALID (soCode fin)
       let (o2, final) = finalizeMessage MsgVerify o
@@ -1198,7 +1198,7 @@ caseMessageGcmAad = withBackend $ \env -> do
   ops2 <- case soEffects o1 of
     [fx@(FxMessageCipher _ _ _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (o, fin) = finishMessage MsgEncrypt ops1 SlotEncrypt "sealed"
+      let (o, fin) = finishMessage F_EncryptMessage MsgEncrypt ops1 SlotEncrypt "sealed"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "encrypt ok" CKR_OK (soCode fin)
       assertEqual "KAT sealed" (Just (gcmCt <> gcmTag)) (stagedBytes fin)
@@ -1217,7 +1217,7 @@ caseMessageGcmAad = withBackend $ \env -> do
   opsD2 <- case soEffects oD of
     [fx] -> do
       out <- expectBytes env fx
-      let (o, fin) = finishMessage MsgDecrypt opsD1 SlotDecrypt "pt"
+      let (o, fin) = finishMessage F_DecryptMessage MsgDecrypt opsD1 SlotDecrypt "pt"
             (GotBytes out) (IntentBuffer 64)
       assertEqual "decrypt ok" CKR_OK (soCode fin)
       assertEqual "roundtrip" (Just gcmPt) (stagedBytes fin)
@@ -1233,7 +1233,7 @@ caseMessageGcmAad = withBackend $ \env -> do
       case res of
         GotBytes _ -> assertFailure "tampered tag sealed bytes"
         _ -> pure ()
-      let (o, fin) = finishMessage MsgDecrypt opsD3 SlotDecrypt "pt"
+      let (o, fin) = finishMessage F_DecryptMessage MsgDecrypt opsD3 SlotDecrypt "pt"
             res (IntentBuffer 64)
       assertBool "tamper fails closed" (soCode fin /= CKR_OK)
       assertEqual "context survives" [SlotDecrypt] (activeSlots o)
@@ -1251,7 +1251,7 @@ caseMessageEcdsa = withBackend $ \env -> do
   (opsS, sig) <- case soEffects o1 of
     [fx@(FxMessageSign _ _ _ _)] -> do
       out <- expectBytes env fx
-      let (o, fin) = finishMessage MsgSign ops1 SlotSign "sig"
+      let (o, fin) = finishMessage F_SignMessage MsgSign ops1 SlotSign "sig"
             (GotBytes out) (IntentBuffer 128)
       assertEqual "sign ok" CKR_OK (soCode fin)
       assertEqual "slot kept" [SlotSign] (activeSlots o)
@@ -1270,7 +1270,7 @@ caseMessageEcdsa = withBackend $ \env -> do
   case soEffects o2 of
     [fx] -> do
       res <- runRealEffect env fx
-      let (o, fin) = finishMessage MsgVerify ops4 SlotVerify "vrf"
+      let (o, fin) = finishMessage F_VerifyMessage MsgVerify ops4 SlotVerify "vrf"
             res (IntentBuffer 0)
       assertEqual "verify ok" CKR_OK (soCode fin)
       assertEqual "slot kept" [SlotVerify] (activeSlots o)
@@ -1312,7 +1312,7 @@ roundRecover env resolve mech input = do
   assertEqual "signature width" 256 (BS.length sig)
   sigStaged <- case soEffects u1 of
     [_] -> do
-      let (o, fin) = finishSignRecover ops1 SlotSign "rec"
+      let (o, fin) = finishSignRecover F_SignRecover ops1 SlotSign "rec"
             (GotBytes sig) (IntentBuffer 512)
       assertEqual "sign finish ok" CKR_OK (soCode fin)
       assertEqual "sign finish frees" [] (activeSlots o)
@@ -1330,7 +1330,7 @@ roundRecover env resolve mech input = do
   case soEffects u2 of
     [fx] -> do
       res <- runEffect env resolve fx
-      let (o, fin) = finishVerifyRecover ops3 SlotVerify "rec"
+      let (o, fin) = finishVerifyRecover F_VerifyRecover ops3 SlotVerify "rec"
             res (IntentBuffer 512)
       assertEqual "verify finish ok" CKR_OK (soCode fin)
       assertEqual "verify finish frees" [] (activeSlots o)
@@ -1430,7 +1430,7 @@ caseRecoverEmptyInput = withBackend $ \env -> do
       case res of
         GotCryptoError (CryptoFailed _) -> pure ()
         other -> assertFailure ("expected driver failure, got: " ++ show other)
-      let (o, fin) = finishSignRecover xops1 SlotSign "rec" res (IntentBuffer 512)
+      let (o, fin) = finishSignRecover F_SignRecover xops1 SlotSign "rec" res (IntentBuffer 512)
       assertEqual "x509 empty surfaces" CKR_GENERAL_ERROR (soCode fin)
       assertEqual "x509 empty frees" [] (activeSlots o)
     other -> assertFailure ("one sign effect, got " ++ show other)

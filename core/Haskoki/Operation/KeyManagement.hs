@@ -46,6 +46,7 @@ module Haskoki.Operation.KeyManagement
   , PendingWork (..)
   , publishPending
   , finishWork
+  , workFunction
   , stampPairComponents
   , stampParamsObject
   , keyPairCompatible
@@ -414,7 +415,7 @@ import Haskoki.Registry.Generated
   , ckm_PBE_MD5_CAST3_CBC
   , ckm_PBE_MD5_CAST128_CBC
   )
-import Haskoki.Request (OutputIntent (..), OutputRegion (..))
+import Haskoki.Request (FunctionId (..), OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (Rules)
 import Haskoki.Session (SessionLogin (LoginSO), admitCode, admitObjects, admitPrivate, admitWritable)
 import Haskoki.Types
@@ -1109,6 +1110,28 @@ data PendingWork
       }
   deriving (Eq, Show)
 
+-- | The C function a unit of key work belongs to (error
+-- attribution for finishers). Total: every constructor maps.
+-- PwBlobOut covers both wrap planners ('planWrapKey' and
+-- 'planAuthWrapKey'): authenticated wrap is a C_WrapKey shape,
+-- not a distinct C entry. Likewise PwUnwrap covers
+-- 'planUnwrapKey' and 'planAuthUnwrapKey' under C_UnwrapKey.
+workFunction :: PendingWork -> FunctionId
+workFunction work = case work of
+  PwGeneratePair {} -> F_GenerateKeyPair
+  PwGenerateKey {} -> F_GenerateKey
+  PwGenerateKeyIv {} -> F_GenerateKey
+  PwEncaps {} -> F_EncapsulateKey
+  PwDecaps {} -> F_DecapsulateKey
+  PwBlobOut {} -> F_WrapKey
+  PwUnwrap {} -> F_UnwrapKey
+  PwUnwrapRaw {} -> F_UnwrapKey
+  PwUnwrapPad8 {} -> F_UnwrapKey
+  PwUnwrapTail {} -> F_UnwrapKey
+  PwDerive {} -> F_DeriveKey
+  PwDeriveIv {} -> F_DeriveKey
+  PwDerivePub {} -> F_DeriveKey
+
 -- | Whether any pending object requests @CKA_TRUSTED=true@. Shared
 -- by the submit-time gate ('admitPending') and the completion-time
 -- gate ('finishWork'): only the security officer may create or
@@ -1409,8 +1432,8 @@ finishWork model st pw res
   -- violation (same failure class as the pre-change empty-bytes
   -- mis-shape, which failed its frame decode).
   (_, GotUnit) -> internal "unit answer to key management"
-  (_, GotCryptoError e) -> Reject Rejection
-    { rejCode = interpretError (TyCrypto e)
+  (w, GotCryptoError e) -> Reject Rejection
+    { rejCode = interpretError (workFunction w) (TyCrypto e)
     , rejOutputs = []
     , rejDelta = StateDelta []
     , rejReleases = []

@@ -28,6 +28,7 @@ import Haskoki.Operation
   , mkDeny
   )
 import qualified Haskoki.Outcome as O
+import Haskoki.Request (FunctionId (..))
 import qualified Haskoki.Transition as T
 import Haskoki.Types (EngineResourceId (..), ReturnCode (..))
 
@@ -79,20 +80,21 @@ sampleDenies =
   , (CKR_GENERAL_ERROR, "boom")
   ]
 
+-- Representative function id (F_GetInfo, arbitrary): the interpreter ignores it, so these collapsing pins evaluate under one id; they expand per function when the per-function error cells land.
 caseCryptoCodes :: IO ()
 caseCryptoCodes =
   mapM_ (\(e, c) -> assertEqual ("interpret " ++ show e) c
-    (interpretError (TyCrypto e))) sampleCryptos
+    (interpretError F_GetInfo (TyCrypto e))) sampleCryptos
 
 caseCoreCodes :: IO ()
 caseCoreCodes =
   mapM_ (\(f, c) -> assertEqual ("interpret " ++ show f) c
-    (interpretError (TyCrypto (T.toCryptoError f)))) sampleFailures
+    (interpretError F_GetInfo (TyCrypto (T.toCryptoError f)))) sampleFailures
 
 caseDenyCodes :: IO ()
 caseDenyCodes = do
   mapM_ (\(c, m) -> assertEqual ("interpret deny " ++ show c) c
-    (interpretError (TyDeny (mkDeny c m)))) sampleDenies
+    (interpretError F_GetInfo (TyDeny (mkDeny c m)))) sampleDenies
   -- Every DenyDetail category is reachable through the interpreter.
   let details = map (sdDetail . uncurry mkDeny) sampleDenies
   assertEqual "detail category count" 7 (length details)
@@ -108,12 +110,12 @@ caseDenyCodes = do
 caseDelegates :: IO ()
 caseDelegates =
   mapM_ (\(e, _) -> assertEqual ("delegate " ++ show e)
-    (interpretError (TyCrypto e)) (cryptoCode e)) sampleCryptos
+    (interpretError F_GetInfo (TyCrypto e)) (cryptoCode F_GetInfo e)) sampleCryptos
 
 caseDenyRoutes :: IO ()
 caseDenyRoutes =
   mapM_ (\(c, m) -> assertEqual ("denyOutcome " ++ show c)
-    (interpretError (TyDeny (mkDeny c m)))
+    (interpretError F_GetInfo (TyDeny (mkDeny c m)))
     (soCode (denyOutcome (mkDeny c m)))) sampleDenies
 
 -- | The package root, resolved CWD-independently: walk up from

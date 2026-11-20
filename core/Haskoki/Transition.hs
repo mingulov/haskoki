@@ -337,6 +337,22 @@ planCall rules model req = case reqFunction req of
       (Just h, Just tmpl) -> planDecoded rules model (DRSetAttributeValue (ssId st) h tmpl)
       (Nothing, _) -> badArgs "set-attributes requires an object handle"
       (_, Nothing) -> badArgs "malformed set-attributes template"
+  -- Key-management and dual identities never arrive through a
+  -- legacy-bytes 'Request' (dedicated decoded-args entries; dual
+  -- currently test-only — see 'notPlannedHere'): defensive
+  -- totality arms; they reject loudly and change no observable
+  -- behavior.
+  F_GenerateKey -> withSession $ \_st -> notPlannedHere F_GenerateKey
+  F_GenerateKeyPair -> withSession $ \_st -> notPlannedHere F_GenerateKeyPair
+  F_DeriveKey -> withSession $ \_st -> notPlannedHere F_DeriveKey
+  F_WrapKey -> withSession $ \_st -> notPlannedHere F_WrapKey
+  F_UnwrapKey -> withSession $ \_st -> notPlannedHere F_UnwrapKey
+  F_EncapsulateKey -> withSession $ \_st -> notPlannedHere F_EncapsulateKey
+  F_DecapsulateKey -> withSession $ \_st -> notPlannedHere F_DecapsulateKey
+  F_DigestEncryptUpdate -> withSession $ \_st -> notPlannedHere F_DigestEncryptUpdate
+  F_DecryptDigestUpdate -> withSession $ \_st -> notPlannedHere F_DecryptDigestUpdate
+  F_SignEncryptUpdate -> withSession $ \_st -> notPlannedHere F_SignEncryptUpdate
+  F_DecryptVerifyUpdate -> withSession $ \_st -> notPlannedHere F_DecryptVerifyUpdate
   where
     withSession :: (SessionState -> PlanResult) -> PlanResult
     withSession k = case reqSession req of
@@ -385,6 +401,25 @@ admissionDenied deny = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = ["admission denied: " ++ show deny]
+  }
+
+-- | Reject a function 'planCall' never plans: key-management
+-- functions are planned through dedicated decoded-args entries
+-- (the 'Haskoki.Operation.KeyManagement' planners, called
+-- directly by the FFI and Detached layers); dual functions are
+-- planned through the 'Haskoki.Operation.Dual' planners
+-- (currently test-only, unwired from production entries).
+-- Neither arrives through a legacy-bytes 'Request' — no
+-- producer builds one — so this is defensive totality only:
+-- reject loudly instead of crashing, changing no observable
+-- behavior.
+notPlannedHere :: FunctionId -> PlanResult
+notPlannedHere fid = Reject Rejection
+  { rejCode = CKR_FUNCTION_FAILED
+  , rejOutputs = []
+  , rejDelta = StateDelta []
+  , rejReleases = []
+  , rejReasons = ["not planned through planCall: " ++ show fid]
   }
 
 -- | Run a decoded step against a known session id: unknown
@@ -1494,28 +1529,28 @@ toCryptoError f = case f of
 -- | Run the finishing function pinned by the step.
 runFinisher :: CryptoStep -> CryptoResult -> Maybe (SessionOps, StepOutcome)
 runFinisher step res = case csFunction step of
-  F_Digest -> go finishDigest
-  F_DigestInit -> go finishDigestInit
-  F_DigestUpdate -> go finishDigestFeed
-  F_DigestFinal -> go finishDigest
-  F_Sign -> go finishSign
-  F_SignFinal -> go finishSign
-  F_SignRecover -> go finishSignRecover
-  F_Verify -> go finishVerify
-  F_VerifyFinal -> go finishVerify
-  F_VerifyRecover -> go finishVerifyRecover
-  F_Encrypt -> go finishCipher
-  F_EncryptFinal -> go finishCipher
-  F_Decrypt -> go finishCipher
-  F_DecryptFinal -> go finishCipher
-  F_EncryptMessage -> goMsg MsgEncrypt
-  F_DecryptMessage -> goMsg MsgDecrypt
-  F_SignMessage -> goMsg MsgSign
-  F_VerifyMessage -> goMsg MsgVerify
-  F_EncryptMessageNext -> goMsg MsgEncrypt
-  F_DecryptMessageNext -> goMsg MsgDecrypt
-  F_SignMessageNext -> goMsg MsgSign
-  F_VerifyMessageNext -> goMsg MsgVerify
+  F_Digest -> go F_Digest finishDigest
+  F_DigestInit -> go F_DigestInit finishDigestInit
+  F_DigestUpdate -> go F_DigestUpdate finishDigestFeed
+  F_DigestFinal -> go F_DigestFinal finishDigest
+  F_Sign -> go F_Sign finishSign
+  F_SignFinal -> go F_SignFinal finishSign
+  F_SignRecover -> go F_SignRecover finishSignRecover
+  F_Verify -> go F_Verify finishVerify
+  F_VerifyFinal -> go F_VerifyFinal finishVerify
+  F_VerifyRecover -> go F_VerifyRecover finishVerifyRecover
+  F_Encrypt -> go F_Encrypt finishCipher
+  F_EncryptFinal -> go F_EncryptFinal finishCipher
+  F_Decrypt -> go F_Decrypt finishCipher
+  F_DecryptFinal -> go F_DecryptFinal finishCipher
+  F_EncryptMessage -> goMsg F_EncryptMessage MsgEncrypt
+  F_DecryptMessage -> goMsg F_DecryptMessage MsgDecrypt
+  F_SignMessage -> goMsg F_SignMessage MsgSign
+  F_VerifyMessage -> goMsg F_VerifyMessage MsgVerify
+  F_EncryptMessageNext -> goMsg F_EncryptMessageNext MsgEncrypt
+  F_DecryptMessageNext -> goMsg F_DecryptMessageNext MsgDecrypt
+  F_SignMessageNext -> goMsg F_SignMessageNext MsgSign
+  F_VerifyMessageNext -> goMsg F_VerifyMessageNext MsgVerify
   -- Exhaustive runFinisher — every 'FunctionId' has an
   -- explicit arm; functions without a finishing leg map to
   -- 'Nothing' (no wildcard). A new constructor fails validation
@@ -1545,9 +1580,9 @@ runFinisher step res = case csFunction step of
   F_SetPIN -> Nothing
   F_VerifyUpdate -> Nothing
   F_EncryptInit -> Nothing
-  F_EncryptUpdate -> go finishCipherUpdate
+  F_EncryptUpdate -> go F_EncryptUpdate finishCipherUpdate
   F_DecryptInit -> Nothing
-  F_DecryptUpdate -> go finishCipherUpdate
+  F_DecryptUpdate -> go F_DecryptUpdate finishCipherUpdate
   F_MessageEncryptInit -> Nothing
   F_MessageDecryptInit -> Nothing
   F_MessageSignInit -> Nothing
@@ -1561,10 +1596,25 @@ runFinisher step res = case csFunction step of
   F_MessageSignFinal -> Nothing
   F_MessageVerifyFinal -> Nothing
   F_SessionCancel -> Nothing
+  -- Key-management and dual steps never become 'CryptoStep's
+  -- (key finishers run over 'PendingWork', dual over
+  -- 'finishDual'), so they have no finishing leg here; a step
+  -- carrying one rejects loudly via 'finishStep'.
+  F_GenerateKey -> Nothing
+  F_GenerateKeyPair -> Nothing
+  F_DeriveKey -> Nothing
+  F_WrapKey -> Nothing
+  F_UnwrapKey -> Nothing
+  F_EncapsulateKey -> Nothing
+  F_DecapsulateKey -> Nothing
+  F_DigestEncryptUpdate -> Nothing
+  F_DecryptDigestUpdate -> Nothing
+  F_SignEncryptUpdate -> Nothing
+  F_DecryptVerifyUpdate -> Nothing
   where
-    go fin = Just (fin (csOps step) (csKind step) (csName step) res (csIntent step))
-    goMsg fam = Just
-      (finishMessage fam (csOps step) (csKind step) (csName step) res (csIntent step))
+    go fid fin = Just (fin fid (csOps step) (csKind step) (csName step) res (csIntent step))
+    goMsg fid fam = Just
+      (finishMessage fid fam (csOps step) (csKind step) (csName step) res (csIntent step))
 
 -- | The first reservation dependency the model no longer satisfies,
 -- if any. The runtime uses this for explicit invalidation checks.

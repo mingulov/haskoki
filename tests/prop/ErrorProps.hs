@@ -17,6 +17,7 @@ import Haskoki.Operation.Effect
   , mkDeny
   , sdCode
   )
+import Haskoki.Request (FunctionId (..))
 import Haskoki.Types (EngineResourceId (..), ReturnCode (..))
 
 spec :: Maybe Int -> Int -> TestTree
@@ -91,7 +92,7 @@ genDeny = StepDeny <$> elements allCodes <*> elements allDetails
 -- | Denials keep their pinned code through the interpreter.
 pDenyPassthrough :: Property
 pDenyPassthrough = forAll genDeny $ \d ->
-  interpretError (TyDeny d) == sdCode d
+  interpretError F_GetInfo (TyDeny d) == sdCode d
 
 -- | The full 38x7=266 (code,detail) space, enumerated
 -- deterministically: the QC sampler above can miss codes
@@ -105,7 +106,7 @@ caseDenyExhaustive =
     check (code, det) =
       assertEqual ("interpret (TyDeny " ++ show code ++ " " ++ show det ++ ")")
         code
-        (interpretError (TyDeny (StepDeny code det)))
+        (interpretError F_GetInfo (TyDeny (StepDeny code det)))
 
 -- | Every crypto failure maps to its pinned code. Four rows
 -- (Failed, Unsupported, BadKey, AuthFailed) cross-check
@@ -124,13 +125,14 @@ cryptoPins =
   , (CryptoResourceGone "r" (EngineResourceId 7), CKR_GENERAL_ERROR)
   ]
 
+-- Representative function id (F_GetInfo, arbitrary): the interpreter ignores it, so these collapsing pins evaluate under one id; they expand per function when the per-function error cells land.
 caseCrypto :: IO ()
 caseCrypto = mapM_ checkPin cryptoPins
   where
     checkPin :: (CryptoError, ReturnCode) -> IO ()
     checkPin (err, want) =
       assertEqual ("interpret " ++ show err) want
-        (interpretError (TyCrypto err))
+        (interpretError F_GetInfo (TyCrypto err))
 
 caseMkDeny :: IO ()
 caseMkDeny = mapM_ checkCode allCodes

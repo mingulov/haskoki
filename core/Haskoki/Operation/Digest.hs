@@ -59,7 +59,7 @@ import Haskoki.Operation
   , setMultipartActive
   )
 import Haskoki.Outcome (ResourceRelease (..))
-import Haskoki.Request (OutputIntent)
+import Haskoki.Request (FunctionId (..), OutputIntent)
 import Haskoki.Types (ReturnCode (..))
 
 -- | The release for a slot's live stream, if any.
@@ -257,9 +257,9 @@ planDigestFinal ops st _name = case lookupSingle ops SlotDigest of
 -- terminate the slot on any failure. The allocation answered with
 -- no resource, so a failure releases nothing.
 finishDigestInit
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishDigestInit ops kind _name result _intent
+finishDigestInit fid ops kind _name result _intent
   | kind /= SlotDigest =
       (ops, denyOutcome (mkDeny CKR_ARGUMENTS_BAD "not a digest slot"))
   | otherwise = case lookupSingle ops SlotDigest of
@@ -291,7 +291,7 @@ finishDigestInit ops kind _name result _intent
              )
       GotCryptoError err ->
         ( removeSingle SlotDigest o
-        , denyOutcome (mkDeny (interpretError (TyCrypto err))
+        , denyOutcome (mkDeny (interpretError fid (TyCrypto err))
             ("digest init failed: " ++ show err)))
       _ ->
         ( removeSingle SlotDigest o
@@ -302,9 +302,9 @@ finishDigestInit ops kind _name result _intent
 -- failure or protocol violation terminates it and releases the
 -- stream.
 finishDigestFeed
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishDigestFeed ops kind _name result _intent
+finishDigestFeed fid ops kind _name result _intent
   | kind /= SlotDigest =
       (ops, denyOutcome (mkDeny CKR_ARGUMENTS_BAD "not a digest slot"))
   | otherwise = case lookupSingle ops SlotDigest of
@@ -320,7 +320,7 @@ finishDigestFeed ops kind _name result _intent
         (o, StepOutcome CKR_OK [] Nothing ["digest feed complete"] [] Nothing)
       GotCryptoError err ->
         ( removeSingle SlotDigest o
-        , denyOutcomeR (mkDeny (interpretError (TyCrypto err)) ("digest feed failed: " ++ show err))
+        , denyOutcomeR (mkDeny (interpretError fid (TyCrypto err)) ("digest feed failed: " ++ show err))
             (streamRelease sc)
         )
       _ ->
@@ -336,9 +336,9 @@ finishDigestFeed ops kind _name result _intent
 -- it; a short buffer keeps the slot with the stream cleared, so
 -- the pure retry can never double-release.
 finishDigest
-  :: SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
+  :: FunctionId -> SessionOps -> SlotKind -> String -> CryptoResult -> OutputIntent
   -> (SessionOps, StepOutcome)
-finishDigest ops kind name result intent
+finishDigest fid ops kind name result intent
   | kind /= SlotDigest =
       (ops, denyOutcome (mkDeny CKR_ARGUMENTS_BAD "not a digest slot"))
   | otherwise = case lookupSingle ops SlotDigest of
@@ -383,6 +383,6 @@ finishDigest ops kind name result intent
           )
         GotCryptoError err ->
           ( removeSingle SlotDigest o
-          , denyOutcomeR (mkDeny (interpretError (TyCrypto err)) ("digest crypto failed: " ++ show err))
+          , denyOutcomeR (mkDeny (interpretError fid (TyCrypto err)) ("digest crypto failed: " ++ show err))
               (streamRelease sc)
           )

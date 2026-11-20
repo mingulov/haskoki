@@ -735,11 +735,18 @@ data StepOutcome = StepOutcome
   , soDeny :: !(Maybe DenyDetail)
   } deriving (Eq, Show)
 
+-- | Unwrap a pre-decided denial code. Denials decide their code at
+-- construction ('mkDeny' with the caller's per-function
+-- interpretation); the edge only unwraps, never re-interprets, so
+-- this takes no 'FunctionId' by design.
+denyCode :: StepDeny -> ReturnCode
+denyCode = sdCode
+
 -- | A denied step: no effects, no output plan, no releases. Carries
 -- the typed denial detail to the edge.
 denyOutcome :: StepDeny -> StepOutcome
 denyOutcome d =
-  StepOutcome (interpretError (TyDeny d)) [] Nothing [sdReason d] [] (Just (sdDetail d))
+  StepOutcome (denyCode d) [] Nothing [sdReason d] [] (Just (sdDetail d))
 
 -- | A denied step that also releases backend resources (crypto
 -- failures on streaming slots): the denial detail plus the releases

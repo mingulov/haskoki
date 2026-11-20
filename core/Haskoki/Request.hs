@@ -93,6 +93,20 @@ data FunctionId
   | F_InitToken
   | F_InitPIN
   | F_SetPIN
+  -- Key-management and dual identities for error attribution
+  -- (planners address these paths through PendingWork/dual
+  -- finishers rather than planCall arms).
+  | F_GenerateKey
+  | F_GenerateKeyPair
+  | F_DeriveKey
+  | F_WrapKey
+  | F_UnwrapKey
+  | F_EncapsulateKey
+  | F_DecapsulateKey
+  | F_DigestEncryptUpdate
+  | F_DecryptDigestUpdate
+  | F_SignEncryptUpdate
+  | F_DecryptVerifyUpdate
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | How the caller provided (or omitted) an output buffer. Null (absent)
