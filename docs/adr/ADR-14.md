@@ -17,5 +17,6 @@ a fixture scan can pin the absence of handles in snapshots.
 
 **Wrong if:** a format must change incompatibly without a version
 bump because a supported reader rejects new versions and cannot be
-upgraded before rollout — then the bump procedure itself is reviewed
-first, with that reader's constraint attached.
+upgraded before rollout — then a compatibility/migration review
+precedes any change, and only then is the bump procedure itself
+reviewed, with that reader's constraint attached.

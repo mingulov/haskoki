@@ -78,7 +78,7 @@
       ]
     },
     {
-      "c_route": "planCall:F_GetInfo + c-table:on_GetInfo",
+      "c_route": "planCall:F_GetInfo (model-only) + c-table:on_GetInfo",
       "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A01",
@@ -128,7 +128,7 @@
       ]
     },
     {
-      "c_route": "planCall:F_GetSlotList + c-table:on_GetSlotList",
+      "c_route": "planCall:F_GetSlotList (model-only) + c-table:on_GetSlotList",
       "contract": "planned-with-behavior",
       "csv_acceptance": [
         "A07",
@@ -256,7 +256,7 @@
         "A41",
         "A45"
       ],
-      "entry": "c-table:on_GetMechanismList",
+      "entry": "c-table:std_GetMechanismList",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -282,7 +282,7 @@
         "A41",
         "A45"
       ],
-      "entry": "c-table:on_GetMechanismInfo",
+      "entry": "c-table:std_GetMechanismInfo",
       "first_layout": "CK_FUNCTION_LIST",
       "layouts": [
         "2.40",
@@ -466,7 +466,7 @@
       "test_evidence": [
         {
           "suite": "test-consumers.sh",
-          "spec": "tests/c/consumer_multitoken.c"
+          "spec": "tests/c/consumer_discovery.c"
         }
       ]
     },
@@ -1748,6 +1748,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/KeyManagementSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_roundtrip.c"
         }
       ]
     },
@@ -1775,6 +1779,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/KeyManagementSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_roundtrip.c"
         }
       ]
     },
@@ -1864,6 +1872,10 @@
         {
           "suite": "haskoki-model-tests",
           "spec": "tests/model/KeyManagementSpec.hs"
+        },
+        {
+          "suite": "test-consumers.sh",
+          "spec": "tests/c/consumer_derive_atomic.c"
         }
       ]
     },
@@ -1937,8 +1949,8 @@
       "reason": "legacy parallel-management entry; haskoki never enters legacy mode and the stub returns CKR_FUNCTION_NOT_PARALLEL (loader pin)",
       "test_evidence": [
         {
-          "suite": "test-consumers.sh",
-          "spec": "tests/c/consumer_errors.c"
+          "suite": "test-loader.sh",
+          "spec": "tests/c/loader.c"
         }
       ]
     },
@@ -1962,8 +1974,8 @@
       "reason": "legacy parallel-management entry; haskoki never enters legacy mode and the stub returns CKR_FUNCTION_NOT_PARALLEL (loader pin)",
       "test_evidence": [
         {
-          "suite": "test-consumers.sh",
-          "spec": "tests/c/consumer_errors.c"
+          "suite": "test-loader.sh",
+          "spec": "tests/c/loader.c"
         }
       ]
     },

@@ -826,12 +826,9 @@ int main(int argc, char **argv) {
                                      0xFFFFFFFFUL, 0xFFFFFFFFUL);
     CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
            "stub set-operation-state (legacy)");
-    rv = legacy->C_GetFunctionStatus(0xFFFFFFFFUL);
-    CHECKM(rv == CKR_FUNCTION_NOT_PARALLEL,
-           "stub get-function-status (legacy)");
-    rv = legacy->C_CancelFunction(0xFFFFFFFFUL);
-    CHECKM(rv == CKR_FUNCTION_NOT_PARALLEL,
-           "stub cancel-function (legacy)");
+    /* GetFunctionStatus/CancelFunction NOT_PARALLEL pins live in
+     * tests/c/loader.c under test-loader.sh (loader-owned live
+     * checks); not duplicated here. */
   }
 
   rv = legacy->C_Finalize(NULL_PTR);

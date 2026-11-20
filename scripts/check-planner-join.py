@@ -20,6 +20,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -49,11 +50,18 @@ def _resolvers():
 
 
 def validate(contracts):
-    """Returns error strings (empty means joined)."""
+    """Returns error strings (empty means joined).
+
+    Join semantics only (c_route presence, evidence presence/shape,
+    duplicate routes). ABI row coverage and generated-bytes freshness
+    belong to check-denominators, which runs in the same loop: this
+    gate never duplicates them.
+    """
     errs = []
     if not isinstance(contracts, dict) or \
-            not isinstance(contracts.get("functions"), list):
-        return ["contracts file has no functions list"]
+            not isinstance(contracts.get("functions"), list) or \
+            not contracts["functions"]:
+        return ["contracts file has no non-empty functions list"]
     suites, drivers, aliases = _resolvers()
     seen_routes = {}
     for row in contracts["functions"]:
@@ -145,23 +153,26 @@ def self_test():
     r1 = _fixture_row()
     r2 = _fixture_row(name="C_Other")
     expect("duplicate-route", validate({"functions": [r1, r2]}))
-    # Idempotency: the generator run twice yields identical bytes.
-    # The tree is restored afterwards so the battery never dirties it.
-    before = CONTRACTS.read_bytes()
-    try:
-        outs = []
-        for _ in range(2):
-            r = subprocess.run([sys.executable, str(GENERATOR)],
-                               cwd=REPO, capture_output=True, text=True)
-            if r.returncode != 0:
-                break
-            outs.append(CONTRACTS.read_bytes())
-        ok = len(outs) == 2 and outs[0] == outs[1]
-        print("%s idempotent-regen: %s" % ("ok  " if ok else "FAIL", ""))
-        if not ok:
-            bad.append("idempotent-regen")
-    finally:
-        CONTRACTS.write_bytes(before)
+    expect("empty-register", validate({"functions": []}))
+    # Idempotency: the generator run twice to isolated tmp outs yields
+    # identical bytes. Tmp outs only — the battery never touches the
+    # tree, so no restore (and no SIGKILL-mid-restore hazard) exists.
+    outs, err = [], ""
+    for _ in range(2):
+        with tempfile.NamedTemporaryFile(suffix=".json",
+                                         delete=False) as f:
+            tmp_out = f.name
+        r = subprocess.run([sys.executable, str(GENERATOR), tmp_out],
+                           cwd=REPO, capture_output=True, text=True)
+        if r.returncode != 0:
+            err = r.stderr.strip()[:300]
+            break
+        outs.append(Path(tmp_out).read_bytes())
+        Path(tmp_out).unlink()
+    ok = len(outs) == 2 and outs[0] == outs[1]
+    print("%s idempotent-regen: %s" % ("ok  " if ok else "FAIL", err))
+    if not ok:
+        bad.append("idempotent-regen")
     if bad:
         return 1
     print("planner-join self-test: ok")
