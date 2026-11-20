@@ -15,13 +15,20 @@ module Haskoki.Runtime.Trace
   , TraceSecret (..)
   , TraceEvent (..)
   , renderJSONL
+  , AsyncTableId (..)
   , Tracer
   , newTracer
+  , fileSink
+  , newFileTracer
   , emitTrace
   , DrainReport (..)
   , drainTracer
   , droppedTraces
   , runHarnessChecked
+  , emitKeptFailure
+  , emitKeptJobFailure
+  , emitRejectionCause
+  , trySync
   ) where
 
 import Control.Concurrent.STM
@@ -31,14 +38,21 @@ import Control.Concurrent.STM
   , readTVar
   , writeTVar
   )
-import Control.Exception (SomeException, try)
+import Control.Exception (AsyncException, SomeException, fromException, throwIO, try)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.ByteString (ByteString)
+import System.Posix.Process (getProcessID)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Word (Word32, Word64)
 
-import Haskoki.Types (redactShown)
+import Haskoki.Operation.Effect (CryptoCause (..), CryptoError (..), functionCName)
+import Haskoki.Outcome (Rejection (rejCause))
+import Haskoki.ReturnCode.Generated (returnCodeToRV)
+import Haskoki.Runtime.Attach (AsyncTableId (..))
+import Haskoki.Runtime.Config (TraceCfg (..))
+import Haskoki.Types (JobId (..), ReturnCode (..), redactShown)
 
 -- ---------------------------------------------------------------------------
 -- Events
@@ -194,6 +208,42 @@ newTracer bound sink strict = Tracer bound sink strict
   <*> pure (TraceIds "trace/1" "haskoki" "provider" "demo-maximal" "run-0")
   <*> newTVarIO 0
 
+-- | Append-only trace sink (best effort; failures are counted by the
+-- tracer, never thrown). @{pid}@ in the path expands to the pid.
+-- A disabled config sinks to nowhere (success without writing).
+fileSink :: TraceCfg -> ByteString -> IO (Either String ())
+fileSink tc line
+  | not (tcEnabled tc) = pure (Right ())
+  | otherwise = do
+      pid <- getProcessID
+      let path = expandPid (tcPath tc) (fromIntegral pid)
+      r <- trySync (BS.appendFile path (line <> BS.singleton 0x0A))
+      case r of
+        Right () -> pure (Right ())
+        Left ex -> pure (Left (show ex))
+  where
+    expandPid [] _ = []
+    expandPid ('{' : 'p' : 'i' : 'd' : '}' : rest) pid =
+      show (pid :: Int) ++ expandPid rest pid
+    expandPid (c : rest) pid = c : expandPid rest pid
+
+-- | A file-backed tracer from the trace config (queue bound from
+-- the config floor, non-strict).
+newFileTracer :: TraceCfg -> IO Tracer
+newFileTracer tc = newTracer (max 8 (tcQueueLimit tc)) (fileSink tc) False
+
+-- | 'try' that never swallows cancellation: async exceptions
+-- rethrow immediately (close paths must unwind); only sync
+-- failures return 'Left'.
+trySync :: IO a -> IO (Either SomeException a)
+trySync act = do
+  r <- try act
+  case r of
+    Right v -> pure (Right v)
+    Left ex -> case (fromException ex :: Maybe AsyncException) of
+      Just _ -> throwIO ex
+      Nothing -> pure (Left ex)
+
 -- | Emit an event: render, enqueue within the bound (else count a
 -- drop). ALWAYS returns the input CKR unchanged — trace failure
 -- (queue or sink) never changes an already computed PKCS#11 result.
@@ -232,7 +282,7 @@ drainTracer tr = do
         writeTVar (trFailed tr) (n + f)
       pure (DrainReport w f)
     go (l : ls) w f = do
-      eR <- try (trSink tr l) :: IO (Either SomeException (Either String ()))
+      eR <- trySync (trSink tr l)
       case eR of
         Right (Right ()) -> go ls (w + 1) f
         _ -> go ls w (f + 1)
@@ -250,3 +300,65 @@ runHarnessChecked tr = do
   d <- atomically (readTVar (trDropped tr))
   f <- atomically (readTVar (trFailed tr))
   pure (not (trStrict tr) || (d == 0 && f == 0))
+
+-- | Emit one kept-general-error cause row: the exact C entry, the
+-- served general-error value, the typed constructor with its
+-- diagnostic fields, disposition \"rejected\". Best effort like
+-- every emission (failures counted, never thrown).
+emitKeptFailure :: Tracer -> CryptoCause -> IO ()
+emitKeptFailure tr cause = do
+  _ <- emitTrace tr (causeEvent "sync" Nothing cause)
+    (returnCodeToRV CKR_GENERAL_ERROR)
+  pure ()
+
+-- | 'emitKeptFailure' for an async job terminal: mode \"async\"
+-- with the table-qualified job tag for correlation (job ids
+-- restart per table, so the tag carries both).
+emitKeptJobFailure :: Tracer -> AsyncTableId -> JobId -> CryptoCause -> IO ()
+emitKeptJobFailure tr (AsyncTableId t) (JobId n) cause = do
+  _ <- emitTrace tr
+    (causeEvent "async" (Just ("j" ++ show n ++ "@t" ++ show t)) cause)
+    (returnCodeToRV CKR_GENERAL_ERROR)
+  pure ()
+
+causeEvent :: String -> Maybe String -> CryptoCause -> TraceEvent
+causeEvent mode job (CryptoCause fid err) = TraceEvent
+  { teFunction = functionCName fid
+  , teInterface = "3.2"
+  , teMechanism = Nothing
+  , teSession = Nothing
+  , teObject = Nothing
+  , teJob = job
+  , teInputLen = 0
+  , teOutputLen = 0
+  , teCkr = returnCodeToRV CKR_GENERAL_ERROR
+  , teDisposition = "rejected"
+  , teReason = causeReason err
+  , teMode = mode
+  , teSecret = Nothing
+  }
+
+-- | The typed constructor with its diagnostic fields. Whys are
+-- backend-authored labels (ops, counts, curve names) — never
+-- caller echoes or key material (audited at introduction; a new
+-- producer echoing caller input must sanitize here).
+causeReason :: CryptoError -> String
+causeReason err = case err of
+  CryptoFailed s -> "CryptoFailed(" ++ s ++ ")"
+  CryptoUnsupported o w -> "CryptoUnsupported(" ++ o ++ "," ++ w ++ ")"
+  CryptoBadParam o w -> "CryptoBadParam(" ++ o ++ "," ++ w ++ ")"
+  CryptoBadKey o w -> "CryptoBadKey(" ++ o ++ "," ++ w ++ ")"
+  CryptoMechParamInvalid o w -> "CryptoMechParamInvalid(" ++ o ++ "," ++ w ++ ")"
+  CryptoAuthFailed o -> "CryptoAuthFailed(" ++ o ++ ")"
+  CryptoSigLenRange o -> "CryptoSigLenRange(" ++ o ++ ")"
+  CryptoInvalidState o w -> "CryptoInvalidState(" ++ o ++ "," ++ w ++ ")"
+  CryptoNative o c w -> "CryptoNative(" ++ o ++ "," ++ show c ++ "," ++ w ++ ")"
+  CryptoResourceGone o rid -> "CryptoResourceGone(" ++ o ++ "," ++ show rid ++ ")"
+
+-- | Emit the rejection's cause, if it carries one. Call after
+-- publish and resource release; a causeless rejection emits
+-- nothing.
+emitRejectionCause :: Tracer -> Rejection -> IO ()
+emitRejectionCause tr rej = case rejCause rej of
+  Just cause -> emitKeptFailure tr cause
+  Nothing -> pure ()

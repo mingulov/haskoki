@@ -266,9 +266,10 @@ import Haskoki.CallWork
 import Haskoki.Engine.Driver (encodeResult)
 import Haskoki.Model (SessionState (..), lookupSession)
 import Haskoki.Object (decodeHandle, encodeHandle)
-import Haskoki.Operation (TypedError (..), interpretError)
+import Haskoki.Operation (TypedError (..), interpretError, keptCause)
 import Haskoki.Operation.Effect
   ( CryptoEffect (..)
+  , CryptoError
   , CryptoResult (..)
   )
 import Haskoki.Operation.KeyManagement
@@ -295,7 +296,8 @@ import Haskoki.Registry.Generated (generatedInventory)
 import Haskoki.Registry.Types (MechanismId (..))
 import Haskoki.Request (FunctionId (..), OutputRegion (..))
 import Haskoki.Runtime.Attach (AsyncTableId (..))
-import Haskoki.Runtime.Lifecycle (Env, checkReservation, envRules, publish, snapshotModel)
+import Haskoki.Runtime.Lifecycle (Env, checkReservation, envRules, envTracer, publish, snapshotModel)
+import Haskoki.Runtime.Trace (emitKeptJobFailure)
 import Haskoki.Transition (finishEffect)
 import Haskoki.Types
   ( ExternalHandle
@@ -1234,9 +1236,13 @@ driveJob run env table jid job
         GotResource _ -> failDrive
           (EvFail CKR_GENERAL_ERROR "resource answer to a bytes job") st e
           (TermFailed CKR_GENERAL_ERROR "resource answer to a bytes job")
-        GotCryptoError err -> failDrive
-          (EvFail (interpretError (jobExactFid job) (TyCrypto err)) (show err)) st e
-          (TermFailed (interpretError (jobExactFid job) (TyCrypto err)) (show err))
+        GotCryptoError err -> do
+          let fid = jobExactFid job
+              code = interpretError fid (TyCrypto err)
+          out <- failDrive (EvFail code (show err)) st e
+            (TermFailed code (show err))
+          emitDriveCause env table jid fid err code
+          pure out
     -- Fail a drive step through 'stepJob', reporting the coded reason.
     failDrive :: JobEvent -> JobState -> Word64 -> TerminalState -> IO PollOutcome
     failDrive ev st e t = case stepJob ev st e of
@@ -1245,6 +1251,20 @@ driveJob run env table jid job
         pure (PollTerminal t)
       Left _ -> pure (PollTerminal (TermFailed CKR_GENERAL_ERROR
         "stepJob EvFail breached its contract"))
+
+-- | Emit a driven crypto failure's kept cause through the env
+-- tracer, if the cell kept it general. Called once per job:
+-- only the driving poll reaches the failure branch (terminal
+-- jobs short-circuit; later polls and completes observe).
+emitDriveCause :: Env -> AsyncTable -> JobId -> FunctionId -> CryptoError -> ReturnCode -> IO ()
+emitDriveCause env table jid fid err code =
+  case keptCause fid (GotCryptoError err) code of
+    Just cause -> do
+      mTr <- readTVarIO (envTracer env)
+      case mTr of
+        Just tr -> emitKeptJobFailure tr (asyncTableId table) jid cause
+        Nothing -> pure ()
+    Nothing -> pure ()
 
 -- | Complete a job. Wrong-function and pending jobs report with
 -- the sink untouched; ready jobs publish their commit, go

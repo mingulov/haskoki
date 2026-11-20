@@ -31,7 +31,8 @@ import Haskoki.Registry (MechanismId (..), Operation (..), curatedRegistry, mkCa
 import Haskoki.Request (FunctionId (..))
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
-  ( ExternalHandle (..)
+  ( EngineResourceId (..)
+  , ExternalHandle (..)
   , Generation (..)
   , Revision (..)
   , SessionId (..)
@@ -44,6 +45,7 @@ spec = testGroup "Code snapshot pins"
   , testCase "encodeResult taxonomy matches snapshot" caseEncode
   , testCase "init deny codes match snapshot" caseDenyInit
   , testCase "init deny reasons match snapshot" caseDenyReason
+  , testCase "per-function cells match snapshot" casePerFunctionCells
   ]
 
 snapshotPaths :: [FilePath]
@@ -178,6 +180,43 @@ isPrefixOfStr :: String -> String -> Bool
 isPrefixOfStr [] _ = True
 isPrefixOfStr _ [] = False
 isPrefixOfStr (x : xs) (y : ys) = x == y && isPrefixOfStr xs ys
+
+-- | Sample errors keyed by snapshot constructor tag.
+sampleByTag :: [(String, CryptoError)]
+sampleByTag =
+  [ ("CryptoBadKey", CryptoBadKey "o" "x")
+  , ("CryptoBadParam", CryptoBadParam "o" "x")
+  , ("CryptoResourceGone", CryptoResourceGone "o" (EngineResourceId 9))
+  ]
+
+-- | Every per-function snapshot row matches live behavior. The
+-- file enumerates itself (fid name resolved against the full
+-- identity space, constructor tag against the samples); unknown
+-- names fail loudly so snapshot typos cannot hide.
+casePerFunctionCells :: IO ()
+casePerFunctionCells = do
+  snap <- loadSnapshot
+  let cells = filter ("cell." `isPrefixOfStr`) (Map.keys snap)
+      fidByName = [(show fid, fid) | fid <- [minBound .. maxBound]]
+  mapM_ (checkCell snap fidByName) cells
+  assertEqual "cell row count" 79 (length cells)
+  where
+    checkCell :: Map String String -> [(String, FunctionId)] -> String -> IO ()
+    checkCell snap fidByName key = case stripPrefixStr "cell." key of
+      Nothing -> assertFailure ("bad cell key: " ++ key)
+      Just rest -> case break (== '.') rest of
+        (fidName, '.' : tag) -> case (lookup fidName fidByName, lookup tag sampleByTag) of
+          (Just fid, Just err) ->
+            expect snap key (show (cryptoCode fid err))
+          _ -> assertFailure ("unknown cell identity: " ++ key)
+        _ -> assertFailure ("bad cell key shape: " ++ key)
+
+stripPrefixStr :: String -> String -> Maybe String
+stripPrefixStr [] ys = Just ys
+stripPrefixStr _ [] = Nothing
+stripPrefixStr (x : xs) (y : ys)
+  | x == y = stripPrefixStr xs ys
+  | otherwise = Nothing
 
 -- | Local fixtures mirroring OperationSpec (unknown mechanism,
 -- SHA-256 digest, AES-CBC encrypt).

@@ -9,11 +9,14 @@ import Test.Tasty.QuickCheck (Gen, Property, elements, forAll)
 
 import Gen (propWith)
 import Haskoki.Operation.Effect
-  ( CryptoError (..)
+  ( CryptoCause (..)
+  , CryptoError (..)
+  , CryptoResult (..)
   , DenyDetail (..)
   , StepDeny (..)
   , TypedError (..)
   , interpretError
+  , keptCause
   , mkDeny
   , sdCode
   )
@@ -28,6 +31,7 @@ spec seedOv count =
     , testCase "deny passthrough exhaustive" caseDenyExhaustive
     , testCase "crypto exhaustiveness" caseCrypto
     , testCase "mkDeny preserves code" caseMkDeny
+    , testCase "cause agrees with served code" caseCauseCoherent
     ]
 
 -- | All 38 return codes (Types.hs), enumerated.
@@ -125,7 +129,9 @@ cryptoPins =
   , (CryptoResourceGone "r" (EngineResourceId 7), CKR_GENERAL_ERROR)
   ]
 
--- Representative function id (F_GetInfo, arbitrary): the interpreter ignores it, so these collapsing pins evaluate under one id; they expand per function when the per-function error cells land.
+-- Representative function id (F_GetInfo, arbitrary): a fid with
+-- no finishing route, so every leg keeps its collapse here;
+-- per-function distinctness is pinned by the cell tables.
 caseCrypto :: IO ()
 caseCrypto = mapM_ checkPin cryptoPins
   where
@@ -141,3 +147,34 @@ caseMkDeny = mapM_ checkCode allCodes
     checkCode code =
       assertEqual ("mkDeny " ++ show code) code
         (sdCode (mkDeny code "why"))
+
+-- | Every per-function sample error, for the exhaustive sweeps.
+cellSamples :: [CryptoError]
+cellSamples =
+  [ CryptoBadKey "o" "w"
+  , CryptoBadParam "o" "w"
+  , CryptoResourceGone "o" (EngineResourceId 7)
+  ]
+
+-- | The trace gate agrees with the served code: a cause exists
+-- exactly when a kept leg serves general-error.
+caseCauseCoherent :: IO ()
+caseCauseCoherent = mapM_ check
+  [ (fid, err)
+  | fid <- [minBound .. maxBound]
+  , err <- cellSamples ++ [CryptoFailed "f", CryptoInvalidState "o" "w", CryptoNative "n" 1 "m"]
+  ]
+  where
+    check :: (FunctionId, CryptoError) -> IO ()
+    check (fid, err) =
+      let code = interpretError fid (TyCrypto err)
+          got = keptCause fid (GotCryptoError err) code
+          want = case err of
+            CryptoFailed _ -> kept code
+            CryptoInvalidState _ _ -> kept code
+            CryptoNative _ _ _ -> kept code
+            _ -> Nothing
+          kept c
+            | c == CKR_GENERAL_ERROR = Just (CryptoCause fid err)
+            | otherwise = Nothing
+      in assertEqual ("cause " ++ show fid ++ " " ++ show err) want got

@@ -17,7 +17,9 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
 
 import Haskoki.Operation
-  ( CryptoError (..)
+  ( CryptoCause (..)
+  , CryptoError (..)
+  , CryptoResult (..)
   , DenyDetail (..)
   , StepDeny (..)
   , StepOutcome (..)
@@ -25,6 +27,7 @@ import Haskoki.Operation
   , cryptoCode
   , denyOutcome
   , interpretError
+  , keptCause
   , mkDeny
   )
 import qualified Haskoki.Outcome as O
@@ -40,6 +43,10 @@ spec = testGroup "Single interpreter"
   , testCase "cryptoCode delegates to the interpreter" caseDelegates
   , testCase "denyOutcome routes through the interpreter" caseDenyRoutes
   , testCase "no production bypass of the interpreter" caseFunnel
+  , testCase "bad key maps per function" caseBadKeyCells
+  , testCase "bad param maps per function" caseBadParamCells
+  , testCase "resource gone maps per function" caseResourceGoneCells
+  , testCase "kept general errors carry a trace cause" caseKeptCause
   ]
 
 sampleCryptos :: [(CryptoError, ReturnCode)]
@@ -117,6 +124,146 @@ caseDenyRoutes =
   mapM_ (\(c, m) -> assertEqual ("denyOutcome " ++ show c)
     (interpretError F_GetInfo (TyDeny (mkDeny c m)))
     (soCode (denyOutcome (mkDeny c m)))) sampleDenies
+
+-- | Per-function bad-key cells: the backend rejected bound key
+-- material (DER refused, curve mismatch, domain params refused).
+badKeyCells :: [(FunctionId, ReturnCode)]
+badKeyCells =
+  [ (F_Sign, CKR_FUNCTION_FAILED)
+  , (F_SignFinal, CKR_FUNCTION_FAILED)
+  , (F_SignRecover, CKR_FUNCTION_FAILED)
+  , (F_SignMessage, CKR_FUNCTION_FAILED)
+  , (F_SignMessageNext, CKR_FUNCTION_FAILED)
+  , (F_Verify, CKR_FUNCTION_FAILED)
+  , (F_VerifyFinal, CKR_FUNCTION_FAILED)
+  , (F_VerifyRecover, CKR_FUNCTION_FAILED)
+  , (F_VerifyMessage, CKR_FUNCTION_FAILED)
+  , (F_VerifyMessageNext, CKR_FUNCTION_FAILED)
+  , (F_Encrypt, CKR_FUNCTION_FAILED)
+  , (F_EncryptFinal, CKR_FUNCTION_FAILED)
+  , (F_EncryptUpdate, CKR_FUNCTION_FAILED)
+  , (F_EncryptMessage, CKR_FUNCTION_FAILED)
+  , (F_EncryptMessageNext, CKR_FUNCTION_FAILED)
+  , (F_Decrypt, CKR_FUNCTION_FAILED)
+  , (F_DecryptFinal, CKR_FUNCTION_FAILED)
+  , (F_DecryptUpdate, CKR_FUNCTION_FAILED)
+  , (F_DecryptMessage, CKR_FUNCTION_FAILED)
+  , (F_DecryptMessageNext, CKR_FUNCTION_FAILED)
+  , (F_WrapKey, CKR_FUNCTION_FAILED)
+  , (F_UnwrapKey, CKR_FUNCTION_FAILED)
+  , (F_EncapsulateKey, CKR_FUNCTION_FAILED)
+  , (F_DecapsulateKey, CKR_FUNCTION_FAILED)
+  , (F_GenerateKey, CKR_ATTRIBUTE_VALUE_INVALID)
+  , (F_GenerateKeyPair, CKR_DOMAIN_PARAMS_INVALID)
+  , (F_DeriveKey, CKR_KEY_TYPE_INCONSISTENT)
+  ]
+
+caseBadKeyCells :: IO ()
+caseBadKeyCells =
+  mapM_ (\(fid, c) -> assertEqual ("badkey " ++ show fid) c
+    (interpretError fid (TyCrypto (CryptoBadKey "op" "why")))) badKeyCells
+
+-- | Per-function bad-param cells: input widths and floors
+-- (mechanism-param-shaped producers reclassify to
+-- 'CryptoMechParamInvalid' instead of reaching these cells).
+badParamCells :: [(FunctionId, ReturnCode)]
+badParamCells =
+  [ (F_Sign, CKR_DATA_LEN_RANGE)
+  , (F_SignFinal, CKR_DATA_LEN_RANGE)
+  , (F_SignRecover, CKR_DATA_LEN_RANGE)
+  , (F_SignMessage, CKR_DATA_LEN_RANGE)
+  , (F_SignMessageNext, CKR_DATA_LEN_RANGE)
+  , (F_Verify, CKR_DATA_LEN_RANGE)
+  , (F_VerifyFinal, CKR_DATA_LEN_RANGE)
+  , (F_VerifyMessage, CKR_DATA_LEN_RANGE)
+  , (F_VerifyMessageNext, CKR_DATA_LEN_RANGE)
+  , (F_Encrypt, CKR_DATA_LEN_RANGE)
+  , (F_EncryptFinal, CKR_DATA_LEN_RANGE)
+  , (F_EncryptUpdate, CKR_DATA_LEN_RANGE)
+  , (F_EncryptMessage, CKR_DATA_LEN_RANGE)
+  , (F_EncryptMessageNext, CKR_DATA_LEN_RANGE)
+  , (F_VerifyRecover, CKR_SIGNATURE_LEN_RANGE)
+  , (F_WrapKey, CKR_KEY_SIZE_RANGE)
+  , (F_Decrypt, CKR_ENCRYPTED_DATA_LEN_RANGE)
+  , (F_DecryptFinal, CKR_ENCRYPTED_DATA_LEN_RANGE)
+  , (F_DecryptUpdate, CKR_ENCRYPTED_DATA_LEN_RANGE)
+  , (F_DecryptMessage, CKR_ENCRYPTED_DATA_LEN_RANGE)
+  , (F_DecryptMessageNext, CKR_ENCRYPTED_DATA_LEN_RANGE)
+  , (F_UnwrapKey, CKR_WRAPPED_KEY_LEN_RANGE)
+  , (F_DecapsulateKey, CKR_WRAPPED_KEY_LEN_RANGE)
+  , (F_GenerateKey, CKR_ATTRIBUTE_VALUE_INVALID)
+  , (F_GenerateKeyPair, CKR_ATTRIBUTE_VALUE_INVALID)
+  ]
+
+caseBadParamCells :: IO ()
+caseBadParamCells =
+  mapM_ (\(fid, c) -> assertEqual ("badparam " ++ show fid) c
+    (interpretError fid (TyCrypto (CryptoBadParam "op" "why")))) badParamCells
+
+-- | Per-function resource-gone cells: the backend lost a
+-- referenced stream or key (one-shot digest and digest init
+-- resolve no backend resources, so they stay collapsed).
+goneCells :: [(FunctionId, ReturnCode)]
+goneCells =
+  [ (F_DigestUpdate, CKR_DEVICE_ERROR)
+  , (F_DigestFinal, CKR_DEVICE_ERROR)
+  , (F_Sign, CKR_DEVICE_ERROR)
+  , (F_SignFinal, CKR_DEVICE_ERROR)
+  , (F_SignRecover, CKR_DEVICE_ERROR)
+  , (F_Verify, CKR_DEVICE_ERROR)
+  , (F_VerifyFinal, CKR_DEVICE_ERROR)
+  , (F_VerifyRecover, CKR_DEVICE_ERROR)
+  , (F_Encrypt, CKR_DEVICE_ERROR)
+  , (F_EncryptFinal, CKR_DEVICE_ERROR)
+  , (F_EncryptUpdate, CKR_DEVICE_ERROR)
+  , (F_Decrypt, CKR_DEVICE_ERROR)
+  , (F_DecryptFinal, CKR_DEVICE_ERROR)
+  , (F_DecryptUpdate, CKR_DEVICE_ERROR)
+  , (F_EncryptMessage, CKR_DEVICE_ERROR)
+  , (F_DecryptMessage, CKR_DEVICE_ERROR)
+  , (F_SignMessage, CKR_DEVICE_ERROR)
+  , (F_VerifyMessage, CKR_DEVICE_ERROR)
+  , (F_EncryptMessageNext, CKR_DEVICE_ERROR)
+  , (F_DecryptMessageNext, CKR_DEVICE_ERROR)
+  , (F_SignMessageNext, CKR_DEVICE_ERROR)
+  , (F_VerifyMessageNext, CKR_DEVICE_ERROR)
+  , (F_DeriveKey, CKR_DEVICE_ERROR)
+  , (F_WrapKey, CKR_DEVICE_ERROR)
+  , (F_UnwrapKey, CKR_DEVICE_ERROR)
+  , (F_EncapsulateKey, CKR_DEVICE_ERROR)
+  , (F_DecapsulateKey, CKR_DEVICE_ERROR)
+  ]
+
+caseResourceGoneCells :: IO ()
+caseResourceGoneCells =
+  mapM_ (\(fid, c) -> assertEqual ("gone " ++ show fid) c
+    (interpretError fid (TyCrypto (CryptoResourceGone "op" (EngineResourceId 9))))) goneCells
+
+-- | Kept-general-error cause table: (function, result, served
+-- code, expected cause). Only the deliberately unclassified
+-- legs (driver, invalid-state, native) serving general-error
+-- carry one; distinct cells, non-errors and code mismatches do
+-- not.
+keptCauseCells :: [(FunctionId, CryptoResult, ReturnCode, Maybe CryptoCause)]
+keptCauseCells =
+  [ (F_Sign, GotCryptoError (CryptoFailed "boom"), CKR_GENERAL_ERROR,
+      Just (CryptoCause F_Sign (CryptoFailed "boom")))
+  , (F_DigestFinal, GotCryptoError (CryptoInvalidState "op" "why"), CKR_GENERAL_ERROR,
+      Just (CryptoCause F_DigestFinal (CryptoInvalidState "op" "why")))
+  , (F_DeriveKey, GotCryptoError (CryptoNative "op" 7 "why"), CKR_GENERAL_ERROR,
+      Just (CryptoCause F_DeriveKey (CryptoNative "op" 7 "why")))
+  , (F_Sign, GotCryptoError (CryptoBadKey "op" "why"), CKR_FUNCTION_FAILED, Nothing)
+  , (F_Sign, GotCryptoError (CryptoBadParam "op" "why"), CKR_DATA_LEN_RANGE, Nothing)
+  , (F_DigestFinal, GotCryptoError (CryptoResourceGone "op" (EngineResourceId 9)), CKR_DEVICE_ERROR, Nothing)
+  , (F_Sign, GotCryptoError (CryptoFailed "boom"), CKR_FUNCTION_FAILED, Nothing)
+  , (F_Sign, GotValid True, CKR_OK, Nothing)
+  , (F_Sign, GotUnit, CKR_GENERAL_ERROR, Nothing)
+  ]
+
+caseKeptCause :: IO ()
+caseKeptCause =
+  mapM_ (\(fid, res, code, want) -> assertEqual
+    ("keptCause " ++ show fid ++ " " ++ show res) want (keptCause fid res code)) keptCauseCells
 
 -- | The package root, resolved CWD-independently: walk up from
 -- the test binary's own directory to haskoki.cabal (the binary

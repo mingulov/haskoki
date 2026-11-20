@@ -28,7 +28,7 @@ import Data.Map.Strict (Map)
 
 import Haskoki.Attribute (AttributeType, AttributeValue)
 import Haskoki.Model (SessionState)
-import Haskoki.Operation.Effect (CryptoEffect)
+import Haskoki.Operation.Effect (CryptoCause (..), CryptoEffect)
 import Haskoki.Operation.State (SessionOps, SlotKind)
 import Haskoki.Request (FunctionId, OutputIntent, OutputRegion)
 import Haskoki.Session (SessionLogin, TokenAuth)
@@ -64,6 +64,7 @@ data Rejection = Rejection
   , rejDelta :: !StateDelta
   , rejReleases :: ![ResourceRelease]
   , rejReasons :: ![String]
+  , rejCause :: !(Maybe CryptoCause)
   } deriving (Eq, Show)
 
 -- | A fully determined commit: API outcome, typed state delta,

@@ -285,6 +285,7 @@ import Haskoki.Operation.Effect
   , CryptoResult (..)
   , TypedError (..)
   , interpretError
+  , keptCause
   )
 import Haskoki.Outcome
   ( DeltaOp (..)
@@ -1337,6 +1338,7 @@ finishWork model st pw res
       , rejDelta = StateDelta []
       , rejReleases = []
       , rejReasons = ["unwrap padding check failed"]
+      , rejCause = Nothing
       }
   -- RSA unwrap answers raw key material (the asymmetric padding
   -- is consumed by the backend): no PKCS#7 framing to strip.
@@ -1353,6 +1355,7 @@ finishWork model st pw res
       , rejDelta = StateDelta []
       , rejReleases = []
       , rejReasons = ["unwrap padding check failed"]
+      , rejCause = Nothing
       }
   -- X.509 unwrap answers a full k-block; the key is the trailing
   -- value_len bytes (the length the unwrap template named).
@@ -1432,13 +1435,16 @@ finishWork model st pw res
   -- violation (same failure class as the pre-change empty-bytes
   -- mis-shape, which failed its frame decode).
   (_, GotUnit) -> internal "unit answer to key management"
-  (w, GotCryptoError e) -> Reject Rejection
-    { rejCode = interpretError (workFunction w) (TyCrypto e)
-    , rejOutputs = []
-    , rejDelta = StateDelta []
-    , rejReleases = []
-    , rejReasons = ["driver: " ++ show e]
-    }
+  (w, res@(GotCryptoError e)) ->
+    let code = interpretError (workFunction w) (TyCrypto e)
+    in Reject Rejection
+      { rejCode = code
+      , rejOutputs = []
+      , rejDelta = StateDelta []
+      , rejReleases = []
+      , rejReasons = ["driver: " ++ show e]
+      , rejCause = keptCause (workFunction w) res code
+      }
   where
     publish :: PendingObject -> PendingObject -> PlanResult
     publish pub priv = case publishPending model st [pub, priv] of
@@ -1510,6 +1516,7 @@ finishWork model st pw res
           , rejReasons = ["unwrapped material length "
               ++ show (BS.length mat) ++ " mismatches key type "
               ++ show (Map.lookup AttrKeyType (poAttrs po))]
+          , rejCause = Nothing
           }
       where
         typeLenOk = case Map.lookup AttrKeyType (poAttrs po) of
@@ -1816,6 +1823,7 @@ rejectOf (KeyDeny code why) = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = [why]
+  , rejCause = Nothing
   }
 
 -- | An internal malfunction: malformed driver answers and
@@ -1827,6 +1835,7 @@ internal why = Reject Rejection
   , rejDelta = StateDelta []
   , rejReleases = []
   , rejReasons = ["internal: " ++ why]
+  , rejCause = Nothing
   }
 
 -- ---------------------------------------------------------------------------
@@ -3828,6 +3837,7 @@ planRsaWrapKey model st mech params wrapH targetH intent =
                         , rejDelta = StateDelta []
                         , rejReleases = []
                         , rejReasons = ["short buffer"]
+                        , rejCause = Nothing
                         })
                     | otherwise -> KeyEffect (PwBlobOut "wrapped")
                         (FxWrap mech (Just wrapOid) params mat)
@@ -3871,6 +3881,7 @@ planAesWrapKey model st mech iv wrapH targetH intent
                     , rejDelta = StateDelta []
                     , rejReleases = []
                     , rejReasons = ["short buffer"]
+                    , rejCause = Nothing
                     })
                 | otherwise -> KeyEffect (PwBlobOut "wrapped")
                     (FxWrap mech (Just wrapOid) iv padded)
@@ -3996,6 +4007,7 @@ planAesKwWrapKey model st mech params wrapH targetH intent
                     , rejDelta = StateDelta []
                     , rejReleases = []
                     , rejReasons = ["short buffer"]
+                    , rejCause = Nothing
                     })
                 | otherwise -> KeyEffect (PwBlobOut "wrapped")
                     (FxWrap mech (Just wrapOid) params mat)
@@ -4144,6 +4156,7 @@ planAesKwPkcs7WrapKey model st mech params wrapH targetH intent
                         , rejDelta = StateDelta []
                         , rejReleases = []
                         , rejReasons = ["short buffer"]
+                        , rejCause = Nothing
                         })
                     | otherwise -> KeyEffect (PwBlobOut "wrapped")
                         (FxWrap mech (Just wrapOid) params padded)
@@ -4246,6 +4259,7 @@ planEcdhCompWrapKey model st mech params wrapH targetH intent =
                               , rejDelta = StateDelta []
                               , rejReleases = []
                               , rejReasons = ["short buffer"]
+                              , rejCause = Nothing
                               })
                           | otherwise -> KeyEffect (PwBlobOut "wrapped")
                               (FxWrap mech (Just wrapOid) params tmat)
@@ -4362,6 +4376,7 @@ planRsaCompWrapKey model st mech params wrapH targetH intent =
                               , rejDelta = StateDelta []
                               , rejReleases = []
                               , rejReasons = ["short buffer"]
+                              , rejCause = Nothing
                               })
                           | otherwise -> KeyEffect (PwBlobOut "wrapped")
                               (FxWrap mech (Just wrapOid) params tmat)
@@ -4462,6 +4477,7 @@ planAuthWrapKey model st mech iv wrapH targetH aad intent
                     , rejDelta = StateDelta []
                     , rejReleases = []
                     , rejReasons = ["short buffer"]
+                    , rejCause = Nothing
                     })
                 | otherwise -> KeyEffect (PwBlobOut "wrapped")
                     (FxAuthWrap mech (Just wrapOid) (encodeWrapParams iv aad) padded)

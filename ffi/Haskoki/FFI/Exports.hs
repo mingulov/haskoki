@@ -31,7 +31,7 @@ path across the real export boundary.
 {-# LANGUAGE OverloadedStrings #-}
 
 module Haskoki.FFI.Exports
-  ( CryptoCtx
+  ( CryptoCtx (..)
   , CryptoAcquisition (..)
   , cryptoAcquisition
   , haskokiCryptoOpen
@@ -39,6 +39,7 @@ module Haskoki.FFI.Exports
   , haskokiCryptoClose
   , haskokiCryptoDigestInit
   , haskokiCryptoDigest
+  , publishRejection
   , returnCodeToRV
   ) where
 
@@ -95,19 +96,23 @@ import Haskoki.Request
   , Request (..)
   )
 import Haskoki.ReturnCode.Generated (returnCodeToRV)
-import Haskoki.Runtime.Config (Config, newConfigCell, resolveOnce)
+import Haskoki.Runtime.Config (Config (cfgTrace), newConfigCell, resolveOnce)
 import Haskoki.Session (AdmitDeny)
 import Haskoki.Runtime.Lifecycle
   ( Env
   , defaultInitArgs
+  , drainEnvTracer
+  , emitEnvRejectionCause
   , envRules
   , initialize
   , newEnv
   , publish
   , rulesFromConfig
   , seatToken
+  , setEnvTracer
   , snapshotModel
   )
+import Haskoki.Runtime.Trace (newFileTracer)
 import Haskoki.Transition (finishEffect, planCall)
 import Haskoki.Outcome
   ( EffectRequest (..)
@@ -256,6 +261,8 @@ openCryptoCtxWith
   :: CryptoAcquisition -> Config -> IO (StablePtr CryptoCtx)
 openCryptoCtxWith ca cfg = guardedSyncPtr $ mask $ \restore -> do
   env <- newEnv (rulesFromConfig cfg)
+  tr <- newFileTracer (cfgTrace cfg)
+  setEnvTracer env tr
   ini <- restore (caInit ca env)
   case ini of
     OutcomeErr _ -> pure nullStable
@@ -312,6 +319,7 @@ haskokiCryptoClose ctx = guardedUnit $
     else do
       c <- deRefStablePtr ctx
       B.closeBackend (ccBackend c)
+      drainEnvTracer (ccEnv c)
       freeStablePtr ctx
 
 -- | Publish a prepared commit, then drain its releases through the
@@ -337,6 +345,7 @@ publishRejection :: Env -> BackendEnv OpenSSL4 -> Rejection -> IO ()
 publishRejection env be rej = do
   _ <- publish env (rejDelta rej)
   drainReleases be (rejReleases rej)
+  emitEnvRejectionCause env rej
 
 -- | The context session when the caller named it, else nothing.
 checkSession :: CryptoCtx -> CULong -> Maybe SessionId

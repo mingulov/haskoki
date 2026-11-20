@@ -27,4 +27,4 @@ edit of the old one's Decision.
 | [ADR-17](ADR-17.md) | Toolchain cadence | Accepted |
 | [ADR-18](ADR-18.md) | Planner/C join register | Accepted |
 | [ADR-19](ADR-19.md) | Generated return values | Proposed |
-| [ADR-20](ADR-20.md) | Per-function error interpretation | Proposed |
+| [ADR-20](ADR-20.md) | Per-function error interpretation | Accepted |

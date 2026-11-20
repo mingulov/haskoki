@@ -60,6 +60,7 @@ import Control.Concurrent
   , threadDelay
   )
 import Control.Concurrent.MVar (MVar)
+import Control.Concurrent.STM (readTVarIO)
 import Control.Exception
   ( AsyncException (ThreadKilled)
   , IOException
@@ -72,16 +73,20 @@ import Control.Exception
   , try
   )
 import Control.Monad (forM, forM_, replicateM, replicateM_)
+import qualified Data.ByteString.Char8 as BC8
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (isInfixOf)
+import Data.Maybe (isJust)
 import EnvLock (withEnvLock)
 import Foreign.C.String (peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr)
+import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr)
 import Foreign.Storable (peek, poke)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.Directory
   ( createDirectory
+  , doesFileExist
   , getTemporaryDirectory
   , removeDirectoryRecursive
   , removeFile
@@ -102,6 +107,7 @@ import Haskoki.FFI.Async
   ( AcquireFailure (..)
   , AcquireStep (..)
   , AsyncAcquisition (..)
+  , AsyncCtx (..)
   , ResidueOwner
   , StoreBox
   , asyncAcquisition
@@ -117,28 +123,38 @@ import Haskoki.FFI.Async
   , residueAnomalies
   , residueCount
   )
+import qualified Haskoki.FFI.Async as AsyncFFI
 import Haskoki.FFI.Exports
   ( CryptoAcquisition (..)
+  , CryptoCtx (..)
   , cryptoAcquisition
   , haskokiCryptoClose
   , haskokiCryptoOpen
   , openCryptoCtxWith
+  , publishRejection
   )
 import Haskoki.FFI.Standard
   ( StdAcquisition (..)
+  , StdInstance (..)
   , StdStoreError (..)
   , haskokiStdClose
   , haskokiStdOpen
   , openStdInstanceWith
+  , publishRejectionE
   , stdAcquisition
   )
 import Haskoki.FFI.Instance (haskokiInstanceClose, haskokiInstanceOpen)
+import Haskoki.Operation (CryptoCause (..), CryptoError (..))
+import Haskoki.Outcome (Rejection (..), StateDelta (..))
+import Haskoki.Request (FunctionId (..))
 import Haskoki.Runtime.Config
   ( Config (..)
   , StorageCfg (..)
   , StorageKind (..)
+  , TraceCfg (..)
   , defaultConfig
   )
+import Haskoki.Runtime.Lifecycle (envTracer)
 import Haskoki.Runtime.Storage
   ( FaultInjector
   , FaultPoint (..)
@@ -151,6 +167,7 @@ import Haskoki.Runtime.Storage
   )
 import Haskoki.Runtime.Storage.Memory (MemoryWorld, newMemoryWorld, openMemoryStoreWith)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore, openSQLiteStoreWith)
+import Haskoki.Runtime.Trace (drainTracer, newTracer)
 import Haskoki.Session (AdmitDeny (..), tokenAuthNew)
 import Haskoki.Types
   ( Generation (..)
@@ -166,6 +183,10 @@ spec envLock = testGroup "Acquisition hooks"
   , testCase "std store failure opens no backend" caseStdStoreFail
   , testCase "std backend failure closes the store" caseStdBackendFail
   , testCase "std success counts balance" caseStdSuccess
+  , testCase "std acquisition threads its tracer" caseStdTracerThreaded
+  , testCase "std publish emits the kept cause" caseStdPublishEmitsCause
+  , testCase "crypto close drains the trace file" caseCryptoCloseDrainsTrace
+  , testCase "async publish and close drain the trace file" caseAsyncPublishCloseDrainsTrace
   , testCase "crypto init failure acquires nothing" caseCryptoInitFail
   , testCase "crypto seat failure opens no backend" caseCryptoSeatFail
   , testCase "crypto backend failure acquires nothing" caseCryptoBackendFail
@@ -306,6 +327,94 @@ caseStdSuccess = do
   assertEqual "no failure-path store close" 0 =<< readIORef storeCloses
   assertEqual "no failure-path backend close" 0 =<< readIORef backendCloses
   haskokiStdClose sp
+
+caseStdTracerThreaded :: IO ()
+caseStdTracerThreaded = do
+  rows <- newIORef []
+  tr <- newTracer 64 (\l -> modifyIORef' rows (l :) >> pure (Right ())) False
+  let sa = stdAcquisition { saTracer = Just tr }
+  bracket (openStdInstanceWith sa defaultConfig) haskokiStdClose $ \sp -> do
+    assertBool "open succeeds" (not (isNull sp))
+    inst <- deRefStablePtr sp
+    mTr <- readTVarIO (envTracer (siEnv inst))
+    assertBool "env carries the acquisition tracer" (isJust mTr)
+
+caseStdPublishEmitsCause :: IO ()
+caseStdPublishEmitsCause = do
+  rows <- newIORef []
+  tr <- newTracer 64 (\l -> modifyIORef' rows (BC8.unpack l :) >> pure (Right ())) False
+  let sa = stdAcquisition { saTracer = Just tr }
+      rej = Rejection
+        { rejCode = CKR_GENERAL_ERROR
+        , rejOutputs = []
+        , rejDelta = StateDelta []
+        , rejReleases = []
+        , rejReasons = ["kept failure"]
+        , rejCause = Just (CryptoCause F_Sign (CryptoFailed "boom"))
+        }
+  bracket (openStdInstanceWith sa defaultConfig) haskokiStdClose $ \sp -> do
+    assertBool "open succeeds" (not (isNull sp))
+    inst <- deRefStablePtr sp
+    _ <- publishRejectionE inst rej
+    _ <- drainTracer tr
+    ls <- reverse <$> readIORef rows
+    assertEqual "one cause row" 1 (length ls)
+    case ls of
+      [line] -> do
+        assertBool "names the entry" ("C_Sign" `isInfixOf` line)
+        assertBool "keeps the code" ("\"ckr\":5" `isInfixOf` line)
+        assertBool "names the ctor" ("CryptoFailed" `isInfixOf` line)
+      other -> fail ("expected exactly one row, got: " ++ show (length other))
+
+caseCryptoCloseDrainsTrace :: IO ()
+caseCryptoCloseDrainsTrace = withPrivateDir $ \tmp -> do
+  let path = tmp ++ "/trace.jsonl"
+      cfg = defaultConfig
+        { cfgTrace = (cfgTrace defaultConfig) { tcPath = path, tcEnabled = True } }
+      rej = Rejection
+        { rejCode = CKR_GENERAL_ERROR
+        , rejOutputs = []
+        , rejDelta = StateDelta []
+        , rejReleases = []
+        , rejReasons = ["kept failure"]
+        , rejCause = Just (CryptoCause F_Digest (CryptoFailed "boom"))
+        }
+  sp <- openCryptoCtxWith cryptoAcquisition cfg
+  assertBool "open succeeds" (not (isNull sp))
+  ctx <- deRefStablePtr sp
+  publishRejection (ccEnv ctx) (ccBackend ctx) rej
+  haskokiCryptoClose sp
+  exists <- doesFileExist path
+  assertBool "trace file written on close" exists
+  body <- readFile path
+  assertBool "row landed in the file" ("C_Digest" `isInfixOf` body)
+
+caseAsyncPublishCloseDrainsTrace :: IO ()
+caseAsyncPublishCloseDrainsTrace = withPrivateDir $ \tmp -> do
+  let path = tmp ++ "/trace.jsonl"
+      cfg = defaultConfig
+        { cfgTrace = (cfgTrace defaultConfig) { tcPath = path, tcEnabled = True } }
+      rej = Rejection
+        { rejCode = CKR_GENERAL_ERROR
+        , rejOutputs = []
+        , rejDelta = StateDelta []
+        , rejReleases = []
+        , rejReasons = ["kept failure"]
+        , rejCause = Just (CryptoCause F_Sign (CryptoFailed "boom"))
+        }
+  eCtx <- openAsyncCtxWith asyncAcquisition cfg
+  case eCtx of
+    Left _ -> fail "async open failed"
+    Right sp -> do
+      ctx <- deRefStablePtr sp
+      mTr <- readTVarIO (envTracer (acEnv ctx))
+      assertBool "async ctx carries a tracer" (isJust mTr)
+      AsyncFFI.publishRejection (acEnv ctx) (acBackend ctx) rej
+      closeViaSlot asyncAcquisition sp closeCtxSlotWith
+  exists <- doesFileExist path
+  assertBool "trace file written on close" exists
+  body <- readFile path
+  assertBool "row landed in the file" ("C_Sign" `isInfixOf` body)
 
 -- ---------------------------------------------------------------------------
 -- Routed-crypto acquisition

@@ -2696,7 +2696,7 @@ caseContextGrantBinding = do
   m23 <- case finishEffect defaultRules m22 resF
       (EngineFail (BackendBadParam "sign" "boom")) of
     Left rej -> do
-      assertEqual "crypto failure code" CKR_GENERAL_ERROR (rejCode rej)
+      assertEqual "crypto failure code" CKR_DATA_LEN_RANGE (rejCode rej)
       case publishDelta m22 (rejDelta rej) of
         Left fault -> assertFailure ("failure fault: " ++ show fault)
         Right m' -> pure m'

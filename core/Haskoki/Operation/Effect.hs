@@ -15,6 +15,9 @@ funnel has no import cycle.
 -}
 module Haskoki.Operation.Effect
   ( CryptoError (..)
+  , CryptoCause (..)
+  , keptCause
+  , functionCName
   , cryptoCode
   , CryptoEffect (..)
   , CryptoResult (..)
@@ -61,8 +64,8 @@ data CryptoError
 
 -- | Return code for a reported crypto failure: the crypto leg of
 -- the single edge interpreter ('interpretError'). The 'FunctionId'
--- is threaded but not yet consulted (the per-function error cells
--- consult it); behavior is identical for every function.
+-- selects the per-function error cell; behavior differs only
+-- where the revised code table says so.
 cryptoCode :: FunctionId -> CryptoError -> ReturnCode
 cryptoCode _fid e = interpretError _fid (TyCrypto e)
 
@@ -176,27 +179,346 @@ data TypedError
 -- mechanism-invalid (never a silent substitution); a bytes-shaped
 -- authentication failure (rejected KEM ciphertext or wrap tag) is
 -- encrypted-data-invalid; a signature disproved by length alone
--- is signature-len-range; anything else is a general failure.
--- Verify-shaped calls report authentication as a verdict ('GotValid
--- False'), never through an error. Backend failures normalize
--- through the adapters first ('toCryptoError' in either layer, then
--- 'TyCrypto'). Every crypto-to-code leg routes through here
--- (pinned by the funnel test). Every case maps to the code its
--- collapse produced (see tests/fixtures/error-code-snapshot.txt).
+-- is signature-len-range; bad key, bad param and resource-gone
+-- resolve per function ('badKeyCode', 'badParamCode',
+-- 'resourceGoneCode'); unclassified driver, invalid-state and
+-- native failures keep the general collapse deliberately (see
+-- docs/adr/ADR-20.md — the typed failure reaches the trace
+-- sink). Verify-shaped calls report authentication as
+-- a verdict ('GotValid False'), never through an error. Backend
+-- failures normalize through the adapters first ('toCryptoError'
+-- in either layer, then 'TyCrypto'). Every crypto-to-code leg
+-- routes through here (pinned by the funnel test). Per-function
+-- rows are pinned in tests/fixtures/code-snapshot.txt.
+-- | A kept-general-error cause: the function whose cell served
+-- 'CKR_GENERAL_ERROR' for a deliberately unclassified typed
+-- failure. Publishers emit it to the trace sink; 'Nothing'
+-- (the common case) emits nothing.
+data CryptoCause = CryptoCause
+  { ccFunction :: !FunctionId
+  , ccError :: !CryptoError
+  } deriving (Eq, Show)
+
+-- | The trace cause for a finished crypto result, if the served
+-- code keeps a deliberately unclassified failure general: the
+-- unclassified driver, invalid-state and native legs. Distinct
+-- cells carry no cause (their code already identifies the
+-- failure), and neither does any non-error result. The served
+-- code gates the cause: if a kept leg ever maps distinctly,
+-- its cause stops without a code change here.
+keptCause :: FunctionId -> CryptoResult -> ReturnCode -> Maybe CryptoCause
+keptCause fid res code
+  | code /= CKR_GENERAL_ERROR = Nothing
+  | otherwise = case res of
+      GotCryptoError e -> case e of
+        CryptoFailed _ -> Just (CryptoCause fid e)
+        CryptoInvalidState _ _ -> Just (CryptoCause fid e)
+        CryptoNative _ _ _ -> Just (CryptoCause fid e)
+        _ -> Nothing
+      _ -> Nothing
+
+-- | The PKCS#11 C entry name for a function identity, for trace
+-- rows ('F_SignFinal' -> \"C_SignFinal\"). Every identity mirrors
+-- its C entry one-to-one. Names the EXECUTING leg: decomposed
+-- calls ('C_DigestKey', the combined updates) trace under their
+-- component identities until the dual path carries caller
+-- identity end to end.
+functionCName :: FunctionId -> String
+functionCName fid = case show fid of
+  'F' : '_' : rest -> "C_" ++ rest
+  other -> other
+
 interpretError :: FunctionId -> TypedError -> ReturnCode
-interpretError _fid terr = case terr of
+interpretError fid terr = case terr of
   TyDeny d -> sdCode d
   TyCrypto e -> case e of
     CryptoFailed _ -> CKR_GENERAL_ERROR
     CryptoUnsupported _ _ -> CKR_MECHANISM_INVALID
-    CryptoBadParam _ _ -> CKR_GENERAL_ERROR
-    CryptoBadKey _ _ -> CKR_GENERAL_ERROR
+    CryptoBadParam _ _ -> badParamCode fid
+    CryptoBadKey _ _ -> badKeyCode fid
     CryptoMechParamInvalid _ _ -> CKR_MECHANISM_PARAM_INVALID
     CryptoAuthFailed _ -> CKR_ENCRYPTED_DATA_INVALID
     CryptoSigLenRange _ -> CKR_SIGNATURE_LEN_RANGE
     CryptoInvalidState _ _ -> CKR_GENERAL_ERROR
     CryptoNative _ _ _ -> CKR_GENERAL_ERROR
-    CryptoResourceGone _ _ -> CKR_GENERAL_ERROR
+    CryptoResourceGone _ _ -> resourceGoneCode fid
+
+-- | Bad-key cell: the backend rejected bound key material. Sign,
+-- verify, cipher and message execution legs take the 5.1.1
+-- fallback (KEY_FUNCTION_NOT_PERMITTED is a 5.1.6
+-- usage-attribute denial, absent from the 5.8-5.16 execution
+-- sets); wrap, unwrap and KEM legs take it for bare bound-key
+-- refusals; generation takes attribute-value-invalid (5.18.1)
+-- and pair generation domain-params-invalid (5.18.2 + 5.1.6);
+-- derivation takes key-type-inconsistent (5.18.5). Legs without
+-- a finishing route keep the general collapse (totality only).
+badKeyCode :: FunctionId -> ReturnCode
+badKeyCode fid = case fid of
+  -- Digest legs (5.12).
+  F_DigestInit -> CKR_GENERAL_ERROR
+  F_Digest -> CKR_GENERAL_ERROR
+  F_DigestUpdate -> CKR_GENERAL_ERROR
+  F_DigestFinal -> CKR_GENERAL_ERROR
+  -- Sign legs (5.13-5.14).
+  F_SignInit -> CKR_GENERAL_ERROR
+  F_Sign -> CKR_FUNCTION_FAILED
+  F_SignUpdate -> CKR_GENERAL_ERROR
+  F_SignFinal -> CKR_FUNCTION_FAILED
+  F_SignRecoverInit -> CKR_GENERAL_ERROR
+  F_SignRecover -> CKR_FUNCTION_FAILED
+  -- Verify legs (5.15-5.16).
+  F_VerifyInit -> CKR_GENERAL_ERROR
+  F_Verify -> CKR_FUNCTION_FAILED
+  F_VerifyUpdate -> CKR_GENERAL_ERROR
+  F_VerifyFinal -> CKR_FUNCTION_FAILED
+  F_VerifyRecoverInit -> CKR_GENERAL_ERROR
+  F_VerifyRecover -> CKR_FUNCTION_FAILED
+  -- Cipher legs (5.8-5.11).
+  F_EncryptInit -> CKR_GENERAL_ERROR
+  F_Encrypt -> CKR_FUNCTION_FAILED
+  F_EncryptUpdate -> CKR_FUNCTION_FAILED
+  F_EncryptFinal -> CKR_FUNCTION_FAILED
+  F_DecryptInit -> CKR_GENERAL_ERROR
+  F_Decrypt -> CKR_FUNCTION_FAILED
+  F_DecryptUpdate -> CKR_FUNCTION_FAILED
+  F_DecryptFinal -> CKR_FUNCTION_FAILED
+  -- Message legs (5.9/5.11/5.14/5.16).
+  F_MessageEncryptInit -> CKR_GENERAL_ERROR
+  F_MessageDecryptInit -> CKR_GENERAL_ERROR
+  F_MessageSignInit -> CKR_GENERAL_ERROR
+  F_MessageVerifyInit -> CKR_GENERAL_ERROR
+  F_EncryptMessage -> CKR_FUNCTION_FAILED
+  F_DecryptMessage -> CKR_FUNCTION_FAILED
+  F_SignMessage -> CKR_FUNCTION_FAILED
+  F_VerifyMessage -> CKR_FUNCTION_FAILED
+  F_EncryptMessageBegin -> CKR_GENERAL_ERROR
+  F_DecryptMessageBegin -> CKR_GENERAL_ERROR
+  F_SignMessageBegin -> CKR_GENERAL_ERROR
+  F_VerifyMessageBegin -> CKR_GENERAL_ERROR
+  F_EncryptMessageNext -> CKR_FUNCTION_FAILED
+  F_DecryptMessageNext -> CKR_FUNCTION_FAILED
+  F_SignMessageNext -> CKR_FUNCTION_FAILED
+  F_VerifyMessageNext -> CKR_FUNCTION_FAILED
+  F_MessageEncryptFinal -> CKR_GENERAL_ERROR
+  F_MessageDecryptFinal -> CKR_GENERAL_ERROR
+  F_MessageSignFinal -> CKR_GENERAL_ERROR
+  F_MessageVerifyFinal -> CKR_GENERAL_ERROR
+  -- Key management (5.18).
+  F_GenerateKey -> CKR_ATTRIBUTE_VALUE_INVALID
+  F_GenerateKeyPair -> CKR_DOMAIN_PARAMS_INVALID
+  F_DeriveKey -> CKR_KEY_TYPE_INCONSISTENT
+  F_WrapKey -> CKR_FUNCTION_FAILED
+  F_UnwrapKey -> CKR_FUNCTION_FAILED
+  F_EncapsulateKey -> CKR_FUNCTION_FAILED
+  F_DecapsulateKey -> CKR_FUNCTION_FAILED
+  -- Dual legs (unwired: the public entries are served through
+  -- composition, so failures surface under the component legs).
+  F_DigestEncryptUpdate -> CKR_GENERAL_ERROR
+  F_DecryptDigestUpdate -> CKR_GENERAL_ERROR
+  F_SignEncryptUpdate -> CKR_GENERAL_ERROR
+  F_DecryptVerifyUpdate -> CKR_GENERAL_ERROR
+  -- Session, object and lifecycle (no crypto leg).
+  F_GetInfo -> CKR_GENERAL_ERROR
+  F_GetSlotList -> CKR_GENERAL_ERROR
+  F_GetSessionInfo -> CKR_GENERAL_ERROR
+  F_OpenSession -> CKR_GENERAL_ERROR
+  F_CloseSession -> CKR_GENERAL_ERROR
+  F_Login -> CKR_GENERAL_ERROR
+  F_Logout -> CKR_GENERAL_ERROR
+  F_CreateObject -> CKR_GENERAL_ERROR
+  F_DestroyObject -> CKR_GENERAL_ERROR
+  F_CopyObject -> CKR_GENERAL_ERROR
+  F_FindObjects -> CKR_GENERAL_ERROR
+  F_GetAttributeValue -> CKR_GENERAL_ERROR
+  F_SetAttributeValue -> CKR_GENERAL_ERROR
+  F_SessionCancel -> CKR_GENERAL_ERROR
+  F_InitToken -> CKR_GENERAL_ERROR
+  F_InitPIN -> CKR_GENERAL_ERROR
+  F_SetPIN -> CKR_GENERAL_ERROR
+
+-- | Bad-param cell: input widths and floors after the
+-- mechanism-param-shaped producers reclassify to
+-- 'CryptoMechParamInvalid'. Message/plaintext widths take
+-- data-len-range (5.8-5.9, 5.13-5.16); ciphertext widths take
+-- encrypted-data-len-range (5.10-5.11); verify-recover takes
+-- signature-len-range (5.15.6); wrap takes key-size-range
+-- (5.18.3); unwrap and decapsulation take wrapped-key-len-range
+-- (5.18.4, 5.18.9); generation takes attribute-value-invalid
+-- (5.18.1-5.18.2). Legs without a finishing route keep the
+-- general collapse (totality only).
+badParamCode :: FunctionId -> ReturnCode
+badParamCode fid = case fid of
+  -- Digest legs (5.12).
+  F_DigestInit -> CKR_GENERAL_ERROR
+  F_Digest -> CKR_GENERAL_ERROR
+  F_DigestUpdate -> CKR_GENERAL_ERROR
+  F_DigestFinal -> CKR_GENERAL_ERROR
+  -- Sign legs (5.13-5.14).
+  F_SignInit -> CKR_GENERAL_ERROR
+  F_Sign -> CKR_DATA_LEN_RANGE
+  F_SignUpdate -> CKR_GENERAL_ERROR
+  F_SignFinal -> CKR_DATA_LEN_RANGE
+  F_SignRecoverInit -> CKR_GENERAL_ERROR
+  F_SignRecover -> CKR_DATA_LEN_RANGE
+  -- Verify legs (5.15-5.16).
+  F_VerifyInit -> CKR_GENERAL_ERROR
+  F_Verify -> CKR_DATA_LEN_RANGE
+  F_VerifyUpdate -> CKR_GENERAL_ERROR
+  F_VerifyFinal -> CKR_DATA_LEN_RANGE
+  F_VerifyRecoverInit -> CKR_GENERAL_ERROR
+  F_VerifyRecover -> CKR_SIGNATURE_LEN_RANGE
+  -- Cipher legs (5.8-5.11).
+  F_EncryptInit -> CKR_GENERAL_ERROR
+  F_Encrypt -> CKR_DATA_LEN_RANGE
+  F_EncryptUpdate -> CKR_DATA_LEN_RANGE
+  F_EncryptFinal -> CKR_DATA_LEN_RANGE
+  F_DecryptInit -> CKR_GENERAL_ERROR
+  F_Decrypt -> CKR_ENCRYPTED_DATA_LEN_RANGE
+  F_DecryptUpdate -> CKR_ENCRYPTED_DATA_LEN_RANGE
+  F_DecryptFinal -> CKR_ENCRYPTED_DATA_LEN_RANGE
+  -- Message legs (5.9/5.11/5.14/5.16).
+  F_MessageEncryptInit -> CKR_GENERAL_ERROR
+  F_MessageDecryptInit -> CKR_GENERAL_ERROR
+  F_MessageSignInit -> CKR_GENERAL_ERROR
+  F_MessageVerifyInit -> CKR_GENERAL_ERROR
+  F_EncryptMessage -> CKR_DATA_LEN_RANGE
+  F_DecryptMessage -> CKR_ENCRYPTED_DATA_LEN_RANGE
+  F_SignMessage -> CKR_DATA_LEN_RANGE
+  F_VerifyMessage -> CKR_DATA_LEN_RANGE
+  F_EncryptMessageBegin -> CKR_GENERAL_ERROR
+  F_DecryptMessageBegin -> CKR_GENERAL_ERROR
+  F_SignMessageBegin -> CKR_GENERAL_ERROR
+  F_VerifyMessageBegin -> CKR_GENERAL_ERROR
+  F_EncryptMessageNext -> CKR_DATA_LEN_RANGE
+  F_DecryptMessageNext -> CKR_ENCRYPTED_DATA_LEN_RANGE
+  F_SignMessageNext -> CKR_DATA_LEN_RANGE
+  F_VerifyMessageNext -> CKR_DATA_LEN_RANGE
+  F_MessageEncryptFinal -> CKR_GENERAL_ERROR
+  F_MessageDecryptFinal -> CKR_GENERAL_ERROR
+  F_MessageSignFinal -> CKR_GENERAL_ERROR
+  F_MessageVerifyFinal -> CKR_GENERAL_ERROR
+  -- Key management (5.18).
+  F_GenerateKey -> CKR_ATTRIBUTE_VALUE_INVALID
+  F_GenerateKeyPair -> CKR_ATTRIBUTE_VALUE_INVALID
+  F_DeriveKey -> CKR_GENERAL_ERROR
+  F_WrapKey -> CKR_KEY_SIZE_RANGE
+  F_UnwrapKey -> CKR_WRAPPED_KEY_LEN_RANGE
+  F_EncapsulateKey -> CKR_GENERAL_ERROR
+  F_DecapsulateKey -> CKR_WRAPPED_KEY_LEN_RANGE
+  -- Dual legs (unwired: the public entries are served through
+  -- composition, so failures surface under the component legs).
+  F_DigestEncryptUpdate -> CKR_GENERAL_ERROR
+  F_DecryptDigestUpdate -> CKR_GENERAL_ERROR
+  F_SignEncryptUpdate -> CKR_GENERAL_ERROR
+  F_DecryptVerifyUpdate -> CKR_GENERAL_ERROR
+  -- Session, object and lifecycle (no crypto leg).
+  F_GetInfo -> CKR_GENERAL_ERROR
+  F_GetSlotList -> CKR_GENERAL_ERROR
+  F_GetSessionInfo -> CKR_GENERAL_ERROR
+  F_OpenSession -> CKR_GENERAL_ERROR
+  F_CloseSession -> CKR_GENERAL_ERROR
+  F_Login -> CKR_GENERAL_ERROR
+  F_Logout -> CKR_GENERAL_ERROR
+  F_CreateObject -> CKR_GENERAL_ERROR
+  F_DestroyObject -> CKR_GENERAL_ERROR
+  F_CopyObject -> CKR_GENERAL_ERROR
+  F_FindObjects -> CKR_GENERAL_ERROR
+  F_GetAttributeValue -> CKR_GENERAL_ERROR
+  F_SetAttributeValue -> CKR_GENERAL_ERROR
+  F_SessionCancel -> CKR_GENERAL_ERROR
+  F_InitToken -> CKR_GENERAL_ERROR
+  F_InitPIN -> CKR_GENERAL_ERROR
+  F_SetPIN -> CKR_GENERAL_ERROR
+
+-- | Resource-gone cell: the backend lost a referenced stream
+-- or key — a 5.1.3 device-side state failure, listed in every
+-- execution set below (digest 5.12.3/5.12.5, sign 5.13-5.14,
+-- verify 5.15-5.16, cipher 5.8-5.11, key 5.18.3-5.18.9).
+-- Legs that resolve no backend resources keep the general
+-- collapse (totality only).
+resourceGoneCode :: FunctionId -> ReturnCode
+resourceGoneCode fid = case fid of
+  -- Digest legs (5.12).
+  F_DigestInit -> CKR_GENERAL_ERROR
+  F_Digest -> CKR_GENERAL_ERROR
+  F_DigestUpdate -> CKR_DEVICE_ERROR
+  F_DigestFinal -> CKR_DEVICE_ERROR
+  -- Sign legs (5.13-5.14).
+  F_SignInit -> CKR_GENERAL_ERROR
+  F_Sign -> CKR_DEVICE_ERROR
+  F_SignUpdate -> CKR_GENERAL_ERROR
+  F_SignFinal -> CKR_DEVICE_ERROR
+  F_SignRecoverInit -> CKR_GENERAL_ERROR
+  F_SignRecover -> CKR_DEVICE_ERROR
+  -- Verify legs (5.15-5.16).
+  F_VerifyInit -> CKR_GENERAL_ERROR
+  F_Verify -> CKR_DEVICE_ERROR
+  F_VerifyUpdate -> CKR_GENERAL_ERROR
+  F_VerifyFinal -> CKR_DEVICE_ERROR
+  F_VerifyRecoverInit -> CKR_GENERAL_ERROR
+  F_VerifyRecover -> CKR_DEVICE_ERROR
+  -- Cipher legs (5.8-5.11).
+  F_EncryptInit -> CKR_GENERAL_ERROR
+  F_Encrypt -> CKR_DEVICE_ERROR
+  F_EncryptUpdate -> CKR_DEVICE_ERROR
+  F_EncryptFinal -> CKR_DEVICE_ERROR
+  F_DecryptInit -> CKR_GENERAL_ERROR
+  F_Decrypt -> CKR_DEVICE_ERROR
+  F_DecryptUpdate -> CKR_DEVICE_ERROR
+  F_DecryptFinal -> CKR_DEVICE_ERROR
+  -- Message legs (5.9/5.11/5.14/5.16).
+  F_MessageEncryptInit -> CKR_GENERAL_ERROR
+  F_MessageDecryptInit -> CKR_GENERAL_ERROR
+  F_MessageSignInit -> CKR_GENERAL_ERROR
+  F_MessageVerifyInit -> CKR_GENERAL_ERROR
+  F_EncryptMessage -> CKR_DEVICE_ERROR
+  F_DecryptMessage -> CKR_DEVICE_ERROR
+  F_SignMessage -> CKR_DEVICE_ERROR
+  F_VerifyMessage -> CKR_DEVICE_ERROR
+  F_EncryptMessageBegin -> CKR_GENERAL_ERROR
+  F_DecryptMessageBegin -> CKR_GENERAL_ERROR
+  F_SignMessageBegin -> CKR_GENERAL_ERROR
+  F_VerifyMessageBegin -> CKR_GENERAL_ERROR
+  F_EncryptMessageNext -> CKR_DEVICE_ERROR
+  F_DecryptMessageNext -> CKR_DEVICE_ERROR
+  F_SignMessageNext -> CKR_DEVICE_ERROR
+  F_VerifyMessageNext -> CKR_DEVICE_ERROR
+  F_MessageEncryptFinal -> CKR_GENERAL_ERROR
+  F_MessageDecryptFinal -> CKR_GENERAL_ERROR
+  F_MessageSignFinal -> CKR_GENERAL_ERROR
+  F_MessageVerifyFinal -> CKR_GENERAL_ERROR
+  -- Key management (5.18).
+  F_GenerateKey -> CKR_GENERAL_ERROR
+  F_GenerateKeyPair -> CKR_GENERAL_ERROR
+  F_DeriveKey -> CKR_DEVICE_ERROR
+  F_WrapKey -> CKR_DEVICE_ERROR
+  F_UnwrapKey -> CKR_DEVICE_ERROR
+  F_EncapsulateKey -> CKR_DEVICE_ERROR
+  F_DecapsulateKey -> CKR_DEVICE_ERROR
+  -- Dual legs (unwired: the public entries are served through
+  -- composition, so failures surface under the component legs).
+  F_DigestEncryptUpdate -> CKR_GENERAL_ERROR
+  F_DecryptDigestUpdate -> CKR_GENERAL_ERROR
+  F_SignEncryptUpdate -> CKR_GENERAL_ERROR
+  F_DecryptVerifyUpdate -> CKR_GENERAL_ERROR
+  -- Session, object and lifecycle (no crypto leg).
+  F_GetInfo -> CKR_GENERAL_ERROR
+  F_GetSlotList -> CKR_GENERAL_ERROR
+  F_GetSessionInfo -> CKR_GENERAL_ERROR
+  F_OpenSession -> CKR_GENERAL_ERROR
+  F_CloseSession -> CKR_GENERAL_ERROR
+  F_Login -> CKR_GENERAL_ERROR
+  F_Logout -> CKR_GENERAL_ERROR
+  F_CreateObject -> CKR_GENERAL_ERROR
+  F_DestroyObject -> CKR_GENERAL_ERROR
+  F_CopyObject -> CKR_GENERAL_ERROR
+  F_FindObjects -> CKR_GENERAL_ERROR
+  F_GetAttributeValue -> CKR_GENERAL_ERROR
+  F_SetAttributeValue -> CKR_GENERAL_ERROR
+  F_SessionCancel -> CKR_GENERAL_ERROR
+  F_InitToken -> CKR_GENERAL_ERROR
+  F_InitPIN -> CKR_GENERAL_ERROR
+  F_SetPIN -> CKR_GENERAL_ERROR
 
 -- | One planned unit of crypto: the family, mechanism, bound key
 -- object, opaque parameters, and the full input the driver executes
