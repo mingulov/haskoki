@@ -143,7 +143,7 @@ def validate_results(results):
     """Strict shape gate; returns (summary, units)."""
     s = results.get("summary")
     _need(isinstance(s, dict), "results.summary is not an object")
-    for key in ("total",) + COUNT_KEYS:
+    for key in ("total",) + COUNT_KEYS + ZERO_KEYS:
         _need(_is_nat(s.get(key)), "results summary.%s is not a nat" % key)
     _need(type(s.get("incomplete")) is bool,
           "results summary.incomplete is not a bool")
@@ -184,6 +184,8 @@ def collect_ids(units):
             if not isinstance(t, dict):
                 raise InputError("unit test entry is not an object: %r" % (t,))
             out = t.get("outcome")
+            if not isinstance(out, str):
+                raise InputError("test outcome is not a string: %r" % (out,))
             if out not in by_outcome:
                 raise InputError("unknown test outcome %r (id %r)"
                                  % (out, t.get("nodeid")))
@@ -681,6 +683,29 @@ def self_test():
         check("null tests is exit 2", code == 2)
     except (AttributeError, TypeError) as e:
         raise SystemExit("SELF-TEST FAIL: null tests tracebacks: %s" % e)
+
+    for key, val in (("child_timeout", False), ("child_crash", 0.0)):
+        r = copy.deepcopy(res)
+        r["summary"][key] = val
+        code, line = _run_case(tmp, "zero-%s" % key, r, base)
+        check("non-nat %s refused" % key, code == 2 and "nat" in line)
+
+    r = copy.deepcopy(res)
+    del r["summary"]["child_crash"]
+    try:
+        code, line = _run_case(tmp, "zero-missing", r, base)
+        check("missing zero key is exit 2", code == 2)
+    except (AttributeError, TypeError, KeyError) as e:
+        raise SystemExit("SELF-TEST FAIL: missing zero key tracebacks: %s"
+                         % e)
+
+    r = copy.deepcopy(res)
+    r["units"][0]["tests"][0]["outcome"] = ["failed"]
+    try:
+        code, line = _run_case(tmp, "outcome-array", r, base)
+        check("array outcome is exit 2", code == 2)
+    except (AttributeError, TypeError) as e:
+        raise SystemExit("SELF-TEST FAIL: array outcome tracebacks: %s" % e)
 
     print("SELF-TEST: PASS %d/%d" % (passed, passed))
 
