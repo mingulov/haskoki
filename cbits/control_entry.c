@@ -58,13 +58,10 @@ extern uint64_t haskoki_control(void *instance, const uint8_t *p_request,
                                 uint64_t *p_response_len);
 #endif
 
-/* Local cryptoki values (pinned v2.40; this TU serves the table body
- * too, so it cannot assume the caller's headers). */
-#define CKR_OK_INSTANCE 0x00000000UL
-#define CKR_FUNCTION_FAILED_INSTANCE 0x00000006UL
-#define CKR_GENERAL_ERROR_INSTANCE 0x00000005UL
-#define CKR_ARGUMENTS_BAD_INSTANCE 0x00000007UL
-#define CKR_CRYPTOKI_NOT_INITIALIZED_INSTANCE 0x00000190UL
+/* Local cryptoki values come generated (rv_values.inc): this TU
+ * serves the table body too, so it cannot assume the caller's
+ * headers. */
+#include "rv_values.inc"
 
 /* The live instance handle, or NULL outside an init interval.
  * Atomic: install release-stores under the init lock while serving
