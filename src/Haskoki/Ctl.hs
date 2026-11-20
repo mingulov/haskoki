@@ -230,6 +230,9 @@ capabilitiesReport cfg = unlines $
   , templateBoundsLine
   , reservedAsyncLine
   , reservedLimitsLine
+  , reservedProfileLine
+  , reservedInterfacesLine
+  , reservedEngineLine
   , "interfaces: " ++ unwords (cfgInterfaces cfg)
       ++ " (configured set; effective native: 3.2 3.1 3.0 via C_GetInterface/C_GetInterfaceList, 2.40 via C_GetFunctionList)"
   , "active-catalog: " ++ unwords active
@@ -275,6 +278,19 @@ reservedAsyncLine = "reserved-async: persist_detached reserved (detached records
 -- template-bounds line above).
 reservedLimitsLine :: String
 reservedLimitsLine = "reserved-limits: transcript_bytes/aggregate_payload_bytes/attribute_depth reserved (parse+report, no enforcement effect; buffer_bytes/attribute_entries: see template-bounds)"
+
+-- | The reserved top-level/engine disclosure sentences, pinned
+-- verbatim by ConfigHonestySpec: @profile@, @interfaces@ and
+-- @engine.kind@ parse, validate and report, but select no
+-- behavior (read-site audit: Ctl reporting only).
+reservedProfileLine :: String
+reservedProfileLine = "reserved-profile: profile reserved (validated label, reported only; no behavior selects on it)"
+
+reservedInterfacesLine :: String
+reservedInterfacesLine = "reserved-interfaces: interfaces reserved (validated subset, reported only; native serves all interfaces regardless)"
+
+reservedEngineLine :: String
+reservedEngineLine = "reserved-engine: engine.kind reserved (validated selector, reported catalog only; native always binds OpenSSL4)"
 
 -- ---------------------------------------------------------------------------
 -- Scenario runner (owned instance, declarative, deterministic)

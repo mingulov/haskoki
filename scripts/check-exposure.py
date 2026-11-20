@@ -602,7 +602,7 @@ def self_test():
     assert check("library foo\n  exposed-modules:\n    A\n") == [], \
         "unmarked named lib must pass (private by default, probed)"
     assert check("library foo\n  visibility: public\n") != [], "public marker must fail"
-    # Adversarial forms (F1): every one of these exposes (or may
+    # Adversarial forms (finding one): every one of these exposes (or may
     # expose) modules, so each must fail.
     assert check("Library upper\n  visibility: public\n") != [], \
         "uppercase public header must fail"

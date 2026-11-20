@@ -67,9 +67,13 @@ spec = testGroup "Config honesty"
     , testCase "seed: default accepted" caseSeedDefault
     , testCase "schema_version: non-1 refused" caseSchemaRefused
     , testCase "profile: unknown refused" caseProfileRefused
+    , testCase "profile: catalog class Reserved" caseProfileReserved
+    , testCase "profile: disclosed as reserved" caseProfileDisclosed
     , testCase "interfaces: bad member refused" caseInterfacesBad
     , testCase "interfaces: empty refused" caseInterfacesEmpty
     , testCase "interfaces: declared set reported" caseInterfacesReported
+    , testCase "interfaces: catalog class Reserved" caseInterfacesReserved
+    , testCase "interfaces: disclosed as reserved" caseInterfacesDisclosed
     ]
   , testGroup "storage"
     [ testCase "storage.kind: unknown refused" caseStorageKindBad
@@ -81,6 +85,8 @@ spec = testGroup "Config honesty"
     ]
   , testGroup "engine"
     [ testCase "engine.kind: unknown refused" caseEngineKindBad
+    , testCase "engine.kind: catalog class Reserved" caseEngineKindReserved
+    , testCase "engine.kind: disclosed as reserved" caseEngineKindDisclosed
     , testCase "engine.allow_synthetic_fallback: true refused" caseFallbackRefused
     , testCase "engine.allow_synthetic_fallback: false accepted" caseFallbackFalse
     , testCase "engine.private_library_context: false refused" casePrivCtxRefused
@@ -159,6 +165,7 @@ spec = testGroup "Config honesty"
     , testCase "every reserved key is on a reserved-*/template-bounds line" caseReservedOnLines
     , testCase "reserved disclosure: dropped line is caught (negative control)" caseReservedLineMissing
     , testCase "reserved disclosure: dropped limits lines are caught (negative control)" caseReservedLimitsLineMissing
+    , testCase "reserved disclosure: dropped top-level lines are caught (negative control)" caseReservedTopLineMissing
     , testCase "every key carries an effective record" caseEffectiveComplete
     , testCase "every reserved key is disclosed in capabilities" caseReservedDisclosedComplete
     , testCase "resource inventory names the open dimensions" caseResourceInventory
@@ -211,7 +218,7 @@ caseSchemaRefused =
       assertEqual "exact refusal" "unsupported schema_version: 2" msg
     other -> assertFailure ("schema_version=2 must be refused, got: " ++ show other)
 
--- | ENFORCED-by-validation: unknown profile errors (reported half
+-- | Reserved but validated: unknown profile errors (reported half
 -- is pinned by CtlSpec caseCapabilities "names the profile").
 caseProfileRefused :: IO ()
 caseProfileRefused =
@@ -220,7 +227,25 @@ caseProfileRefused =
       assertEqual "exact refusal" "unknown profile: prod" msg
     other -> assertFailure ("unknown profile must be refused, got: " ++ show other)
 
--- | ENFORCED-by-validation: interfaces must be a non-empty subset
+-- | CONFIG-NOT-POLICY: nothing selects behavior by profile
+-- (repo-wide audit: only Ctl reporting reads 'cfgProfile', and
+-- only for the label plus the demo-maximal target mark), so the
+-- catalog class is Reserved, disclosed loudly like the other
+-- reserved knobs.
+caseProfileReserved :: IO ()
+caseProfileReserved =
+  assertEqual "profile class" (Just Reserved)
+    (lookup ("", "profile") configKeyCatalog)
+
+caseProfileDisclosed :: IO ()
+caseProfileDisclosed = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
+  assertEqual "exit 0" 0 (ceCode r)
+  assertBool "reserved-profile line present" (reservedProfileLine `isInfixOf` ceOut r)
+  where
+    reservedProfileLine = "reserved-profile: profile reserved (validated label, reported only; no behavior selects on it)"
+
+-- | Reserved but validated: interfaces must be a non-empty subset
 -- of 2.40/3.0/3.1/3.2. Scope note (S2b): the declared set is
 -- validated + reported, but no native path gates behavior on it
 -- (repo-wide grep: only Ctl reporting reads 'cfgInterfaces');
@@ -243,6 +268,23 @@ caseInterfacesReported = withTimeout "capabilities run" $ do
   assertEqual "exit 0" 0 (ceCode r)
   assertBool "declared set reported"
     ("interfaces: 2.40 3.0 3.1 3.2" `isInfixOf` ceOut r)
+
+-- | CONFIG-NOT-POLICY: no native path gates behavior on the
+-- declared set (repo-wide audit: only Ctl reporting reads
+-- 'cfgInterfaces'), so the catalog class is Reserved, disclosed
+-- loudly like the other reserved knobs.
+caseInterfacesReserved :: IO ()
+caseInterfacesReserved =
+  assertEqual "interfaces class" (Just Reserved)
+    (lookup ("", "interfaces") configKeyCatalog)
+
+caseInterfacesDisclosed :: IO ()
+caseInterfacesDisclosed = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
+  assertEqual "exit 0" 0 (ceCode r)
+  assertBool "reserved-interfaces line present" (reservedInterfacesLine `isInfixOf` ceOut r)
+  where
+    reservedInterfacesLine = "reserved-interfaces: interfaces reserved (validated subset, reported only; native serves all interfaces regardless)"
 
 -- ---------------------------------------------------------------------------
 -- Storage
@@ -309,19 +351,38 @@ caseExclTrue =
 -- Engine (knobs + never-knobs)
 -- ---------------------------------------------------------------------------
 
--- | ENFORCED: kind validates + observably selects the reported
--- active catalog (CtlSpec caseCapabilities: 132 synthetic vs 130
--- openssl rows). Headline answer (S2a): NOTHING routes native
--- backends by engine.kind — all four native opens bind
--- @BackendEnv OpenSSL4@ ('Standard.hs' engine-policy doc,
--- CtlSpec caseNativeScope); kind describes the configured engine
--- only, disclosed by the native-engine report line.
+-- | Reserved but validated: kind validates + observably selects
+-- the reported active catalog (CtlSpec caseCapabilities).
+-- Headline answer (S2a): NOTHING routes native backends by
+-- engine.kind — all four native opens bind @BackendEnv OpenSSL4@
+-- ('Standard.hs' engine-policy doc, CtlSpec caseNativeScope);
+-- kind describes the configured engine only, disclosed by the
+-- native-engine report line.
 caseEngineKindBad :: IO ()
 caseEngineKindBad =
   case parseConfig (unlines ["schema_version = 1", "[engine]", "kind = \"boringssl\""]) of
     Left (CfgInvalid msg) ->
       assertEqual "exact refusal" "unknown engine.kind: boringssl" msg
     other -> assertFailure ("unknown engine.kind must be refused, got: " ++ show other)
+
+-- | CONFIG-NOT-POLICY: nothing routes native backends by
+-- engine.kind (repo-wide audit: only Ctl reporting reads
+-- 'ecKind', for the reported catalog plus the engine line; all
+-- four native opens bind BackendEnv OpenSSL4 regardless), so the
+-- catalog class is Reserved, disclosed loudly like the other
+-- reserved knobs.
+caseEngineKindReserved :: IO ()
+caseEngineKindReserved =
+  assertEqual "engine.kind class" (Just Reserved)
+    (lookup ("engine", "kind") configKeyCatalog)
+
+caseEngineKindDisclosed :: IO ()
+caseEngineKindDisclosed = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
+  assertEqual "exit 0" 0 (ceCode r)
+  assertBool "reserved-engine line present" (reservedEngineLine `isInfixOf` ceOut r)
+  where
+    reservedEngineLine = "reserved-engine: engine.kind reserved (validated selector, reported catalog only; native always binds OpenSSL4)"
 
 -- | No synthetic-fallback logic exists on any path (repo-wide
 -- grep: the accessor is never read), so @true@ promises a crypto
@@ -958,6 +1019,7 @@ caseAuditReserved = do
     [ "buffer_bytes", "attribute_entries"
     , "transcript_bytes", "aggregate_payload_bytes", "attribute_depth"
     , "persist_detached", "template-bounds"
+    , "reserved-profile", "reserved-interfaces", "reserved-engine"
     ]
 
 caseAuditNeverKnobs :: IO ()
@@ -1089,7 +1151,7 @@ undisclosedReserved out =
 caseReservedOnLines :: IO ()
 caseReservedOnLines = withTimeout "capabilities run" $ do
   r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
-  assertEqual "reserved keys in the catalog" 6
+  assertEqual "reserved keys in the catalog" 9
     (length [ () | (_, Reserved) <- configKeyCatalog ])
   assertEqual "undisclosed reserved keys" [] (undisclosedReserved (ceOut r))
 
@@ -1161,6 +1223,24 @@ caseReservedLimitsLineMissing = withTimeout "capabilities run" $ do
           , "limits.aggregate_payload_bytes", "limits.attribute_entries"
           , "limits.attribute_depth"])
     (sort (undisclosedReserved (without ["reserved-limits", "template-bounds"])))
+
+-- | Negative control for the reserved top-level/engine leaves:
+-- dropping the three new disclosure lines (plus reserved-async,
+-- whose storage.kind mention also covers the "kind" leaf) must
+-- surface exactly profile, interfaces, engine.kind and
+-- async.persist_detached.
+caseReservedTopLineMissing :: IO ()
+caseReservedTopLineMissing = withTimeout "capabilities run" $ do
+  r <- runCtl ["capabilities", "--config", fixture "real-crypto.toml"]
+  let without tags = unlines
+        [ ln | ln <- lines (ceOut r)
+             , not (any (`isPrefixOf` ln) tags) ]
+  assertEqual "capabilities without the new disclosure lines"
+    (sort ["async.persist_detached", "engine.kind", "interfaces"
+          , "profile"])
+    (sort (undisclosedReserved
+            (without ["reserved-async", "reserved-profile"
+                     , "reserved-interfaces", "reserved-engine"])))
 
 caseResourceInventory :: IO ()
 caseResourceInventory = do

@@ -92,8 +92,8 @@ probe() { # $1 = probe dir/name, $2 = expected diagnostic
   # with its own diagnostic; anything else (a resolution, a
   # broken toolchain, a changed message) is a loud failure. The
   # pinned toolchain (cabal-install 3.12.1.0) fixes the wording:
-  # a toolchain upgrade that rewords diagnostics turns this
-  # check red until a human re-pins the expectations below.
+  # a toolchain upgrade that rewords diagnostics fails this check
+  # until a human re-pins the expectations below.
   SQUASHED=$(tr -s '[:space:]' ' ' < "$LOG")
   if echo "$SQUASHED" | grep -q "will be built"; then
     echo "consumer: FAIL - probe $1 resolved (expected a resolution failure):"

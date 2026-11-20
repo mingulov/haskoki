@@ -56,7 +56,7 @@ against the pinned toolchain (cabal-install 3.12.1.0):
   Unmarked named libraries are private by default (probed);
   `common` stanzas cannot carry visibility (Cabal parses
   them with the build-info grammar, which has no such
-  field). Partial publicity turns the build red even where
+  field). Partial publicity fails the build even where
   the solver would already refuse it.
 
 The consumer check (`check-consumer.sh`) runs one fixture
