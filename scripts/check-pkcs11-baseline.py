@@ -8,7 +8,7 @@ Exit 0 pass, 1 gate violations, 2 unusable input (missing/corrupt file,
 wrong schema, absent envelope). Every refusal names its reason; nothing
 ever passes on a traceback.
 
-Rules (Task 4, six rules + input contracts):
+Rules (P-01 baseline: six rules + input contracts):
   0. Provenance: results provenance.framework.commit must equal the
      baseline checker_pin; a mismatch names both pins (R-11 skew rule).
      The version tag alone is not accepted: tags can move, SHAs cannot.
