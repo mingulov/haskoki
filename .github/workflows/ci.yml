@@ -197,7 +197,7 @@ jobs:
               check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
               check-smoke-surface check-history-codes check-sealed-callwork check-ossl4-laziness check-actions-pinned \
-              check-qualification-wiring check-findings-ledger; do
+              check-qualification-wiring check-findings-ledger check-planner-join; do
             python3 scripts/$g.py
           done
           python3 scripts/check-history-codes.py --self-test
@@ -219,6 +219,7 @@ jobs:
           python3 scripts/check-qualification-wiring.py --self-test
           python3 scripts/test-ownership-matrix-controls.py
           python3 scripts/check-findings-ledger.py --self-test
+          python3 scripts/check-planner-join.py --self-test
           python3 scripts/check-seed-honesty.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
