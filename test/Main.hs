@@ -17,7 +17,7 @@ module Main (main) where
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase)
 
-import Haskoki (Outcome (..), Pkcs11Version (..), ReturnCode (..))
+import Haskoki.Types (Outcome (..), Pkcs11Version (..), ReturnCode (..))
 
 main :: IO ()
 main = defaultMain tests

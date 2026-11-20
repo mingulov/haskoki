@@ -28,3 +28,4 @@ edit of the old one's Decision.
 | [ADR-18](ADR-18.md) | Planner/C join register | Accepted |
 | [ADR-19](ADR-19.md) | Generated return values | Proposed |
 | [ADR-20](ADR-20.md) | Per-function error interpretation | Accepted |
+| [ADR-21](ADR-21.md) | Private Haskell libraries, no public API | Accepted |

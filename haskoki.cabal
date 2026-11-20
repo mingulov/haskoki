@@ -95,8 +95,9 @@ common fatal-omissions
 -- direction is structural: this component depends on nothing
 -- project-internal (external data libraries only); the main library,
 -- the foreign library, and the test suites depend on it, never the
--- reverse. Visibility is private: the package's public API is the
--- main library alone.
+-- reverse. Visibility is private: like `haskoki-internal`, this
+-- library is same-package only — the package has no public
+-- Haskell library (the C ABI is the interface).
 library haskoki-core
   import:             fatal-omissions
   visibility:         private
@@ -179,10 +180,10 @@ library haskoki-core
   ghc-options:      -Wall
   default-language: GHC2024
 
-library
+library haskoki-internal
   import:           fatal-omissions
+  visibility:         private
   exposed-modules:
-    Haskoki
     Haskoki.Engine.Backend
     Haskoki.Engine.Driver
     Haskoki.Engine.OpenSSL4
@@ -213,7 +214,6 @@ library
     Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Trace
-    Haskoki.PKCS11
   -- Private provider-only OpenSSL 4 raw bindings (not a public API),
   -- and the private store-handle-owned detached-job claim authority
   -- (keeps the AsyncTableId constructor out of the public API).
@@ -242,7 +242,8 @@ library
   extra-libraries:
     :libcrypto.a
   -- The pure core lives in core/ (single home of Haskoki.Types and
-  -- the request/outcome/model contracts); src/ keeps the facade.
+  -- the request/outcome/model contracts); src/ keeps the
+  -- implementation modules of this private library.
   -- The native decode/encode side lives in ffi/ but is wired
   -- through the library so model tests exercise it without a
   -- cross-component duplicate; the foreign library picks these
@@ -356,7 +357,7 @@ executable haskoki-ctl
   hs-source-dirs:   app
   build-depends:
     base     >= 4.14 && < 5,
-    haskoki
+    haskoki:haskoki-internal
   ghc-options:      -Wall -threaded
   -- NOTE: no ld-options here by design. This exe links fully static
   -- (Haskell libs + libcrypto.a inside; only system libc/libm/libgmp/
@@ -373,7 +374,7 @@ executable lifecycle-probe
   hs-source-dirs:   tools/lifecycle-probe
   build-depends:
     base     >= 4.14 && < 5,
-    haskoki
+    haskoki:haskoki-internal
   ghc-options:      -Wall -threaded
   default-language: GHC2024
 
@@ -404,7 +405,7 @@ test-suite haskoki-prop-tests
     containers      >= 0.6  && < 0.9,
     directory       >= 1.3  && < 1.4,
     filepath        >= 1.4  && < 1.6,
-    haskoki,
+    haskoki:haskoki-internal,
     haskoki:haskoki-core,
     process         >= 1.6  && < 1.7,
     QuickCheck      >= 2.14 && < 2.20,
@@ -421,7 +422,7 @@ test-suite haskoki-tests
   hs-source-dirs:   test
   build-depends:
     base        >= 4.14 && < 5,
-    haskoki,
+    haskoki:haskoki-core,
     tasty       >= 1.4  && < 1.6,
     tasty-hunit >= 0.10 && < 0.11
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
@@ -531,7 +532,7 @@ test-suite haskoki-model-tests
     containers  >= 0.6  && < 0.9,
     directory   >= 1.3  && < 1.4,
     filepath    >= 1.4  && < 1.6,
-    haskoki,
+    haskoki:haskoki-internal,
     haskoki:haskoki-core,
     process     >= 1.6  && < 1.7,
     stm         >= 2.5  && < 2.6,
@@ -577,7 +578,7 @@ test-suite haskoki-engine-tests
     containers  >= 0.6  && < 0.9,
     directory   >= 1.3  && < 1.4,
     ghc-heap    >= 9.10 && < 9.15,
-    haskoki,
+    haskoki:haskoki-internal,
     haskoki:haskoki-core,
     stm         >= 2.5  && < 2.6,
     tasty       >= 1.4  && < 1.6,
@@ -607,7 +608,7 @@ test-suite haskoki-storage-tests
     directory   >= 1.3  && < 1.4,
     direct-sqlite >= 2.3 && < 2.4,
     filepath    >= 1.4  && < 1.6,
-    haskoki,
+    haskoki:haskoki-internal,
     haskoki:haskoki-core,
     process     >= 1.6  && < 1.7,
     tasty       >= 1.4  && < 1.6,

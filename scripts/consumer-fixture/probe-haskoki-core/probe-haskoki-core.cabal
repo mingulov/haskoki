@@ -1,0 +1,18 @@
+cabal-version:      3.0
+name:               probe-haskoki-core
+version:            0.1.0.0
+synopsis:           Out-of-tree probe for the haskoki-core sublibrary
+license:            NONE
+build-type:         Simple
+
+-- Negative probe in its own project (separate solve universe:
+-- see probe-main). Imports the stub facade through the
+-- haskoki-core sublibrary; must FAIL with a
+-- dependency-resolution error.
+executable probe
+  main-is:          Main.hs
+  build-depends:
+    base >= 4.14 && < 5,
+    haskoki:haskoki-core
+  ghc-options:      -Wall
+  default-language: GHC2024

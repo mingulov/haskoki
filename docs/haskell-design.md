@@ -81,20 +81,21 @@ over key functions (see `src/Haskoki/Runtime/Async.hs`).
 
 ## Public Haskell surface
 
-External callers have two supported paths into this package, and
-neither is a Haskell provider facade: native callers load
+There is none. The package has no public Haskell library: the
+only supported path into this package is native — callers load
 `libhaskoki.so` through the versioned C function tables (`cbits/` +
-`ffi/`), and Haskell callers inside this repository use the pure
+`ffi/`). Haskell callers inside this repository use the pure
 request/outcome contracts (`planCall`, `finishEffect`,
-`publishDelta`). The 32 library modules below are developer
-interfaces; their names and shapes may change, and nothing here
-promises a stable Haskell provider API. The private `haskoki-core`
-component is not the package public API at all.
+`publishDelta`) through the two private libraries
+(`haskoki-core`, `haskoki-internal`; `visibility: private`, so no
+downstream package can depend on them — see
+`docs/private-apis.md`). The 30 implementation modules below are
+developer interfaces; their names and shapes may change. (The
+0.5.0.0 stub facade, `Haskoki.PKCS11`, was deleted with this
+policy.)
 
 | Modules | Purpose | Stability | Resource owner | Concurrency contract |
 |---|---|---|---|---|
-| `Haskoki` | Facade re-export (`Haskoki.Types` + `Haskoki.PKCS11`) | Facade; compat names deprecated | None (re-export only) | None |
-| `Haskoki.PKCS11` | Compatibility scaffold: `initialize`, `finalize`, `getInfo`, `getSlotList` each answer `CKR_GENERAL_ERROR` | Frozen, deprecated, kept for compatibility | None (no state) | None |
 | `Haskoki.Engine.Backend`, `Haskoki.Engine.Driver` | Backend interface and its interpreter over planned effects | Internal | Backends own native contexts; the driver borrows | Backend operations hold the exclusive environment gate (environment-then-registry lock order), atomic with close; native digest contexts are borrowed under a registry lock |
 | `Haskoki.Engine.OpenSSL4` | Native backend over the pinned static libcrypto | Internal | Same as above | Same as above |
 | `Haskoki.Engine.Synthetic` | Labeled fake bytes for engine suites and scenario runs | Test-only; absent from the foreign library | None served | None served |
@@ -214,16 +215,14 @@ The [B3 inventory](b3-docs-inventory.md) lists the module sets read from
 | Foreign library `other-modules` | 25 | `haskoki.cabal:244-269` |
 
 Two facts from that survey matter here: the `Haskoki.PKCS11` facade
-(`initialize`, `finalize`, `getInfo`, `getSlotList`) always answers
-`CKR_GENERAL_ERROR` and is not the serving path, and 7 library-exposed
-modules are absent from the foreign library while flib-only
-`Haskoki.FFI.Types` has zero in-tree importers. See gaps D1 and D4 in the
-inventory for the H3 follow-ups. Freshness: at this tree the library
-exposes 32 modules (adds `Haskoki.Ctl.Store` and
-`Haskoki.Runtime.Storage.Preflight`), the foreign library bundles 27
-(adds `Haskoki.FFI.MessageParams` and `Haskoki.Runtime.Attach`), and
-`haskoki-core` holds 68 with `Haskoki.CallWork`, so 8 library-exposed
-modules are absent from the foreign library; the facade
-names are now deprecated (see `src/Haskoki/PKCS11.hs`) and the
+(`initialize`, `finalize`, `getInfo`, `getSlotList`) always answered
+`CKR_GENERAL_ERROR` and was not the serving path, and 7 library-exposed
+modules were absent from the foreign library while flib-only
+`Haskoki.FFI.Types` had zero in-tree importers. See gaps D1 and D4 in the
+inventory for the H3 follow-ups. Freshness: at this tree there is no
+public library at all (`docs/private-apis.md`); the private
+`haskoki-internal` holds the 30 implementation modules, the foreign
+library bundles its own sources, and `haskoki-core` holds the pure
+core. The D1 facade row is closed (facade deleted); the
 supported-path answer to D4 is the Public Haskell surface section
 above.

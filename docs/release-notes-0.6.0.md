@@ -2,6 +2,17 @@
 
 Developer preview: entries land per task and finalize at release.
 
+## Removed — public Haskell API
+
+- The package has no installable Haskell library anymore: the
+  main `library` stanza is gone, `haskoki-core` and
+  `haskoki-internal` are `visibility: private`, and the 0.5.0.0
+  stub facade (`Haskoki.PKCS11`, four functions answering
+  `CKR_GENERAL_ERROR`) plus its top-level re-export were
+  deleted. Out-of-tree `import Haskoki.*` fails at dependency
+  resolution. The product interface is the C ABI, unchanged.
+  (No external Haskell consumers are known to exist.)
+
 ## Changed — exact per-function errors
 
 - Rejected backend key material now reports `CKR_FUNCTION_FAILED`
@@ -38,3 +49,10 @@ Developer preview: entries land per task and finalize at release.
 
 - Three newly served return codes (63 total): `CKR_DEVICE_ERROR`,
   `CKR_DOMAIN_PARAMS_INVALID`, `CKR_WRAPPED_KEY_LEN_RANGE`.
+
+## Removed
+
+- No public Haskell library: the package exposes only the C ABI.
+  The stub facade (`Haskoki.PKCS11`, already deprecated) and its
+  top-level re-export are deleted; out-of-tree `import Haskoki.*`
+  now fails at dependency resolution (checked in CI).

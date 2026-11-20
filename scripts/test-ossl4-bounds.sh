@@ -34,13 +34,14 @@ EXTRA_LIB_DIRS=""
 if [ -d /opt/openssl-4.0.2/lib64 ]; then
   EXTRA_LIB_DIRS="--extra-lib-dirs=/opt/openssl-4.0.2/lib64"
 fi
-# The test-hook macro belongs to the main library stanza only. Anywhere
-# else in haskoki.cabal (the foreign-library stanza, a common stanza it
-# imports, another component) or in any cabal.project* file it could
-# reach the shipped module. Comment lines are ignored.
-awk '/^library[ \t]*$/{lib=1;next} /^[^ \t-]/{lib=0} !lib && !/^[ \t]*--/' haskoki.cabal \
+# The test-hook macro belongs to the private implementation
+# library stanza only. Anywhere else in haskoki.cabal (the
+# foreign-library stanza, a common stanza it imports, another
+# component) or in any cabal.project* file it could reach the
+# shipped module. Comment lines are ignored.
+awk -f scripts/check-ossl4-hooks.awk haskoki.cabal \
   | grep -q 'HSK_OSSL4_TEST_HOOKS' \
-  && fail "HSK_OSSL4_TEST_HOOKS appears in haskoki.cabal outside the library stanza"
+  && fail "HSK_OSSL4_TEST_HOOKS appears in haskoki.cabal outside the internal library stanza"
 for f in cabal.project*; do
   [ -f "$f" ] || continue
   grep -v '^[ \t]*--' "$f" | grep -q 'HSK_OSSL4_TEST_HOOKS' \

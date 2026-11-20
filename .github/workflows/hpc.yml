@@ -21,9 +21,8 @@ name: hpc
 # the deliverable. The test step itself keeps its honest exit code —
 # no `|| true` anywhere.
 #
-# Documented excludes (T-5): `Haskoki.PKCS11` (untested stub, listed
-# with its reason in tests/hpc-exclusions.json) and the cabal autogen
-# module `Paths_haskoki`. Suite runners (`Main`) and spec/helpers never
+# Documented excludes (T-5): the cabal autogen module `Paths_haskoki`.
+# Suite runners (`Main`) and spec/helpers never
 # enter the reports: only the two LIBRARY mix dirs are passed as
 # --hpcdir, so harness modules cannot inflate a number. The separate
 # haskoki-client package is outside module reconciliation (its suite
@@ -171,10 +170,10 @@ jobs:
           # flag takes the mix/ parent, never the unit-id dir itself.
           CORE_MIX=$(find dist-newstyle -type d \
             -path '*l/haskoki-core/build/*/extra-compilation-artifacts/hpc/vanilla/mix')
-          # The main library of the haskoki package only: the
-          # haskoki-<version> package dir, never haskoki-client.
+          # The private implementation library of the haskoki package
+          # only (unit-id dir, like core), never haskoki-client.
           MAIN_MIX=$(find dist-newstyle -type d \
-            -path '*/haskoki-[0-9]*/build/extra-compilation-artifacts/hpc/vanilla/mix')
+            -path '*l/haskoki-internal/build/*/extra-compilation-artifacts/hpc/vanilla/mix')
           [ -n "$CORE_MIX" ] || { echo 'core mix dir not found'; exit 2; }
           [ -n "$MAIN_MIX" ] || { echo 'main mix dir not found'; exit 2; }
           [ "$(printf '%s\n' "$CORE_MIX" | wc -l)" -eq 1 ] || { echo 'core mix dir ambiguous'; exit 2; }
@@ -187,26 +186,26 @@ jobs:
           [ -n "$MAIN_UNIT" ] || { echo 'main unit id missing'; exit 2; }
           # The trailing colon scopes --include to the whole package;
           # one --include/positional module otherwise selects a single
-          # module. Excludes: the PKCS11 stub + cabal autogen (T-5).
+          # module. Excludes: cabal autogen (T-5).
           hpc report hpc/combined.tix \
             --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
             --include="$CORE_UNIT:" \
-            --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+            --exclude=Paths_haskoki \
             --per-module > hpc/report-haskoki-core.txt
           hpc report hpc/combined.tix \
             --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
             --include="$MAIN_UNIT:" \
-            --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+            --exclude=Paths_haskoki \
             --per-module > hpc/report-haskoki.txt
           hpc markup hpc/combined.tix \
             --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
             --include="$CORE_UNIT:" \
-            --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+            --exclude=Paths_haskoki \
             --destdir=hpc/html-core
           hpc markup hpc/combined.tix \
             --hpcdir="$CORE_MIX" --hpcdir="$MAIN_MIX" \
             --include="$MAIN_UNIT:" \
-            --exclude=Haskoki.PKCS11 --exclude=Paths_haskoki \
+            --exclude=Paths_haskoki \
             --destdir=hpc/html-main
           test -f hpc/html-core/hpc_index.html || { echo 'core html missing'; exit 2; }
           test -f hpc/html-main/hpc_index.html || { echo 'main html missing'; exit 2; }
@@ -239,7 +238,7 @@ jobs:
           CORE_MIX=$(find dist-newstyle -type d \
             -path '*l/haskoki-core/build/*/extra-compilation-artifacts/hpc/vanilla/mix' 2>/dev/null || true)
           MAIN_MIX=$(find dist-newstyle -type d \
-            -path '*/haskoki-[0-9]*/build/extra-compilation-artifacts/hpc/vanilla/mix' 2>/dev/null || true)
+            -path '*l/haskoki-internal/build/*/extra-compilation-artifacts/hpc/vanilla/mix' 2>/dev/null || true)
           python3 scripts/check-test-execution.py --check-hpc \
             --tix-root dist-newstyle \
             --mix-dirs "$CORE_MIX,$MAIN_MIX" \

@@ -105,6 +105,8 @@ python3 scripts/check-planner-join.py
 python3 scripts/check-planner-join.py --self-test
 python3 scripts/check-rv-generated.py
 python3 scripts/check-rv-generated.py --self-test
+python3 scripts/check-exposure.py
+python3 scripts/check-exposure.py --self-test
 python3 scripts/check-qualification-wiring.py
 python3 scripts/check-qualification-wiring.py --self-test
 python3 scripts/check-loader-norm.py
@@ -168,6 +170,8 @@ set -e
 test "${rc[0]}" -eq 0 || { echo "GATES: cabal test failed (see haskell-test.log)"; exit 1; }
 test "${rc[1]}" -eq 0 || { echo "GATES: test log write failed"; exit 1; }
 python3 scripts/check-test-execution.py --scan-log haskell-test.log
+echo "=== out-of-tree consumer check (pinned container) ==="
+timeout -s KILL 1200 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" bash scripts/check-consumer.sh
 echo "=== benchmark self-test + sdist build (exact build above) ==="
 timeout -s KILL 600 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "BENCH_BIN=\$(cabal list-bin bench:buffered-updates) && test -x \"\$BENCH_BIN\" && \"\$BENCH_BIN\" --self-test"
 timeout -s KILL 600 docker run --rm --network host -v "$PWD:/work" -w /work "$IMAGE" sh -c "cabal sdist"
