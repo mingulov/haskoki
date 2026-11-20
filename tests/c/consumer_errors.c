@@ -783,6 +783,57 @@ int main(int argc, char **argv) {
            "stub-beats-args login-user (3.0)");
   }
 
+  /* T-06 refusal pins: 3.2-only x32_ stubs plus the stub_probe /
+   * stub_parallel handlers. Garbage args, stub code wins, same
+   * contract as above (x_live_check / stub_probe ->
+   * CKR_FUNCTION_NOT_SUPPORTED when live; stub_parallel ->
+   * CKR_FUNCTION_NOT_PARALLEL). Direct-only: module contract, out
+   * of the parity transcript. */
+  if (!isProxy) {
+    CK_FLAGS vflags = 0;
+    CK_ULONG outlen = 0;
+    CK_OBJECT_HANDLE hkey = 0xFFFFFFFFUL;
+    rv = g_t32->C_VerifySignatureInit(0xFFFFFFFFUL, NULL_PTR,
+                                      0xFFFFFFFFUL, NULL_PTR, 0);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub verify-signature-init (3.2)");
+    rv = g_t32->C_VerifySignature(0xFFFFFFFFUL, NULL_PTR, 0);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub verify-signature (3.2)");
+    rv = g_t32->C_VerifySignatureUpdate(0xFFFFFFFFUL, NULL_PTR, 0);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub verify-signature-update (3.2)");
+    rv = g_t32->C_VerifySignatureFinal(0xFFFFFFFFUL);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub verify-signature-final (3.2)");
+    rv = g_t32->C_GetSessionValidationFlags(0xFFFFFFFFUL, 0, &vflags);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub session-validation-flags (3.2)");
+    rv = g_t32->C_WrapKeyAuthenticated(0xFFFFFFFFUL, NULL_PTR,
+                                       0xFFFFFFFFUL, 0xFFFFFFFFUL, NULL_PTR,
+                                       0, NULL_PTR, &outlen);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub wrap-key-authenticated (3.2)");
+    rv = g_t32->C_UnwrapKeyAuthenticated(0xFFFFFFFFUL, NULL_PTR,
+                                         0xFFFFFFFFUL, NULL_PTR, 0, NULL_PTR,
+                                         0, NULL_PTR, 0, &hkey);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub unwrap-key-authenticated (3.2)");
+    rv = legacy->C_GetObjectSize(0xFFFFFFFFUL, 0xFFFFFFFFUL, &outlen);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub get-object-size (legacy)");
+    rv = legacy->C_SetOperationState(0xFFFFFFFFUL, NULL_PTR, 0,
+                                     0xFFFFFFFFUL, 0xFFFFFFFFUL);
+    CHECKM(rv == CKR_FUNCTION_NOT_SUPPORTED,
+           "stub set-operation-state (legacy)");
+    rv = legacy->C_GetFunctionStatus(0xFFFFFFFFUL);
+    CHECKM(rv == CKR_FUNCTION_NOT_PARALLEL,
+           "stub get-function-status (legacy)");
+    rv = legacy->C_CancelFunction(0xFFFFFFFFUL);
+    CHECKM(rv == CKR_FUNCTION_NOT_PARALLEL,
+           "stub cancel-function (legacy)");
+  }
+
   rv = legacy->C_Finalize(NULL_PTR);
   CHECK(rv == CKR_OK, "C_Finalize ok");
 

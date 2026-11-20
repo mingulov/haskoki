@@ -37,6 +37,7 @@ Never a behavior claim without tests: no "planned" row without evidence.
 import csv
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -406,6 +407,59 @@ NOT_APPLICABLE = {
                          "CKR_FUNCTION_NOT_PARALLEL (loader pin)"),
 }
 
+# T-06 refusal evidence: every UNSUPPORTED/NOT_APPLICABLE row points at
+# the suite+spec proving its current routing — behavior suites for
+# above-planner-served rows, refusal pins in tests/c/consumer_errors.c
+# for stub rows. Same linkage validation as PLANNED evidence.
+REFUSAL_EVIDENCE = {
+    "C_CloseAllSessions": [("test-consumers.sh",
+                            "tests/c/consumer_multitoken.c")],
+    "C_GetOperationState": [("test-consumers.sh",
+                             "tests/c/consumer_errors.c")],
+    "C_SetOperationState": [("test-consumers.sh",
+                             "tests/c/consumer_errors.c")],
+    "C_GetObjectSize": [("test-consumers.sh", "tests/c/consumer_errors.c")],
+    "C_FindObjectsInit": [("test-consumers.sh",
+                           "tests/c/consumer_find_sealed.c")],
+    "C_FindObjectsFinal": [("test-consumers.sh",
+                            "tests/c/consumer_find_sealed.c")],
+    "C_GenerateKey": [("haskoki-model-tests",
+                       "tests/model/KeyManagementSpec.hs")],
+    "C_GenerateKeyPair": [("haskoki-model-tests",
+                           "tests/model/KeyManagementSpec.hs")],
+    "C_DeriveKey": [("haskoki-model-tests",
+                     "tests/model/KeyManagementSpec.hs")],
+    "C_SeedRandom": [("test-consumers.sh",
+                      "tests/c/consumer_roundtrip.c")],
+    "C_GenerateRandom": [("test-consumers.sh",
+                          "tests/c/consumer_roundtrip.c")],
+    "C_GetFunctionStatus": [("test-consumers.sh",
+                             "tests/c/consumer_errors.c")],
+    "C_CancelFunction": [("test-consumers.sh",
+                          "tests/c/consumer_errors.c")],
+    "C_LoginUser": [("test-consumers.sh", "tests/c/consumer_errors.c")],
+    "C_EncapsulateKey": [("haskoki-model-tests",
+                          "tests/model/KeyManagementSpec.hs"),
+                         ("test-consumers.sh", "tests/c/consumer_kem.c")],
+    "C_DecapsulateKey": [("haskoki-model-tests",
+                          "tests/model/KeyManagementSpec.hs"),
+                         ("test-consumers.sh", "tests/c/consumer_kem.c")],
+    "C_VerifySignatureInit": [("test-consumers.sh",
+                               "tests/c/consumer_errors.c")],
+    "C_VerifySignature": [("test-consumers.sh",
+                           "tests/c/consumer_errors.c")],
+    "C_VerifySignatureUpdate": [("test-consumers.sh",
+                                 "tests/c/consumer_errors.c")],
+    "C_VerifySignatureFinal": [("test-consumers.sh",
+                                "tests/c/consumer_errors.c")],
+    "C_GetSessionValidationFlags": [("test-consumers.sh",
+                                     "tests/c/consumer_errors.c")],
+    "C_WrapKeyAuthenticated": [("test-consumers.sh",
+                                "tests/c/consumer_errors.c")],
+    "C_UnwrapKeyAuthenticated": [("test-consumers.sh",
+                                  "tests/c/consumer_errors.c")],
+}
+
 # Reviewed task-label aliases: the dual/recover rows cite the
 # mechanism-task labels they were curated under. Both consumers
 # execute under scripts/test-proxy-parity.sh (its scenario list
@@ -485,9 +539,8 @@ def main():
     except Exception as e:  # noqa: BLE001 - reported, not hidden
         fail(f"cannot parse scripts/driver-inventory.json: {e}")
     cabal_suites = wiring.parse_suites((REPO / "haskoki.cabal").read_text())
-    for name, (_entry, ev) in PLANNED.items():
-        if not ev:
-            fail(f"{name}: planned without evidence")
+
+    def check_evidence(name, ev):
         for suite, rel in ev:
             if not (REPO / rel).exists():
                 fail(f"{name}: evidence file missing: {rel} (suite {suite})")
@@ -524,6 +577,61 @@ def main():
                 continue
             fail(f"{name}: evidence suite {suite!r} resolves to no "
                  f"inventoried suite, driver, or task alias")
+
+    for name, (_entry, ev) in PLANNED.items():
+        if not ev:
+            fail(f"{name}: planned without evidence")
+        check_evidence(name, ev)
+    if set(REFUSAL_EVIDENCE) != set(UNSUPPORTED) | set(NOT_APPLICABLE):
+        fail("REFUSAL_EVIDENCE keys != refused rows")
+    for name, ev in REFUSAL_EVIDENCE.items():
+        if not ev:
+            fail(f"{name}: refused without evidence")
+        check_evidence(name, ev)
+    # c_route join: planner token from the entry + C handler parsed
+    # from the routed tables. Every contract function routes exactly
+    # once; planCall FunctionIds must exist in Request.hs.
+    table_src = (REPO / "cbits" / "function_tables.c").read_text()
+    stubs_src = (REPO / "cbits" / "abi_stubs.inc").read_text()
+    c_sites = {}
+    for m in re.finditer(r"\.([A-Za-z0-9_]+)\s*=\s*([A-Za-z0-9_]+)",
+                         table_src):
+        if m.group(1) in names32:
+            c_sites.setdefault(m.group(1), []).append(
+                ("c-table", m.group(2)))
+    for m in re.finditer(r"\(T\)->([A-Za-z0-9_]+)\s*=\s*([A-Za-z0-9_]+)",
+                         stubs_src):
+        if m.group(1) in names32:
+            c_sites.setdefault(m.group(1), []).append(
+                ("abi-stubs", m.group(2)))
+    ctor_src = (REPO / "core" / "Haskoki" / "Request.hs").read_text()
+    ctors = set(re.findall(r"^\s*[|=]\s*(F_[A-Za-z0-9_]+)",
+                           ctor_src, re.M))
+    c_text = table_src + stubs_src + \
+        (REPO / "cbits" / "exports.c").read_text()
+
+    def planner_token(entry):
+        if entry.startswith("planCall:"):
+            return entry
+        if ":F_" in entry:
+            return "plan:" + entry.split(":", 1)[1]
+        if entry == "none":
+            return "no-plan"
+        return "above-planner"
+
+    def c_route_for(name, entry):
+        sites = c_sites.get(name, [])
+        if len(sites) != 1:
+            fail(f"{name}: routes {len(sites)}x in C tables, want exactly 1")
+        src, handler = sites[0]
+        if not re.search(r"\b%s\b" % re.escape(handler), c_text):
+            fail(f"{name}: C handler {handler} not found in cbits")
+        tok = planner_token(entry)
+        if tok.startswith("planCall:"):
+            fid = tok.split(":", 1)[1]
+            if fid not in ctors:
+                fail(f"{name}: FunctionId {fid} not in Request.hs")
+        return "%s + %s:%s" % (tok, src, handler)
     functions = []
     for f in f32:
         name = f["name"]
@@ -544,18 +652,27 @@ def main():
             base["test_evidence"] = [
                 {"suite": suite, "spec": rel} for suite, rel in ev
             ]
+            base["c_route"] = c_route_for(name, entry)
             if name in POLICY_REFS:
                 base["policy_refs"] = list(POLICY_REFS[name])
         elif name in UNSUPPORTED:
             base["contract"] = "unsupported-with-reason"
             base["entry"] = "none"
             base["reason"] = UNSUPPORTED[name]
-            base["test_evidence"] = []
+            base["test_evidence"] = [
+                {"suite": suite, "spec": rel}
+                for suite, rel in REFUSAL_EVIDENCE[name]
+            ]
+            base["c_route"] = c_route_for(name, "none")
         else:
             base["contract"] = "not-applicable"
             base["entry"] = "none"
             base["reason"] = NOT_APPLICABLE[name]
-            base["test_evidence"] = []
+            base["test_evidence"] = [
+                {"suite": suite, "spec": rel}
+                for suite, rel in REFUSAL_EVIDENCE[name]
+            ]
+            base["c_route"] = c_route_for(name, "none")
         functions.append({k: base[k] for k in sorted(base)})
     doc = {
         "scope": "planner/in-process reachability, NOT C-table routing",

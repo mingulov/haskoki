@@ -101,6 +101,8 @@ python3 scripts/publish-coverage.py --check
 python3 scripts/check-release-pivots.py
 python3 scripts/check-findings-ledger.py
 python3 scripts/check-findings-ledger.py --self-test
+python3 scripts/check-planner-join.py
+python3 scripts/check-planner-join.py --self-test
 python3 scripts/check-qualification-wiring.py
 python3 scripts/check-qualification-wiring.py --self-test
 python3 scripts/check-loader-norm.py
