@@ -106,8 +106,8 @@ onCheckInterrupt e = throwIO e
 
 -- | An interrupt anywhere in the migrate command is exit 130 with a
 -- fixed line, never a migration outcome. The cold-journal clearing
--- line rides along when a clear already happened. Any other async
--- exception propagates.
+-- line rides along once the flag is set (not in the unlink-to-flag
+-- window). Any other async exception propagates.
 onMigrateInterrupt :: String -> AsyncException -> IO (Int, String, String)
 onMigrateInterrupt coldLine UserInterrupt =
   pure (130, coldLine, line ("migrate-interrupted", "store state unknown; run store check"))
@@ -149,16 +149,24 @@ checkSelected path cfgPath asyncHome cfg = do
         (1, renderPlan plan, line ("store-identity-refused", renderIdentityRefusal ir))
   where
     -- A cold journal whose plan is otherwise openable is not a
-    -- refusal: the serving open takes the store and the next write
-    -- reuses the file. An identity refusal takes precedence over the
-    -- cold-journal message (migrate reports it too). Any other retry
-    -- outcome keeps the cold refusal.
+    -- refusal: preflight reports the store openable, subject to
+    -- checks only the serving open performs — a shared database
+    -- flock, a sidecar-only flock, a read-only database or lock,
+    -- or a missing lock in an unwritable directory can pass the
+    -- probe yet fail serving's read-write acquisition (the probe
+    -- takes only a shared lock on the database, reads the lock
+    -- without flocking, and never creates one), and value-level
+    -- checks (durable counters must parse positive) stay with
+    -- the serving open too, leaving any cold journal alone for
+    -- the next write to reuse. An identity refusal takes
+    -- precedence over the cold-journal message (migrate reports
+    -- it too). Any other retry outcome keeps the cold refusal.
     coldOkOrRefusal cold = do
       r2 <- trySync (checkStoreOpenAllowCold path cfg)
         :: IO (Either SomeException (Either StoreError StoreOpenPlan))
       pure $ case r2 of
         Right (Right plan) | planVerdict plan == VerdictOpenable ->
-          (0, renderPlan plan ++ "journal: cold (harmless; reused by the next write)\n", "")
+          (0, renderPlan plan ++ "journal: cold (harmless; left alone by this command)\n", "")
         Right (Right plan) | VerdictIdentityRefused ir <- planVerdict plan ->
           (1, renderPlan plan, line ("store-identity-refused", renderIdentityRefusal ir))
         _ -> (1, "", line (renderStoreRefusal cold))
@@ -209,10 +217,12 @@ exceptionTypeName ex =
 
 -- | An unexpected synchronous exception as a fixed tagged line:
 -- the exception type only, never raw message text, so no credential
--- of any shape can reach operator output. Single line, like every
--- other exit-1 refusal. Its own tag: @migrate-failed@ is reserved
--- for a rolled-back transaction ("the store was not changed"),
--- which an unforeseen failure cannot promise.
+-- of any shape can reach operator output. One tagged diagnostic,
+-- like every other exit-1 refusal (details echoing paths can span
+-- lines). Its own tag: @migrate-failed@ reports a
+-- transaction that failed before committing with a kept backup
+-- (no rollback claim; run store check), which an unforeseen
+-- failure cannot promise.
 renderUnexpectedFailure :: SomeException -> (String, String)
 renderUnexpectedFailure ex =
   ("migrate-unexpected", "unexpected failure: " ++ exceptionTypeName ex
@@ -227,9 +237,14 @@ renderCheckUnexpectedFailure ex =
 -- | Run the selected migration over injected hooks. The clearing
 -- line is printed to stdout and flushed the moment the cold journal
 -- is cleared (like the backup lines below), so a run killed after
--- the clear still leaves its record; every outcome after a clear
--- also carries the line at the end (a migrated run in its receipt),
--- so operator logs show it twice. The verified backup's path and
+-- the flush still leaves its record (a kill between the unlink and
+-- the flush can leave neither file nor record); every reported
+-- outcome after the flag is set also carries the line at the
+-- end (in the receipt when one is written), so operator logs
+-- usually show it twice — a SIGINT between the unlink and the
+-- flag is reported without the line, and one between the flag
+-- and the print leaves the outcome's copy as the only one.
+-- The verified backup's path and
 -- SHA-256 are printed to stdout the moment verification passes,
 -- before the transaction begins, and flushed, so a killed run still
 -- leaves its digest in the operator's log (the receipt repeats both
@@ -260,6 +275,6 @@ migrateSelectedWith hooks0 path cfg dir = do
           Right (Left me) -> (1, coldLine, line (render me))
           Right (Right MigrateNotNeeded) -> (0, coldLine ++ line ("migrate-not-needed",
             "the store is at schema " ++ show sqliteSchemaVersion
-              ++ " and every token has a credential row; nothing was written"), "")
+              ++ " and every token has a credential row; no migration transaction ran"), "")
           Right (Right (Migrated rc)) -> (0, renderReceipt rc ++ "receipt: " ++ mrReceipt rc ++ "\nmigrate-done\n", "")
   run `catch` onInt

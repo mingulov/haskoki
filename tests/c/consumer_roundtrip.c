@@ -4722,7 +4722,7 @@ int main(int argc, char **argv) {
       pdm.pParameter = NULL_PTR;
       pdm.ulParameterLen = 0;
       rv = f->C_DeriveKey(wsess, &pdm, pPub, pdtmpl, 3, &pDerived);
-      CHECKC(rv == CKR_TEMPLATE_INCONSISTENT,
+      CHECKC(rv == CKR_KEY_TYPE_INCONSISTENT,
              "pubpriv RSA public base refused");
     }
     /* Pub-from-priv over P-256: the derived point equals the

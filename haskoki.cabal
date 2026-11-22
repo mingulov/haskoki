@@ -256,6 +256,8 @@ library haskoki-internal
     bytestring    >= 0.10  && < 0.13,
     containers    >= 0.6   && < 0.9,
     direct-sqlite >= 2.3   && < 2.4,
+    directory     >= 1.3   && < 1.4,
+    filepath      >= 1.4   && < 1.6,
     stm           >= 2.5   && < 2.6,
     text          >= 1.2   && < 2.2,
     unix          >= 2.8   && < 2.9,
@@ -304,6 +306,7 @@ foreign-library haskoki
     Haskoki.Runtime.Catalog
     Haskoki.Runtime.Storage
     Haskoki.Runtime.Storage.Memory
+    Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Trace
   c-sources:
@@ -339,6 +342,8 @@ foreign-library haskoki
     bytestring    >= 0.10 && < 0.13,
     containers    >= 0.6  && < 0.9,
     direct-sqlite >= 2.3  && < 2.4,
+    directory     >= 1.3  && < 1.4,
+    filepath      >= 1.4  && < 1.6,
     stm           >= 2.5  && < 2.6,
     text          >= 1.2  && < 2.2,
     unix          >= 2.8  && < 2.9,
@@ -562,6 +567,7 @@ test-suite haskoki-engine-tests
     DetachedEngineSpec
     EnvLock
     FfiAcquireSpec
+    InitDiagnosticSpec
     LeaseWedgeDenseSpec
     LazyWalk
     LeaseWedgeSpec
@@ -581,9 +587,10 @@ test-suite haskoki-engine-tests
     haskoki:haskoki-internal,
     haskoki:haskoki-core,
     stm         >= 2.5  && < 2.6,
-    tasty       >= 1.4  && < 1.6,
+    tasty       >= 1.5.4 && < 1.6,
     tasty-hunit >= 0.10 && < 0.11,
-    text        >= 1.2  && < 2.2
+    text        >= 1.2  && < 2.2,
+    unix        >= 2.8  && < 2.9
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
   default-language: GHC2024
 

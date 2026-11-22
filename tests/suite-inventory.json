@@ -101,6 +101,7 @@
         "EnvLock",
         "OwnershipCounters",
         "FfiAcquireSpec",
+        "InitDiagnosticSpec",
         "LazyWalk",
         "LeaseWedgeDenseSpec",
         "LeaseWedgeSpec",
@@ -154,6 +155,9 @@
         "OwnershipCounters": [],
         "FfiAcquireSpec": [
           "Acquisition hooks"
+        ],
+        "InitDiagnosticSpec": [
+          "C_Initialize diagnostics"
         ],
         "LazyWalk": [],
         "LeaseWedgeDenseSpec": [

@@ -52,6 +52,13 @@ spec = testGroup "Config"
   , testCase "capabilities reports token catalog" caseTokensReported
   , testCase "config check accepts multi-token fixture" caseTokensCheckGood
   , testCase "config check rejects ragged catalog (guard)" caseTokensCheckBad
+  , testCase "nbsp-padded storage path parses (runbook gate)" caseNbspPath
+  , testCase "em-space padding parses (runbook gate)" caseEmSpacePath
+  , testCase "em-space section switch is honored (runbook gate)" caseEmSpaceSection
+  , testCase "non-folded spaces are rejected (runbook gate)" caseNonFoldedRejected
+  , testCase "non-folded spaces parse in comments/values (runbook gate)" caseNonFoldedAccepted
+  , testCase "duplicate storage path is last-wins (runbook gate)" caseDupPathLastWins
+  , testCase "nbsp section switch is honored (runbook gate)" caseNbspSection
   ]
 
 fixture :: FilePath -> FilePath
@@ -471,3 +478,161 @@ caseTokensCheckBad = withPrivateDir $ \tmp ->
         , "user_pins = [\"1234\"]"
         ])
       pure path
+
+-- | The rehearsal runbook's config-path extraction must agree with
+-- the CLI on padding the CLI folds but POSIX awk does not: a later
+-- NBSP-indented assignment wins ('isSpace' folds U+00A0).
+caseNbspPath :: IO ()
+caseNbspPath = do
+  let doc = unlines
+        [ "schema_version = 1"
+        , "profile = \"demo-maximal\""
+        , "[storage]"
+        , "kind = \"sqlite\""
+        , "path = \"/abs/A\""
+        , "\x00a0path = \"rel/R\""
+        ]
+  case parseConfig doc of
+    Left err -> assertFailure (show err)
+    Right cfg -> assertEqual "nbsp-indented later path wins"
+      (Just "rel/R") (scPath (cfgStorage cfg))
+
+-- | U+2003 (em space) between @=@ and the quote folds like any
+-- padding ('isSpace'): the runbook extraction must treat a
+-- matched-but-unparseable line as fatal, since the CLI selects
+-- it while the awk value would stay behind.
+caseEmSpacePath :: IO ()
+caseEmSpacePath = do
+  let doc = unlines
+        [ "schema_version = 1"
+        , "profile = \"demo-maximal\""
+        , "[storage]"
+        , "kind = \"sqlite\""
+        , "path = \"/abs/A\""
+        , "path =\x2003\"./file:x\""
+        ]
+  case parseConfig doc of
+    Left err -> assertFailure (show err)
+    Right cfg -> assertEqual "em-space-padded later path wins"
+      (Just "./file:x") (scPath (cfgStorage cfg))
+
+-- | An em-space-indented section header still switches sections:
+-- the runbook matchers must see it too, or the extraction
+-- validates (and the rewrite replaces) another section's path.
+caseEmSpaceSection :: IO ()
+caseEmSpaceSection = do
+  let doc = unlines
+        [ "schema_version = 1"
+        , "profile = \"demo-maximal\""
+        , "[storage]"
+        , "kind = \"sqlite\""
+        , "path = \"./file:x\""
+        , "\x2003[trace]"
+        , "path = \"/abs/filex\""
+        ]
+  case parseConfig doc of
+    Left err -> assertFailure (show err)
+    Right cfg -> do
+      assertEqual "storage path keeps the storage value"
+        (Just "./file:x") (scPath (cfgStorage cfg))
+      assertEqual "trace path takes the trace value"
+        "/abs/filex" (tcPath (cfgTrace cfg))
+
+-- | Spaces 'isSpace' does not fold (NEL, U+2028/2029, zero-width)
+-- are not padding to the CLI: a key or section line carrying one
+-- in syntactic padding fails the parse, so the rehearsal's first
+-- gate aborts whatever the awk matchers see.
+caseNonFoldedRejected :: IO ()
+caseNonFoldedRejected = do
+  let docWith pre = unlines
+        [ "schema_version = 1"
+        , "profile = \"demo-maximal\""
+        , "[storage]"
+        , "kind = \"sqlite\""
+        , pre ++ "path = \"/x\""
+        ]
+      rejects z = case parseConfig (docWith z) of
+        Left _ -> pure ()
+        Right _ -> assertFailure ("non-folded padding must fail the parse: " ++ show (map fromEnum z))
+      docWithSect z = unlines
+        [ "schema_version = 1"
+        , "profile = \"demo-maximal\""
+        , "[storage]"
+        , "kind = \"sqlite\""
+        , "path = \"/x\""
+        , z ++ "[trace]"
+        , "path = \"/t\""
+        ]
+      rejectsSect z = case parseConfig (docWithSect z) of
+        Left _ -> pure ()
+        Right _ -> assertFailure ("non-folded section indent must fail the parse: " ++ show (map fromEnum z))
+      docWithLine line =
+        unlines [ "schema_version = 1", "profile = \"demo-maximal\"", "[storage]"
+                , "kind = \"sqlite\"", line ]
+      rejectsLine what mk z = case parseConfig (docWithLine (mk z)) of
+        Left _ -> pure ()
+        Right _ -> assertFailure ("non-folded " ++ what ++ " must fail the parse: " ++ show (map fromEnum z))
+      chars = ["\x85", "\x2028", "\x2029", "\x200b"]
+  mapM_ rejects chars
+  mapM_ rejectsSect chars
+  mapM_ (rejectsLine "pre-equals" (\z -> "path" ++ z ++ "= \"/x\"")) chars
+  mapM_ (rejectsLine "post-equals" (\z -> "path =" ++ z ++ "\"/x\"")) chars
+  mapM_ (rejectsLine "trailing" (\z -> "path = \"/x\"" ++ z)) chars
+
+-- | The same characters parse normally inside comments (stripped
+-- before parsing) and quoted values (copied verbatim): only
+-- syntactic padding rejects them.
+caseNonFoldedAccepted :: IO ()
+caseNonFoldedAccepted = do
+  let docWith z = unlines
+        [ "schema_version = 1"
+        , "profile = \"demo-maximal\""
+        , "# comment " ++ z ++ " padding"
+        , "[storage]"
+        , "kind = \"sqlite\""
+        , "path = \"/a" ++ z ++ "b\""
+        ]
+      accepts z = case parseConfig (docWith z) of
+        Left err -> assertFailure ("comment/value padding must parse: " ++ show (map fromEnum z)
+          ++ ": " ++ show err)
+        Right cfg -> assertEqual ("value keeps " ++ show (map fromEnum z))
+          (Just ("/a" ++ z ++ "b")) (scPath (cfgStorage cfg))
+  mapM_ accepts ["\x85", "\x2028", "\x2029", "\x200b"]
+
+-- | Duplicate assignments resolve last-wins ('Map.insert'
+-- overwrites): the runbook extraction keeps the last match.
+caseDupPathLastWins :: IO ()
+caseDupPathLastWins = do
+  let doc = unlines
+        [ "schema_version = 1"
+        , "profile = \"demo-maximal\""
+        , "[storage]"
+        , "kind = \"sqlite\""
+        , "path = \"/abs/A\""
+        , "path = \"/abs/B\""
+        ]
+  case parseConfig doc of
+    Left err -> assertFailure (show err)
+    Right cfg -> assertEqual "later duplicate wins"
+      (Just "/abs/B") (scPath (cfgStorage cfg))
+
+-- | An NBSP-indented section header still switches sections, so a
+-- @path@ under a later section never selects the store.
+caseNbspSection :: IO ()
+caseNbspSection = do
+  let doc = unlines
+        [ "schema_version = 1"
+        , "profile = \"demo-maximal\""
+        , "[storage]"
+        , "kind = \"sqlite\""
+        , "path = \"/abs/A\""
+        , "\x00a0[trace]"
+        , "path = \"/trace/R\""
+        ]
+  case parseConfig doc of
+    Left err -> assertFailure (show err)
+    Right cfg -> do
+      assertEqual "storage path keeps the storage value"
+        (Just "/abs/A") (scPath (cfgStorage cfg))
+      assertEqual "trace path takes the trace value"
+        "/trace/R" (tcPath (cfgTrace cfg))

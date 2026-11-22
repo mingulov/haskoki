@@ -76,6 +76,7 @@ module Haskoki.FFI.Standard
   , openStdInstanceWithNotify
   , openStdStore
   , openStdStoreWith
+  , renderInitRefusal
   , publishRejectionE
   , NativeNotify, SessionNotify (..), NotifyDecision (..), NotifyInvoker
   , invokeNativeNotify, dispatchSessionNotifyWith
@@ -254,7 +255,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (ord)
 import qualified Data.ByteString.Unsafe as BSU
-import Data.List (find)
+import Data.List (find, isPrefixOf)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -499,7 +500,7 @@ import Haskoki.Runtime.Storage
   , ReconcilePlan (..)
   , Store (..)
   , StoreDelta (..)
-  , StoreError (StoreCorrupt)
+  , StoreError (..)
   , TokenRecord (..)
   , emptyDelta
   , objectToRecord
@@ -510,8 +511,9 @@ import Haskoki.Runtime.Storage
   , renderIdentityRefusal
   , tokensWithoutCredentials
   )
-import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
-import Haskoki.Runtime.Trace (Tracer)
+import Haskoki.Runtime.Storage.Preflight (renderStoreRefusal)
+import Haskoki.Runtime.Storage.SQLite (openSQLiteStore, resolveStorePath)
+import Haskoki.Runtime.Trace (TraceEvent (..), Tracer, emitTrace, noteTraceDropped, spellingDrops, tracerAliasesStore, tracerFilePath, uriEffective)
 import Haskoki.Session
   ( AdmitDeny
   , EffectivePolicy (..)
@@ -872,7 +874,76 @@ openStdInstanceWithNotify sa cfg slots invoker = guardedSyncPtr $ mask $ \restor
           OutcomeOk () -> do
             eStore <- restore (saOpenStore sa env cfg)
             case eStore of
-              Left _ -> pure nullStable
+              -- A refused store open still returns NULL (the C ABI is
+              -- unchanged: C_Initialize reports CKR_GENERAL_ERROR),
+              -- but first it best-effort emits one JSONL cause row
+              -- through the acquisition tracer — the same tracer the
+              -- rollback close drains once. Best effort like every
+              -- emission: disabled tracing, an aliased destination,
+              -- queue overflow, or sink failure loses the row, and
+              -- the NULL is returned either way. The row carries
+              -- the typed refusal as @<tag>: <remedy>@; without a
+              -- tracer there is nowhere to emit to.
+              Left err -> do
+                case saTracer sa of
+                  Nothing -> pure ()
+                  Just tr -> do
+                    -- A file tracer aimed at the store (or its
+                    -- journal, sidecars, or lock) would corrupt it
+                    -- on drain: skip the row and count the drop
+                    -- instead of emitting (fail closed).
+                    skip <- case (scPath (cfgStorage cfg), tracerFilePath tr) of
+                      (Just db, Just _) -> do
+                        -- Every opener resolves before SQLite sees
+                        -- the path, so the URI test applies to the
+                        -- RESOLVED spelling ("./file:x" resolves to
+                        -- a URI even though the raw string has no
+                        -- prefix). URI stores guard both spellings,
+                        -- each resolved the opener's way (a decoded
+                        -- escape can introduce dot-dot components);
+                        -- an undecodable file: URI drops, since
+                        -- SQLite keeps a bare % literally and the
+                        -- guard cannot place it. Encoding checks run
+                        -- on spellings BEFORE resolving (the raw db
+                        -- and the decoded eff): resolution can
+                        -- consume the very characters they look for
+                        -- (a decoded non-ASCII name resolving
+                        -- through a symlink to ASCII), while SQLite
+                        -- opens the decoded bytes.
+                        rawDrop <- spellingDrops db
+                        if rawDrop then pure True else do
+                          dbR <- resolveStorePath db
+                          firstHit <- tracerAliasesStore tr dbR
+                          if firstHit then pure True
+                          else if not ("file:" `isPrefixOf` dbR) then pure False
+                          else case uriEffective dbR of
+                            Just eff -> do
+                              effDrop <- spellingDrops eff
+                              if effDrop then pure True else do
+                                effR <- resolveStorePath eff
+                                tracerAliasesStore tr effR
+                            _ -> pure True
+                      _ -> pure False
+                    if skip then noteTraceDropped tr else do
+                      let (tag, remedy) = renderInitRefusal err
+                          ckr = returnCodeToRV CKR_GENERAL_ERROR
+                      _ <- emitTrace tr TraceEvent
+                        { teFunction = "C_Initialize"
+                        , teInterface = "3.2"
+                        , teMechanism = Nothing
+                        , teSession = Nothing
+                        , teObject = Nothing
+                        , teJob = Nothing
+                        , teInputLen = 0
+                        , teOutputLen = 0
+                        , teCkr = ckr
+                        , teDisposition = "rejected"
+                        , teReason = tag ++ ": " ++ remedy
+                        , teMode = "sync"
+                        , teSecret = Nothing
+                        } ckr
+                      pure ()
+                pure nullStable
               Right mStore -> do
                 r <- restore (saOpenBackend sa)
                   `onException` saCloseStore sa mStore
@@ -992,15 +1063,23 @@ seatAll env (slot : rest) = do
 -- plus commits each seed the reconciler accepts. The config
 -- arrives resolved (the open resolves once, up front); an
 -- unopenable store, a refused seating, or a refused
--- reconciliation fails the whole open loudly, without writing.
+-- reconciliation fails the whole open loudly. Pre-seed refusals
+-- of a rollback-journal store that perform no recovery writes
+-- leave the database bytes unchanged; completed rollback replays
+-- first, and past the seed an unknown commit outcome can leave
+-- durable rows, while WAL header switches and fresh schema
+-- initialization write before later refusals are decided (full
+-- accounting on 'openStdStoreWith').
 --
 -- The store-open failure is TYPED (settling the untyped edge):
 -- every consumer maps failures to NULL uniformly, and the
 -- typed cases keep any future dispatch honest instead of matching
--- on message strings. The C initialization path reports every
--- store-open failure generically (no diagnostic sink there, as
--- with every other store-open failure); Haskell callers
--- receive the typed refusal with its actionable message
+-- on message strings. The C initialization path still reports every
+-- store-open failure generically (NULL, hence CKR_GENERAL_ERROR),
+-- and since R-09c it also best-effort emits one JSONL cause row
+-- through the acquisition tracer ('renderInitRefusal'); the rollback
+-- close drains once, and disabled tracing, overflow, or sink failure
+-- loses the row. Haskell callers receive the typed refusal itself
 -- through 'openStdStore'.
 data StdStoreError
   = StdStoreSeating !AdmitDeny
@@ -1013,12 +1092,128 @@ data StdStoreError
   | StdStoreCatalogMismatch
   | StdStoreIdentityRefusal !String
   -- | Stored tokens with no durable credential row in a schema-3
-  -- store. Lists every such token, ascending; the open writes
-  -- nothing and never invents a credential from the catalog PINs.
+  -- store. Lists every such token, ascending; the refusal returns
+  -- before the seed commit and never invents a credential from the
+  -- catalog PINs (an earlier WAL-to-rollback switch still rewrites
+  -- the header, as for any refusal past connection setup).
   -- (An old-schema store never gets this far: it refuses as
   -- @StdStoreSQLite (StoreNeedsMigration n 3)@ before identity.)
   | StdStoreMigrationRequired ![TokenId]
   deriving (Eq, Show)
+
+-- | Operator tag and trace-safe remedy for a refused standard-surface
+-- open. Tags reuse the CLI vocabulary where it applies (the SQLite
+-- arm takes its tag straight from 'renderStoreRefusal', pinned
+-- equal per constructor), so one doc table —
+-- @docs/operations-notes.md@, init-refusal tags — covers both
+-- surfaces. Remedies are FIXED text: no store payload bytes (paths,
+-- SQLite detail, reconciler prose) ever reach the trace row. Run
+-- @store check@ for the detail it can see: it never runs the serving
+-- open's counter validation or seed write, so it can report ok on a
+-- store the serving open refuses. The only interpolation
+-- is the 'AdmitDeny' variant name (fixed vocabulary; it names which
+-- bound refused while the action stays the same within each class).
+--
+-- Reachability from the serving open ('openStdStoreWith'):
+-- 'StdStoreReload', 'StdStoreCommit', 'StdStoreIdentityRefusal',
+-- 'StdStoreMigrationRequired' and the serving-reachable SQLite
+-- constructors below fire there, including through native init.
+-- 'StdStoreSeating' and 'StdStoreNoPath' fire only through the
+-- Haskell API — a hand-built config, an injected opener, or, for
+-- seating, a direct 'openStdStore' caller whose 'Env' seating bound
+-- undercuts a valid config's catalog: native init cannot produce
+-- them (construction refuses an over-limit catalog before any seat,
+-- and config resolution refuses pathless SQLite before any tracer
+-- exists).
+-- 'StdStoreCatalogMismatch' is retained but no longer produced.
+-- Within the SQLite arm, 'StoreJournalPresent', 'StoreJournalCold',
+-- 'StoreQuarantined', 'StoreLimit' and 'StoreRevisionConflict' are
+-- mapped for totality but never surface at a serving open: journals
+-- are a CLI-preflight refusal (the serving opener only refuses
+-- foreign WAL sidecars and lets SQLite roll journals itself),
+-- quarantine is connection-lifetime state, and limit and conflict
+-- failures of the open's seed commit arrive as the untyped
+-- 'StdStoreCommit'. 'StoreFull' does surface where the open
+-- propagates SQLite errors unwrapped: SQLITE_FULL from connection
+-- setup, reads, or the fresh-init @BEGIN IMMEDIATE@ maps through
+-- 'trySQLite'; failures of the schema statements and @COMMIT@ wrap
+-- as 'StoreIO', and seed-commit failures arrive as the untyped
+-- 'StdStoreCommit'. An ordinarily missing
+-- file never surfaces either (the SQLite opener initializes a fresh
+-- store) — @store-missing@ stays a CLI-preflight-only tag — while
+-- a dangling final symlink refuses as 'StoreIO' ('store-unreadable').
+renderInitRefusal :: StdStoreError -> (String, String)
+renderInitRefusal e = case e of
+  StdStoreSeating deny -> ("store-seating-refused"
+    , "token seating refused (" ++ show deny
+      ++ "): the catalog exceeds serving limits; shrink the configured token catalog and retry")
+  StdStoreNoPath -> ("store-no-path"
+    , "SQLite storage is configured without a store path: set storage.path to the store file")
+  StdStoreSQLite se -> (fst (renderStoreRefusal se), storeTraceRemedy se)
+  StdStoreReload deny -> ("store-reload-refused"
+    , "stored token state refused (" ++ show deny
+      ++ "): the store exceeds serving limits; shrink the store and retry")
+  StdStoreCommit -> ("store-commit-failed"
+    , "the open's seed commit failed (rejected or outcome unknown): retry the open;"
+      ++ " if it persists, check disk space and run haskoki-ctl store check for store state")
+  StdStoreCatalogMismatch -> ("store-catalog-mismatch"
+    , "retained refusal (no longer produced): catalog/store drift reports as store-identity-refused")
+  StdStoreIdentityRefusal _ -> ("store-identity-refused"
+    , "stored token identity drifted from the catalog: run haskoki-ctl store check for the reconciler's report")
+  StdStoreMigrationRequired _ -> ("store-migration-required"
+    , "stored tokens lack credential rows: run haskoki-ctl store migrate")
+
+-- | Fixed trace remedy per 'StoreError' constructor. The two
+-- 'StoreIO' branches mirror 'renderStoreRefusal' (same prefix,
+-- pinned by the tag-agreement case); every other constructor maps
+-- by constructor alone, so raw detail never reaches the row.
+storeTraceRemedy :: StoreError -> String
+storeTraceRemedy e = case e of
+  StoreSecondWriter _ ->
+    "the store lock could not be acquired (run haskoki-ctl store check to see the lock state):"
+    ++ " if a store owner holds it, stop the owner and retry;"
+    ++ " otherwise inspect the lock file and retry"
+  StoreJournalPresent _ ->
+    "a hot or unrecognized rollback journal is present: do not delete it;"
+    ++ " see docs/operations-notes.md, Interrupted migration"
+  StoreJournalCold _ ->
+    "a cold rollback journal is present, or migration found the store busy:"
+    ++ " stop any process that holds the store, run haskoki-ctl store check,"
+    ++ " and retry store migrate with a valid backup directory unless check names another blocker;"
+    ++ " if migrate keeps reporting cold, stop and investigate: wait for a persistent"
+    ++ " SQLite lock holder to release once identified, or retry migrate once for a cold"
+    ++ " journal that appeared with no holder left"
+  StoreForeignSidecar _ ->
+    "a foreign WAL sidecar is present: do not start the service;"
+    ++ " when the sidecars are confirmed stray, move the -wal/-shm pair aside (keep both files)"
+    ++ " and run store check again; otherwise keep them with the database;"
+    ++ " see docs/operations-notes.md, Upgrade, backup and recovery"
+  StoreNeedsMigration _ _ ->
+    "the store schema needs haskoki-ctl store migrate to reach the current schema"
+  StoreSchemaVersion _ _ ->
+    "the store's schema marker is not one this build opens or migrates:"
+    ++ " inspect the schema marker with SQLite tooling;"
+    ++ " reopen with the writing build if a newer haskoki wrote it,"
+    ++ " or restore a backup if the marker itself is damaged"
+  StoreCorrupt _ ->
+    "the store content is damaged or inconsistent: restore a backup;"
+    ++ " see docs/operations-notes.md, Upgrade, backup and recovery"
+  StoreFull _ ->
+    "the store cannot grow: free disk space and retry"
+  StoreIO m | "store lock cannot be created: " `isPrefixOf` m ->
+    "the store lock cannot be created: fix the directory permissions or free space and retry"
+  StoreIO _ ->
+    "the store cannot be opened (I/O, SQLite, or format failure):"
+    ++ " run haskoki-ctl store check for detail and retry;"
+    ++ " if check reports ok, inspect the store with SQLite tooling"
+  StoreQuarantined _ _ ->
+    "a prior failure quarantined the store connection: restart the service"
+  StoreLimit _ ->
+    "a store quota refused the write: shrink the payload and retry"
+  StoreRevisionConflict _ ->
+    "a commit conflict was detected between the request and current store state"
+    ++ " (examples: stale revision, dangling reference, duplicate slot use):"
+    ++ " re-read state and retry; if it persists, correct the request"
 
 openStdStore :: Env -> Config -> IO (Either StdStoreError (Maybe StdStore))
 openStdStore = openStdStoreWith openSQLiteStore
@@ -1028,14 +1223,27 @@ openStdStore = openStdStoreWith openSQLiteStore
 -- scripted opener ('openSQLiteStoreWith' with limits and
 -- faults). The reconcile\/seat\/seed flow is identical either
 -- way, so injected faults exercise the production open path.
--- The seed commit is the open's only write: the SQLite opener
--- only reads an existing store, and every refusal (an old schema
--- first, as @StdStoreSQLite (StoreNeedsMigration n 3)@, then
--- identity, then missing credentials) returns before it, so a
--- refused open leaves the database bytes unchanged — absent a hot
--- journal, which SQLite itself rolls back on open before any
--- refusal is decided (a non-empty @-wal@\/@-shm@ is refused before
--- any SQLite connection opens, so nothing is checkpointed).
+-- The seed commit is the open's only write of store rows to an
+-- existing store, and every pre-seed refusal (an old schema first,
+-- as @StdStoreSQLite (StoreNeedsMigration n 3)@, then identity, then
+-- missing credentials) returns before it. A pre-seed refusal of a
+-- rollback-journal store that performs no recovery writes leaves
+-- the database bytes unchanged. Completed hot-journal rollback
+-- replays the journal before later refusals are decided; a failed
+-- recovery can leave partial replay bytes behind. Ownership and
+-- foreign-sidecar refusals precede SQLite: they roll back nothing,
+-- and a refused -wal/-shm checkpoints nothing. Past the seed the
+-- guarantee ends: a rejected
+-- seed ('NotCommitted') writes no seed rows, but an unknown outcome
+-- ('CommitUnknown') can leave durable seed rows. And creating a
+-- fresh store writes its schema
+-- rows — while a refusal before the schema statements, or a failed
+-- @BEGIN IMMEDIATE@, leaves the created empty file behind (only
+-- failed schema statements and @COMMIT@ attempt partial-file
+-- removal, best effort). Configuring the connection additionally
+-- switches a WAL-format database to rollback-journal mode, rewriting
+-- its header version bytes on success (SQLITE_FULL there surfaces as
+-- @StoreFull@).
 openStdStoreWith
   :: (FilePath -> IO (Either StoreError Store))
   -> Env

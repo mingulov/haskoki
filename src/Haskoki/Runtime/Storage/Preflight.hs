@@ -192,11 +192,19 @@ planVerdict p = case sopIdentity p of
     | null (sopOps p) -> VerdictOpenable
     | otherwise -> VerdictMigrationRequired
 
--- | Diagnose a store for this config WITHOUT writing it: refuses a
--- live owner, then reads a read-only snapshot and plans. The result
--- names ids, versions and reasons only. The path is resolved once
--- up front: every sidecar and every open below derives from the
--- real file.
+-- | Diagnose a store for this config WITHOUT writing the database:
+-- refuses a live owner, then reads a read-only snapshot and
+-- plans (a WAL-format store can gain sidecars from the snapshot
+-- open; see 'readStoreSnapshot'). The result names ids, versions
+-- and reasons only. The path is resolved once up front: every
+-- sidecar and every open below derives from the real file —
+-- under a UTF-8 filesystem encoding (other locales may
+-- double-encode non-ASCII names) — except through a @file:@
+-- URI spelling, where SQLite opens the decoded file instead
+-- (URI/spelling consistency is a separate work item).
+-- Spellings that do not round-trip through UTF-8 are out of
+-- scope (POSIX uses the original bytes while SQLite opens the
+-- replacement spelling).
 checkStoreOpen :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
 checkStoreOpen path0 cfg = do
   path <- resolveStorePath path0
@@ -257,27 +265,34 @@ renderPlan p = unlines
 -- paths, ids, versions and reasons only.
 renderStoreRefusal :: StoreError -> (String, String)
 renderStoreRefusal e = case e of
-  StoreSecondWriter m -> ("store-live", m ++ "; stop the store owner and retry")
-  StoreJournalPresent j -> ("store-journal-present", "an interrupted write left " ++ j
-    ++ "; do not delete it. Start the serving haskoki once (its open rolls the write back),"
-    ++ " or restore a backup with the store and journal moved aside together;"
-    ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
-  StoreJournalCold j -> ("store-journal-cold", "an interrupted write left a cold journal " ++ j
-    ++ " (SQLite treats it as not hot: the database already reads as committed state);"
-    ++ " run haskoki-ctl store migrate to clear it under exclusive locks,"
-    ++ " or restore a backup with the store and journal moved aside together;"
-    ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
+  StoreSecondWriter m -> ("store-live", m
+    ++ "; stop any store owner and retry; if none holds it, inspect the lock file and retry")
+  StoreJournalPresent j -> ("store-journal-present", "a hot or unrecognized rollback journal is present (" ++ j
+    ++ "); do not delete it. See docs/operations-notes.md, Interrupted migration:"
+    ++ " only a hot journal with a complete header on a writable store rolls back under the serving open;"
+    ++ " an unrecognized header needs the verified backup")
+  StoreJournalCold j -> ("store-journal-cold", "a cold rollback journal is present (" ++ j
+    ++ "), or migration found the store busy: stop any process that holds the store,"
+    ++ " run haskoki-ctl store check, and retry store migrate with a valid backup directory"
+    ++ " unless check names another blocker;"
+    ++ " if migrate keeps reporting cold, stop and investigate: wait for a persistent"
+    ++ " SQLite lock holder to release once identified, or retry migrate once for a cold"
+    ++ " journal that appeared with no holder left;"
+    ++ " see docs/operations-notes.md, Interrupted migration")
   StoreForeignSidecar p -> ("store-foreign-sidecar",
-    "haskoki never writes a WAL, so " ++ p ++ " can only come from foreign tooling;"
-    ++ " do not start the service. Move " ++ wal ++ " and " ++ shm
+    "unexpected WAL sidecar files were detected (" ++ p ++ ");"
+    ++ " do not start the service. When the sidecars are confirmed stray,"
+    ++ " move " ++ wal ++ " and " ++ shm
     ++ " aside (keep both files) and run store check again;"
+    ++ " otherwise keep them with the database;"
     ++ " see docs/operations-notes.md, Upgrade, backup and recovery")
     where (wal, shm) = walShmPair p
   StoreNeedsMigration f t -> ("store-migration-required", "schema " ++ show f
     ++ " needs haskoki-ctl store migrate to reach schema " ++ show t)
   StoreSchemaVersion want found -> ("store-unsupported-version", "store schema " ++ found
     ++ " is not one this build opens or migrates (this build: " ++ show want
-    ++ "); a newer haskoki wrote it, or it is not a haskoki store")
+    ++ "); inspect the schema marker with SQLite tooling: reopen with the writing build"
+    ++ " if a newer haskoki wrote it, or restore a backup if the marker itself is damaged")
   StoreCorrupt m -> ("store-corrupt", m)
   StoreFull m -> ("store-full", m)
   -- A sidecar the owner probe cannot create (see 'takeOwnership':
@@ -305,8 +320,11 @@ data MigrateHooks = MigrateHooks
   { mhAfterPlan :: IO ()
     -- ^ after the unowned plan, before taking ownership
   , mhOnColdClear :: IO ()
-    -- ^ once the cold journal is gone (cleared now or already
-    -- vanished), so every outcome after a clear reports it
+    -- ^ once the cold journal is cleared, already vanished, or
+    -- classified absent on recheck (an empty or unstatable file
+    -- can remain); reporting after the flag is set is the CLI
+    -- wrapper's job (the default hook is a no-op, and the error
+    -- value itself carries no clear status)
   , mhAfterBackup :: IO ()
     -- ^ after the verified backup, before the transaction
   , mhOnBackupVerified :: FilePath -> Int -> String -> IO ()
@@ -357,10 +375,23 @@ data MigrationReceipt = MigrationReceipt
 data MigrateOutcome = MigrateNotNeeded | Migrated !MigrationReceipt deriving (Eq, Show)
 
 -- | Why a migration did not complete. Every constructor before
--- 'MigrateTxnFailed' is a refusal that wrote nothing to the store or
--- the backup directory; 'MigrateTxnFailed' rolled back unchanged,
--- while 'MigrateCommitUnknown' may already have committed (run
--- @store check@ before retrying). A stored rowless token without a
+-- 'MigrateTxnFailed' is a refusal that leaves no trusted artifact
+-- behind: a failed backup may leave a file when its cleanup
+-- fails, but no digest is recorded for it, so restore cannot
+-- trust it; mutations from the clear step — a removed journal,
+-- possible recovery replay — surface as 'MigrateStore' with the
+-- clearing reported separately;
+-- 'MigrateTxnFailed' failed before committing with no uniform
+-- rollback account (a COMMIT failure with an open transaction
+-- attempts a rollback, and is classified as rolled-back only
+-- when the rollback succeeds, autocommit is restored, and the
+-- journal reads absent — already-ended transactions go directly
+-- to unknown, and an unstatable journal reads absent without
+-- certifying unchanged bytes; a body failure attempts rollback
+-- best-effort with errors discarded; setup failures never begin
+-- one — run @store check@ to establish state), while
+-- 'MigrateCommitUnknown' may already have committed (run @store
+-- check@ before retrying). A stored rowless token without a
 -- catalog credential is reported as the identity refusal it is
 -- ('RefuseStoredUnconfigured').
 data MigrateError
@@ -371,10 +402,10 @@ data MigrateError
   | MigrateStoreChanged
   | MigrateBackupExists !FilePath
   | MigrateBackupFailed !String
-  | MigrateTxnFailed !FilePath !StoreError       -- ^ backup path; the body failed and rolled back unchanged
+  | MigrateTxnFailed !FilePath !StoreError       -- ^ backup path; failed before committing (setup, begin, body, or a rolled-back COMMIT — no blanket rollback claim; the report names store check)
   | MigrateCommitUnknown !FilePath !StoreError   -- ^ backup path; COMMIT failed, outcome unknown (run check)
   | MigrateVerifyFailed !FilePath !String        -- ^ committed; post-check failed
-  | MigrateReceiptFailed !FilePath !String       -- ^ committed; receipt not written
+  | MigrateReceiptFailed !FilePath !String       -- ^ committed; receipt finalization failed
   deriving (Eq, Show)
 
 migrateStore :: FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
@@ -384,10 +415,27 @@ migrateStore = migrateStoreWith noMigrateHooks
 m >>? k = m >>= either (pure . Left) k
 infixl 1 >>?
 
--- | The explicit migration (AC-05). Refusals before ownership write
--- nothing: config selection, backup-dir safety, a live owner, a hot
--- or unknown journal, a foreign -wal/-shm sibling (via the
--- read-only check), identity drift, or a current store. A cold
+-- | The explicit migration (AC-05). Refusals before the planning
+-- snapshot touch nothing but stats and a lock probe: config
+-- selection, backup-dir safety, a non-regular store, and a live
+-- owner. The snapshot read itself (a read-only connection with a
+-- journal/sidecar blocker run before and after the SELECTs, plus
+-- a file-identity comparison) refuses hot and unknown journals
+-- and foreign -wal/-shm siblings (cold journals refuse in the
+-- strict read; the migration plans through them with the
+-- cold-tolerant read). On a WAL-format database the read-only
+-- open itself can create -shm/-wal sidecars when the directory
+-- is writable (observed: a 32KiB -shm), which the post-read
+-- check then reports as foreign when the snapshot itself
+-- succeeded (a snapshot error or a vanished file takes
+-- precedence); the identity comparison notices replacement,
+-- resizing, or modification across a second boundary mid-read
+-- (same-size same-second rewrites are invisible to the
+-- device/inode/size/second-mtime identity).
+-- The handle changes no database bytes. Identity drift and a
+-- current store are decided by the plan AFTER the snapshot:
+-- drift refuses (MigrateIdentityRefused) while a current store
+-- succeeds (MigrateNotNeeded). A cold
 -- journal is cleared only after the plan says the migration
 -- proceeds: the verdict is taken first through a read-only snapshot
 -- that tolerates the cold journal, and any other outcome leaves the
@@ -395,8 +443,10 @@ infixl 1 >>?
 -- snapshot must equal the planned one, then the cold journal is
 -- cleared (if any; a vanished one counts as cleared), then a new
 -- verified backup, then ONE transaction, then a read-back check,
--- then a non-overwriting receipt. Every outcome after a clear
--- reports it.
+-- then a non-overwriting receipt. Every outcome after the flag
+-- is set reports it through the CLI wrapper's print and flag
+-- (the default hook is a no-op; the error value itself carries
+-- no clear status).
 migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
 migrateStoreWith hooks path0 cfg backupDir =
   (first MigrateConfig <$> configSelectsStore path0 cfg) >>? \() -> do
@@ -408,7 +458,13 @@ migrateStoreWith hooks path0 cfg backupDir =
 -- ran on the operator's spelling, the backup-directory guard ran on
 -- the resolved path (a link must not smuggle backups beside the
 -- real file), and every sidecar and every open below derives from
--- the real file.
+-- the real file — under a UTF-8 filesystem encoding (other
+-- locales may double-encode non-ASCII names) — except through a
+-- @file:@ URI spelling, where SQLite opens the decoded file
+-- instead (URI/spelling consistency is a separate work item).
+-- Spellings that do not round-trip through UTF-8 are out of
+-- scope (POSIX uses the original bytes while SQLite opens the
+-- replacement spelling).
 migrateResolved :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
 migrateResolved hooks path cfg backupDir = do
   ePlan <- first MigrateStore <$> checkStoreOpen path cfg
@@ -538,7 +594,8 @@ data ExclusiveWrite = Written | NameTaken | WriteFailed !String
 -- | Create a NEW file (O_EXCL, 0600, 'guardFlags'), write all bytes,
 -- fsync it and its directory. Never overwrites: an existing name is
 -- 'NameTaken'. Any failure after the create, or an asynchronous
--- exception (re-thrown), removes the file. The create, the
+-- exception (re-thrown), attempts to remove the file; the message
+-- says whether that removal succeeded. The create, the
 -- descriptor release and the cleanup run masked -- the release is
 -- registered before the write is unmasked, so no window leaks the
 -- descriptor; only the byte writing is interruptible.
@@ -554,12 +611,14 @@ writeExclusive afterCreate path bytes dir = mask $ \restore -> do
       case r of
         Right () -> pure Written
         Left e -> do
-          _ <- tryIOError (removeLink path)
+          eRm <- tryIOError (removeLink path)
           case fromException e of
             Just (io :: IOException) ->
-              pure (WriteFailed ("cannot write " ++ path ++ " (incomplete file removed): " ++ show io))
+              pure (WriteFailed ("cannot write " ++ path ++ " (" ++ rmWord eRm ++ "): " ++ show io))
             Nothing -> throwIO e
   where
+    rmWord (Right ()) = "incomplete file removed"
+    rmWord (Left _) = "incomplete file may remain"
     fill fd = afterCreate path >> writeAll fd bytes >> fileSynchronise fd
     writeAll :: Fd -> ByteString -> IO ()
     writeAll fd bs
@@ -572,19 +631,26 @@ writeExclusive afterCreate path bytes dir = mask $ \restore -> do
 syncDir :: FilePath -> IO ()
 syncDir dir = bracket (openFd dir ReadOnly guardFlags) closeFd fileSynchronise
 
--- | Write a receipt so that its name never holds a truncated file: the
--- bytes go to a new temporary with a unique name (the final name plus
--- the process id and a per-attempt counter, so a stale temporary from
--- a crashed run is ignored, never fatal), written and fsynced by
--- 'writeExclusive'; it is then moved into place by link(2) plus unlink
--- (unlike rename(2), link never replaces an existing name), and the
--- directory is fsynced. Our temporary is removed on every path after
--- its write. Stale temporaries from provably-dead owners are swept
+-- | Write a receipt so that its name never holds a truncated file on
+-- the link path: the bytes go to a new temporary with a unique name
+-- (the final name plus the process id and a per-attempt counter, so
+-- a stale temporary from a crashed run is ignored, never fatal by
+-- itself — fatal only if every candidate name is occupied and the
+-- bounded search exhausts),
+-- written and fsynced by 'writeExclusive'; it is then moved into
+-- place by link(2) plus unlink (unlike rename(2), link never
+-- replaces an existing name), and the directory is fsynced; a
+-- link-successful but sync-failed run still reports
+-- 'MigrateReceiptFailed' with the final name already visible. Our
+-- temporary's removal is attempted on every path after its write
+-- (best-effort; failures strand it until a later dead-owner
+-- sweep). Stale temporaries from provably-dead owners are swept
 -- before writing (see 'sweepStaleReceiptTemps'). On filesystems
 -- without hard links (the link fails with EPERM, ENOTSUP, EOPNOTSUPP
 -- or EXDEV) it falls back to an O_EXCL create-and-write of the final
--- name, which still never overwrites; any other link failure stays a
--- receipt failure.
+-- name, which still never overwrites — but unlike the link path, a
+-- kill -9 mid-write there can strand a truncated final name; any
+-- other link failure stays a receipt failure.
 writeReceipt :: (FilePath -> IO ()) -> (FilePath -> FilePath -> IO ()) -> FilePath -> ByteString -> FilePath -> IO ExclusiveWrite
 writeReceipt afterCreate link final bytes dir = mask $ \restore -> do
   pid <- getProcessID
@@ -754,39 +820,48 @@ renderMigrateError e = case e of
   MigrateUnsafeBackupDir d why -> ("migrate-unsafe-backup-dir", d ++ " " ++ why ++ "; nothing was written")
   MigrateStore se -> renderStoreRefusal se
   MigrateIdentityRefused r -> ("store-identity-refused", renderIdentityRefusal r)
-  MigrateStoreChanged -> ("migrate-store-changed", "the store changed between the check and "
-    ++ "taking ownership; nothing was written. Run store check again")
+  MigrateStoreChanged -> ("migrate-store-changed", "the store snapshot no longer matches the plan"
+    ++ " (schema, token records, counts, credential coverage, metadata, or file identity);"
+    ++ " this run did not change the store database. Run store check again")
   MigrateBackupExists p -> ("migrate-backup-exists", "every backup name is taken (first: " ++ p
-    ++ "); nothing was written")
+    ++ "); the store database was not changed")
   MigrateBackupFailed why -> ("migrate-backup-failed", why ++ "; the store was not changed")
-  MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction rolled back ("
-    ++ snd (renderStoreRefusal se) ++ "); the store was not changed. Backup kept at " ++ bak)
+  MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction failed ("
+    ++ snd (renderStoreRefusal se) ++ ") before committing;"
+    ++ " run store check to establish the store state, restoring the verified backup on inconsistency."
+    ++ " Backup kept at " ++ bak)
   MigrateCommitUnknown bak se -> ("migrate-commit-unknown", "the migration COMMIT failed and its outcome is unknown ("
     ++ snd (renderStoreRefusal se) ++ "); the store may already be at schema 3 -- run store check before retrying. Backup kept at " ++ bak)
   MigrateVerifyFailed bak why -> ("migrate-verify-failed", "the migration committed but its "
     ++ "read-back failed: " ++ why ++ ". Stop the rollout; restore from " ++ bak
     ++ " (docs/operations-notes.md, Upgrade, backup and recovery)")
-  MigrateReceiptFailed bak why -> ("migrate-receipt-failed", "the migration committed; the "
-    ++ "receipt was not written (" ++ why ++ "). Backup at " ++ bak)
+  MigrateReceiptFailed bak why -> ("migrate-receipt-failed", "the migration committed; "
+    ++ "receipt finalization failed (" ++ why ++ "). Backup at " ++ bak)
 
 -- | Like 'renderMigrateError', but for a migration run that already
 -- cleared a cold journal: the post-clear refusals must not claim
--- nothing was written or the store was unchanged. The tags are
--- unchanged; anything that can only fail before the clear renders
--- exactly as before.
+-- nothing was written or the store was unchanged. Even "the
+-- database was not changed" is unclaimable: SQLite recovery
+-- during the clear's BEGIN IMMEDIATE can roll back a hot journal
+-- that appeared after the owned snapshot, rewriting database
+-- pages before any backup is made. The tags are unchanged;
+-- anything that can only fail before the clear renders exactly
+-- as before.
 renderMigrateErrorAfterClear :: MigrateError -> (String, String)
 renderMigrateErrorAfterClear e = case e of
   MigrateBackupExists p -> ("migrate-backup-exists",
     "every backup name is taken (first: " ++ p
-      ++ "); the store database was not changed (a cold journal was removed; see above)")
+      ++ "); no backup was written (a cold journal was unlinked or treated as absent when rechecked; see above)")
   MigrateBackupFailed why -> ("migrate-backup-failed", why
-    ++ "; the store database was not changed (a cold journal was removed; see above)")
-  MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction rolled back ("
+    ++ "; the backup was not completed (a cold journal was unlinked or treated as absent when rechecked; see above)")
+  MigrateTxnFailed bak se -> ("migrate-failed", "the migration transaction failed ("
     ++ snd (renderStoreRefusal se)
-    ++ "); the store database was not changed (a cold journal was removed; see above). Backup kept at "
+    ++ ") before committing (a cold journal was unlinked or treated as absent when rechecked; see above);"
+    ++ " run store check to establish the store state, restoring the verified backup on inconsistency."
+    ++ " Backup kept at "
     ++ bak)
   MigrateCommitUnknown bak se -> ("migrate-commit-unknown", "the migration COMMIT failed and its outcome is unknown ("
     ++ snd (renderStoreRefusal se)
-    ++ "); the store may already be at schema 3 -- run store check before retrying (a cold journal was removed; see above). Backup kept at "
+    ++ "); the store may already be at schema 3 -- run store check before retrying (a cold journal was unlinked or treated as absent when rechecked; see above). Backup kept at "
     ++ bak)
   _ -> renderMigrateError e
