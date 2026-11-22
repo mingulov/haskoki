@@ -106,9 +106,14 @@ caseServingWaitCompetition = forM_ [0, 2] $ \pollers -> forM_ [1, 2] $ \flags ->
   decisions <- newTVarIO []
   let boundedWait label action = timeout 2000000 action >>= maybe (assertFailure label) pure
       parked tid = boundedWait "loser did not park in STM" $ let
+        -- BlockedOnBlackHole is a legitimate transient like ThreadRunning:
+        -- a waiter sampled while entering a thunk under evaluation
+        -- elsewhere can re-park on a later poll. Spin through it; the 2s
+        -- bound still fails a genuinely stuck waiter that never parks.
         loop = threadStatus tid >>= \state -> case state of
           ThreadBlocked BlockedOnSTM -> pure ()
           ThreadRunning -> yield >> loop
+          ThreadBlocked BlockedOnBlackHole -> yield >> loop
           _ -> assertFailure ("unexpected waiter state: " ++ show state)
         in loop
       hook point = do
