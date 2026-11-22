@@ -104,7 +104,13 @@
       "decision": "Defer the exhaustive mechanism expansion. The ABI lock claims exactly: locked sources, generated versioned tables/constants, independent layout/prototype probes. No mechanism-coverage claim is made.",
       "scope": "Mechanism expansion.",
       "tests": "Expansion work items per mechanism (future).",
-      "blocks_completeness": true
+      "blocks_completeness": true,
+      "disposition": {
+        "owner": "mechanism-expansion lead",
+        "phase": "Phase 3 (R-08/P-07 deliverable)",
+        "trigger": "mechanism expansion scheduled",
+        "exit_check": "release exit check: prose-vs-header audit complete; ABI lock claims unchanged (locked sources, generated tables, layout/prototype probes)"
+      }
     },
     {
       "id": "SRC-08",
@@ -133,7 +139,14 @@
       "decision": "Enforce the reviewed subset as data (TEMPLATE_RULES in scripts/generate-attributes.py, emitted to attributes.json template_rules and Haskoki.Attribute.Generated, enforced by Haskoki.Object.checkRules at the strict keygen/pairgen paths, pinned by TemplateRulesSpec). Forbidden lists stay empty until prose grounds exist. Vendor the base-spec prose (or a byte-locked template-table extract) to close this issue.",
       "scope": "Template-rule enforcement; blocks full acceptance-5 coverage (all classes), not the reviewed subset.",
       "tests": "scripts/check-attributes.py (rule shape + name references); scripts/check-denominators.py (rule closure JSON<->Haskell); TemplateRulesSpec (15 cases: resolution, consistency, missing-required, forbidden, mismatch, disagreement).",
-      "blocks_completeness": true
+      "blocks_completeness": true,
+      "disposition": {
+        "owner": "mechanism maintainer",
+        "phase": "0.6.1",
+        "trigger": "OASIS base-spec template prose vendored (or byte-locked template-table extract with redistribution clearance) + per-creation-path supply/demand matrix recorded in the plan ledger",
+        "exit_check": "TemplateRulesSpec + check-attributes + denominators green on enforced per-class required/forbidden tables incl. C_CreateObject; forbidden lists stay empty until then",
+        "stance": "deferred carry: reviewed 4-rule subset enforced; nothing invented"
+      }
     },
     {
       "id": "GAP-BLAKE2B",
@@ -166,7 +179,13 @@
       "decision": "Leave as marked; ship the stateless HOTP profile. Closing the stateful half needs an approved state-advancing execution path (planner-owned counter/key update committed with the success output, or a stateful-object execution mode) plus vendored OTP/stateful-signature prose; closing ACTI needs the proprietary algorithm specification plus the OTP object framework (CKO_OTP_KEY/CKA_OTP_*). A validation slice may add CKO_OTP_KEY/CKA_OTP_* as validation-only denominators without behavior.",
       "scope": "OTP/stateful group; blocks HOTP-stateful and XMSS/HSS behavior only (ACTI is stance-closed, not gap-blocked).",
       "tests": "N/A (no behavior claimed for the gap; the shipped HOTP profile is pinned by RecipeOtpSpec/RoutingE2ESpec/SyntheticSpec).",
-      "blocks_completeness": true
+      "blocks_completeness": true,
+      "disposition": {
+        "owner": "execution-architecture maintainer",
+        "phase": "Phase 3",
+        "trigger": "approved state-advancing execution path (planner-owned counter/key update committed with the success output) + vendored token-management prose",
+        "exit_check": "each success commits exactly one state advance; failure/retry covered; stateless HOTP pins preserved; ACTI stays unsupported-with-reason (reconsider only with proprietary spec + OTP object framework)"
+      }
     },
     {
       "id": "GAP-SPECIALS",
@@ -182,12 +201,25 @@
       "decision": "Leave as marked. Close (a) by vendoring the SHA512_T base-spec prose (or a byte-locked truncation table); close (b) with CMS profile prose plus an approved Raw-surface exception; close (c) only with any semantic source at all (FASTHASH already closed this way in 11n).",
       "scope": "Specials batch; blocks the listed rows except CKM_FASTHASH (stance-closed in 11n).",
       "tests": "N/A (no behavior claimed; the rows are pinned catalog-only by RegistrySpec and refusing by SyntheticSpec).",
-      "blocks_completeness": true
+      "blocks_completeness": true,
+      "disposition": {
+        "owner": "mechanism maintainer",
+        "phase": "Phase 3",
+        "trigger": "per-row triggers below",
+        "exit_check": "each row resolved or carried with rationale; refusal pins stay green",
+        "rows": {
+          "SHA512_T family": "trigger: SHA512_T truncation prose/table vendored; exit: conforming backend + family tests green",
+          "CMS": "carry until CMS profile prose + approved Raw-surface exception yield passing native tests",
+          "PBA": "carry until a usable pinned semantic source yields implementation + conformance tests",
+          "LYNKS": "permanent non-goal with continued refusal coverage (RegistrySpec/SyntheticSpec pins); reopenable only by ADR with a usable source",
+          "FASTHASH": "stance recorded in 11n (unpublished digest, no primitive, no vectors); keep marking"
+        }
+      }
     },
     {
       "id": "GAP-CHACHA20-COUNTER",
       "title": "CK_CHACHA20_PARAMS block-counter byte order is unspecified in the OASIS text",
-      "status": "open",
+      "status": "resolved",
       "sources": [
         "S-PD-32 header (CK_CHACHA20_PARAMS shape only)",
         "PKCS#11 chacha20.md working text (counter/nonce widths plus the IETF variant table; no byte-order sentence)",
@@ -195,7 +227,7 @@
       ],
       "inconsistency": "The OASIS text pins the counter widths (32/64 bits) and the IETF variant (96-bit nonce plus 32-bit counter) but never states the byte order of the pBlockCounter bytes. Counter value 1 as LE (01 00 00 00) vs BE (00 00 00 01) selects a different keystream, so the order is observable on the wire.",
       "affected": "CKM_CHACHA20 native-struct intake only; the canonical chacha20-params/1 codec carries the counter as an integer and is unaffected.",
-      "decision": "Interpreted 2026-09-27: decode the counter little-endian (RFC 8439 state-word order), pinned by RecipeChacha20Spec LE tests and the RFC 8439 section 2.4.2 consumer KAT. If OASIS later pins big-endian, flip leWordToInt and the KAT counter bytes together.",
+      "decision": "Resolved 2026-11-19 (G1 closure slice): LE interpretation kept (RFC 8439 state-word order), evidenced by RecipeChacha20Spec caseNative (LE pin 0x1234, 64-bit width behavior), NativeParamsSpec struct chase, and the RFC 8439 section 2.4.2 consumer KAT (canonical codec unaffected: counter travels as an integer). Reopen iff OASIS pins big-endian (flip the decode together with the KAT counter bytes).",
       "scope": "Cipher group; blocks nothing (served under a documented interpretation).",
       "tests": "RecipeChacha20Spec:caseNative (LE pin 0x1234); NativeParamsSpec (struct chase); consumer_roundtrip (RFC 8439 2.4.2 KAT).",
       "blocks_completeness": false
