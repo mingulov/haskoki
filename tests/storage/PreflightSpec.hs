@@ -1968,11 +1968,15 @@ caseMigrateTxnFailureKeepsStore = withScratch "migrate" $ \dir -> do
     Right (Migrated rc) -> assertBool "a new backup name" (mrBackup rc /= bak)
     other -> assertFailure ("retry: " ++ show other)
 
--- | A COMMIT failure with the transaction still active rolls back
--- and reports unchanged, never the unknown-outcome error: a second
+-- | A COMMIT failure with the transaction still active takes the
+-- failed-transaction path, never the unknown-outcome error: a second
 -- connection holds a read transaction while the writer's busy
 -- timeout is zeroed before COMMIT, so COMMIT reports busy with the
--- transaction open.
+-- transaction open. The report says the transaction failed before
+-- committing with no rollback claim at all (this path rolls back
+-- under verification, but the shared constructor cannot say so),
+-- never claiming a rollback or an unchanged store (this fixture's
+-- bytes do happen to be unchanged, asserted below).
 caseMigrateCommitBusyRollsBack :: IO ()
 caseMigrateCommitBusyRollsBack = withScratch "migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
@@ -1990,8 +1994,13 @@ caseMigrateCommitBusyRollsBack = withScratch "migrate" $ \dir -> do
       Left err@(MigrateTxnFailed _ _) -> do
         let (tag, detail) = renderMigrateError err
         assertEqual "tag" "migrate-failed" tag
-        assertBool "says rolled back" ("rolled back" `isInfixOf` detail)
-        assertBool "says unchanged" ("was not changed" `isInfixOf` detail)
+        assertBool "says transaction failed" ("transaction failed" `isInfixOf` detail)
+        assertBool "says before committing" ("before committing" `isInfixOf` detail)
+        assertBool "says establish state" ("to establish the store state" `isInfixOf` detail)
+        assertBool "says run store check" ("store check" `isInfixOf` detail)
+        assertBool "no rollback word" (not ("rollback" `isInfixOf` detail))
+        assertBool "no rolled-back claim" (not ("rolled back" `isInfixOf` detail))
+        assertBool "no unchanged claim" (not ("was not changed" `isInfixOf` detail))
         assertBool "no unknown outcome" (not ("outcome is unknown" `isInfixOf` detail))
         assertBool "backup kept" ("Backup kept at" `isInfixOf` detail)
       other -> assertFailure ("wrong result: " ++ show other)
@@ -2028,7 +2037,7 @@ caseMigrateCommitFailureHonest = withScratch "migrate" $ \dir -> do
         assertBool (ctx ++ ": no unchanged claim") (not ("was not changed" `isInfixOf` d))
         assertBool (ctx ++ ": no unchanged word") (not ("unchanged" `isInfixOf` d))
         ) [("plain", detail), ("after-clear", detailAfter)]
-      assertBool "after-clear names the clearing" ("cold journal was removed" `isInfixOf` detailAfter)
+      assertBool "after-clear names the clearing" ("cold journal was unlinked or treated as absent" `isInfixOf` detailAfter)
       moved <- captureState store
       assertBool "store moved (early commit landed)" (ssBytes before /= ssBytes moved)
       names <- listBackups backups

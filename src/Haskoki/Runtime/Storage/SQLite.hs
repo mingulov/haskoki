@@ -275,7 +275,14 @@ openSQLiteStoreWith path limits inj = openSQLiteStoreWithHooks path limits inj n
 -- ('SQLiteTestHooks'); the storage suites use it to stimulate
 -- real statement failures on the store's own connection. The path
 -- is resolved once up front: every sidecar and every open below
--- derives from the real file. A store path whose own final component
+-- derives from the real file — under a UTF-8 filesystem encoding
+-- (other locales may double-encode non-ASCII names) — except
+-- through a @file:@ URI spelling, where SQLite opens the decoded
+-- file instead (URI/spelling consistency is a separate work
+-- item). Spellings that do not round-trip through UTF-8 are out
+-- of scope (POSIX uses the original bytes while SQLite opens the
+-- replacement spelling). A store
+-- path whose own final component
 -- is a dangling symlink refuses: no store is created at that link's
 -- target. A missing store under a symlinked parent directory is
 -- created at the resolved path, as before.
@@ -2420,9 +2427,10 @@ readFirst8 p = bracket open hClose (`BS.hGet` 8)
   where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
 
 -- | A sibling the rollback-journal store never writes itself: a
--- non-empty @-wal@ or @-shm@ file can only come from foreign tooling
--- and refuses distinctly. Zero-byte files are ignored, as
--- zero-byte journals are.
+-- non-empty @-wal@ or @-shm@ file means foreign tooling — or the
+-- snapshot's own read-only open of a WAL-format database, which
+-- can create them itself — and refuses distinctly. Zero-byte
+-- files are ignored, as zero-byte journals are.
 foreignSidecar :: FilePath -> IO (Maybe FilePath)
 foreignSidecar path = do
   w <- nonEmpty (path ++ "-wal")
@@ -2458,8 +2466,9 @@ journalBlocked path = do
     journal = path ++ "-journal"
 
 -- | Like 'journalBlocked' but a cold journal does not block: used
--- only to plan a migration's verdict before deciding whether the
--- cold journal may be cleared. Hot, unknown and foreign siblings
+-- to plan a migration's verdict (before deciding whether the
+-- cold journal may be cleared) and by 'store check''s
+-- cold-tolerant retry. Hot, unknown and foreign siblings
 -- still refuse.
 journalBlockedAllowCold :: FilePath -> IO (Maybe StoreError)
 journalBlockedAllowCold path = do
@@ -2570,21 +2579,33 @@ resolveStorePathTracked p
     joinPath False [] = "."
     joinPath False cs = intercalate "/" cs
 
--- | Read a store WITHOUT writing it: no ownership, no sidecar, a
+-- | Read a store without writing the database: no ownership, a
 -- read-only connection (never creates the file, never recovers a
--- journal, never migrates). Decodes every record the serving open
--- decodes, so a corrupt file fails here too; keeps only ids and
--- counts. Refuses a foreign -wal/-shm sibling, a hot or unknown
+-- journal, never migrates) — but on a WAL-format database the
+-- open can create -shm/-wal sidecars when the directory is
+-- writable (observed: a 32KiB -shm), which the post-read check
+-- then reports as foreign when the snapshot itself succeeded (a
+-- snapshot error or a vanished file takes precedence). Decodes
+-- every record the serving open decodes, so a structurally
+-- corrupt file (missing tables, bad schema version, misshapen
+-- rows) fails here too; value-level checks (durable counters
+-- must parse positive, see 'loadCounter' vs 'loadMeta') stay
+-- with the serving open. Keeps the schema version, token
+-- records, credential ids, metadata, counts, and file identity
+-- (credential rows reduced to token ids — no PIN byte leaves).
+-- Refuses a foreign -wal/-shm sibling, a hot or unknown
 -- journal, a cold journal (distinctly), and a file that changed
 -- while read.
 readStoreSnapshot :: FilePath -> IO (Either StoreError StoreSnapshot)
 readStoreSnapshot = readStoreSnapshotWith journalBlocked
 
 -- | Like 'readStoreSnapshot' but a cold journal does not refuse:
--- used only to plan a migration's verdict before deciding whether
--- the cold journal may be cleared. The read-only connection treats
--- a cold journal as not hot (committed state), never recovers it
--- and never writes.
+-- used to plan a migration's verdict (before deciding whether
+-- the cold journal may be cleared) and by 'store check''s
+-- cold-tolerant retry. The read-only connection treats
+-- a cold journal as not hot (committed state) and never recovers
+-- it; like the strict read it can create WAL sidecars on a
+-- WAL-format database, but changes no database bytes.
 readStoreSnapshotAllowCold :: FilePath -> IO (Either StoreError StoreSnapshot)
 readStoreSnapshotAllowCold = readStoreSnapshotWith journalBlockedAllowCold
 
@@ -2822,10 +2843,16 @@ ownedDbMatches o = sameFile (osfDbFd o) (osfPath o)
 -- (@BEGIN IMMEDIATE@ fails while any other connection writes), and
 -- the re-read journal is still cold. Removing it cannot change what
 -- SQLite reads: the zeroed magic already makes SQLite treat the
--- journal as not hot. @onClear@ fires once the journal is gone. A
--- journal that vanished between the plan and the clear counts as
--- already cleared (fires, succeeds). Anything else refuses, fail
--- closed, with the journal still in place -- except a sync or
+-- journal as not hot. @onClear@ fires once the journal was
+-- unlinked or was classified as absent on recheck (missing,
+-- empty, or unstatable -- a failed stat counts as absent; a
+-- non-regular file, or a failed header read on a nonempty
+-- regular file, counts as unknown and refuses). A journal that vanished between the plan and the clear
+-- counts as already cleared (fires, succeeds). Anything else
+-- refuses, fail closed -- usually with the journal still in place,
+-- except that SQLite recovery during @BEGIN IMMEDIATE@ rolls back
+-- a hot journal that appeared after the owned snapshot, rewriting
+-- database pages (before any backup is made), and except a sync or
 -- commit failure after the unlink, which already fired.
 clearColdJournalOwned :: IO () -> FilePath -> IO (Either StoreError ())
 clearColdJournalOwned onClear path = do
@@ -2890,11 +2917,19 @@ syncParentDir p = bracket (openFd (parentDir p) ReadOnly guardFlags) closeFd fil
       [_] -> "/"
       (_ : rest) -> reverse rest
 
--- | How a migration transaction failed: the setup or the body
--- failed and rolled back, leaving the store as it was — or the
--- COMMIT failed with an unknown outcome (the store may already be
--- at the new schema; the operator must run @store check@ before
--- retrying). Preflight renders the two cases separately.
+-- | How a migration transaction failed: setup, begin, or body
+-- failed before committing (a body failure attempts a rollback,
+-- best effort with errors discarded; setup failures never begin
+-- a transaction), or a COMMIT failure with an open transaction
+-- attempted a rollback and classified as rolled-back only when
+-- the rollback succeeded, autocommit is restored, and the
+-- journal reads absent — or the COMMIT failed with an unknown
+-- outcome (already-ended transactions go directly to unknown;
+-- the store may already be at the new schema; the operator must
+-- run @store check@ before retrying). The rolled-back
+-- classification cannot certify unchanged bytes: an unstatable
+-- journal reads absent without excluding foreign residue.
+-- Preflight renders the two cases separately.
 data MigrateTxnError
   = MigrateTxnUnchanged !StoreError
   | MigrateTxnCommitUnknown !StoreError
@@ -2905,10 +2940,13 @@ data MigrateTxnError
 -- create the credentials table for version 1, INSERT every frozen
 -- row (never replacing: an existing row aborts everything), and
 -- advance the marker unless the store is already current. A body
--- failure rolls back and leaves the file as it was; a COMMIT
--- failure is judged from the native autocommit state and the
--- journal, and an unknown outcome is reported distinctly, never
--- as unchanged. An exception rolls back, closes and re-throws.
+-- failure attempts a rollback (best effort: rollback errors are
+-- discarded, so page effects may remain); a COMMIT failure with
+-- an open transaction attempts a rollback, and classifies as
+-- rolled-back only when the rollback succeeds, autocommit is
+-- restored, and the journal reads absent — any other COMMIT
+-- outcome is unknown, reported distinctly, never as unchanged.
+-- An exception attempts a rollback, closes and re-throws.
 migrateOwned :: OwnedStoreFile -> SQLiteMigration -> MigrationHooks -> IO (Either MigrateTxnError ())
 migrateOwned owned mig hooks = mask $ \restore -> do
   let path = osfPath owned
@@ -2942,10 +2980,12 @@ migrateOwned owned mig hooks = mask $ \restore -> do
                     Left err -> commitFailed db path err
                     Right () -> pure (Right ())
     -- A failed COMMIT may have landed, rolled back, or left a hot
-    -- journal: only a still-active transaction that rolls back
-    -- clean with no journal proves unchanged. Anything else —
-    -- including an already-ended transaction — is unknown and
-    -- must not claim the store was unchanged.
+    -- journal: a still-active transaction that rolls back with
+    -- autocommit restored and no journal classifies as
+    -- rolled-back (an unstatable journal reads absent without
+    -- certifying it). Anything else — including an
+    -- already-ended transaction — is unknown and must not claim
+    -- the store was unchanged.
     commitFailed db path err = do
       ended <- getAutoCommit db
       if ended

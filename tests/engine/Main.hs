@@ -9,6 +9,7 @@ import qualified CertificateEngineSpec
 import qualified CryptoExportSpec
 import qualified DetachedEngineSpec
 import qualified FfiAcquireSpec
+import qualified InitDiagnosticSpec
 import qualified LeaseWedgeDenseSpec
 import qualified LeaseWedgeSpec
 import qualified NativeParamsSpec
@@ -52,6 +53,7 @@ main = do
     , AsyncEngineSpec.spec envLock
     , DetachedEngineSpec.spec envLock
     , FfiAcquireSpec.spec envLock
+    , InitDiagnosticSpec.spec
     , LeaseWedgeSpec.spec
     , LeaseWedgeDenseSpec.spec
     , NativeParamsSpec.spec

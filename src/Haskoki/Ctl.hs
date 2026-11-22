@@ -17,10 +17,11 @@ Every command owns its instance or works offline:
   value admission, expectable refusals, lifecycle; only the @note@
   field carries inert prose);
 * @store inspect@ reads a SQLite store offline (SELECT-only under
-  @query_only@; never takes the ownership lock);
+  @query_only@ — SQLite may still replay or checkpoint; never takes
+  the ownership lock);
 * @store check@ plans an open of a store read-only and reports what
-  it would need (nothing written; @--async-home@ plans a store the
-  async open created);
+  it would need (no database bytes written — WAL sidecars excepted;
+  @--async-home@ plans a store the async open created);
 * @store migrate@ upgrades a store from an earlier release, after a
   verified backup (@--async-home@ migrates a store the async open
   created);
@@ -120,9 +121,10 @@ ctlHelp = unlines
   , "  haskoki-ctl store migrate --path FILE --config FILE --backup-dir DIR [--async-home]"
   , ""
   , "Model: capabilities and scenario run own their module instance;"
-  , "store commands are offline: inspect and check never write; reset and"
+  , "store commands are offline: check writes no database bytes (WAL sidecars"
+  , "excepted); inspect may replay or checkpoint under query_only; reset and"
   , "migrate need the store owner stopped, and migrate writes a verified"
-  , "backup and a receipt first. --async-home makes check and"
+  , "backup first and a receipt last. --async-home makes check and"
   , "migrate use the async home catalog (a store created through"
   , "the async open). There is no remote administration:"
   , "this tool cannot mutate another process's loaded module."
@@ -910,9 +912,16 @@ readLockState dbPath = do
           Nothing -> pure (LockLive (-1))
 
 -- | Offline inspect: report lock state + table counts over a
--- SELECT-only connection. Never creates the sidecar, never writes.
--- The path is resolved once up front, so the lock read and the
--- counts both name the real file.
+-- SELECT-only connection. Never creates the sidecar; read-only at
+-- the SQL layer, though opening can still replay a hot journal,
+-- and closing the last connection can still checkpoint a WAL.
+-- The path is resolved once up
+-- front, so for POSIX spellings under a UTF-8 filesystem encoding
+-- the lock read and the counts both name the real file (a @file:@
+-- URI stats the literal path while SQLite counts the decoded
+-- database). Spellings that do not round-trip through UTF-8 are
+-- out of scope (POSIX uses the original bytes while SQLite opens
+-- the replacement spelling).
 inspectStore :: FilePath -> IO CtlExit
 inspectStore path0 = do
   path <- resolveStorePath path0

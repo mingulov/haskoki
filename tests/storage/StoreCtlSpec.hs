@@ -860,7 +860,7 @@ caseMigrateCliSchema3Cold = withScratch "ctl-migrate" $ \dir -> do
   c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
   assertEqual "check accepts the cold journal on a current store" 0 (ceCode c)
   assertBool "verdict ok" ("verdict: ok" `isInfixOf` ceOut c)
-  assertBool "journal line" ("journal: cold (harmless; reused by the next write)" `elem` lines (ceOut c))
+  assertBool "journal line" ("journal: cold (harmless; left alone by this command)" `elem` lines (ceOut c))
   assertEqual "quiet stderr" "" (ceErr c)
   m <- migrateCli store cfgPath backups
   assertEqual "migrate needs nothing" 0 (ceCode m)
@@ -1091,8 +1091,9 @@ caseCheckUnexpectedTagged = do
   assertBool "no alphanumeric message" (not ("ab12CD34" `isInfixOf` alpha))
 
 -- A true async interrupt during migrate is exit 130 with the fixed
--- interrupted line: never migrate-failed, which means "rolled back;
--- the store was not changed". The hook only synchronises: a second
+-- interrupted line: never migrate-failed, which reports a failed
+-- transaction (rollback conditional and unverified). The hook only
+-- synchronises: a second
 -- thread throws, so the exception arrives the way SIGINT delivers
 -- it (a 'throwIO' would be a synchronous raise, not an interrupt).
 caseMigrateInterrupt130 :: IO ()
@@ -1125,8 +1126,8 @@ caseMigrateSyncFailureDistinctTag = withScratch "ctl-migrate" $ \dir -> do
   assertBool "not migrate-failed" (not ("migrate-failed:" `isPrefixOf` err))
 
 -- An unknown COMMIT outcome reaches the operator under its own
--- tag: the store may already be at schema 3, so the rolled-back
--- tag (which promises the store was not changed) must not appear.
+-- tag: the store may already be at schema 3, so the
+-- failed-transaction tag must not appear.
 caseMigrateCommitUnknownTag :: IO ()
 caseMigrateCommitUnknownTag = withScratch "ctl-migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.3.1.0" dir
@@ -1614,8 +1615,9 @@ epochClock :: MigrateHooks
 epochClock = noMigrateHooks { mhClock = pure 1700000000 }
 
 -- After clearing a cold journal, an exhausted backup namespace must
--- not claim nothing was written: the database is unchanged, but the
--- journal is gone.
+-- not claim nothing was written: no backup went out, the journal
+-- is gone, and even the database bytes are unclaimable (recovery
+-- during the clear's BEGIN can roll back a late hot journal).
 caseMigrateClearBackupExistsHonest :: IO ()
 caseMigrateClearBackupExistsHonest = withScratch "ctl-migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
@@ -1631,11 +1633,15 @@ caseMigrateClearBackupExistsHonest = withScratch "ctl-migrate" $ \dir -> do
   gone <- not <$> doesFileExist journal
   assertBool "journal removed" gone
   assertBool "no nothing-written claim" (not ("nothing was written" `isInfixOf` err))
-  assertBool "database unchanged" ("the store database was not changed" `isInfixOf` err)
-  assertBool "names the clearing" ("cold journal was removed" `isInfixOf` err)
+  assertBool "no backup written" ("no backup was written" `isInfixOf` err)
+  assertBool "no unchanged claim" (not ("was not changed" `isInfixOf` err))
+  assertBool "names the clearing" ("cold journal was unlinked or treated as absent" `isInfixOf` err)
 
 -- After clearing a cold journal, a backup failure must not claim
--- the store was unchanged: the database is, but the journal is gone.
+-- the store was unchanged: the backup did not complete, the
+-- journal is gone, and even the database bytes are unclaimable
+-- (recovery during the clear's BEGIN can roll back a late hot
+-- journal).
 caseMigrateClearBackupFailedHonest :: IO ()
 caseMigrateClearBackupFailedHonest = withScratch "ctl-migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
@@ -1650,12 +1656,13 @@ caseMigrateClearBackupFailedHonest = withScratch "ctl-migrate" $ \dir -> do
   assertBool "clearing reported" ("cold-journal-removed: yes" `elem` lines out)
   gone <- not <$> doesFileExist journal
   assertBool "journal removed" gone
-  assertBool "no store-unchanged claim" (not ("; the store was not changed" `isInfixOf` err))
-  assertBool "database unchanged" ("the store database was not changed" `isInfixOf` err)
-  assertBool "names the clearing" ("cold journal was removed" `isInfixOf` err)
+  assertBool "backup not completed" ("the backup was not completed" `isInfixOf` err)
+  assertBool "no unchanged claim" (not ("was not changed" `isInfixOf` err))
+  assertBool "names the clearing" ("cold journal was unlinked or treated as absent" `isInfixOf` err)
 
--- After clearing a cold journal, a rolled-back transaction must not
--- claim the store was unchanged either: the backup is still kept.
+-- After clearing a cold journal, a failed transaction reports the
+-- failure without claiming a rollback or an unchanged store; the
+-- backup is still kept and the clearing is named.
 caseMigrateClearTxnFailedHonest :: IO ()
 caseMigrateClearTxnFailedHonest = withScratch "ctl-migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.3.1.0" dir
@@ -1672,8 +1679,14 @@ caseMigrateClearTxnFailedHonest = withScratch "ctl-migrate" $ \dir -> do
   assertBool "clearing reported" ("cold-journal-removed: yes" `elem` lines out)
   gone <- not <$> doesFileExist journal
   assertBool "journal removed" gone
-  assertBool "no store-unchanged claim" (not ("; the store was not changed" `isInfixOf` err))
-  assertBool "database unchanged" ("the store database was not changed" `isInfixOf` err)
+  assertBool "says transaction failed" ("transaction failed" `isInfixOf` err)
+  assertBool "says before committing" ("before committing" `isInfixOf` err)
+  assertBool "says establish state" ("to establish the store state" `isInfixOf` err)
+  assertBool "says run store check" ("store check" `isInfixOf` err)
+  assertBool "names the clearing" ("cold journal was unlinked or treated as absent" `isInfixOf` err)
+  assertBool "no rollback word" (not ("rollback" `isInfixOf` err))
+  assertBool "no rolled-back claim" (not ("rolled back" `isInfixOf` err))
+  assertBool "no unchanged claim" (not ("was not changed" `isInfixOf` err))
   assertBool "backup kept" ("Backup kept at" `isInfixOf` err)
 
 -- | Run an action with the process stdout redirected to a file
