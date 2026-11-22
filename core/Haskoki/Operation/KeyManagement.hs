@@ -1435,7 +1435,7 @@ finishWork model st pw res
   -- violation (same failure class as the pre-change empty-bytes
   -- mis-shape, which failed its frame decode).
   (_, GotUnit) -> internal "unit answer to key management"
-  (w, res@(GotCryptoError e)) ->
+  (w, ans@(GotCryptoError e)) ->
     let code = interpretError (workFunction w) (TyCrypto e)
     in Reject Rejection
       { rejCode = code
@@ -1443,7 +1443,7 @@ finishWork model st pw res
       , rejDelta = StateDelta []
       , rejReleases = []
       , rejReasons = ["driver: " ++ show e]
-      , rejCause = keptCause (workFunction w) res code
+      , rejCause = keptCause (workFunction w) ans code
       }
   where
     publish :: PendingObject -> PendingObject -> PlanResult
