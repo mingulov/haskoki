@@ -218,13 +218,23 @@ def parse_layouts_keys(source):
     import, so no bytecode is read or written by this gate. Only
     full entry lines count (`"key": "value",` plus an optional
     trailing comment), so quoted text inside comments can neither
-    break the gate nor certify a key."""
+    break the gate nor certify a key. Blank lines and full-line
+    comments are skipped; any other unrecognized line fails the
+    whole read closed (silently dropping it would under-read a
+    reshaped literal)."""
     m = re.search(r"^LAYOUTS = \{(.*?)^\}$", source, re.M | re.S)
     if not m:
         return None
     entry = re.compile(r'^\s*"([^"]+)"\s*:\s*"[^"]*"\s*,?\s*(?:#.*)?$')
-    keys = [g for line in m.group(1).splitlines()
-            for g in entry.findall(line)]
+    skip = re.compile(r"^\s*(?:#.*)?$")
+    keys = []
+    for line in m.group(1).splitlines():
+        if skip.match(line):
+            continue
+        g = entry.match(line)
+        if not g:
+            return None
+        keys.append(g.group(1))
     return sorted(keys) if keys else None
 
 
@@ -463,6 +473,16 @@ def self_test():
         expect("layouts reader ignores comment keys",
                [] if parse_layouts_keys(trapped) == ["3.2"]
                else ["misparse: %r" % parse_layouts_keys(trapped)], False)
+        # Leg 14: an unrecognized entry shape fails closed (the r39
+        # trap: silently dropping it would under-read the set).
+        odd = ('LAYOUTS = {\n'
+               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+               '    "3.3": ("CK_FUNCTION_LIST_3_2"),\n'
+               '}\n')
+        expect("layouts reader fails closed on odd shapes",
+               [] if parse_layouts_keys(odd) is None
+               else ["should be None, got %r" % parse_layouts_keys(odd)],
+               False)
 
     print("compat: self-test %s" % ("ok" if not bad else "FAIL"))
     return 1 if bad else 0
