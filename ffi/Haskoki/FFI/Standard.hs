@@ -246,8 +246,11 @@ import Control.Exception
   , onException
   , throwIO
   , try
+  , uninterruptibleMask_
   )
+import Control.Concurrent (MVar, forkIO, forkIOWithUnmask, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM (atomically, catchSTM, throwSTM)
+import System.Timeout (timeout)
 import Control.Monad (foldM, forM, forM_, when, zipWithM_)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
@@ -502,7 +505,9 @@ import Haskoki.Runtime.Storage
   , StoreDelta (..)
   , StoreError (..)
   , TokenRecord (..)
+  , defaultLimits
   , emptyDelta
+  , noFaults
   , objectToRecord
   , reconcileCredentialsReload
   , reconcileIdentities
@@ -512,7 +517,7 @@ import Haskoki.Runtime.Storage
   , tokensWithoutCredentials
   )
 import Haskoki.Runtime.Storage.Preflight (renderStoreRefusal)
-import Haskoki.Runtime.Storage.SQLite (openSQLiteStore, resolveStorePath)
+import Haskoki.Runtime.Storage.SQLite (openSQLiteStoreWith, resolveStorePath)
 import Haskoki.Runtime.Trace (TraceEvent (..), Tracer, emitTrace, noteTraceDropped, spellingDrops, tracerAliasesStore, tracerFilePath, uriEffective)
 import Haskoki.Session
   ( AdmitDeny
@@ -872,7 +877,16 @@ openStdInstanceWithNotify sa cfg slots invoker = guardedSyncPtr $ mask $ \restor
         case ini of
           OutcomeErr _ -> pure nullStable
           OutcomeOk () -> do
-            eStore <- restore (saOpenStore sa env cfg)
+            -- The store open runs under the outer mask, NOT restored:
+            -- a kill pending at the inner open's unmask point would
+            -- otherwise land in the return suffix — after the seed
+            -- commit, before this caller installs its release
+            -- handler below — stranding the guard while reporting
+            -- NULL. Under the mask the handoff (return, match,
+            -- handler install) is atomic; the open's own
+            -- interruptible waits stay cancellable, and a kill
+            -- during them unwinds through the open's own cleanup.
+            eStore <- saOpenStore sa env cfg
             case eStore of
               -- A refused store open still returns NULL (the C ABI is
               -- unchanged: C_Initialize reports CKR_GENERAL_ERROR),
@@ -1216,13 +1230,18 @@ storeTraceRemedy e = case e of
     ++ " re-read state and retry; if it persists, correct the request"
 
 openStdStore :: Env -> Config -> IO (Either StdStoreError (Maybe StdStore))
-openStdStore = openStdStoreWith openSQLiteStore
+openStdStore env cfg =
+  openStdStoreWith
+    (\p -> openSQLiteStoreWith (scAllowEnvSeams (cfgStorage cfg)) p defaultLimits noFaults)
+    env
+    cfg
 
 -- | 'openStdStore' over an injected store opener: production
--- passes 'openSQLiteStore'; fault-injection fixtures pass a
--- scripted opener ('openSQLiteStoreWith' with limits and
--- faults). The reconcile\/seat\/seed flow is identical either
--- way, so injected faults exercise the production open path.
+-- passes 'openSQLiteStoreWith' with default limits, no faults,
+-- and the configured 'storage.allow_env_seams' opt-in; fault-injection
+-- fixtures pass a scripted opener (custom limits and faults).
+-- The reconcile\/seat\/seed flow is identical either way, so injected
+-- faults exercise the production open path.
 -- The seed commit is the open's only write of store rows to an
 -- existing store, and every pre-seed refusal (an old schema first,
 -- as @StdStoreSQLite (StoreNeedsMigration n 3)@, then identity, then
@@ -1249,7 +1268,13 @@ openStdStoreWith
   -> Env
   -> Config
   -> IO (Either StdStoreError (Maybe StdStore))
-openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
+-- Masked throughout: async exceptions are deferred except at
+-- interruptible waits (which stay cancellable, so a stuck open can
+-- still be killed), and the whole continuation runs under the
+-- cleanup handler below. No case-match gap exists for a kill to
+-- slip through between acquiring the store and installing the
+-- handler.
+openStdStoreWith openPath env cfg = mask_ $ case scKind (cfgStorage cfg) of
       StorageMemory -> do
         eSeat <- seatAll env (Map.keys catalog)
         case eSeat of
@@ -1261,61 +1286,121 @@ openStdStoreWith openPath env cfg = case scKind (cfgStorage cfg) of
           eStore <- openPath path
           case eStore of
             Left err -> pure (Left (StdStoreSQLite err))
-            Right store -> do
-              eLoaded <- storeLoadTokens store
-              case eLoaded of
-                Left err -> do
-                  storeClose store
-                  pure (Left (StdStoreSQLite err))
-                Right loaded -> do
-                  eRestored <- restoreStoreState env loaded
-                  case eRestored of
-                    Left deny -> do
-                      storeClose store
-                      pure (Left (StdStoreReload deny))
-                    Right () -> do
-                      eReserved <- reserveDurableCounters env store
-                      case eReserved of
-                        Left err -> do
-                          storeClose store
-                          pure (Left (StdStoreSQLite err))
-                        Right () ->
-                          -- Durable identity reconciliation: the
-                          -- configured catalog must name every
-                          -- stored token under its durable label
-                          -- at its durable slot. A shrunk
-                          -- catalog, a reorder, an insertion
-                          -- that shifts slots, or a label change
-                          -- REFUSES here (never prunes, moves,
-                          -- or renames silently), failing the
-                          -- whole open with the reconciler's
-                          -- actionable message; accepted seeds
-                          -- seat and commit below.
-                          case reconcileIdentities desired [t | (t, _) <- loaded] of
-                            Left refusal -> do
-                              storeClose store
-                              pure (Left (StdStoreIdentityRefusal (renderIdentityRefusal refusal)))
-                            Right plan -> do
-                              -- Every stored token must carry its
-                              -- durable credential row. A token
-                              -- written before credentials were
-                              -- seeded refuses as migration-required,
-                              -- after the identity check so drift
-                              -- reports first; the catalog PINs never
-                              -- stand in for a missing row.
-                              eCreds <- storeLoadCredentials store
-                              case eCreds of
-                                Left err -> do
-                                  storeClose store
-                                  pure (Left (StdStoreSQLite err))
-                                Right creds ->
-                                  case tokensWithoutCredentials [t | (t, _) <- loaded] (map crToken creds) of
-                                    legacy@(_ : _) -> do
-                                      storeClose store
-                                      pure (Left (StdStoreMigrationRequired legacy))
-                                    [] -> seatAndSeed store loaded plan
+            -- An async exception anywhere below (each 'Left' already
+            -- closes) must not strand the open store: close it and
+            -- rethrow, so a cancelled open never leaks the lock. The
+            -- whole body runs masked (see above), so no handoff gap
+            -- exists between acquiring the store and installing this
+            -- handler.
+            Right store ->
+              (do
+                eLoaded <- storeLoadTokens store
+                case eLoaded of
+                  Left err -> do
+                    storeClose store
+                    pure (Left (StdStoreSQLite err))
+                  Right loaded -> do
+                    eRestored <- restoreStoreState env loaded
+                    case eRestored of
+                      Left deny -> do
+                        storeClose store
+                        pure (Left (StdStoreReload deny))
+                      Right () -> do
+                        eReserved <- reserveDurableCounters env store
+                        case eReserved of
+                          Left err -> do
+                            storeClose store
+                            pure (Left (StdStoreSQLite err))
+                          Right () ->
+                            -- Durable identity reconciliation: the
+                            -- configured catalog must name every
+                            -- stored token under its durable label
+                            -- at its durable slot. A shrunk
+                            -- catalog, a reorder, an insertion
+                            -- that shifts slots, or a label change
+                            -- REFUSES here (never prunes, moves,
+                            -- or renames silently), failing the
+                            -- whole open with the reconciler's
+                            -- actionable message; accepted seeds
+                            -- seat and commit below.
+                            case reconcileIdentities desired [t | (t, _) <- loaded] of
+                              Left refusal -> do
+                                storeClose store
+                                pure (Left (StdStoreIdentityRefusal (renderIdentityRefusal refusal)))
+                              Right plan -> do
+                                -- Every stored token must carry its
+                                -- durable credential row. A token
+                                -- written before credentials were
+                                -- seeded refuses as migration-required,
+                                -- after the identity check so drift
+                                -- reports first; the catalog PINs never
+                                -- stand in for a missing row.
+                                eCreds <- storeLoadCredentials store
+                                case eCreds of
+                                  Left err -> do
+                                    storeClose store
+                                    pure (Left (StdStoreSQLite err))
+                                  Right creds ->
+                                    case tokensWithoutCredentials [t | (t, _) <- loaded] (map crToken creds) of
+                                      legacy@(_ : _) -> do
+                                        storeClose store
+                                        pure (Left (StdStoreMigrationRequired legacy))
+                                      [] -> seatAndSeed store loaded plan
+              -- A close that fails during cancellation (e.g. an
+              -- injected FaultClose) must not replace the original
+              -- exception: the primary failure wins. Retry once: the
+              -- backend marks a failed close for a real retry, so a
+              -- one-shot fault clears here; a persistently failing
+              -- close is swallowed after the retry (nothing is left
+              -- to retry it, and the original exception must stand).
+              -- (On the sync paths above, closes are direct and
+              -- their errors return normally; this handler fires
+              -- only on exception.)
+              ) `onException` closeQuietly store
   where
     catalog = effectiveCatalog cfg
+    -- Best-effort close for cancellation cleanup with a SINGLE
+    -- deadline across both attempts: a supervisor thread owns one
+    -- 10s timeout over up-to-two sequential closes (a slow failure
+    -- no longer buys a fresh budget the way per-attempt timeouts
+    -- did — worst case is 10s total, never ~20s). The supervisor
+    -- publishes completion in 'finally' and the parent waits
+    -- uninterruptibly, so a concurrent async kill cannot supersede
+    -- the original exception mid-join: the kill stays pending until
+    -- the bounded wait completes, and the original keeps unwinding
+    -- afterwards. The attempt thread runs explicitly unmasked, so
+    -- its own waits stay cancellable; a wedged attempt is abandoned
+    -- by the supervisor's timeout (the waiter is abandoned, never
+    -- the release). A close that fails outright is retried once (a
+    -- one-shot injected fault clears); then we move on.
+    -- Residual: the bound covers every Haskell-level wait. A kernel
+    -- stall inside an UNSAFE foreign call in the close path (this
+    -- module's own 'removeLink', external sqlite bindings) under
+    -- a single capability — which the shipped provider pins (see
+    -- cbits/rts_bootstrap.c) — occupies the sole capability, so
+    -- even the supervisor's timer cannot fire. That is a platform
+    -- limit (Haskell timeouts cannot preempt unsafe FFI), not a
+    -- closable gap: no Haskell-level restructuring survives it.
+    closeQuietly s = do
+      done <- newEmptyMVar :: IO (MVar ())
+      _ <- forkIOWithUnmask (\unmask -> unmask (supervise done))
+      uninterruptibleMask_ (takeMVar done)
+      where
+        supervise doneM =
+          (do att <- newEmptyMVar :: IO (MVar ())
+              _ <- forkIO (tryTwice >> putMVar att ())
+              _ <- timeout (10 * 1000000) (takeMVar att)
+              pure ())
+          `finally` putMVar doneM ()
+        tryTwice = do
+          e1 <- try (storeClose s) :: IO (Either SomeException ())
+          case e1 of
+            Right () -> pure ()
+            Left (_ :: SomeException) -> do
+              e2 <- try (storeClose s) :: IO (Either SomeException ())
+              case e2 of
+                Right () -> pure ()
+                Left (_ :: SomeException) -> pure ()
     seatAndSeed store loaded plan = do
       let seeds = planSeeds plan
       eSeat <- seatAll env [trSlot t | t <- seeds]

@@ -18,6 +18,15 @@ module StoreSpec
   ( spec
   , contractSpec
   , Opener (..)
+  , EnvScope
+  , newEnvScope
+  , withEnvGate
+  , withOpenPause
+  , withProcRoot
+  , forkOpener
+  , closeStoreResult
+  , closeStdResult
+  , closeReconciledResult
   , holderMain
   , spawnHolderEnv
   , releaseHolder
@@ -33,15 +42,16 @@ module StoreSpec
   , freshObject
   ) where
 
-import Control.Concurrent (forkFinally, forkIO, killThread, threadDelay)
+import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, myThreadId, threadDelay, withMVar)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar, tryReadMVar, tryTakeMVar)
-import Control.Exception (AsyncException (ThreadKilled), bracket, bracket_, fromException, mask)
-import Control.Monad (replicateM_, when)
+import Control.Exception (AsyncException (ThreadKilled, UserInterrupt), SomeException, bracket, bracket_, finally, fromException, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Monad (forM, forM_, replicateM_, unless, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (isAlphaNum, isSpace)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf, isPrefixOf, sort)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
+import GHC.Clock (getMonotonicTime)
+import Data.List (isInfixOf, isPrefixOf, partition, sort)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -53,8 +63,8 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castStablePtrToPtr)
 import Foreign.Storable (peek, poke)
-import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removeFile, renameFile)
-import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removeFile, renameFile)
+import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
 import System.IO.Error (catchIOError)
@@ -65,6 +75,7 @@ import System.Posix.Signals (sigKILL, signalProcess)
 import System.Posix.Types (Fd, ProcessID)
 import System.Process (CreateProcess (..), ProcessHandle, createProcess, proc)
 import System.Timeout (timeout)
+import qualified System.Posix.Env as PosixEnv
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -95,6 +106,7 @@ import Haskoki.Runtime.Storage
   ( CommitResult (..)
   , CredentialRecord (..)
   , DesiredToken (..)
+  , FaultInjector (..)
   , FaultPoint (..)
   , IdentityRefusal (..)
   , JobBody (..)
@@ -133,8 +145,8 @@ import Haskoki.Runtime.Storage
   )
 import Haskoki.FFI.Async (haskokiAsyncStoreClose, haskokiAsyncStoreOpen)
 import StoreFixtures
-  ( StoreState (..), assertUnchanged, awaitHolderExit, captureState, claimReap, closeAcquired
-  , expectStdNeedsMigration, loadConfigOrFail, makeTempDir, openReconciled, rawExec, rawTexts
+  ( EnvScope, StoreState (..), assertUnchanged, awaitHolderExit, captureState, claimReap, closeAcquired
+  , expectStdNeedsMigration, loadConfigOrFail, makeTempDir, newEnvScope, openReconciled, rawExec, rawTexts
   , reapedPid, releaseHolder, spawnedPid, storePackageRoot, waitBounded, withFileMode
   , writeStoreConfig )
 import Haskoki.FFI.Standard
@@ -153,6 +165,7 @@ import Haskoki.FFI.Standard
   , haskokiStdOpenSession
   , haskokiStdSetPin
   , openStdInstance
+  , openStdStore
   , openStdStoreWith
   )
 import Haskoki.Runtime.Async (newAsyncTable)
@@ -169,7 +182,7 @@ import Haskoki.Runtime.Config
   )
 import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
-import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), SQLiteTestHooks (..), livenessFromProbes, noSQLiteTestHooks, openSQLiteStore, openSQLiteStoreWith, openSQLiteStoreWithHooks)
+import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), SQLiteTestHooks (..), livenessFromProbes, noSQLiteTestHooks, openSQLiteStore, openSQLiteStoreWith, openSQLiteStoreWithHooks, pauseForFreshCreate, waitForGoFile, waitForPoll)
 import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
@@ -327,8 +340,18 @@ testOpenFdSourceGate = do
             else pure [f | takeExtension f `elem` [".hs", ".c", ".h"]]) es
 
 -- | Both backends run the shared contract, plus sqlite-only cases.
-spec :: TestTree
-spec = testGroup "store contract"
+--
+-- The process-wide env mutators (every @withProcRoot@/@withOpenPause@
+-- user below) share one atomic gate held through arming and
+-- restoration: the AllFinish chain already serializes full runs, and
+-- the gate additionally serializes name-filtered runs whose filter
+-- drops chain links. Readers that need the real @\/proc@ use the
+-- inert opener, so they are immune either way. Child processes are
+-- spawned from the scope's frozen environment snapshot, never from a
+-- live 'getEnvironment' that could race a concurrent restore. The
+-- scope is acquired once in 'Main' and passed in.
+spec :: IO EnvScope -> TestTree
+spec mkScope = testGroup "store contract"
   [ contractSpec "memory" memoryOpener
   , contractSpec "sqlite" sqliteOpener
   , testGroup "sqlite-only"
@@ -342,40 +365,85 @@ spec = testGroup "store contract"
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
       , testCase "raw columns contain no pointers or handles" testRawColumnsClean
       , testCase "live schema matches spec/storage-schema.sql" testSchemaShape
-      , testCase "stale lock takeable; masked proc and held flock refuse" testOwnershipGuards
+      , testCase "stale lock takeable; masked proc and held flock refuse" (withEnvGate mkScope (testOwnershipGuards mkScope))
       , testCase "ppid-0 liveness mapping" testLivenessMapping
-      , testCase "lock deletion cannot fork a live owner" testUnlinkRefuses
-      , testCase "owner close keeps a replacement lock" testCloseKeepsReplacement
+      , testCase "lock deletion cannot fork a live owner" (testUnlinkRefuses mkScope)
+      , testCase "owner close keeps a replacement lock" (testCloseKeepsReplacement mkScope)
       -- The proc-root tests mutate HASKOKI_PROC_ROOT process-wide,
       -- the pause tests mutate HASKOKI_OPEN_PAUSE process-wide, and
       -- the ownership-guards / kill-retry tests consult the real
-      -- /proc (their stale-takeover phases); chain them so they
-      -- never run concurrently with each other. (The
+      -- /proc (their stale-takeover phases); chain them so full
+      -- (unfiltered) runs never run them concurrently. Name-filtered
+      -- runs (@-p@) drop chain links, so every mutator below also
+      -- registers through the atomic 'withEnvGate', which serializes
+      -- them even when the chain is filtered away. (The
       -- unlink/replacement tests neither mutate the env nor consult
       -- liveness, so they stay parallel.)
       , after AllFinish "/stale lock takeable; masked proc and held flock refuse/" $
-          testCase "unreadable proc root refuses cleanly" testProcUnreadableRefuses
+          testCase "unreadable proc root refuses cleanly" (withEnvGate mkScope (testProcUnreadableRefuses mkScope))
       , after AllFinish "/unreadable proc root refuses cleanly/" $
-          testCase "partially masked proc refuses as unknowable" testProcPartialMaskRefuses
+          testCase "partially masked proc refuses as unknowable" (withEnvGate mkScope (testProcPartialMaskRefuses mkScope))
       , after AllFinish "/partially masked proc refuses as unknowable/" $
-          testCase "fresh open guards the database before init" testFreshGuardBeforeInit
+          testCase "fresh open guards the database before init" (withEnvGate mkScope (testFreshGuardBeforeInit mkScope))
       , after AllFinish "/fresh open guards the database before init/" $
-          testCase "database swapped during open aborts" testSwappedDbAborts
+          testCase "database swapped during open aborts" (withEnvGate mkScope (testSwappedDbAborts mkScope))
       , after AllFinish "/database swapped during open aborts/" $
-          testCase "cancellation during db-guard retry releases the sidecar" testKillDuringDbRetry
+          testCase "cancellation during db-guard retry releases the sidecar" (testKillDuringDbRetry mkScope)
       , after AllFinish "/cancellation during db-guard retry releases the sidecar/" $
-          testCase "selective owner hiding refuses safely" testSelectiveHideRefuses
+          testCase "selective owner hiding refuses safely" (withEnvGate mkScope (testSelectiveHideRefuses mkScope))
       , after AllFinish "/selective owner hiding refuses safely/" $
-          testCase "pause binds to the intended opener" testPauseBindsToIntendedOpener
+          testCase "pause binds to the intended opener" (withEnvGate mkScope (testPauseBindsToIntendedOpener mkScope))
       , after AllFinish "/pause binds to the intended opener/" $
-          testCase "lock naming pid 0 is takeable without probing" testPidZeroTakeable
+          testCase "pre-existing go file releases the pause promptly" (withEnvGate mkScope (testPauseGoPresentProceeds mkScope))
+      , after AllFinish "/pre-existing go file releases the pause promptly/" $
+          testCase "pause waits on the loop directly" (withEnvGate mkScope (testPauseDirectWaitsOnLoop mkScope))
+      -- No chain link: the poll-loop unit test touches no
+      -- process-wide env, only its own scratch directory.
+      , testCase "go handshake polls until the file appears" testGoHandshakePolls
+      -- Ungated (no env to arm): mkScope is only for tracking the
+      -- delayed writer so a failure cannot strand it.
+      , testCase "go file handshake polls the filesystem" (testGoHandshakeFilePolls mkScope)
+      , after AllFinish "/pre-existing go file releases the pause promptly/" $
+          testCase "lock naming pid 0 refuses dead-by-rule without naming pid 0" (withEnvGate mkScope (testPidZeroTakeable mkScope))
       -- The reserve-death case takes over a SIGKILLed child's
       -- lock via the real /proc, so it joins the same chain.
-      , after AllFinish "/lock naming pid 0 is takeable without probing/" $
-          testCase "death after reservation leaves a gap, never reuse" testReserveDeathGap
-      -- Stale-lock takeover consults the real /proc for pid 1 and
-      -- the opener's own pid, so it joins the same chain after
-      -- every proc-root mutator.
+      -- The new seam tests mutate HASKOKI_PROC_ROOT/HASKOKI_OPEN_PAUSE
+      -- process-wide too, so they join the same chain here and
+      -- register through 'withEnvGate' like every other mutator.
+      , after AllFinish "/lock naming pid 0 refuses dead-by-rule without naming pid 0/" $
+          testCase "env seams inert without opt-in (proc root)" (withEnvGate mkScope (testProcRootInertWithoutOptIn mkScope))
+      , after AllFinish "/env seams inert without opt-in (proc root)/" $
+          testCase "env seams honored with opt-in (proc root)" (withEnvGate mkScope (testProcRootHonoredWithOptIn mkScope))
+      , after AllFinish "/env seams honored with opt-in (proc root)/" $
+          testCase "pause seam inert without opt-in" (withEnvGate mkScope (testPauseInertWithoutOptIn mkScope))
+      , after AllFinish "/pause seam inert without opt-in/" $
+          testCase "serving open honors the pause seam under opt-in" (withEnvGate mkScope (testServingOpenHonorsPauseSeam mkScope))
+      , after AllFinish "/serving open honors the pause seam under opt-in/" $
+          testCase "serving open inert without opt-in" (withEnvGate mkScope (testServingOpenInertByDefault mkScope))
+      , after AllFinish "/serving open inert without opt-in/" $
+          testCase "serving open waits for the go file" (withEnvGate mkScope (testServingOpenWaitsForGo mkScope))
+      , after AllFinish "/serving open waits for the go file/" $
+          testCase "serving open resumes promptly on an early go" (withEnvGate mkScope (testServingOpenResumesPromptly mkScope))
+      , after AllFinish "/serving open resumes promptly on an early go/" $
+          testCase "cancelled open retries a faulted close" (withEnvGate mkScope (testCancelledOpenRetriesClose mkScope))
+      , after AllFinish "/cancelled open retries a faulted close/" $
+          testCase "kill during release still restores the env" (withEnvGate mkScope (testKillDuringReleaseRestoresEnv mkScope))
+      , after AllFinish "/kill during release still restores the env/" $
+          testCase "kill during release reaps the remaining workers" (withEnvGate mkScope (testKillDuringReleaseKeepsWorkers mkScope))
+      , after AllFinish "/kill during release reaps the remaining workers/" $
+          testCase "kill during join is not swallowed" (withEnvGate mkScope (testKillDuringJoinPropagates mkScope))
+      , after AllFinish "/kill during join is not swallowed/" $
+          testCase "wedged closer is abandoned within the drain bound and reported" (withEnvGate mkScope (testWedgedCloserAbandoned mkScope))
+      , after AllFinish "/wedged closer is abandoned within the drain bound and reported/" $
+          testCase "serving open proceeds when go never arrives" (withEnvGate mkScope (testServingOpenNoGoCompletesAtCap mkScope))
+      , after AllFinish "/serving open proceeds when go never arrives/" $
+          testCase "reconciliation fixture preserves the opt-in" (withEnvGate mkScope (testReconciledHonorsOptIn mkScope))
+      , after AllFinish "/reconciliation fixture preserves the opt-in/" $
+          testCase "death after reservation leaves a gap, never reuse" (withEnvGate mkScope (testReserveDeathGap mkScope))
+      -- Stale-lock takeover consults the real /proc for pid 1
+      -- (own-pid entries take the same-process shortcut straight to
+      -- the flock, with no liveness probe at all), so it joins the
+      -- same chain after every proc-root mutator.
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
           testStaleLockTakeoverServing
       ]
@@ -1944,24 +2012,24 @@ testSchemaShape = do
 -- (no fail-closed overreach); a second open with owner liveness
 -- unknowable is refused; and a stale-pid lock whose kernel lock is
 -- held is refused until the holder goes away.
-testOwnershipGuards :: IO ()
-testOwnershipGuards = do
-  staleTakeable
-  heldFlockRefuses
-  maskedProcRefuses
+testOwnershipGuards :: IO EnvScope -> IO ()
+testOwnershipGuards mkScope = do
+  (staleTakeable mkScope)
+  (heldFlockRefuses mkScope)
+  (maskedProcRefuses mkScope)
 
 -- | Variant guard: a lock naming a provably-dead pid, with no
 -- kernel-lock holder, is taken over; the lock is re-owned and the
 -- seeded data survives the takeover.
-staleTakeable :: IO ()
-staleTakeable =
+staleTakeable :: IO EnvScope -> IO ()
+staleTakeable mkScope =
   bracket (makeTempDir "haskoki-storage-stale") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "store.db"
     e0 <- openSQLiteStore path
     s0 <- either (\e -> assertFailure ("stale seed open: " ++ show e)) pure e0
     _ <- seedStore s0
     storeClose s0
-    deadPid <- reapedPid
+    deadPid <- reapedPid mkScope
     writeFile (path ++ ".lock") (show deadPid ++ "\n")
     e1 <- openSQLiteStore path
     s1 <- either (\e -> assertFailure ("stale takeover failed: " ++ show e)) pure e1
@@ -1977,14 +2045,14 @@ staleTakeable =
 -- live-but-hidden owner from the store's point of view) refuses the
 -- takeover with 'StoreSecondWriter'; once the holder goes away the
 -- same lock is takeable.
-heldFlockRefuses :: IO ()
-heldFlockRefuses =
+heldFlockRefuses :: IO EnvScope -> IO ()
+heldFlockRefuses mkScope =
   bracket (makeTempDir "haskoki-storage-held") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "store.db"
     e0 <- openSQLiteStore path
     s0 <- either (\e -> assertFailure ("held seed open: " ++ show e)) pure e0
     storeClose s0
-    deadPid <- reapedPid
+    deadPid <- reapedPid mkScope
     writeFile (path ++ ".lock") (show deadPid ++ "\n")
     bracket (openFd (path ++ ".lock") ReadOnly defaultFileFlags) closeFd $ \holderFd -> do
       held <- testTryFlock holderFd
@@ -2007,7 +2075,10 @@ heldFlockRefuses =
 -- and refused while another fd holds it. A genuine second open in
 -- the same process still refuses: flock is per open file
 -- description, so the second open's takeover attempt meets the
--- first open's held lock.
+-- first open's held lock. All cases use the default (inert) opener,
+-- so the verdicts come from the real @\/proc@ and the kernel lock,
+-- never the env seams — a concurrent fake-root arming in a
+-- filtered run cannot reclassify them.
 testStaleLockTakeoverServing :: TestTree
 testStaleLockTakeoverServing = testGroup "stale locks take over when no holder keeps them; second open still refuses"
   [ testCase "own pid, free lock is taken over" $
@@ -2104,20 +2175,20 @@ testStaleLockTakeoverServing = testGroup "stale locks take over when no holder k
 -- same-process guard before liveness is ever consulted, so it can
 -- never pin the fail-closed path (and its message carries no
 -- "unknowable" on either base or patch).
-maskedProcRefuses :: IO ()
-maskedProcRefuses =
+maskedProcRefuses :: IO EnvScope -> IO ()
+maskedProcRefuses mkScope =
   bracket (makeTempDir "haskoki-storage-masked") removeDirectoryRecursive $ \dir ->
     bracket (makeTempDir "haskoki-storage-emptyproc") removeDirectoryRecursive $ \emptyProc -> do
       reaped <- newIORef False
       let path = dir </> "store.db"
           doneFile = dir </> "holder.done"
           readyFile = dir </> "holder.ready"
-      bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+      bracket (spawnHolder mkScope path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
         holderPid <- spawnedPid ph "masked"
         awaitLockOwner path holderPid
         awaitDone readyFile (6000 :: Int)
-        withProcRoot emptyProc $ do
-          e2 <- openSQLiteStore path
+        withProcRoot mkScope emptyProc $ do
+          e2 <- openSQLiteStoreWith True path defaultLimits noFaults
           case e2 of
             Right s2 -> do
               storeClose s2
@@ -2174,6 +2245,10 @@ holderMain path doneFile readyFile = do
 -- close and exit.
 holderStoreMain :: FilePath -> FilePath -> FilePath -> Maybe String -> IO ()
 holderStoreMain path doneFile readyFile mode = do
+  -- Inert opener: the holder is infrastructure, never the seam under
+  -- test, and it inherits the test process's environment — an armed
+  -- fake root or pause handshake for another test's path must not be
+  -- able to refuse or stall the holder open.
   e <- openSQLiteStore path
   case e of
     Left _ -> exitImmediately (ExitFailure 1)
@@ -2232,7 +2307,7 @@ authProbeMain path = do
     _ -> exitImmediately (ExitFailure 5)
   where
     sqliteCfg = defaultConfig
-      { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+      { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False }
 
 -- | Open one read/write session on slot 0 for the probe.
 openProbeSession :: StablePtr StdInstance -> IO (Maybe CULong)
@@ -2290,7 +2365,7 @@ splitScript = go
 -- from the journey suite).
 provisionCfg :: FilePath -> Config
 provisionCfg path = defaultConfig
-  { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True
+  { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False
   , cfgTokens = TokensCfg [("haskoki-demo", "5678", "1234"), ("haskoki-ops", "6789", "2345")]
   }
 
@@ -2446,62 +2521,289 @@ awaitLockOwner path holderPid = do
 -- thread is inside SQLite can wedge the child forever. The spawned
 -- child starts with only stdio fds (@close_fds@) and a clean
 -- address space.
-spawnHolder :: FilePath -> FilePath -> FilePath -> IO ProcessHandle
-spawnHolder path doneFile readyFile = do
+spawnHolder :: IO EnvScope -> FilePath -> FilePath -> FilePath -> IO ProcessHandle
+spawnHolder mkScope path doneFile readyFile = do
+  (_, _, frozenEnv) <- mkScope
   exe <- getExecutablePath
-  (_, _, _, ph) <- createProcess ((proc exe ["--holder", path, doneFile, readyFile]) { close_fds = True })
+  (_, _, _, ph) <- createProcess ((proc exe ["--holder", path, doneFile, readyFile]) { close_fds = True, env = Just frozenEnv })
   pure ph
 
 -- | Spawn a holder child with extra environment entries (merged
--- over the parent's environment for the child only): mode
--- switches travel here so concurrent holders never observe a
--- process-wide mutation.
-spawnHolderEnv :: [(String, String)] -> FilePath -> FilePath -> FilePath -> IO ProcessHandle
-spawnHolderEnv extra path doneFile readyFile = do
+-- over the suite's frozen environment snapshot for the child only):
+-- mode switches travel here so concurrent holders never observe a
+-- process-wide mutation, and the snapshot (taken once before any
+-- test runs) never races a concurrent restore the way a live
+-- 'getEnvironment' would.
+spawnHolderEnv :: IO EnvScope -> [(String, String)] -> FilePath -> FilePath -> FilePath -> IO ProcessHandle
+spawnHolderEnv mkScope extra path doneFile readyFile = do
+  (_, _, frozenEnv) <- mkScope
   exe <- getExecutablePath
-  parentEnv <- getEnvironment
-  let merged = extra ++ [(k, v) | (k, v) <- parentEnv, k `notElem` map fst extra]
+  let merged = extra ++ [(k, v) | (k, v) <- frozenEnv, k `notElem` map fst extra]
   (_, _, _, ph) <- createProcess
     ((proc exe ["--holder", path, doneFile, readyFile])
       { close_fds = True, env = Just merged })
   pure ph
 
+-- | Workers tracked for one test: the forking test thread, the
+-- opener thread, its completion flag, and the drain that closes an
+-- unconsumed successful open. Entries carry their owner's thread
+-- id, so a release reaps exactly the current test's workers even
+-- when name-filtered runs overlap tests on different pool threads.
+type WorkerReg = IORef [(ThreadId, ThreadId, MVar (), IO ())]
+
+-- | Serialize one process-wide env mutation through the scope's
+-- atomic gate (held through arming, the body, worker cleanup, and
+-- restoration, so a concurrent mutator can neither arm over us nor
+-- restore our values away). Every mutator test registers through
+-- this: a future mutator that forgets the gate is a review-time
+-- defect, caught by inspection (every helper user must register
+-- gated).
+withEnvGate :: IO EnvScope -> IO a -> IO a
+withEnvGate mkScope action = do
+  (gate, _, _) <- mkScope
+  withMVar gate (\_ -> action)
+
+-- | Fork a one-shot opener worker tracked in the scope's registry.
+-- The worker's result lands in the returned 'MVar' exactly as with
+-- a raw fork; the difference is lifetime: the arming helpers reap
+-- every tracked worker (kill, bounded join, drain of an unconsumed
+-- successful open through @closer@) before restoring the env, so a
+-- timed-out test never leaves an orphaned opener behind to read the
+-- next test's armed variables — and never leaks an unconsumed open.
+forkOpener :: IO EnvScope -> (e -> IO ()) -> IO e -> IO (MVar e)
+forkOpener mkScope closer open = do
+  (_, reg, _) <- mkScope
+  resVar <- newEmptyMVar
+  doneVar <- newEmptyMVar
+  mask_ $ do
+    me <- myThreadId
+    tid <- forkIO ((open >>= \e -> tryPutMVar resVar e >> pure ()) `finally` putMVar doneVar ())
+    atomicModifyIORef' reg (\w -> ((me, tid, doneVar, drain resVar) : w, ()))
+  pure resVar
+  where
+    -- A closer failure puts the result back so a later reap can
+    -- retry the close (SQLite retries a failed close for real);
+    -- without the put-back a failed close would silently drop a
+    -- handle the backend deliberately retained.
+    drain var = do
+      mRes <- tryTakeMVar var
+      case mRes of
+        Just e -> closer e `onException` (tryPutMVar var e >> pure ())
+        Nothing -> pure ()
+
+-- | Closer for a raw store open result: releases a successful
+-- open, ignores failures (nothing to release).
+closeStoreResult :: Either StoreError Store -> IO ()
+closeStoreResult (Right s) = storeClose s
+closeStoreResult (Left _) = pure ()
+
+-- | Closer for a serving-open result: releases the acquired store,
+-- ignores failures (nothing to release).
+closeStdResult :: Either StdStoreError (Maybe StdStore) -> IO ()
+closeStdResult (Right mss) = closeAcquired mss
+closeStdResult (Left _) = pure ()
+
+-- | Closer for a reconciliation-fixture open result.
+closeReconciledResult :: Either StdStoreError (Maybe StdStore) -> IO ()
+closeReconciledResult (Right mss) = closeAcquired mss
+closeReconciledResult (Left _) = pure ()
+
+-- | Reap the calling test's tracked workers, failing on problems.
+reapOwnWorkers :: IO EnvScope -> IO ()
+reapOwnWorkers mkScope = do
+  (_, reg, _) <- mkScope
+  me <- myThreadId
+  problems <- reapSelected (Just me) reg
+  unless (null problems) (assertFailure (unlines problems))
+
+-- | Reap a registry's entries, or — with @Just me@ — only the
+-- entries forked by one test thread, leaving concurrent tests'
+-- entries for their own release. Worker problems never throw:
+-- they accumulate as strings so the caller still restores the
+-- env and reaps everything. The one exception that escapes is an
+-- async kill of the releasing thread itself: the abort sweep
+-- reaps (boundedly) or kills the unreaped remainder first, so no
+-- worker is orphaned as an untracked live handle, and then the
+-- kill propagates. Both the kill and the join share one 10s
+-- bound (a pending kill delivery counts against it too): no
+-- worker state, including a wedged uninterruptible section, can
+-- stall the release past the bound. The suite never masks
+-- uninterruptibly in worker-reachable code (the one
+-- 'uninterruptibleMask_' guards microsecond close bookkeeping),
+-- so in practice the kill is prompt and the bound covers only
+-- the join.
+reapSelected :: Maybe ThreadId -> WorkerReg -> IO [String]
+reapSelected who reg = mask_ $ do
+  -- The whole traversal runs masked (interruptible): async
+  -- exceptions can only land at interruptible waits (the joins
+  -- and drain takes below), where the abort sweep below covers
+  -- them — never between popping the batch and installing that
+  -- sweep, which would lose the batch with no release to reap
+  -- it. The waits themselves stay killable, so prompt
+  -- cancellation is preserved.
+  workers <- atomicModifyIORef' reg (splitBy who)
+  -- Entries popped below as they finish, so an abort sweep can
+  -- tell finished workers (MVars consumed: re-reaping would stall
+  -- on the joined doneVar) from unreaped ones.
+  remainingVar <- newIORef workers
+  fmap concat $
+    (forM workers $ \w -> do
+        r <- reapOne w
+        atomicModifyIORef' remainingVar (\ws -> (drop 1 ws, ()))
+        pure r)
+    `onException` do
+      -- Abort sweep: a kill during the traversal must not orphan
+      -- the unreaped remainder as untracked live workers (their
+      -- registry entries are already gone). Reap them boundedly
+      -- now — drains stay idempotent (a consumed resVar is a fast
+      -- no-op, never a double close). Every attempt is caught: we
+      -- are already unwinding with the original kill, which must
+      -- keep propagating (a second kill degrades to a skipped
+      -- worker, never to a replaced exception).
+      -- Residual: a closer that FAILS after the sweep passed its
+      -- entry puts the handle back with no consumer left (the
+      -- inline retry lives in the unwound parent loop). Lock held
+      -- means the next open fails loudly (never silent); only a
+      -- choreographed failing closer under an external kill can
+      -- stage it — no in-suite trigger exists.
+      rest <- readIORef remainingVar
+      forM_ rest $ \w -> do
+        _ <- (try (reapOne w) :: IO (Either SomeException [String]))
+        pure ()
+  where
+    -- Never throws on worker problems and never parks entries for
+    -- other releases: every path either reaps the worker or
+    -- reports it, all within bounded time. Retries stay inside the
+    -- current release, so no failed worker (or its error report)
+    -- can leak into an unrelated test running later on the same
+    -- pool thread. The one exception that escapes is an async kill
+    -- of the releasing thread itself, which the abort sweep above
+    -- turns into reaped-or-killed remainder plus propagation.
+    reapOne (_, tid, doneVar, drain) = join (3 :: Int)
+      where
+        -- Bounded join: a slow worker gets up to ~30s total across
+        -- retries, then a loud report. Kill delivery itself is
+        -- prompt (no uninterruptible code on worker paths), so
+        -- retries only ever fire on genuine stalls.
+        join 0 = pure ["opener worker survived kill-and-join (wedged)"]
+        join n = do
+          -- A genuine async kill of the releasing thread must
+          -- propagate, not degrade into a retried round: a retry
+          -- that later succeeds would swallow the kill and return
+          -- normally. Timeout-internals races and sync failures
+          -- keep the old retry behavior (the timer's private
+          -- exception is not AsyncException-typed, and takeMVar
+          -- has no AsyncException-typed sync failure).
+          -- readMVar (not takeMVar): completion stays observable,
+          -- so an abort sweep re-joining a finished worker returns
+          -- instantly instead of stalling the full bound on the
+          -- consumed MVar. Single put, many peeks — same wakeup
+          -- semantics, re-entrant.
+          eJoin <- (try (timeout (10 * 1000000) (killThread tid >> readMVar doneVar)) :: IO (Either SomeException (Maybe ())))
+          case eJoin of
+            Left e -> case fromException e of
+              Just ThreadKilled -> throwIO e
+              Just UserInterrupt -> throwIO e
+              _ -> join (n - 1)
+            Right Nothing -> join (n - 1)
+            Right (Just _) -> closeIt (3 :: Int) "no error recorded"
+        -- Bounded close: each attempt runs forked with a 10s join,
+        -- so even an uninterruptible hang cannot stall the release
+        -- (the waiter is abandoned, never the release). A failed
+        -- attempt is retried (one-shot injected faults and SQLite's
+        -- own retryable failures clear on a second attempt); the
+        -- drain puts the result back on failure so retries see it.
+        -- A timeout is reported immediately (retrying a wedged
+        -- closer is futile, and a second attempt would just find
+        -- the resVar already consumed); a persistently failing close
+        -- is reported with its last error.
+        closeIt 0 why = pure ["opener drain failed persistently: " ++ why]
+        closeIt n _ = do
+          dd <- newEmptyMVar :: IO (MVar (Either SomeException ()))
+          _ <- forkIO (try drain >>= putMVar dd)
+          mDone <- timeout (10 * 1000000) (takeMVar dd)
+          case mDone of
+            Just (Right _) -> pure []
+            Just (Left ex) -> closeIt (n - 1) (show ex)
+            Nothing -> pure ["opener drain timed out (abandoned wedged closer)"]
+    splitBy Nothing w = ([], w)
+    splitBy (Just me) w = (others, mine)
+      where (mine, others) = partition (\(owner, _, _, _) -> owner == me) w
+
+-- | Restore a saved process-env value exactly: 'setEnv' removes
+-- empty-valued variables, so restoration goes through the POSIX
+-- binding, which sets them byte-for-byte.
+restoreEnv :: String -> Maybe String -> IO ()
+restoreEnv var Nothing = unsetEnv var
+restoreEnv var (Just val) = PosixEnv.setEnv var val True
+
+-- | Reap the calling test's workers, then run a restore action —
+-- kill-safe: a kill landing in the reap's interruptible join must
+-- not skip the restore and leave armed state behind for the next
+-- test. The reap outcome (including async death) is captured, the
+-- restore runs shielded, then the kill is rethrown or the problems
+-- reported unshielded — the invariant is "restore ran", not
+-- "report delivered".
+reapThenRestore :: IO EnvScope -> IO () -> IO ()
+reapThenRestore mkScope restore = do
+  (_, reg, _) <- mkScope
+  me <- myThreadId
+  eProblems <- try (reapSelected (Just me) reg)
+  mask_ restore
+  case eProblems of
+    Left (e :: SomeException) -> throwIO e
+    Right problems ->
+      unless (null problems) (assertFailure (unlines problems))
+
 -- | Run with @HASKOKI_PROC_ROOT@ overridden, restoring it afterwards.
-withProcRoot :: FilePath -> IO a -> IO a
-withProcRoot root action =
+-- Any inherited value is saved and restored, so a developer-exported
+-- variable never breaks the suite. Mutual exclusion between mutators
+-- comes from 'withEnvGate' at registration; tracked workers are
+-- reaped before the restore, so none outlives the armed region.
+withProcRoot :: IO EnvScope -> FilePath -> IO a -> IO a
+withProcRoot mkScope root action = do
   bracket (lookupEnv "HASKOKI_PROC_ROOT")
-          (\prev -> maybe (unsetEnv "HASKOKI_PROC_ROOT") (setEnv "HASKOKI_PROC_ROOT") prev)
+          (\prev -> reapThenRestore mkScope (restoreEnv "HASKOKI_PROC_ROOT" prev))
           (\_ -> setEnv "HASKOKI_PROC_ROOT" root >> action)
 
 -- | Run with @HASKOKI_OPEN_PAUSE@ (pause directory) and
 -- @HASKOKI_OPEN_PAUSE_PATH@ (intended opener's database path)
 -- overridden, restoring both afterwards. The path binding keeps
 -- unrelated parallel SQLite creators from pausing on our handshake.
-withOpenPause :: FilePath -> FilePath -> IO a -> IO a
-withOpenPause dir want action =
-  bracket (lookupEnv "HASKOKI_OPEN_PAUSE")
-          (\prev -> maybe (unsetEnv "HASKOKI_OPEN_PAUSE") (setEnv "HASKOKI_OPEN_PAUSE") prev)
-          (\_ -> setEnv "HASKOKI_OPEN_PAUSE" dir >> inner)
-  where
-    inner =
-      bracket (lookupEnv "HASKOKI_OPEN_PAUSE_PATH")
-              (\prev -> maybe (unsetEnv "HASKOKI_OPEN_PAUSE_PATH") (setEnv "HASKOKI_OPEN_PAUSE_PATH") prev)
-              (\_ -> setEnv "HASKOKI_OPEN_PAUSE_PATH" want >> action)
+-- Inherited values are saved and restored like above; mutual
+-- exclusion comes from 'withEnvGate' at registration. Both
+-- variables are acquired up front so the release reaps workers
+-- before restoring EITHER variable — no worker is ever resumed
+-- between the two restores.
+withOpenPause :: IO EnvScope -> FilePath -> FilePath -> IO a -> IO a
+withOpenPause mkScope dir want action =
+  bracket
+    (do prevDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
+        prevWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
+        setEnv "HASKOKI_OPEN_PAUSE" dir
+        -- A throwing second setter must not leave the first half
+        -- installed (bracket release would never run for it).
+        setEnv "HASKOKI_OPEN_PAUSE_PATH" want `onException` restoreEnv "HASKOKI_OPEN_PAUSE" prevDir
+        pure (prevDir, prevWant))
+    (\(prevDir, prevWant) -> reapThenRestore mkScope $ do
+        restoreEnv "HASKOKI_OPEN_PAUSE" prevDir
+        restoreEnv "HASKOKI_OPEN_PAUSE_PATH" prevWant)
+    (\_ -> action)
 
 -- | Unlink guard: deleting a live owner's lock path must not let
 -- a second opener take over by creating and flocking a different
 -- inode — exclusion is anchored to the database identity as well
 -- as the sidecar, so the replacement lock's sidecar flock
 -- succeeding still refuses at the database guard.
-testUnlinkRefuses :: IO ()
-testUnlinkRefuses =
+testUnlinkRefuses :: IO EnvScope -> IO ()
+testUnlinkRefuses mkScope =
   bracket (makeTempDir "haskoki-storage-unlink") removeDirectoryRecursive $ \dir -> do
     reaped <- newIORef False
     let path = dir </> "store.db"
         lockPath = path ++ ".lock"
         doneFile = dir </> "holder.done"
         readyFile = dir </> "holder.ready"
-    bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+    bracket (spawnHolder mkScope path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
       holderPid <- spawnedPid ph "unlink"
       awaitLockOwner path holderPid
       awaitDone readyFile (6000 :: Int)
@@ -2523,15 +2825,15 @@ testUnlinkRefuses =
 -- after a live owner's lock was deleted is NOT the owner's, so
 -- the owner's close must leave it byte-identical (unlink only the
 -- owned inode).
-testCloseKeepsReplacement :: IO ()
-testCloseKeepsReplacement =
+testCloseKeepsReplacement :: IO EnvScope -> IO ()
+testCloseKeepsReplacement mkScope =
   bracket (makeTempDir "haskoki-storage-replace") removeDirectoryRecursive $ \dir -> do
     reaped <- newIORef False
     let path = dir </> "store.db"
         lockPath = path ++ ".lock"
         doneFile = dir </> "holder.done"
         readyFile = dir </> "holder.ready"
-    bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+    bracket (spawnHolder mkScope path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
       holderPid <- spawnedPid ph "replace"
       awaitLockOwner path holderPid
       awaitDone readyFile (6000 :: Int)
@@ -2548,22 +2850,22 @@ testCloseKeepsReplacement =
 -- with a clean 'StoreSecondWriter' (never an uncaught
 -- 'IOException'), while a free lock is taken over (no holder to
 -- fork with, even though death cannot be proven).
-testProcUnreadableRefuses :: IO ()
-testProcUnreadableRefuses =
+testProcUnreadableRefuses :: IO EnvScope -> IO ()
+testProcUnreadableRefuses mkScope =
   bracket (makeTempDir "haskoki-storage-noproc") removeDirectoryRecursive $ \dir ->
     bracket (makeTempDir "haskoki-storage-denied") removeDirectoryRecursive $ \denied -> do
       let path = dir </> "store.db"
-      e0 <- openSQLiteStore path
+      e0 <- openSQLiteStoreWith True path defaultLimits noFaults
       s0 <- either (\e -> assertFailure ("noproc seed open: " ++ show e)) pure e0
       storeClose s0
-      deadPid <- reapedPid
+      deadPid <- reapedPid mkScope
       writeFile (path ++ ".lock") (show deadPid ++ "\n")
       withFileMode denied 0o000 $
-        withProcRoot denied $ do
+        withProcRoot mkScope denied $ do
           bracket (openFd (path ++ ".lock") ReadOnly defaultFileFlags) closeFd $ \holderFd -> do
             held <- testTryFlock holderFd
             assertBool "noproc: test holder took the kernel lock" held
-            e1 <- openSQLiteStore path
+            e1 <- openSQLiteStoreWith True path defaultLimits noFaults
             case e1 of
               Right s1 -> do
                 storeClose s1
@@ -2573,12 +2875,12 @@ testProcUnreadableRefuses =
                   ("unknowable" `isInfixOf` msg)
               Left other ->
                 assertFailure ("noproc: wrong error for unreadable proc: " ++ show other)
-          e2 <- openSQLiteStore path
+          e2 <- openSQLiteStoreWith True path defaultLimits noFaults
           s2 <- either (\e -> assertFailure ("noproc: takeover with free lock failed: " ++ show e)) pure e2
           me <- getProcessID
           readFile (path ++ ".lock") >>= assertEqual "noproc: lock re-owned" (show me ++ "\n")
           storeClose s2
-          e3 <- openSQLiteStore path
+          e3 <- openSQLiteStoreWith True path defaultLimits noFaults
           s3 <- either (\e -> assertFailure ("noproc: reopen after close: " ++ show e)) pure e3
           storeClose s3
 
@@ -2587,8 +2889,8 @@ testProcUnreadableRefuses =
 -- self-loop symlink: ELOOP for every runner, root included),
 -- cannot prove death — so a second open against a live owner is
 -- refused as unknowable, never misread as dead.
-testProcPartialMaskRefuses :: IO ()
-testProcPartialMaskRefuses =
+testProcPartialMaskRefuses :: IO EnvScope -> IO ()
+testProcPartialMaskRefuses mkScope =
   bracket (makeTempDir "haskoki-storage-pmask") removeDirectoryRecursive $ \dir ->
     bracket (makeTempDir "haskoki-storage-fakeproc") removeDirectoryRecursive $ \fakeProc -> do
       reaped <- newIORef False
@@ -2597,13 +2899,13 @@ testProcPartialMaskRefuses =
       let path = dir </> "store.db"
           doneFile = dir </> "holder.done"
           readyFile = dir </> "holder.ready"
-      bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+      bracket (spawnHolder mkScope path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
         holderPid <- spawnedPid ph "pmask"
         awaitLockOwner path holderPid
         awaitDone readyFile (6000 :: Int)
         writeFile (fakeProc </> "self") ""
-        withProcRoot fakeProc $ do
-          e1 <- openSQLiteStore path
+        withProcRoot mkScope fakeProc $ do
+          e1 <- openSQLiteStoreWith True path defaultLimits noFaults
           case e1 of
             Right s1 -> do
               storeClose s1
@@ -2623,8 +2925,8 @@ testProcPartialMaskRefuses =
         -- be bypassed as root (CI runs as root), misreading the live
         -- owner as dead.
         createSymbolicLink (show holderPid) (fakeProc </> show holderPid)
-        withProcRoot fakeProc $ do
-          e2 <- openSQLiteStore path
+        withProcRoot mkScope fakeProc $ do
+          e2 <- openSQLiteStoreWith True path defaultLimits noFaults
           case e2 of
             Right s2 -> do
               storeClose s2
@@ -2636,7 +2938,7 @@ testProcPartialMaskRefuses =
               assertFailure ("pmask: wrong error for denied owner entry: " ++ show other)
         writeFile doneFile "done\n"
         awaitHolderExit reaped ph "pmask"
-        e3 <- openSQLiteStore path
+        e3 <- openSQLiteStoreWith True path defaultLimits noFaults
         s3 <- either (\e -> assertFailure ("pmask reopen after close: " ++ show e)) pure e3
         storeClose s3
 
@@ -2648,26 +2950,22 @@ testProcPartialMaskRefuses =
 -- resume must complete harmlessly. Then A owns alone and the store
 -- reopens cleanly. In-process threads contend on @flock@ exactly
 -- like processes (separate opens), so no spawn is needed.
-testFreshGuardBeforeInit :: IO ()
-testFreshGuardBeforeInit =
+testFreshGuardBeforeInit :: IO EnvScope -> IO ()
+testFreshGuardBeforeInit mkScope =
   bracket (makeTempDir "haskoki-storage-freshg") removeDirectoryRecursive $ \dir ->
     bracket (makeTempDir "haskoki-storage-pause") removeDirectoryRecursive $ \pauseDir -> do
       let path = dir </> "store.db"
           lockPath = path ++ ".lock"
           pausedFile = pauseDir </> "paused"
           goFile = pauseDir </> "go"
-      withOpenPause pauseDir path $ do
-        resVar <- newEmptyMVar
-        _ <- forkIO $ do
-          e <- openSQLiteStore path
-          _ <- tryPutMVar resVar e
-          pure ()
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeStoreResult (openSQLiteStoreWith True path defaultLimits noFaults)
         awaitDone pausedFile (300 :: Int)
         paused <- doesFileExist pausedFile
         assertBool "freshg: opener did not pause (seam not honored?)" paused
         -- The interleaving: A loses its sidecar while paused.
         removeFile lockPath
-        e2 <- openSQLiteStore path
+        e2 <- openSQLiteStoreWith True path defaultLimits noFaults
         case e2 of
           Right s2 -> do
             storeClose s2
@@ -2678,13 +2976,18 @@ testFreshGuardBeforeInit =
           Left other ->
             assertFailure ("freshg: wrong error during paused fresh init: " ++ show other)
         writeFile goFile "go\n"
-        mA <- timeout (30 * 1000000) (takeMVar resVar)
+        -- Peek, don't take: the result stays registered for the
+        -- reap drain, which owns the single close. The eager close
+        -- below is still needed (the reopen requires the lock
+        -- released); the drain's later close of the same handle is
+        -- a no-op on the closed handle.
+        mA <- timeout (30 * 1000000) (readMVar resVar)
         eA <- case mA of
           Nothing -> assertFailure "freshg: paused opener wedged after release"
           Just e -> pure e
         sA <- either (\e -> assertFailure ("freshg: paused opener failed: " ++ show e)) pure eA
         storeClose sA
-        e3 <- openSQLiteStore path
+        e3 <- openSQLiteStoreWith True path defaultLimits noFaults
         s3 <- either (\e -> assertFailure ("freshg reopen after close: " ++ show e)) pure e3
         eLoaded <- storeLoadTokens s3
         _ <- either (\e -> assertFailure ("freshg load after close: " ++ show e)) pure eLoaded
@@ -2695,8 +2998,8 @@ testFreshGuardBeforeInit =
 -- with "replaced" instead of initializing another file — and the
 -- planted file is left byte-identical. (The planted store is
 -- created outside the pause env: it must not pause itself.)
-testSwappedDbAborts :: IO ()
-testSwappedDbAborts =
+testSwappedDbAborts :: IO EnvScope -> IO ()
+testSwappedDbAborts mkScope =
   bracket (makeTempDir "haskoki-storage-swap") removeDirectoryRecursive $ \dir ->
     bracket (makeTempDir "haskoki-storage-pause") removeDirectoryRecursive $ \pauseDir -> do
       let path = dir </> "store.db"
@@ -2709,26 +3012,20 @@ testSwappedDbAborts =
       _ <- seedStore plant
       storeClose plant
       plantBytes <- BS.readFile plantSrc
-      withOpenPause pauseDir path $ do
-        resVar <- newEmptyMVar
-        _ <- forkIO $ do
-          e <- openSQLiteStore path
-          _ <- tryPutMVar resVar e
-          pure ()
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeStoreResult (openSQLiteStoreWith True path defaultLimits noFaults)
         awaitDone pausedFile (300 :: Int)
         paused <- doesFileExist pausedFile
         assertBool "swap: opener did not pause (seam not honored?)" paused
         renameFile path movedAside
         renameFile plantSrc path
         writeFile goFile "go\n"
-        mA <- timeout (30 * 1000000) (takeMVar resVar)
+        mA <- timeout (30 * 1000000) (readMVar resVar)
         eA <- case mA of
           Nothing -> assertFailure "swap: paused opener wedged after release"
           Just e -> pure e
         case eA of
-          Right sA -> do
-            storeClose sA
-            assertFailure "swap: opener initialized a swapped-in database"
+          Right _ -> assertFailure "swap: opener initialized a swapped-in database"
           Left (StoreIO msg) ->
             assertBool ("swap: expected replaced-database refusal, got: " ++ msg)
               ("replaced" `isInfixOf` msg)
@@ -2738,7 +3035,7 @@ testSwappedDbAborts =
         assertEqual "swap: planted database modified" plantBytes afterBytes
         aside <- doesFileExist movedAside
         assertBool "swap: paused opener's file went missing" aside
-        e3 <- openSQLiteStore path
+        e3 <- openSQLiteStoreWith True path defaultLimits noFaults
         s3 <- either (\e -> assertFailure ("swap reopen planted: " ++ show e)) pure e3
         eLoaded <- storeLoadTokens s3
         loaded <- either (\e -> assertFailure ("swap load planted: " ++ show e)) pure eLoaded
@@ -2754,8 +3051,8 @@ testSwappedDbAborts =
 -- checks completion, since scheduling can hide the short-lived
 -- sidecar. A missed kill still asserts the clean end-state; the
 -- hit counter requires at least one actual ThreadKilled outcome.
-testKillDuringDbRetry :: IO ()
-testKillDuringDbRetry =
+testKillDuringDbRetry :: IO EnvScope -> IO ()
+testKillDuringDbRetry mkScope =
   bracket (makeTempDir "haskoki-storage-killr") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "store.db"
         lockPath = path ++ ".lock"
@@ -2779,7 +3076,7 @@ testKillDuringDbRetry =
             Nothing -> assertFailure "killr: opener neither published ownership nor completed"
         loop 0 = pure ()
         loop n = do
-          deadPid <- reapedPid
+          deadPid <- reapedPid mkScope
           writeFile lockPath (show deadPid ++ "\n")
           bracket (openFd path ReadOnly defaultFileFlags) closeFd $ \holdFd -> do
             held <- testTryFlock holdFd
@@ -2827,8 +3124,8 @@ testKillDuringDbRetry =
 -- surgical filter hiding ONLY the owner is
 -- @\/proc@-indistinguishable from a dead owner and falls through
 -- to the kernel-lock backstop, which still refuses.
-testSelectiveHideRefuses :: IO ()
-testSelectiveHideRefuses =
+testSelectiveHideRefuses :: IO EnvScope -> IO ()
+testSelectiveHideRefuses mkScope =
   bracket (makeTempDir "haskoki-storage-selhide") removeDirectoryRecursive $ \dir ->
     bracket (makeTempDir "haskoki-storage-fakeproc") removeDirectoryRecursive $ \fakeProc -> do
       reaped <- newIORef False
@@ -2837,7 +3134,7 @@ testSelectiveHideRefuses =
       let path = dir </> "store.db"
           doneFile = dir </> "holder.done"
           readyFile = dir </> "holder.ready"
-      bracket (spawnHolder path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+      bracket (spawnHolder mkScope path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
         holderPid <- spawnedPid ph "selhide"
         awaitLockOwner path holderPid
         awaitDone readyFile (6000 :: Int)
@@ -2845,8 +3142,8 @@ testSelectiveHideRefuses =
         -- (ENOENT), parent witness absent -> unknowable.
         writeFile (fakeProc </> "self") ""
         writeFile (fakeProc </> show me) ""
-        withProcRoot fakeProc $ do
-          e1 <- openSQLiteStore path
+        withProcRoot mkScope fakeProc $ do
+          e1 <- openSQLiteStoreWith True path defaultLimits noFaults
           case e1 of
             Right s1 -> do
               storeClose s1
@@ -2860,8 +3157,8 @@ testSelectiveHideRefuses =
         -- only the live owner hidden -> takeover attempted, kernel
         -- lock backstop refuses.
         writeFile (fakeProc </> show ppid) ""
-        withProcRoot fakeProc $ do
-          e2 <- openSQLiteStore path
+        withProcRoot mkScope fakeProc $ do
+          e2 <- openSQLiteStoreWith True path defaultLimits noFaults
           case e2 of
             Right s2 -> do
               storeClose s2
@@ -2883,66 +3180,980 @@ testSelectiveHideRefuses =
 -- SQLite creator — contract/commit tests, inherited-env holders —
 -- paused on the same handshake file and could satisfy the
 -- controller's handshake before the intended opener paused.)
-testPauseBindsToIntendedOpener :: IO ()
-testPauseBindsToIntendedOpener =
+testPauseBindsToIntendedOpener :: IO EnvScope -> IO ()
+testPauseBindsToIntendedOpener mkScope =
   bracket (makeTempDir "haskoki-storage-pausebind") removeDirectoryRecursive $ \dir ->
     bracket (makeTempDir "haskoki-storage-pause") removeDirectoryRecursive $ \pauseDir -> do
       let intended = dir </> "intended.db"
           other = dir </> "other.db"
-      withOpenPause pauseDir intended $ do
-        resVar <- newEmptyMVar
-        _ <- forkIO $ do
-          e <- openSQLiteStore other
-          _ <- tryPutMVar resVar e
-          pure ()
-        mDone <- timeout (5 * 1000000) (takeMVar resVar)
+      withOpenPause mkScope pauseDir intended $ do
+        resVar <- forkOpener mkScope closeStoreResult (openSQLiteStoreWith True other defaultLimits noFaults)
+        mDone <- timeout (5 * 1000000) (readMVar resVar)
         eOther <- case mDone of
           Nothing -> assertFailure "pausebind: unrelated fresh open paused (seam leaked across openers)"
           Just e -> pure e
-        sOther <- either (\e -> assertFailure ("pausebind: unrelated open failed: " ++ show e)) pure eOther
-        storeClose sOther
+        case eOther of
+          Left e -> assertFailure ("pausebind: unrelated open failed: " ++ show e)
+          Right _ -> pure ()
         pausedExists <- doesFileExist (pauseDir </> "paused")
         assertBool "pausebind: pause seam fired for an unintended opener" (not pausedExists)
+        resVar2 <- forkOpener mkScope closeStoreResult (openSQLiteStoreWith True intended defaultLimits noFaults)
+        let awaitPaused 0 = assertFailure "pausebind: intended open did not pause (binding broken)"
+            awaitPaused n = do
+              here <- doesFileExist (pauseDir </> "paused")
+              if here then pure () else threadDelay 100000 >> awaitPaused (n - 1 :: Int)
+        awaitPaused (50 :: Int)
+        -- Blocked proof: the opener must still be waiting at 0.5s,
+        -- 1.5s and 2.5s with no go file present. (A seam that wrote
+        -- `paused` and returned on any shorter idle — including a
+        -- three-second unconditional delay in place of the go loop —
+        -- would have published by the fourth sample.) The go handshake
+        -- must then release it within 5s: the production seam polls
+        -- every 10ms, so an ignored or missing go file reads as a
+        -- poll-cap timeout instead.
+        -- A completed open here means the seam never fired: fail
+        -- without consuming it (a peek, not a take), so the reap
+        -- drain still owns the single close at teardown.
+        let stillWaiting tag = do
+              early <- tryReadMVar resVar2
+              case early of
+                Just _ -> assertFailure ("pausebind: intended open completed without the go file (" ++ tag ++ ")")
+                Nothing -> pure ()
+        threadDelay 500000 >> stillWaiting "0.5s sample"
+        threadDelay 1000000 >> stillWaiting "1.5s sample"
+        threadDelay 1000000 >> stillWaiting "2.5s sample"
+        threadDelay 1000000 >> stillWaiting "3.5s sample"
+        writeFile (pauseDir </> "go") "go\n"
+        mIntended <- timeout (5 * 1000000) (readMVar resVar2)
+        eIntended <- case mIntended of
+          Nothing -> assertFailure "pausebind: intended open did not resume on go file"
+          Just e -> pure e
+        case eIntended of
+          Left e -> assertFailure ("pausebind: intended open failed: " ++ show e)
+          Right _ -> pure ()
 
--- | Pid-0 test (finding 2): a lock naming pid 0 is takeable WITHOUT
--- probing @\/proc\/0@ — pid 0 is never a userspace owner (owners
--- write @getProcessID@), so the entry is dead by rule while the
--- kernel backstop still confirms. The fake proc root even contains
--- a @0@ entry: any probe would read Present (alive) and refuse, so
--- success proves no probe happened.
-testPidZeroTakeable :: IO ()
-testPidZeroTakeable =
+-- | Go-handshake unit test: 'waitForPoll' against a scripted probe
+-- (no clock, no filesystem, no process-wide env — parallel-safe
+-- outside the chain). A probe firing on its third poll returns True
+-- after exactly 3 probes, proving the loop keeps polling past its
+-- first check: a check-once-then-sleep seam returns False here,
+-- while the timing tests alone would pass it. A never-firing probe
+-- returns False after exactly the budgeted polls, and a nonpositive
+-- budget probes nothing at all.
+testGoHandshakePolls :: IO ()
+testGoHandshakePolls = do
+  scripted <- newIORef [False, False, True]
+  scriptedCalls <- newIORef (0 :: Int)
+  let scriptedProbe = do
+        modifyIORef' scriptedCalls (+1)
+        xs <- readIORef scripted
+        case xs of
+          [] -> pure True
+          (b : bs) -> writeIORef scripted bs >> pure b
+  (found, nReported) <- waitForPoll scriptedProbe 10
+  assertBool "probe firing on third poll not observed (seam stopped polling)" found
+  assertEqual "loop reports the firing poll" 3 nReported
+  nFired <- readIORef scriptedCalls
+  assertEqual "firing probe polled exactly to the firing poll" 3 nFired
+  quietCalls <- newIORef (0 :: Int)
+  (missing, nQuietReported) <- waitForPoll (modifyIORef' quietCalls (+1) >> pure False) 5
+  assertBool "never-firing probe reported present" (not missing)
+  assertEqual "loop reports the exhausted budget" 5 nQuietReported
+  nQuiet <- readIORef quietCalls
+  assertEqual "quiet probe polled exactly the budget" 5 nQuiet
+  staleCalls <- newIORef (0 :: Int)
+  (exhausted, nStaleReported) <- waitForPoll (modifyIORef' staleCalls (+1) >> pure True) 0
+  assertBool "nonpositive budget reported present" (not exhausted)
+  assertEqual "nonpositive budget reports zero polls" 0 nStaleReported
+  nStale <- readIORef staleCalls
+  assertEqual "nonpositive budget probes nothing" 0 nStale
+  negCalls <- newIORef (0 :: Int)
+  (negExhausted, nNegReported) <- waitForPoll (modifyIORef' negCalls (+1) >> pure True) (-1)
+  assertBool "negative budget reported present" (not negExhausted)
+  assertEqual "negative budget reports zero polls" 0 nNegReported
+  nNeg <- readIORef negCalls
+  assertEqual "negative budget probes nothing" 0 nNeg
+
+-- | Go-file composition test: 'waitForGoFile' polls the real
+-- filesystem through 'waitForPoll', and the poll count is part of
+-- the verdict. A go file landing mid-wait must report (True, n)
+-- with n >= 2: a single-check reimplementation reports a count of
+-- one and fails here no matter how the test thread is scheduled
+-- (it cannot fabricate a second poll it never ran). An absent file
+-- must report exactly the budget. The writer announces itself
+-- through a @ready@ file and only then sleeps, so the validity
+-- gate below (fail loudly on a pre-existing go file) plus the
+-- count assertion leave a timing-only adversary no silent pass:
+-- any scheduling anomaly fails loudly instead. No process-wide
+-- env, so parallel-safe outside the chain.
+testGoHandshakeFilePolls :: IO EnvScope -> IO ()
+testGoHandshakeFilePolls mkScope =
+  bracket (makeTempDir "haskoki-storage-gofilepoll") removeDirectoryRecursive $ \dir ->
+    bracket_ (pure ()) (reapOwnWorkers mkScope) $ do
+      let goFile = dir </> "go"
+          readyFile = dir </> "ready"
+      -- Tracked in the shared registry and reaped by the bracket
+      -- (a no-op once the writer has fired) so a failing run cannot
+      -- strand it writing into the removed scratch directory. It
+      -- reads no env and the release only reaps this test's own
+      -- entries, so no other test can be affected either way; the
+      -- test itself stays ungated as it arms nothing.
+      _ <- forkOpener mkScope (\_ -> pure ()) $ do
+        writeFile readyFile "ready\n"
+        threadDelay 100000
+        writeFile goFile "go\n"
+      awaitFile readyFile
+      -- Validity gate: go must not exist yet. A pre-existing go
+      -- file means the environment, not the implementation, is at
+      -- fault: fail loudly as a broken test environment instead of
+      -- letting a one-shot implementation pass vacuously.
+      early <- doesFileExist goFile
+      when early (assertFailure "composition: go file already present before the waiter started (scheduling anomaly)")
+      (found, nPolls) <- waitForGoFile goFile 100
+      assertBool "delayed go file not observed through waitForGoFile" found
+      assertBool ("handshake took a single poll: " ++ show nPolls) (nPolls >= 2)
+      (missing, nAbsent) <- waitForGoFile (dir </> "absent") 5
+      assertBool "absent go file reported present" (not missing)
+      assertEqual "absent go file polled exactly the budget" 5 nAbsent
+  where
+    awaitFile f = do
+      mOk <- timeout (5 * 1000000) (awaitFileGo f)
+      case mOk of
+        Just () -> pure ()
+        Nothing -> assertFailure "handshake writer never announced readiness"
+    awaitFileGo f = do
+      here <- doesFileExist f
+      if here then pure () else threadDelay 10000 >> awaitFileGo f
+
+-- | Go-present release: with the @go@ file already in place, an
+-- opted-in fresh-create open must still write the @paused@ marker
+-- (the seam fires) but complete promptly (within 3s) instead of
+-- waiting out the poll cap. A seam that ignores the handshake and
+-- idles unconditionally fails here for any idle longer than the
+-- bound — the complement of the still-waiting tests, which catch
+-- short idles. Together they leave an unconditional-delay seam no
+-- delay that passes both.
+testPauseGoPresentProceeds :: IO EnvScope -> IO ()
+testPauseGoPresentProceeds mkScope =
+  bracket (makeTempDir "haskoki-storage-gopresent") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-gopresentdir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          pausedFile = pauseDir </> "paused"
+      writeFile (pauseDir </> "go") "go\n"
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeStoreResult (openSQLiteStoreWith True path defaultLimits noFaults)
+        mDone <- timeout (3 * 1000000) (readMVar resVar)
+        eOpen <- case mDone of
+          Nothing -> assertFailure "gopresent: open with pre-existing go file did not complete promptly (handshake ignored)"
+          Just e -> pure e
+        case eOpen of
+          Left e -> assertFailure ("gopresent: open failed: " ++ show e)
+          Right _ -> pure ()
+        paused <- doesFileExist pausedFile
+        assertBool "gopresent: pause marker missing (seam never fired)" paused
+
+-- | Direct seam test: 'pauseForFreshCreate' itself waits on the
+-- polling loop. A @go@ file landing 0.1s in releases it promptly
+-- (within 1s): a seam that checked once and then slept a fixed
+-- delay fails here for any sleep longer than the bound, while the
+-- still-waiting tests catch shorter sleeps — together they leave a
+-- fixed-sleep seam no delay that passes both. No opener thread is
+-- involved; the forked writer exits on its own in 0.1s.
+testPauseDirectWaitsOnLoop :: IO EnvScope -> IO ()
+testPauseDirectWaitsOnLoop mkScope =
+  bracket (makeTempDir "haskoki-storage-directpause") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-directpausedir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+      withOpenPause mkScope pauseDir path $ do
+        -- Tracked so a failing run cannot leave it writing into the
+        -- removed scratch directory (reaped before restore).
+        _ <- forkOpener mkScope (\_ -> pure ()) (threadDelay 100000 >> writeFile (pauseDir </> "go") "go\n")
+        mDone <- timeout (1000000) (pauseForFreshCreate True path)
+        case mDone of
+          Nothing -> assertFailure "directpause: pause did not release on go file within 1s (not waiting on the loop)"
+          Just () -> pure ()
+
+-- | Env seams are inert without the explicit opt-in (finding: ambient
+-- @HASKOKI_PROC_ROOT@ must not change liveness verdicts). A live
+-- holder's lock refuses with the live-owner verdict, never the
+-- unknowable one: the real @/proc@ (which reports the holder live)
+-- decides, not the env var. (Outside the same-process shortcut —
+-- which skips the liveness probe and lets the flock decide: a lock
+-- our own open holds refuses as already-open-in-this-process, a free
+-- lock naming our pid is taken over (both halves pinned by the
+-- stale-lock takeover cases) — liveness is still probed for other
+-- named pids; a free, writable lock is taken over (an unwritable
+-- sidecar refuses as untakeoverable instead) and the verdict
+-- survives only in the refusal message — the flock arbitrates.)
+testProcRootInertWithoutOptIn :: IO EnvScope -> IO ()
+testProcRootInertWithoutOptIn mkScope =
+  bracket (makeTempDir "haskoki-storage-seamoff") removeDirectoryRecursive $ \dir -> do
+    reaped <- newIORef False
+    let path = dir </> "store.db"
+        doneFile = dir </> "holder.done"
+        readyFile = dir </> "holder.ready"
+        pidFile = dir </> "holder.pid"
+    e0 <- openSQLiteStore path
+    s0 <- either (\e -> assertFailure ("seamoff seed open: " ++ show e)) pure e0
+    _ <- seedStore s0
+    storeClose s0
+    let childEnv =
+          [ ("HASKOKI_HOLDER_MODE", "reserve")
+          , ("HASKOKI_HOLDER_PIDFILE", pidFile)
+          ]
+    bracket (spawnHolderEnv mkScope childEnv path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+      holderPid <- spawnedPid ph "seamoff"
+      awaitLockOwner path holderPid
+      awaitDone readyFile (6000 :: Int)
+      withProcRoot mkScope "/nonexistent-proc-haskoki-test" $ do
+        -- The production default surface (the no-Bool wrapper), then
+        -- the explicit opt-out: both must refuse with the live-owner
+        -- verdict. Going through the wrapper pins the default itself —
+        -- flipping the wrapper's default would refuse as unknowable
+        -- here and fail this test.
+        e1 <- openSQLiteStore path
+        case e1 of
+          Right s1 -> do
+            storeClose s1
+            assertFailure "seamoff: default second open succeeded against a live holder (state fork)"
+          Left (StoreSecondWriter msg) ->
+            assertBool ("seamoff: expected live-owner refusal, got: " ++ msg)
+              (("already open by pid " ++ show holderPid) `isInfixOf` msg
+               && not ("unknowable" `isInfixOf` msg))
+          Left other -> assertFailure ("seamoff: wrong error with bogus proc root: " ++ show other)
+        e2 <- openSQLiteStoreWith False path defaultLimits noFaults
+        case e2 of
+          Right s2 -> do
+            storeClose s2
+            assertFailure "seamoff: explicit opt-out second open succeeded against a live holder (state fork)"
+          Left (StoreSecondWriter msg) ->
+            assertBool ("seamoff: expected live-owner refusal, got: " ++ msg)
+              (("already open by pid " ++ show holderPid) `isInfixOf` msg
+               && not ("unknowable" `isInfixOf` msg))
+          Left other -> assertFailure ("seamoff: wrong error with bogus proc root: " ++ show other)
+      writeFile doneFile "done\n"
+      awaitHolderExit reaped ph "seamoff"
+
+-- | The opt-in restores the seam: same live holder and bogus proc
+-- root, but @allowEnvSeams@ on refuses as unknowable.
+testProcRootHonoredWithOptIn :: IO EnvScope -> IO ()
+testProcRootHonoredWithOptIn mkScope =
+  bracket (makeTempDir "haskoki-storage-seamon") removeDirectoryRecursive $ \dir -> do
+    reaped <- newIORef False
+    let path = dir </> "store.db"
+        doneFile = dir </> "holder.done"
+        readyFile = dir </> "holder.ready"
+        pidFile = dir </> "holder.pid"
+    e0 <- openSQLiteStore path
+    s0 <- either (\e -> assertFailure ("seamon seed open: " ++ show e)) pure e0
+    _ <- seedStore s0
+    storeClose s0
+    let childEnv =
+          [ ("HASKOKI_HOLDER_MODE", "reserve")
+          , ("HASKOKI_HOLDER_PIDFILE", pidFile)
+          ]
+    bracket (spawnHolderEnv mkScope childEnv path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+      holderPid <- spawnedPid ph "seamon"
+      awaitLockOwner path holderPid
+      awaitDone readyFile (6000 :: Int)
+      withProcRoot mkScope "/nonexistent-proc-haskoki-test" $ do
+        e1 <- openSQLiteStoreWith True path defaultLimits noFaults
+        case e1 of
+          Right s1 -> do
+            storeClose s1
+            assertFailure "seamon: second open succeeded with a bogus proc root under opt-in (expected unknowable refusal)"
+          Left (StoreSecondWriter msg) ->
+            assertBool ("seamon: expected unknowable-liveness refusal, got: " ++ msg)
+              ("unknowable" `isInfixOf` msg)
+          Left other -> assertFailure ("seamon: wrong error with bogus proc root under opt-in: " ++ show other)
+      writeFile doneFile "done\n"
+      awaitHolderExit reaped ph "seamon"
+
+
+-- | The pause seam is inert without the opt-in: @HASKOKI_OPEN_PAUSE@
+-- set, but the default open returns promptly and writes no @paused@
+-- file. Both the production default surface (the no-Bool wrapper)
+-- and the explicit opt-out are pinned: flipping the wrapper's
+-- default would block here and fail this test. (The honored
+-- direction is covered by testPauseBindsToIntendedOpener with the
+-- opt-in on.)
+testPauseInertWithoutOptIn :: IO EnvScope -> IO ()
+testPauseInertWithoutOptIn mkScope =
+  bracket (makeTempDir "haskoki-storage-seamnopause") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-seamnopausedir") removeDirectoryRecursive $ \pauseDir -> do
+      let pathA = dir </> "store-a.db"
+          pathB = dir </> "store-b.db"
+          pausedFile = pauseDir </> "paused"
+          openPrompt tag open = do
+            resVar <- forkOpener mkScope closeStoreResult open
+            mDone <- timeout (10 * 1000000) (readMVar resVar)
+            eOpen <- case mDone of
+              Nothing -> assertFailure (tag ++ ": open blocked without opt-in (pause seam leaked)")
+              Just e -> pure e
+            case eOpen of
+              Left e -> assertFailure (tag ++ ": open failed: " ++ show e)
+              Right _ -> pure ()
+            paused <- doesFileExist pausedFile
+            assertBool (tag ++ ": pause file written without opt-in (seam leaked)") (not paused)
+      withOpenPause mkScope pauseDir pathA (openPrompt "seamnopause-default" (openSQLiteStore pathA))
+      withOpenPause mkScope pauseDir pathB
+        (openPrompt "seamnopause-explicit" (openSQLiteStoreWith False pathB defaultLimits noFaults))
+
+-- | Serving open honors the pause seam under the opt-in: the
+-- config-driven serving open (not just the backend direct call)
+-- pauses a fresh creation until the @go@ file appears. Dropping
+-- the opt-in threading in 'openStdStore' (hardcoding the inert
+-- open) fails this test: the open would complete without pausing.
+testServingOpenHonorsPauseSeam :: IO EnvScope -> IO ()
+testServingOpenHonorsPauseSeam mkScope =
+  bracket (makeTempDir "haskoki-storage-servingpause") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-servingpausedir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          pausedFile = pauseDir </> "paused"
+          goFile = pauseDir </> "go"
+          cfg = defaultConfig
+            { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True True
+            }
+      env <- newEnv (rulesFromConfig cfg)
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeStdResult (openStdStore env cfg)
+        let awaitPaused 0 = assertFailure "servingpause: serving open did not pause under opt-in"
+            awaitPaused n = do
+              here <- doesFileExist pausedFile
+              if here then pure () else threadDelay 100000 >> awaitPaused (n - 1 :: Int)
+        awaitPaused (100 :: Int)
+        -- Still blocked at 0.5s, 1.5s and 2.5s with no go file: a
+        -- seam that only wrote `paused` (even after a three-second
+        -- unconditional delay in place of the go loop) publishes by
+        -- the fourth sample. The go handshake must then release the
+        -- serving open within 5s (the seam polls every 10ms);
+        -- without the handshake the poll cap, not the go file, would
+        -- release it.
+        -- A completed open here means the seam never fired: fail
+        -- without consuming it (a peek, not a take), so the reap
+        -- drain still owns the single close at teardown.
+        let stillWaiting tag = do
+              early <- tryReadMVar resVar
+              case early of
+                Just _ -> assertFailure ("servingpause: serving open completed without the go file (" ++ tag ++ ")")
+                Nothing -> pure ()
+        threadDelay 500000 >> stillWaiting "0.5s sample"
+        threadDelay 1000000 >> stillWaiting "1.5s sample"
+        threadDelay 1000000 >> stillWaiting "2.5s sample"
+        threadDelay 1000000 >> stillWaiting "3.5s sample"
+        writeFile goFile "go\n"
+        mDone <- timeout (5 * 1000000) (readMVar resVar)
+        eAcq <- case mDone of
+          Nothing -> assertFailure "servingpause: serving open did not resume on go file"
+          Just e -> pure e
+        case eAcq of
+          Left err -> assertFailure ("servingpause: serving open failed: " ++ show err)
+          Right Nothing -> assertFailure "servingpause: serving open returned no store"
+          Right (Just _) -> pure ()
+
+-- | Serving open is inert without the opt-in: the pause variables
+-- armed, but the config-driven open with 'defaultConfig' (only the
+-- kind and path pointed at the scratch sqlite file; the seam flag
+-- keeps its default) returns promptly and writes no @paused@ file.
+-- Flipping defaultConfig's flag, or hardcoding the opt-in inside
+-- 'openStdStore', blocks here and fails this test.
+testServingOpenInertByDefault :: IO EnvScope -> IO ()
+testServingOpenInertByDefault mkScope =
+  bracket (makeTempDir "haskoki-storage-servingoff") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-servingoffdir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          pausedFile = pauseDir </> "paused"
+          cfg = defaultConfig
+            { cfgStorage = (cfgStorage defaultConfig)
+              { scKind = StorageSQLite, scPath = Just path }
+            }
+      env <- newEnv (rulesFromConfig cfg)
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeStdResult (openStdStore env cfg)
+        mDone <- timeout (10 * 1000000) (readMVar resVar)
+        eAcq <- case mDone of
+          Nothing -> assertFailure "servingoff: serving open blocked without opt-in (pause seam leaked)"
+          Just e -> pure e
+        case eAcq of
+          Left err -> assertFailure ("servingoff: serving open failed: " ++ show err)
+          Right Nothing -> assertFailure "servingoff: serving open returned no store"
+          Right (Just _) -> pure ()
+        paused <- doesFileExist pausedFile
+        assertBool "servingoff: pause file written without opt-in (seam leaked)" (not paused)
+
+-- | Serving open waits for the go file (finding 4): with the opt-in
+-- armed, the open must stay blocked through ~21s of samples with
+-- no go file, then resume promptly once go lands at ~22s (within
+-- 2s). Sampling this late pins that the seam is STILL POLLING
+-- deep into the budget: a call site that stopped polling early
+-- (to sleep, then proceed) publishes early or ignores the late
+-- go and fails here. Together with the early-go run the pair
+-- admits no fixed-sleep seam (disjoint survivor sets — see the
+-- companion), and together with the no-go cap run it pins
+-- late-budget activity as well as the total budget. Residual:
+-- give-up cutoffs past ~22s need a go written even later to
+-- catch; each such probe moves the band without closing it —
+-- full exactness would need the poll count exposed at the
+-- serving level (offered, not built).
+testServingOpenWaitsForGo :: IO EnvScope -> IO ()
+testServingOpenWaitsForGo mkScope =
+  bracket (makeTempDir "haskoki-storage-servingwait") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-servingwaitdir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          pausedFile = pauseDir </> "paused"
+          goFile = pauseDir </> "go"
+          cfg = defaultConfig
+            { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True True
+            }
+      env <- newEnv (rulesFromConfig cfg)
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeStdResult (openStdStore env cfg)
+        let awaitPaused 0 = assertFailure "servingwait: serving open did not pause under opt-in"
+            awaitPaused n = do
+              here <- doesFileExist pausedFile
+              if here then pure () else threadDelay 100000 >> awaitPaused (n - 1 :: Int)
+        awaitPaused (100 :: Int)
+        -- No go file until ~22s: the uniform 1s samples prove the
+        -- seam is still blocked (hence still polling) deep into
+        -- the budget — a call site that stopped polling early
+        -- publishes early here, and one that went quiet ignores
+        -- the late go below and fails the resume. Peek, never
+        -- consume: the reap drain still owns the single close at
+        -- teardown.
+        let stillWaiting tag = do
+              early <- tryReadMVar resVar
+              case early of
+                Just _ -> assertFailure ("servingwait: serving open completed without the go file (" ++ tag ++ ")")
+                Nothing -> pure ()
+        threadDelay 500000 >> stillWaiting "0.5s sample"
+        threadDelay 1000000 >> stillWaiting "1.5s sample"
+        threadDelay 1000000 >> stillWaiting "2.5s sample"
+        threadDelay 1000000 >> stillWaiting "3.5s sample"
+        threadDelay 1000000 >> stillWaiting "4.5s sample"
+        threadDelay 1000000 >> stillWaiting "5.5s sample"
+        threadDelay 1000000 >> stillWaiting "6.5s sample"
+        threadDelay 1000000 >> stillWaiting "7.5s sample"
+        threadDelay 1000000 >> stillWaiting "8.5s sample"
+        threadDelay 1000000 >> stillWaiting "9.5s sample"
+        threadDelay 1000000 >> stillWaiting "10.5s sample"
+        threadDelay 1000000 >> stillWaiting "11.5s sample"
+        threadDelay 1000000 >> stillWaiting "12.5s sample"
+        threadDelay 1000000 >> stillWaiting "13.5s sample"
+        threadDelay 1000000 >> stillWaiting "14.5s sample"
+        threadDelay 1000000 >> stillWaiting "15.5s sample"
+        threadDelay 1000000 >> stillWaiting "16.5s sample"
+        threadDelay 1000000 >> stillWaiting "17.5s sample"
+        threadDelay 1000000 >> stillWaiting "18.5s sample"
+        threadDelay 1000000 >> stillWaiting "19.5s sample"
+        threadDelay 1000000 >> stillWaiting "20.5s sample"
+        threadDelay 1000000 >> stillWaiting "21.5s sample"
+        writeFile goFile "go\n"
+        -- Prompt resume after the late go (the poll loop resumes
+        -- within ~50ms; 2s is 40x slop for scheduling): a seam
+        -- that stopped polling before the go completes late and
+        -- fails here.
+        mDone <- timeout (2 * 1000000) (readMVar resVar)
+        eAcq <- case mDone of
+          Nothing -> assertFailure "servingwait: serving open did not resume promptly on late go file"
+          Just e -> pure e
+        case eAcq of
+          Left err -> assertFailure ("servingwait: serving open failed: " ++ show err)
+          Right Nothing -> assertFailure "servingwait: serving open returned no store"
+          Right (Just _) -> pure ()
+
+-- | Serving open resumes promptly on an early go (finding 4,
+-- companion to the waits-for-go run): with the opt-in armed, the
+-- go file lands at 0.5s and the open must complete by 2.5s. The
+-- two runs' survivor sets are disjoint — a fixed sleep short
+-- enough to pass here (<= ~2.4s) fails the late run's 21.5s
+-- still-blocked samples, and one long enough to pass there
+-- (> ~21.4s) fails here — so together they admit no fixed-sleep
+-- seam at all, only implementations that resume promptly on go.
+testServingOpenResumesPromptly :: IO EnvScope -> IO ()
+testServingOpenResumesPromptly mkScope =
+  bracket (makeTempDir "haskoki-storage-servingearly") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-servingearlydir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          pausedFile = pauseDir </> "paused"
+          goFile = pauseDir </> "go"
+          cfg = defaultConfig
+            { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True True
+            }
+      env <- newEnv (rulesFromConfig cfg)
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeStdResult (openStdStore env cfg)
+        let awaitPaused 0 = assertFailure "servingearly: serving open did not pause under opt-in"
+            awaitPaused n = do
+              here <- doesFileExist pausedFile
+              if here then pure () else threadDelay 100000 >> awaitPaused (n - 1 :: Int)
+        awaitPaused (100 :: Int)
+        threadDelay 500000
+        writeFile goFile "go\n"
+        -- The poll loop resumes within ~50ms of the go file; 2s is
+        -- 40x slop for scheduling. A seam that slept a fixed span
+        -- instead of polling completes late and fails here.
+        mDone <- timeout (2 * 1000000) (readMVar resVar)
+        eAcq <- case mDone of
+          Nothing -> assertFailure "servingearly: serving open did not resume promptly on early go file"
+          Just e -> pure e
+        case eAcq of
+          Left err -> assertFailure ("servingearly: serving open failed: " ++ show err)
+          Right Nothing -> assertFailure "servingearly: serving open returned no store"
+          Right (Just _) -> pure ()
+
+-- | Cancelled open retries a faulted close (finding 2): killing a
+-- serving open blocked mid-body (post-acquire) with a one-shot
+-- 'FaultClose' armed must still propagate the kill (not the
+-- injected close failure), attempt the close exactly twice (the
+-- fault spends on the first attempt, the retry closes for real),
+-- and release the lock. The block comes from a 'FaultBeforeCommit'
+-- probe that signals entry and parks (the commit runs after the
+-- store is acquired, so the cleanup owns a live handle); the kill
+-- lands there deterministically. The close count pins the retry:
+-- a fault that never fired, or a missing retry, reports a count
+-- other than two and fails here. Without the real second close
+-- the reopen below would see a second writer. The worker runs on
+-- a raw fork (not the registry) so the thrown kill is observable;
+-- it is joined before the assertions, and no tracked workers remain.
+testCancelledOpenRetriesClose :: IO EnvScope -> IO ()
+testCancelledOpenRetriesClose _mkScope =
+  bracket (makeTempDir "haskoki-storage-cancelretry") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+        cfg = defaultConfig
+          { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False
+          }
+    env <- newEnv (rulesFromConfig cfg)
+    base <- scriptedFaults [FaultClose]
+    entered <- newEmptyMVar
+    closeCount <- newIORef (0 :: Int)
+    never <- newEmptyMVar :: IO (MVar ())
+    let inj = base { fiFire = fire }
+        fire FaultClose = do
+          modifyIORef' closeCount (+1)
+          fiFire base FaultClose
+        fire FaultBeforeCommit = do
+          _ <- tryPutMVar entered ()
+          takeMVar never
+          pure True
+        fire p = fiFire base p
+    resVar <- newEmptyMVar :: IO (MVar (Either SomeException (Either StdStoreError (Maybe StdStore))))
+    tid <- forkIO (do
+      eOpen <- try (openStdStoreWith (\p -> openSQLiteStoreWith False p defaultLimits inj) env cfg)
+      putMVar resVar eOpen)
+    -- The commit block is post-acquire by construction (the fault
+    -- fires inside the seed commit on a live handle); killing
+    -- before entry is impossible — entry precedes the kill.
+    mEntered <- timeout (15 * 1000000) (takeMVar entered)
+    case mEntered of
+      Nothing -> assertFailure "cancelretry: open never reached the commit block"
+      Just () -> pure ()
+    killThread tid
+    -- 15s guard: the supervisor bounds cleanup at 10s, so a
+    -- correct run joins in milliseconds; only a true hang
+    -- trips this.
+    mDone <- timeout (15 * 1000000) (takeMVar resVar)
+    eOpen <- case mDone of
+      Nothing -> assertFailure "cancelretry: killed open never completed its cleanup"
+      Just e -> pure e
+    case eOpen of
+      Left e -> case fromException e of
+        Just ThreadKilled -> pure ()
+        _ -> assertFailure ("cancelretry: kill replaced by cleanup failure: " ++ show e)
+      Right _ -> assertFailure "cancelretry: killed open returned a value"
+    nCloses <- readIORef closeCount
+    assertEqual "cancelretry: cleanup did not attempt the close twice (retry missing or fault never fired)" 2 nCloses
+    -- The retry closed for real: the lock is free for a reopen.
+    eRe <- openSQLiteStore path
+    case eRe of
+      Left err -> assertFailure ("cancelretry: lock still held after retried close: " ++ show err)
+      Right sRe -> storeClose sRe
+
+-- | Kill-during-release test (finding 3): a kill landing in the
+-- release reap's interruptible join must still restore the armed
+-- variables (via 'reapThenRestore') and must still propagate. The
+-- controller kills the test thread the moment the gated closer
+-- signals entry — at that point the test thread is parked in the
+-- drain join (or a microstep before it; both paths run the
+-- shielded restore and rethrow identically, so the test is
+-- race-free by construction, with no timing assertions). The gate
+-- fill runs in 'finally' and the closer's exit is observed, so no
+-- path strands the waiter.
+testKillDuringReleaseRestoresEnv :: IO EnvScope -> IO ()
+testKillDuringReleaseRestoresEnv mkScope =
+  bracket (makeTempDir "haskoki-storage-killrelease") removeDirectoryRecursive $ \dir -> do
+    let pauseDir = dir </> "pause"
+        path = dir </> "store.db"
+    createDirectoryIfMissing True pauseDir
+    me <- myThreadId
+    gate <- newEmptyMVar
+    entered <- newEmptyMVar
+    exited <- newEmptyMVar
+    _resVar <- forkOpener mkScope
+      (\(_ :: ()) -> putMVar entered () >> takeMVar gate >> putMVar exited ())
+      (pure ())
+    _ <- forkIO (takeMVar entered >> killThread me)
+    prevDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
+    prevWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
+    flip finally (putMVar gate ()) $ do
+      eOut <- try (withOpenPause mkScope pauseDir path (pure ()))
+      case eOut of
+        Left e -> case fromException e of
+          Just ThreadKilled -> pure ()
+          _ -> assertFailure ("killrelease: release threw instead of rethrowing the kill: " ++ show e)
+        Right _ -> assertFailure "killrelease: kill during release did not propagate"
+      afterDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
+      assertEqual "killrelease: HASKOKI_OPEN_PAUSE left armed by a killed release"
+        prevDir afterDir
+      afterWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
+      assertEqual "killrelease: HASKOKI_OPEN_PAUSE_PATH left armed by a killed release"
+        prevWant afterWant
+    mExited <- timeout (5 * 1000000) (takeMVar exited)
+    case mExited of
+      Nothing -> assertFailure "killrelease: abandoned closer did not exit after the gate fill"
+      Just () -> pure ()
+
+-- | Serving open proceeds when go never arrives (finding 4): the
+-- documented no-go fallback is "10ms poll, 3000 polls — about 30s
+-- wall-clock — then proceed regardless". With the opt-in armed and
+-- no go file ever written, the open must stay blocked at 5s (no
+-- instant skip, no short sleep), then complete on its own — within
+-- 35s of fork (a 3000 -> 30000 typo at the call site would need
+-- ~300s and trips the guard), having waited out the budget (over
+-- 25s of it: threadDelay never fires early, so the floor proves
+-- polling happened. The 3000 lives at the 'pauseForFreshCreate' call
+-- site, not in the count-tested helper — this is the only test
+-- that pins the call-site value behaviorally. Clock and guard both
+-- start at fork (a guard started after the peek would grant ~5s
+-- extra and admit a 4000 cap), so the bracket is the full ~30s
+-- budget: floor 25 and guard 35 admit the documented value with
+-- slop but reject a 2000 cap below and a 4000 cap above.
+-- All intervals use the monotonic clock (immune to wall-clock
+-- steps).
+testServingOpenNoGoCompletesAtCap :: IO EnvScope -> IO ()
+testServingOpenNoGoCompletesAtCap mkScope =
+  bracket (makeTempDir "haskoki-storage-servingnocap") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-servingnocapdir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          pausedFile = pauseDir </> "paused"
+          cfg = defaultConfig
+            { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True True
+            }
+      env <- newEnv (rulesFromConfig cfg)
+      withOpenPause mkScope pauseDir path $ do
+        -- Clock and guard both start at fork: the 5s peek below
+        -- runs concurrently with the first seconds of the poll
+        -- budget, so a guard started after the peek would grant
+        -- ~5s extra and admit a 4000 cap. The correct ~30s
+        -- budget clears 35s with slop; floor 25 rejects a 2000
+        -- cap, guard 35 rejects 4000 and above.
+        start <- getMonotonicTime
+        resVar <- forkOpener mkScope closeStdResult (openStdStore env cfg)
+        mDone <- timeout (35 * 1000000) $ do
+          let awaitPaused 0 = assertFailure "servingnocap: serving open did not pause under opt-in"
+              awaitPaused n = do
+                here <- doesFileExist pausedFile
+                if here then pure () else threadDelay 100000 >> awaitPaused (n - 1 :: Int)
+          awaitPaused (100 :: Int)
+          -- Still blocked at 5s with no go file (peek, not take).
+          threadDelay 5000000
+          early <- tryReadMVar resVar
+          case early of
+            Just _ -> assertFailure "servingnocap: serving open completed without any go file or cap wait"
+            Nothing -> readMVar resVar
+        end <- getMonotonicTime
+        eAcq <- case mDone of
+          Nothing -> assertFailure "servingnocap: serving open buried the no-go fallback (cap larger than documented?)"
+          Just e -> pure e
+        case eAcq of
+          Left err -> assertFailure ("servingnocap: serving open failed after the cap wait: " ++ show err)
+          Right Nothing -> assertFailure "servingnocap: serving open returned no store after the cap wait"
+          Right (Just _) -> pure ()
+        assertBool ("servingnocap: open returned without waiting the cap budget: " ++ show (end - start))
+          (end - start > 25)
+        -- Exact poll count: the seam must have polled 3000 times,
+        -- not fewer with sleeps or backoff in place of polls. Any
+        -- structural reworking reports a different total here.
+        ePolls <- catchIOError (Right <$> readFile (pauseDir </> "polls")) (pure . Left . show)
+        case ePolls of
+          Left err -> assertFailure ("servingnocap: polls file unreadable: " ++ err)
+          Right raw -> assertEqual "servingnocap: seam did not poll exactly 3000 times"
+            "3000" (filter (/= '\n') raw)
+
+-- | Kill-during-release test, multi-worker (finding 3): a kill
+-- landing in one worker's drain must not orphan the remaining
+-- workers as untracked live handles. Worker A holds a successful
+-- SQLite open (result unread); worker B's gated closer signals
+-- entry and blocks. Killing the release on entry must still
+-- drain A's store (via the abort sweep) before restoring the env
+-- and rethrowing: reopening A's database must succeed. A release
+-- that drops the unreaped remainder leaves A's lock held and the
+-- reopen sees a second writer. The gate fill runs in 'finally'
+-- and the abandoned closer's exit is observed, so no path
+-- strands the waiter. B's closer first peeks A's result, so the
+-- kill provably lands after A completed — a slow A delays the
+-- whole choreography instead of passing vacuously (reopen would
+-- succeed merely because A never opened).
+testKillDuringReleaseKeepsWorkers :: IO EnvScope -> IO ()
+testKillDuringReleaseKeepsWorkers mkScope =
+  bracket (makeTempDir "haskoki-storage-killrelease2") removeDirectoryRecursive $ \dir -> do
+    let pauseDir = dir </> "pause"
+        pathA = dir </> "a.db"
+        pathB = dir </> "b.db"
+    createDirectoryIfMissing True pauseDir
+    me <- myThreadId
+    gate <- newEmptyMVar
+    entered <- newEmptyMVar
+    exited <- newEmptyMVar
+    resVarA <- forkOpener mkScope closeStoreResult (openSQLiteStore pathA)
+    aOk <- newIORef False
+    _resB <- forkOpener mkScope
+      (\(_ :: ()) -> do
+          -- Record whether A actually opened: the kill choreography
+          -- below is only meaningful if it did. A failed A must
+          -- fail this test loudly, not pass vacuously (reopen would
+          -- succeed merely because nothing was ever held).
+          eA <- readMVar resVarA
+          case eA of
+            Right _ -> writeIORef aOk True
+            Left _ -> pure ()
+          putMVar entered () >> takeMVar gate >> putMVar exited ())
+      (pure ())
+    _ <- forkIO (takeMVar entered >> killThread me)
+    prevDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
+    prevWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
+    flip finally (putMVar gate ()) $ do
+      eOut <- try (withOpenPause mkScope pauseDir pathB (pure ()))
+      case eOut of
+        Left e -> case fromException e of
+          Just ThreadKilled -> pure ()
+          _ -> assertFailure ("killrelease2: release threw instead of rethrowing the kill: " ++ show e)
+        Right _ -> assertFailure "killrelease2: kill during release did not propagate"
+      ok <- readIORef aOk
+      assertBool "killrelease2: worker A never opened (choreography untested)" ok
+      afterDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
+      assertEqual "killrelease2: HASKOKI_OPEN_PAUSE left armed by a killed release"
+        prevDir afterDir
+      afterWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
+      assertEqual "killrelease2: HASKOKI_OPEN_PAUSE_PATH left armed by a killed release"
+        prevWant afterWant
+      -- The abort sweep must have drained worker A: reopening its
+      -- database succeeds. A dropped remainder leaves the lock
+      -- held and this sees a second writer.
+      eRe <- openSQLiteStore pathA
+      case eRe of
+        Left err -> assertFailure ("killrelease2: first worker orphaned (lock still held): " ++ show err)
+        Right sRe -> storeClose sRe
+    mExited <- timeout (5 * 1000000) (takeMVar exited)
+    case mExited of
+      Nothing -> assertFailure "killrelease2: abandoned closer did not exit after the gate fill"
+      Just () -> pure ()
+
+-- | Kill-during-join test (finding 3): a kill landing in the
+-- release's interruptible join must propagate, not degrade into
+-- a retried round — a retry that later succeeds would swallow
+-- the kill and return normally. The worker's cancellation
+-- finalizer signals entry and parks on a gate; killing the
+-- release on entry must surface ThreadKilled (not a normal
+-- return) while still restoring the env. The gate is opened
+-- after the kill so no path strands the worker.
+testKillDuringJoinPropagates :: IO EnvScope -> IO ()
+testKillDuringJoinPropagates mkScope =
+  bracket (makeTempDir "haskoki-storage-killjoin") removeDirectoryRecursive $ \dir -> do
+    let pauseDir = dir </> "pause"
+        path = dir </> "b.db"
+    createDirectoryIfMissing True pauseDir
+    me <- myThreadId
+    entered <- newEmptyMVar
+    gate <- newEmptyMVar
+    opengate <- newEmptyMVar
+    _resVar <- forkOpener mkScope (\(_ :: ()) -> pure ())
+      (takeMVar opengate `finally` (putMVar entered () >> takeMVar gate))
+    _ <- forkIO (takeMVar entered >> killThread me >> putMVar gate ())
+    prevDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
+    prevWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
+    -- tryPutMVar: the controller normally opens the gate itself;
+    -- this only releases a worker stranded by an early failure.
+    flip finally (tryPutMVar gate () >> pure ()) $ do
+      eOut <- try (withOpenPause mkScope pauseDir path (pure ()))
+      case eOut of
+        Left e -> case fromException e of
+          Just ThreadKilled -> pure ()
+          _ -> assertFailure ("killjoin: release threw instead of rethrowing the kill: " ++ show e)
+        Right _ -> assertFailure "killjoin: kill during join was swallowed (release returned normally)"
+      afterDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
+      assertEqual "killjoin: HASKOKI_OPEN_PAUSE left armed by a killed release"
+        prevDir afterDir
+      afterWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
+      assertEqual "killjoin: HASKOKI_OPEN_PAUSE_PATH left armed by a killed release"
+        prevWant afterWant
+
+-- | Wedged-closer test (finding 3): a closer that blocks on a gate
+-- the controller never fills must not stall the release past the
+-- 10s drain bound — and the abandonment must be reported loudly,
+-- not swallowed. The closer waits UNINTERRUPTIBLY: an inline
+-- @timeout@-around-@drain@ reimplementation cannot cancel it and
+-- hangs into the 60s guard, so this test distinguishes the
+-- fork+abandon drain from that weaker shape. The opener completes
+-- immediately so the drain really invokes the closer (an empty
+-- result would take the no-op path and the report assertion below
+-- would fail). Without any bound the reap would hang forever and
+-- the 60s guard would fire; with fork+abandon the reap returns in
+-- ~10s carrying the timeout report. The report string is only
+-- produced by the timeout's 'Nothing' branch, so its presence
+-- proves the full bound was waited, not skipped; the 5s elapsed
+-- floor pins the constant against a regress to a zero bound, and
+-- the 20s ceiling pins it from above (a 30s-timeout regress would
+-- return at ~30s and fail here — the 60s guard alone cannot catch
+-- it). The gate fill wraps the reap itself in 'finally': a kill
+-- landing after the closer parks but before the drain returns
+-- still releases the waiter instead of stranding it (a kill before
+-- the reap starts strand nothing — the closer was never invoked).
+-- The closer's exit is then observed, proving the abandoned waiter
+-- reaped — and a post-abandon throw would have to come from
+-- nowhere (the waiter's thread id is discarded, unreachable by
+-- 'throwTo'; the gate fill returns normally, so no put-back
+-- fires).
+testWedgedCloserAbandoned :: IO EnvScope -> IO ()
+testWedgedCloserAbandoned mkScope = do
+  (_, reg, _) <- mkScope
+  me <- myThreadId
+  gate <- newEmptyMVar
+  exited <- newEmptyMVar
+  _resVar <- forkOpener mkScope
+    (\(_ :: ()) -> uninterruptibleMask_ (takeMVar gate >> putMVar exited ()))
+    (pure ())
+  -- A wall-clock step between the readings would corrupt the
+  -- interval, so the floor and ceiling use the monotonic clock.
+  start <- getMonotonicTime
+  (mProblems, end) <- flip finally (putMVar gate ()) $ do
+    mPs <- timeout (60 * 1000000) (reapSelected (Just me) reg)
+    endNow <- getMonotonicTime
+    pure (mPs, endNow)
+  problems <- case mProblems of
+    Nothing -> assertFailure "wedgedrain: reap hung past 60s on a wedged closer (no drain bound)"
+    Just ps -> pure ps
+  assertBool ("wedgedrain: wedged-closer abandonment not reported: " ++ show problems)
+    (any ("drain timed out" `isInfixOf`) problems)
+  assertBool ("wedgedrain: reap returned without waiting the drain bound: " ++ show (end - start))
+    (end - start > 5)
+  assertBool ("wedgedrain: reap returned past twice the drain bound: " ++ show (end - start))
+    (end - start < 20)
+  mExited <- timeout (5 * 1000000) (takeMVar exited)
+  case mExited of
+    Nothing -> assertFailure "wedgedrain: abandoned closer did not exit after the gate fill"
+    Just () -> pure ()
+
+-- | The reconciliation fixture preserves the caller's opt-in: an
+-- opted-in config through 'openReconciled' pauses a fresh creation
+-- until the @go@ file appears, exactly like the direct serving
+-- open. (The fixture used to force the flag off; that version never
+-- writes the marker here and fails this test.)
+testReconciledHonorsOptIn :: IO EnvScope -> IO ()
+testReconciledHonorsOptIn mkScope =
+  bracket (makeTempDir "haskoki-storage-reconpause") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-storage-reconpausedir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          pausedFile = pauseDir </> "paused"
+          goFile = pauseDir </> "go"
+          cfg = defaultConfig
+            { cfgStorage = (cfgStorage defaultConfig)
+              { scKind = StorageSQLite, scPath = Just path, scAllowEnvSeams = True }
+            }
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeReconciledResult (openReconciled path cfg)
+        let awaitPaused 0 = assertFailure "reconpause: reconciled open did not pause under opt-in"
+            awaitPaused n = do
+              here <- doesFileExist pausedFile
+              if here then pure () else threadDelay 100000 >> awaitPaused (n - 1 :: Int)
+        awaitPaused (100 :: Int)
+        -- Still blocked at 0.5s, 1.5s and 2.5s with no go file (same
+        -- bar as the direct serving-open test: a marker-only seam
+        -- publishes by the fourth sample); the go handshake must then
+        -- release it within 5s.
+        -- A completed open here means the seam never fired: fail
+        -- without consuming it (a peek, not a take), so the reap
+        -- drain still owns the single close at teardown.
+        let stillWaiting tag = do
+              early <- tryReadMVar resVar
+              case early of
+                Just _ -> assertFailure ("reconpause: reconciled open completed without the go file (" ++ tag ++ ")")
+                Nothing -> pure ()
+        threadDelay 500000 >> stillWaiting "0.5s sample"
+        threadDelay 1000000 >> stillWaiting "1.5s sample"
+        threadDelay 1000000 >> stillWaiting "2.5s sample"
+        threadDelay 1000000 >> stillWaiting "3.5s sample"
+        writeFile goFile "go\n"
+        mDone <- timeout (5 * 1000000) (readMVar resVar)
+        eAcq <- case mDone of
+          Nothing -> assertFailure "reconpause: reconciled open did not resume on go file"
+          Just e -> pure e
+        case eAcq of
+          Left err -> assertFailure ("reconpause: reconciled open failed: " ++ show err)
+          Right Nothing -> assertFailure "reconpause: reconciled open returned no store"
+          Right _ -> pure ()
+
+-- | Pid-0 test: a lock naming pid 0 takes no @\/proc\/0@ probe — pid 0
+-- is never a userspace owner (owners write @getProcessID@), so the
+-- entry is dead by rule while the kernel backstop still confirms.
+-- A free, writable lock would take over regardless of the pid
+-- verdict (the flock arbitrates; an unwritable sidecar refuses
+-- instead), so this test holds the lock instead: with a live holder
+-- behind the
+-- stale @0@ entry and a fake proc root, the dead-by-rule path takes
+-- the generic kernel-held refusal, which names no pid. The assertion
+-- pins that path positively (and excludes every pid-0 phrasing):
+-- probing @\/proc\/0@ would read Present (alive) and refuse as
+-- "already open by pid 0", while a missing @self@ witness would
+-- refuse as unknowable "locked by pid 0". Both controls fail it.
+testPidZeroTakeable :: IO EnvScope -> IO ()
+testPidZeroTakeable mkScope =
   bracket (makeTempDir "haskoki-storage-pidzero") removeDirectoryRecursive $ \dir ->
     bracket (makeTempDir "haskoki-storage-fakeproc") removeDirectoryRecursive $ \fakeProc -> do
       me <- getProcessID
       ppid <- getParentProcessID
+      reaped <- newIORef False
       let path = dir </> "store.db"
+          doneFile = dir </> "holder.done"
+          readyFile = dir </> "holder.ready"
+          pidFile = dir </> "holder.pid"
       e0 <- openSQLiteStore path
       s0 <- either (\e -> assertFailure ("pidzero seed open: " ++ show e)) pure e0
       _ <- seedStore s0
       storeClose s0
-      writeFile (path ++ ".lock") "0\n"
-      writeFile (fakeProc </> "self") ""
-      writeFile (fakeProc </> show me) ""
-      writeFile (fakeProc </> show ppid) ""
-      writeFile (fakeProc </> "0") ""
-      withProcRoot fakeProc $ do
-        e1 <- openSQLiteStore path
-        s1 <- either (\e -> assertFailure ("pidzero takeover failed: " ++ show e)) pure e1
-        content <- readFile (path ++ ".lock")
-        assertEqual "pidzero: lock re-owned by taker" (show me ++ "\n") content
-        eLoaded <- storeLoadTokens s1
-        loaded <- either (\e -> assertFailure ("pidzero load after takeover: " ++ show e)) pure eLoaded
-        assertEqual "pidzero: seeded token survives takeover" 1 (length loaded)
-        storeClose s1
+      let childEnv =
+            [ ("HASKOKI_HOLDER_MODE", "reserve")
+            , ("HASKOKI_HOLDER_PIDFILE", pidFile)
+            ]
+      bracket (spawnHolderEnv mkScope childEnv path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+        holderPid <- spawnedPid ph "pidzero"
+        awaitLockOwner path holderPid
+        awaitDone readyFile (6000 :: Int)
+        -- The holder keeps the flock; rewrite the entry to pid 0.
+        writeFile (path ++ ".lock") "0\n"
+        writeFile (fakeProc </> "self") ""
+        writeFile (fakeProc </> show me) ""
+        writeFile (fakeProc </> show ppid) ""
+        writeFile (fakeProc </> "0") ""
+        withProcRoot mkScope fakeProc $ do
+          e1 <- openSQLiteStoreWith True path defaultLimits noFaults
+          case e1 of
+            Right s1 -> do
+              storeClose s1
+              assertFailure "pidzero: second open succeeded against a held lock (state fork)"
+            Left (StoreSecondWriter msg) ->
+              assertBool ("pidzero: expected dead-by-rule kernel-held refusal naming no pid 0, got: " ++ msg)
+                (("kernel lock held" `isInfixOf` msg) && not ("pid 0" `isInfixOf` msg))
+            Left other -> assertFailure ("pidzero: wrong error with bogus proc root: " ++ show other)
+        writeFile doneFile "done\n"
+        awaitHolderExit reaped ph "pidzero"
 
 -- | Death between reservation and insertion: a holder child in
 -- reserve mode opens the store, durably reserves one id,
 -- records it, and parks; the parent SIGKILLs it there (no
 -- close, no insert), takes over the stale lock via the real
 -- /proc, and proves the burned id is absent and never reused.
-testReserveDeathGap :: IO ()
-testReserveDeathGap =
+testReserveDeathGap :: IO EnvScope -> IO ()
+testReserveDeathGap mkScope =
   bracket (makeTempDir "haskoki-storage-reservedeath") removeDirectoryRecursive $ \dir -> do
     reaped <- newIORef False
     let path = dir </> "store.db"
@@ -2957,7 +4168,7 @@ testReserveDeathGap =
           [ ("HASKOKI_HOLDER_MODE", "reserve")
           , ("HASKOKI_HOLDER_PIDFILE", pidFile)
           ]
-    bracket (spawnHolderEnv childEnv path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
+    bracket (spawnHolderEnv mkScope childEnv path doneFile readyFile) (releaseHolder reaped) $ \ph -> do
       holderPid <- spawnedPid ph "reserve-death"
       awaitLockOwner path holderPid
       awaitDone readyFile (6000 :: Int)
@@ -4370,8 +5581,8 @@ caseOpenSeedFailsAtomically = withOpenFile $ \path -> do
   cfg <- parseCatalog positionalDoc
   inj <- scriptedFaults [FaultBeforeCommit]
   env <- newEnv (rulesFromConfig cfg)
-  eAcq <- openStdStoreWith (\p -> openSQLiteStoreWith p defaultLimits inj) env
-    cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+  let cfgServe = cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False }
+  eAcq <- openStdStoreWith (\p -> openSQLiteStoreWith (scAllowEnvSeams (cfgStorage cfgServe)) p defaultLimits inj) env cfgServe
   case eAcq of
     Left StdStoreCommit -> pure ()
     Left err -> assertFailure ("faulted seed failed for the wrong reason: " ++ show err)
@@ -4407,8 +5618,8 @@ caseOpenSeedCredentialFailureLeavesNoToken = withOpenFile $ \path -> do
         , " BEFORE INSERT ON main.credentials"
         , " BEGIN SELECT RAISE(ABORT, 'haskoki-test: injected credential insert failure'); END" ]))
       hooks = noSQLiteTestHooks { sthBeforeBegin = failCredentialInsert }
-  eAcq <- openStdStoreWith (\p -> openSQLiteStoreWithHooks p defaultLimits noFaults hooks) env
-    cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+  let cfgServe = cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False }
+  eAcq <- openStdStoreWith (\p -> openSQLiteStoreWithHooks (scAllowEnvSeams (cfgStorage cfgServe)) p defaultLimits noFaults hooks) env cfgServe
   case eAcq of
     Left StdStoreCommit -> pure ()
     Left err -> assertFailure ("faulted seed failed for the wrong reason: " ++ show err)

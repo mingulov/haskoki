@@ -64,6 +64,9 @@ module Haskoki.Runtime.Storage.SQLite
   , PidLiveness (..)
   , ProcProbe (..)
   , pidIsDead
+  , waitForGoFile
+  , waitForPoll
+  , pauseForFreshCreate
   , FileIdentity (..)
   , StoreSnapshot (..)
   , resolveStorePath
@@ -247,7 +250,7 @@ noSQLiteTestHooks = SQLiteTestHooks
 -- re-propagates, so it can never strand a live-pid lock.
 -- Default limits, no fault injection.
 openSQLiteStore :: FilePath -> IO (Either StoreError Store)
-openSQLiteStore path = openSQLiteStoreWith path defaultLimits noFaults
+openSQLiteStore path = openSQLiteStoreWith False path defaultLimits noFaults
 
 -- | Open with explicit limits (always enforced) and an
 -- explicit fault injector. The whole acquisition runs masked;
@@ -268,8 +271,15 @@ openSQLiteStore path = openSQLiteStoreWith path defaultLimits noFaults
 -- interruptible operation on the path, and handle cleanup is
 -- retained across the construction itself — so the handoff has
 -- no async-delivery window at all.
-openSQLiteStoreWith :: FilePath -> StoreLimits -> FaultInjector -> IO (Either StoreError Store)
-openSQLiteStoreWith path limits inj = openSQLiteStoreWithHooks path limits inj noSQLiteTestHooks
+-- | Whether the open honours the environment seams (@HASKOKI_PROC_ROOT@
+-- for owner liveness, @HASKOKI_OPEN_PAUSE*@ for the fresh-init pause).
+-- Default-off everywhere except explicit opt-in: ambient variables must
+-- not change storage behaviour unless the configuration asks for it
+-- (@storage.allow_env_seams@); tests opt in per case.
+openSQLiteStoreWith
+  :: Bool -> FilePath -> StoreLimits -> FaultInjector -> IO (Either StoreError Store)
+openSQLiteStoreWith allowEnv path limits inj =
+  openSQLiteStoreWithHooks allowEnv path limits inj noSQLiteTestHooks
 
 -- | 'openSQLiteStoreWith' plus test-only connection hooks
 -- ('SQLiteTestHooks'); the storage suites use it to stimulate
@@ -287,12 +297,12 @@ openSQLiteStoreWith path limits inj = openSQLiteStoreWithHooks path limits inj n
 -- target. A missing store under a symlinked parent directory is
 -- created at the resolved path, as before.
 openSQLiteStoreWithHooks
-  :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
+  :: Bool -> FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
   -> IO (Either StoreError Store)
-openSQLiteStoreWithHooks path0 limits inj hooks = do
+openSQLiteStoreWithHooks allowEnv path0 limits inj hooks = do
   (path, sawLink) <- resolveStorePathTracked path0
   if not sawLink
-    then openSQLiteStoreResolved path limits inj hooks
+    then openSQLiteStoreResolved allowEnv path limits inj hooks
     else do
       -- A final-component link that resolves to a missing target
       -- is dangling (a moved store, an unmounted volume): refuse
@@ -305,14 +315,14 @@ openSQLiteStoreWithHooks path0 limits inj hooks = do
         Right Nothing -> pure (Left (StoreIO
           ("dangling symlink " ++ path0 ++ " (target " ++ path
             ++ " is missing); refusing to create a store at a link target")))
-        _ -> openSQLiteStoreResolved path limits inj hooks
+        _ -> openSQLiteStoreResolved allowEnv path limits inj hooks
 
 -- | 'openSQLiteStoreWithHooks' on an already-resolved path.
 openSQLiteStoreResolved
-  :: FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
+  :: Bool -> FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
   -> IO (Either StoreError Store)
-openSQLiteStoreResolved path limits inj hooks = mask $ \restore -> do
-  procRoot <- procRootFromEnv
+openSQLiteStoreResolved allowEnv path limits inj hooks = mask $ \restore -> do
+  procRoot <- procRootFromEnv allowEnv
   let lockPath = path ++ ".lock"
   eOwn <- takeOwnership path lockPath procRoot 3
   case eOwn of
@@ -345,7 +355,7 @@ openSQLiteStoreResolved path limits inj hooks = mask $ \restore -> do
           releaseQuiet lockFd lockPath
           pure (Left (StoreForeignSidecar p))
         Nothing -> do
-          eDb <- openAndInit restore dbFd path created
+          eDb <- openAndInit allowEnv restore dbFd path created
           case eDb of
             Left err -> do
               closeQuietFd dbFd
@@ -377,13 +387,16 @@ openSQLiteStoreResolved path limits inj hooks = mask $ \restore -> do
                   pure (Right (mkStore conn)))
                 `onException` closeQuiet db
 
--- | The @\/proc@ root for owner-liveness checks: @HASKOKI_PROC_ROOT@
--- overrides (tests mask liveness deterministically); empty or unset
--- means @\/proc@. Any override that hides a live owner fails closed
+-- | The @\/proc@ root for owner-liveness checks. Honoured only
+-- with the env-seam opt-in (@True@): @HASKOKI_PROC_ROOT@ overrides
+-- (tests mask liveness deterministically); empty or unset means
+-- @\/proc@. Any override that hides a live owner fails closed
 -- (the opener is refused), never open — and the kernel lock below
--- backstops every @\/proc@ verdict.
-procRootFromEnv :: IO FilePath
-procRootFromEnv = do
+-- backstops every @\/proc@ verdict. Without the opt-in the
+-- environment is not consulted at all: always @\/proc@.
+procRootFromEnv :: Bool -> IO FilePath
+procRootFromEnv False = pure "/proc"
+procRootFromEnv True = do
   mRoot <- lookupEnv "HASKOKI_PROC_ROOT"
   pure (case mRoot of Just r | not (null r) -> r; _ -> "/proc")
 
@@ -571,7 +584,8 @@ inspectLock dbPath lockPath procRoot pid attempts = do
 -- | Owner-liveness verdict: alive, provably dead (sufficient
 -- death evidence), or unknowable (anything else: masked,
 -- unreadable, or partially hidden proc). Unknowable fails closed
--- while the kernel lock is held; a free lock is taken over.
+-- while the kernel lock is held; a free lock proceeds to takeover
+-- (which still needs a writable sidecar).
 data PidLiveness = PidAlive | PidDead | PidUnknown deriving (Eq, Show)
 
 -- | One @\/proc@ entry probe: present, cleanly absent (@ENOENT@),
@@ -652,13 +666,16 @@ pidLiveness procRoot ownerPid = do
         _ -> pure PidUnknown
     _ -> pure PidUnknown
 
--- | True exactly when a pid is provably dead ('PidDead' through the
--- same @\/proc@ policy as owner liveness, honouring
--- @HASKOKI_PROC_ROOT@). Anything unknowable is alive (fail closed:
--- the caller must not act on it).
-pidIsDead :: Int -> IO Bool
-pidIsDead pid = do
-  procRoot <- procRootFromEnv
+-- | True exactly when a pid reads dead ('PidDead') through the
+-- consulted @\/proc@ view: the real @\/proc@ by default, the
+-- @HASKOKI_PROC_ROOT@ view only with the env-seam opt-in. Hiding
+-- ONLY the owner entry reads a live pid dead; hiding any required
+-- witness instead (@self@, our own pid, or the parent entry) fails
+-- closed through 'PidUnknown', which reads alive here. Anything
+-- unknowable is alive (fail closed: the caller must not act on it).
+pidIsDead :: Bool -> Int -> IO Bool
+pidIsDead allowEnv pid = do
+  procRoot <- procRootFromEnv allowEnv
   live <- pidLiveness procRoot pid
   pure (live == PidDead)
 
@@ -854,15 +871,16 @@ releaseQuiet fd lockPath = do
 -- closes once on each failure path and hands the handle off
 -- untouched on success.
 openAndInit
-  :: (IO (Either StoreError S.Database) -> IO (Either StoreError S.Database))
+  :: Bool
+  -> (IO (Either StoreError S.Database) -> IO (Either StoreError S.Database))
   -> Fd -> FilePath -> Bool -> IO (Either StoreError S.Database)
-openAndInit restore guardFd path created = do
+openAndInit allowEnv restore guardFd path created = do
   eSt <- tryStoreIO (getFdStatus guardFd)
   case eSt of
     Left err -> pure (Left err)
     Right st -> do
       let fresh = fileSize st == 0
-      when created (pauseForFreshCreate path)
+      when created (pauseForFreshCreate allowEnv path)
       eDb <- trySQLite (S.open (T.pack path))
       case eDb of
         Left err -> pure (Left err)
@@ -885,12 +903,25 @@ openAndInit restore guardFd path created = do
           | fresh -> initSchema db guardFd dbPath
           | otherwise -> verifyExisting db dbPath
 
--- | Test seam: when @HASKOKI_OPEN_PAUSE@ names a directory AND
+-- | Test seam: when @HASKOKI_OPEN_PAUSE@ is a nonempty value AND
 -- @HASKOKI_OPEN_PAUSE_PATH@ names THIS open's database path
 -- (exact string match) AND this open created the file, write a
--- @paused@ file and wait for a @go@ file (10ms poll, 30s cap,
--- then proceed). Inert unless both variables are set (one env
--- lookup each) and on every open that did not create the file.
+-- @paused@ marker and wait for a @go@ file (10ms poll, 3000 polls —
+-- about 30s wall-clock when running, longer if the process is
+-- suspended — then proceed regardless). The marker write is
+-- best-effort and the value is not checked to be a directory: a
+-- nonexistent directory simply fails the marker write and the open
+-- still waits out the poll budget. Afterwards the seam records
+-- the exact poll count in @<dir>\/polls@ (best-effort, same
+-- terms): the count pins the polling structure — any reworking
+-- of the loop (backoff, early give-up, split calls) reports a
+-- different total. Timing probes cover promptness; the count
+-- covers structure.
+-- Honoured only with the env-seam opt-in
+-- (@storage.allow_env_seams@); without it the seam never fires,
+-- even with both variables set. Inert unless both variables are
+-- set (one env lookup each) and on every open that did not
+-- create the file.
 -- The path binding keeps unrelated parallel SQLite creators
 -- (contract\/commit tests, inherited-env holder children) from
 -- pausing on another test's handshake — only the intended opener
@@ -900,20 +931,43 @@ openAndInit restore guardFd path created = do
 -- exactly that window so the interleaving and the path-swap abort
 -- are deterministically testable. One pauser per directory;
 -- production never sets it.
-pauseForFreshCreate :: FilePath -> IO ()
-pauseForFreshCreate dbPath = do
+pauseForFreshCreate :: Bool -> FilePath -> IO ()
+pauseForFreshCreate False _ = pure ()
+pauseForFreshCreate True dbPath = do
   mDir <- lookupEnv "HASKOKI_OPEN_PAUSE"
   mWant <- lookupEnv "HASKOKI_OPEN_PAUSE_PATH"
   case (mDir, mWant) of
     (Just dir, Just want) | not (null dir), want == dbPath -> do
       _ <- tryIOError (writeFile (dir ++ "/paused") "paused\n")
-      go (dir ++ "/go") (3000 :: Int)
+      (_, nPolls) <- waitForGoFile (dir ++ "/go") (3000 :: Int)
+      _ <- tryIOError (writeFile (dir ++ "/polls") (show nPolls ++ "\n"))
+      pure ()
     _ -> pure ()
+
+-- | Wait for the @go@ handshake file: poll @fileExist@ through
+-- 'waitForPoll', reporting how many polls ran. The count is part
+-- of the contract: a single-check reimplementation returns a count
+-- of one, which the composition test rejects.
+waitForGoFile :: FilePath -> Int -> IO (Bool, Int)
+waitForGoFile goFile maxPolls = waitForPoll (fileExist goFile) maxPolls
+
+-- | Poll a @go@-style probe every 10ms, up to @maxPolls@ times.
+-- Returns whether it fired paired with the polls performed: True
+-- the moment it fires, (False, 0) without probing on a
+-- nonpositive budget, (False, budget) on exhaustion (the caller
+-- proceeds regardless). Exported so the handshake polling — not
+-- just its timing — is unit-testable (like 'livenessFromProbes'):
+-- a seam that checked once and then slept returns a count of one,
+-- which the composition test rejects no matter how the test
+-- thread is scheduled.
+waitForPoll :: IO Bool -> Int -> IO (Bool, Int)
+waitForPoll _ maxPolls | maxPolls <= 0 = pure (False, 0)
+waitForPoll probe maxPolls = go 0
   where
-    go _ 0 = pure ()
-    go goFile n = do
-      done <- fileExist goFile
-      if done then pure () else threadDelay 10000 >> go goFile (n - 1)
+    go n = do
+      done <- probe
+      let n' = n + 1
+      if done then pure (True, n') else threadDelay 10000 >> if n' >= maxPolls then pure (False, n') else go n'
 
 -- | Configure one connection: foreign keys, bounded busy timeout,
 -- rollback journal, durable sync — then verify the durable modes
@@ -2669,9 +2723,9 @@ readStoreSnapshotWith blockedBy path = do
 -- with the @\/proc@ verdict kept only for the message text. A dead
 -- pid reports stale as before. Never creates, removes or rewrites
 -- a lock.
-probeOwner :: FilePath -> IO OwnerState
-probeOwner path = do
-  procRoot <- procRootFromEnv
+probeOwner :: Bool -> FilePath -> IO OwnerState
+probeOwner allowEnv path = do
+  procRoot <- procRootFromEnv allowEnv
   me <- getProcessID
   let lockPath = path ++ ".lock"
   eLock <- tryIOError (getSymbolicLinkStatus lockPath)
@@ -2782,21 +2836,26 @@ noMigrationHooks = MigrationHooks (\_ -> pure ()) (\_ -> pure ())
 -- action, and release on every path. Never creates the database; a
 -- live owner is refused ('StoreSecondWriter'). The sidecar is the
 -- only file created, and it is removed on release.
-withOwnedStoreFile :: FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
-withOwnedStoreFile = withOwnedRelease True
+withOwnedStoreFile :: Bool -> FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
+withOwnedStoreFile allowEnv = withOwnedRelease allowEnv True
 
 -- | Like 'withOwnedStoreFile', but the post-body release only closes
 -- the sidecar descriptor and never unlinks the sidecar: the body
 -- owns sidecar removal instead. Releases before the body runs still
 -- remove a sidecar this call created or took over. Used by reset,
 -- where a failed database removal must leave the sidecar in place.
-withOwnedStoreFileKeep :: FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
-withOwnedStoreFileKeep = withOwnedRelease False
+withOwnedStoreFileKeep :: Bool -> FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
+withOwnedStoreFileKeep allowEnv = withOwnedRelease allowEnv False
 
 -- | 'True' unlinks our sidecar on the post-body release (the body
--- may already have done so); 'False' only closes it.
-withOwnedRelease :: Bool -> FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
-withOwnedRelease unlinkOnRelease path act = mask $ \restore -> do
+-- may already have done so); 'False' only closes it. 'allowEnv' gates
+-- the liveness seam (default-off): without it the takeOwnership
+-- probe below reads the real @\/proc@ however the environment is set.
+-- This path never pauses: the fresh-init pause lives on the create
+-- path only, so check\/migrate ownership checks consult liveness and
+-- nothing else.
+withOwnedRelease :: Bool -> Bool -> FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
+withOwnedRelease allowEnv unlinkOnRelease path act = mask $ \restore -> do
   eSt <- lstatOpt path
   case eSt of
     Right Nothing -> pure (Left (StoreIO ("no store file at " ++ path)))
@@ -2804,7 +2863,7 @@ withOwnedRelease unlinkOnRelease path act = mask $ \restore -> do
       pure (Left (StoreIO ("not a regular file: " ++ path)))
     Left e -> pure (Left (StoreIO ("store database cannot be examined: " ++ path ++ ": " ++ e)))
     Right _ -> do
-      procRoot <- procRootFromEnv
+      procRoot <- procRootFromEnv allowEnv
       let lockPath = path ++ ".lock"
       eOwn <- takeOwnership path lockPath procRoot 3
       case eOwn of

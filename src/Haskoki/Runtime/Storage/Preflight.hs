@@ -212,7 +212,7 @@ checkStoreOpen path0 cfg = do
   case eReg of
     Left err -> pure (Left err)
     Right () -> do
-      owner <- probeOwner path
+      owner <- probeOwner (scAllowEnvSeams (cfgStorage cfg)) path
       case owner of
         OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
         _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshot path
@@ -228,7 +228,7 @@ checkStoreOpenAllowCold path0 cfg = do
   case eReg of
     Left err -> pure (Left err)
     Right () -> do
-      owner <- probeOwner path
+      owner <- probeOwner (scAllowEnvSeams (cfgStorage cfg)) path
       case owner of
         OwnerLive why -> pure (Left (StoreSecondWriter ("store is in use (" ++ why ++ "): " ++ path)))
         _ -> fmap (planStoreOpen path owner cfg) <$> readStoreSnapshotAllowCold path
@@ -493,7 +493,7 @@ migrateResolved hooks path cfg backupDir = do
       VerdictMigrationRequired ->
         pure (traverse freezeOne (rowless plan)) >>? \freeze -> do
           mhAfterPlan hooks
-          owned <- withOwnedStoreFile path (\o -> underOwnership needsClear o plan freeze)
+          owned <- withOwnedStoreFile (scAllowEnvSeams (cfgStorage cfg)) path (\o -> underOwnership needsClear o plan freeze)
           pure (either (Left . MigrateStore) id owned)
     -- The owned re-read tolerates the cold journal exactly when
     -- the unowned plan did, so the comparison is like-for-like.
@@ -705,6 +705,12 @@ listDirEntries dir =
       e <- readDirStream s
       if null e then pure (reverse acc) else collect s (e : acc)
 
+-- The sweep always reads the real @\/proc@, even under the env-seam
+-- opt-in: deleting another live owner's receipt temporary on the
+-- strength of a masked root would turn a correct migration into a
+-- spurious receipt failure. Liveness masking stays scoped to
+-- ownership decisions (probeOwner/takeOwnership), never janitorial
+-- deletion.
 sweepStaleReceiptTemps :: FilePath -> Int -> IO ()
 sweepStaleReceiptTemps dir self = do
   eNames <- tryIOError (listDirEntries dir)
@@ -713,7 +719,7 @@ sweepStaleReceiptTemps dir self = do
     Right names -> forM_ (filter (\n -> n /= "." && n /= "..") names) $ \name ->
       case stalePid name of
         Just pid | pid /= self -> do
-          dead <- pidIsDead pid
+          dead <- pidIsDead False pid
           whenDead dead (dir ++ "/" ++ name)
         _ -> pure ()
   where

@@ -148,7 +148,8 @@ runCtl ("config" : "check" : rest) = do
         Left err -> pure (CtlExit 1 "" ("config-invalid: " ++ show err ++ "\n"))
         Right cfg -> pure (CtlExit 0
           ("config-ok: profile=" ++ show (cfgProfile cfg)
-           ++ " interfaces=" ++ show (cfgInterfaces cfg) ++ "\n") "")
+           ++ " interfaces=" ++ show (cfgInterfaces cfg)
+           ++ " storage.allow_env_seams=" ++ show (scAllowEnvSeams (cfgStorage cfg)) ++ "\n") "")
 runCtl ("capabilities" : rest) = do
   case flag "--config" rest of
     Nothing -> pure (CtlExit 2 "" "capabilities needs --config FILE\n")
@@ -239,6 +240,7 @@ capabilitiesReport cfg = unlines $
       ++ " (configured set; effective native: 3.2 3.1 3.0 via C_GetInterface/C_GetInterfaceList, 2.40 via C_GetFunctionList)"
   , "active-catalog: " ++ unwords active
   , "gap-set: " ++ unwords gaps
+  , "storage.allow_env_seams: " ++ show (scAllowEnvSeams (cfgStorage cfg))
   ] ++ map (\(k, v) -> "limit." ++ k ++ ": " ++ show v) (reportLimits cfg)
     ++ map (\(k, v) -> "sim." ++ k ++ ": " ++ v) (reportSim cfg)
     ++ map (\(k, v) -> "tokens." ++ k ++ ": " ++ v) (reportTokens cfg)
@@ -1016,7 +1018,9 @@ resetStoreWith hooks path0 confirmed = do
         -- files are gone, after which it starts a fresh store; a
         -- stale lock with no holder is taken over, like the open
         -- and migrate paths.
-        eReset <- withOwnedStoreFileKeep path $ \o -> do
+        -- Env seams stay off here (no config on the reset path):
+        -- a masked @/proc@ must not make a live store look dead.
+        eReset <- withOwnedStoreFileKeep False path $ \o -> do
           rhBeforeRemove hooks
           -- No opener can create the database while the guard is
           -- held, so absence here is conclusive. The sidecar is

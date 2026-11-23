@@ -517,7 +517,7 @@ caseSqliteRoundTrip = withPrivateDir $ \dir -> do
   let dbPath = dir </> "multitoken.sqlite"
   cfg <- loadFixtureConfig
   let sqliteCfg = cfg
-        { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True }
+        { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True False }
   withConfigInstance sqliteCfg $ \inst ->
     alloca $ \(pCount :: Ptr CULong) -> do
       poke pCount (CULong 0)
@@ -548,7 +548,7 @@ caseCatalogShrinkRefused = withPrivateDir $ \dir -> do
   let dbPath = dir </> "catalog-shrink.sqlite"
   cfg <- loadFixtureConfig
   let sqliteCfg = cfg
-        { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True }
+        { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True False }
   withConfigInstance sqliteCfg $ \inst ->
     alloca $ \(pCount :: Ptr CULong) -> do
       poke pCount (CULong 0)
@@ -852,7 +852,7 @@ caseReinitLockedSoRecovery = withPrivateDir $ \dir -> do
   let dbPath = dir </> "reinit-locked.sqlite"
   cfg <- loadFixtureConfig
   let sqliteCfg = cfg
-        { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True }
+        { cfgStorage = StorageCfg StorageSQLite (Just dbPath) 5000 True False }
   withConfigInstance sqliteCfg $ \inst -> do
     s0 <- openSession inst (CULong 0)
     rvStrike1 <- loginAs inst s0 0 "bad-so-0001"

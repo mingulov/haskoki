@@ -82,6 +82,7 @@ spec = testGroup "Config honesty"
     , testCase "storage.busy_timeout_ms: default accepted" caseBusyDefault
     , testCase "storage.exclusive_provider_ownership: false refused" caseExclRefused
     , testCase "storage.exclusive_provider_ownership: true accepted" caseExclTrue
+    , testCase "storage.allow_env_seams: default false, true accepted" caseAllowEnvSeams
     ]
   , testGroup "engine"
     [ testCase "engine.kind: unknown refused" caseEngineKindBad
@@ -346,6 +347,18 @@ caseExclTrue =
   case parseConfig (unlines ["schema_version = 1", "[storage]", "exclusive_provider_ownership = true"]) of
     Right cfg -> assertEqual "exclusive true" True (scExclusiveOwnership (cfgStorage cfg))
     other -> assertFailure ("exclusive=true must parse, got: " ++ show other)
+
+-- | Env seams default off: absent key parses to False (opens ignore
+-- the environment). Explicit @true@ opts in and parses.
+caseAllowEnvSeams :: IO ()
+caseAllowEnvSeams = do
+  assertEqual "defaultConfig allow_env_seams" False (scAllowEnvSeams (cfgStorage defaultConfig))
+  case parseConfig (unlines ["schema_version = 1"]) of
+    Right cfg -> assertEqual "allow_env_seams default" False (scAllowEnvSeams (cfgStorage cfg))
+    other -> assertFailure ("minimal config must parse, got: " ++ show other)
+  case parseConfig (unlines ["schema_version = 1", "[storage]", "allow_env_seams = true"]) of
+    Right cfg -> assertEqual "allow_env_seams true" True (scAllowEnvSeams (cfgStorage cfg))
+    other -> assertFailure ("allow_env_seams=true must parse, got: " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Engine (knobs + never-knobs)
@@ -1101,7 +1114,7 @@ compareKeyTable doc =
 caseKeyTableMatches :: IO ()
 caseKeyTableMatches = do
   doc <- honestyCatalog
-  assertEqual "44 catalog keys" 44 (length configKeyCatalog)
+  assertEqual "45 catalog keys" 45 (length configKeyCatalog)
   assertEqual "doc table vs parser catalog" [] (compareKeyTable doc)
 
 dropRow :: String -> String -> String
