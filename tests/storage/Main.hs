@@ -64,13 +64,16 @@ main = do
       -- into -N2.
       caps <- getNumCapabilities
       warmupCommitPath
-      -- One env-mutation scope for the whole binary, acquired before
-      -- tasty forks any worker: the gate serializes StoreSpec's
-      -- process-wide env mutators, and every test child in every
-      -- spec is spawned from the frozen snapshot (never a live
-      -- 'getEnvironment' that could race a concurrent restore).
-      scope <- StoreFixtures.newEnvScope
-      let mkScope = pure scope
+      -- One shared env-mutation scope action for the whole binary,
+      -- acquired before tasty forks any worker: the gate serializes
+      -- StoreSpec's process-wide env mutators, and every test child
+      -- in every spec is spawned from the frozen snapshot (never a
+      -- live 'getEnvironment' that could race a concurrent
+      -- restore). Do-bound (not let-bound): the test-wiring gate
+      -- only attributes tree-position values with do, lambda,
+      -- top-level, or import-pinned bindings; let/where/case
+      -- locals fail closed.
+      mkScope <- pure <$> StoreFixtures.newEnvScope
       defaultMain $ localOption (NumThreads (min 2 caps)) $ testGroup "haskoki storage"
         [ StoreSpec.spec mkScope
         , CommitSpec.spec

@@ -16,19 +16,30 @@ the early reduced-catalog/session-less defects be gone:
 * FIPSx2: both sessions yield the FIPS "abc" bytes.
 * NOSESSIONLESS: no C_DigestInit(1, / C_Digest(1, implicit-session call.
 * NOREDUCED: no 1-mechanism [CKM_SHA256] catalog assertion.
-* VERPIN: the lib 0.5 pin keeps the check-version.py shape.
+* VERPIN: the lib pin keeps the check-version.py shape (major/minor
+  derived from haskoki.cabal, never hardcoded here).
 
 STDLIB ONLY. Run on HOST python3 from anywhere:
   python3 scripts/check-smoke-surface.py [path/to/release_smoke.c]
 (the optional path exists so a negative-control run can check the pins
 against the pre-rewrite smoke source: FAIL there, ok on the rewrite).
 """
+import re
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT = REPO / "tests" / "c" / "release_smoke.c"
 INC = REPO / "cbits" / "mech_catalog.inc"
+
+
+def package_minor():
+    cabal = (REPO / "haskoki.cabal").read_text()
+    m = re.search(r"^version:\s+(\d+)\.(\d+)\.(\d+)\.(\d+)\s*$",
+                  cabal, re.M)
+    if not m:
+        raise AssertionError("version not found in haskoki.cabal")
+    return int(m.group(2))
 
 failures = []
 
@@ -78,8 +89,8 @@ def main() -> int:
           and "[CKM_SHA256]" not in src,
           "no 1-mechanism reduced-catalog assertion")
     check("VERPIN", "info.libraryVersion.major == 0 &&" in src
-          and "info.libraryVersion.minor == 5," in src,
-          "lib 0.5 pin keeps the version-gate shape")
+          and f"info.libraryVersion.minor == {package_minor()}," in src,
+          "lib pin keeps the version-gate shape")
     check("FINALIZE", 'C_Finalize(NULL_PTR)' in src
           and "SMOKE-OK: release_smoke" in src,
           "finalize + SMOKE-OK verdict intact")
