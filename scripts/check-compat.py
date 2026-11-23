@@ -215,11 +215,16 @@ def check_idempotent(root):
 def parse_layouts_keys(source):
     """Interface keys of the LAYOUTS literal, or None when the
     pinned shape is absent (fail closed). Textual on purpose: no
-    import, so no bytecode is read or written by this gate."""
+    import, so no bytecode is read or written by this gate. Only
+    full entry lines count (`"key": "value",` plus an optional
+    trailing comment), so quoted text inside comments can neither
+    break the gate nor certify a key."""
     m = re.search(r"^LAYOUTS = \{(.*?)^\}$", source, re.M | re.S)
     if not m:
         return None
-    keys = re.findall(r'"([^"]+)"\s*:', m.group(1))
+    entry = re.compile(r'^\s*"([^"]+)"\s*:\s*"[^"]*"\s*,?\s*(?:#.*)?$')
+    keys = [g for line in m.group(1).splitlines()
+            for g in entry.findall(line)]
     return sorted(keys) if keys else None
 
 
@@ -449,6 +454,15 @@ def self_test():
         expect("layouts reader fails closed",
                [] if parse_layouts_keys("# no layouts here\n") is None
                else ["should be None"], False)
+        # Leg 13: quoted keys inside comments are not entries (the
+        # r38 trap: a comment must neither break nor certify).
+        trapped = ('LAYOUTS = {\n'
+                   '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+                   '    # Future example: "3.3": "CK_FUNCTION_LIST_3_2"\n'
+                   '}\n')
+        expect("layouts reader ignores comment keys",
+               [] if parse_layouts_keys(trapped) == ["3.2"]
+               else ["misparse: %r" % parse_layouts_keys(trapped)], False)
 
     print("compat: self-test %s" % ("ok" if not bad else "FAIL"))
     return 1 if bad else 0
