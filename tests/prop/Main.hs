@@ -15,6 +15,7 @@ import Haskoki.Engine.Synthetic (Synthetic)
 import qualified BytesProps
 import qualified CipherProps
 import qualified CodecProps
+import qualified ConfigProps
 import qualified DeltaProps
 import qualified DigestCmdProps
 import qualified ErrorProps
@@ -42,6 +43,7 @@ main = do
       "haskoki properties"
       [ BytesProps.spec seedOv count
       , CodecProps.spec seedOv count
+      , ConfigProps.spec seedOv count
       , ErrorProps.spec seedOv count
       , DeltaProps.spec count
       , SnapshotProps.spec count

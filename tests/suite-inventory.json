@@ -576,6 +576,7 @@
         "Gen",
         "BytesProps",
         "CodecProps",
+        "ConfigProps",
         "ErrorProps",
         "DeltaProps",
         "SnapshotProps",
@@ -622,6 +623,9 @@
         ],
         "CodecProps": [
           "codec laws"
+        ],
+        "ConfigProps": [
+          "config parse laws"
         ],
         "ErrorProps": [
           "error laws"

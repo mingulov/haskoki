@@ -394,6 +394,7 @@ test-suite haskoki-prop-tests
     Gen
     BytesProps
     CodecProps
+    ConfigProps
     ErrorProps
     DeltaProps
     SnapshotProps
