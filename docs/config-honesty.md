@@ -12,7 +12,7 @@ The file is read strictly as bytes and decoded explicitly as UTF-8
 regardless of the process locale; undecodable bytes answer
 `CfgInvalid`, never an exception.
 
-## Accepted settings (45 keys)
+## Accepted settings (49 keys)
 
 `E` = ENFORCED, `R` = REFUSED (non-default/misleading values),
 `D` = CONFIG-NOT-POLICY (reserved, disclosed).
@@ -31,10 +31,14 @@ regardless of the process locale; undecodable bytes answer
 | `engine.kind` | D | reserved: validated selector + reported active catalog; native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `ConfigHonestySpec` class + `reserved-engine` line; `CtlSpec` native-scope | synthetic or openssl, reported catalog only (config-not-policy; native always binds OpenSSL4) |
 | `engine.allow_synthetic_fallback` | R | no fallback exists; `true` refused | `ConfigHonestySpec` fallback refusal | false only, read by nothing (config loader; both) |
 | `engine.private_library_context` | R | native OpenSSL4 always opens a private libctx; `false` refused, default `true` | `ConfigHonestySpec` privctx refusal + default | true only (native OpenSSL4 open; always private libctx) |
-| `async.executor` | E | must be `"logical"` | `ConfigHonestySpec` executor refusal | "logical" only, load gate (config loader; both) |
-| `async.enabled` | E | scenario runner pending gate (native paths do not consult it — scope note below) | `ConfigHonestySpec` enabled on/off scenarios | on/off pending gate (scenario; native async never reads it) |
-| `async.pending_polls` | E | scenario runner pending count (same scope note) | `ConfigHonestySpec` polls scenario | scenario runner pending count (scenario; native async never reads it) |
-| `async.persist_detached` | D | reserved: detached records always commit; durability follows `storage.kind` | `ConfigHonestySpec` parses + `reserved-async` line | reserved; detached records always commit (native store; durability follows storage.kind) |
+| `async.executor` | E | legacy spelling of `scenario.async.executor`: must be `"logical"`, migrates on load | `ConfigHonestySpec` executor refusal (both spellings) | "logical" only, load gate (config loader; both) |
+| `async.enabled` | E | legacy spelling of `scenario.async.enabled`: scenario runner pending gate (native paths do not consult it — scope note below) | `ConfigHonestySpec` enabled on/off scenarios | on/off pending gate (scenario; native async never reads it) |
+| `async.pending_polls` | E | legacy spelling of `scenario.async.pending_polls`: scenario runner pending count (same scope note) | `ConfigHonestySpec` polls scenario | scenario runner pending count (scenario; native async never reads it) |
+| `async.persist_detached` | D | legacy spelling of `scenario.async.persist_detached` (migrates on load); reserved: detached records always commit; durability follows `storage.kind` | `ConfigHonestySpec` parses + `reserved-async` line | reserved; detached records always commit (native store; durability follows storage.kind) |
+| `scenario.async.executor` | E | must be `"logical"` | `ConfigHonestySpec` executor refusal (both spellings) | "logical" only, load gate (config loader; both) |
+| `scenario.async.enabled` | E | scenario runner pending gate (native paths do not consult it — scope note below) | `ConfigHonestySpec` enabled on/off scenarios + `ConfigSpec` migration | on/off pending gate (scenario; native async never reads it) |
+| `scenario.async.pending_polls` | E | scenario runner pending count (same scope note) | `ConfigHonestySpec` polls scenario + `ConfigSpec` migration | scenario runner pending count (scenario; native async never reads it) |
+| `scenario.async.persist_detached` | D | reserved: detached records always commit; durability follows `storage.kind` | `ConfigHonestySpec` parses + `reserved-async` line + `ConfigSpec` migration | reserved; detached records always commit (native store; durability follows storage.kind) |
 | `trace.enabled` | E | off by default; `[trace] enabled = true` opts in (`fileSink` no-op arm) | `ConfigHonestySpec` disabled-writes-nothing | off default, on/off file sink arm (native; runner sink always discards) |
 | `trace.path` | E | `fileSink` append target (`{pid}` expands); `HASKOKI_TRACE` overrides the path only, never enables tracing | `ConfigHonestySpec` path writes file | append target, {pid} expands, HASKOKI_TRACE overrides the path only and does not enable tracing (native; runner sink always discards) |
 | `trace.redact_secrets` | R | always redacted; `false` refused | `ConfigHonestySpec` redact refusal | true only (both; Show instances and renderer always redact) |
@@ -65,9 +69,14 @@ regardless of the process locale; undecodable bytes answer
 | `tokens.user_pins` | E | per-slot user auth; on SQLite it seeds a new token only, and the stored credential row wins after; PINs must be ASCII (a non-ASCII PIN refuses the whole config at load with `CfgInvalid`) | `MultiTokenSpec` per-slot PINs | per-slot ASCII user PIN, 4..32 bytes (native; login auth) |
 | `tokens.token_ids` | E | optional parallel array of decimal stable identities (strings in `1..2147483647`), positional with `tokens.labels`: same length, unique, `token_ids[0]` must be `1` (slot 0 is the home token), else the whole config refuses at load with `CfgInvalid`. Absent: slot `n` owns `TokenId (n+1)`. Pinned ids select durable identity, and the public token serial is that identity in 16 lowercase hex digits | `StoreSpec` pinned/duplicate/ragged/malformed/absent `token_ids` cases (parser: `parseTokenIds`) | serial is the 16-character TokenId (native TokenInfo, slot-independent); config PINs seed fresh stores only, durable credentials win after |
 
-Sections (9): `storage`, `engine`, `async`, `trace`, `control`,
-`fixtures`, `limits`, `sim`, `tokens`. Any other section name is
-rejected as unknown.
+Sections (10): `storage`, `engine`, `async`, `scenario.async`, `trace`,
+`control`, `fixtures`, `limits`, `sim`, `tokens`. Any other section
+name is rejected as unknown.
+
+Legacy `[async]` headers migrate to `[scenario.async]` on load with
+identical validation. Keys under BOTH headers refuse (`CfgInvalid`:
+consolidate into `[scenario.async]`) even when the keys differ; an
+empty header on either side is vacuous (loads, no refusal).
 
 ## Reserved settings (CONFIG-NOT-POLICY)
 
@@ -83,7 +92,7 @@ rejected as unknown.
   validate, report; no bound implemented anywhere. Disclosed by
   the `reserved-limits` capabilities line (below), never silently
   ignored again.
-- `async.persist_detached`: detached job records always commit to
+- `scenario.async.persist_detached`: detached job records always commit to
   the configured store at detach (unconditional `storeCommit`;
   two-process SQLite recovery is driver-pinned), so durability
   follows `storage.kind` (memory: process lifetime; sqlite: file
@@ -136,7 +145,7 @@ std, instance answer NULL — pinned by `FfiAcquireSpec`), and
 
 Pre-existing validation refusals (unchanged, contract-pinned):
 bad `schema_version`/`profile`/`interfaces`/`storage.kind`/
-`engine.kind`/`async.executor`/`control.response_budget_bytes`,
+`engine.kind`/`scenario.async.executor`/`control.response_budget_bytes`,
 zero `[limits]`, sqlite-without-path, malformed `[sim]`/`[tokens]`.
 
 Unknown keys/sections: `CfgUnknownKey` naming the dotted key
@@ -157,7 +166,7 @@ Unknown keys/sections: `CfgUnknownKey` naming the dotted key
 - `interfaces`: the declared interface set is validated (non-empty
   subset of 2.40/3.0/3.1/3.2) and reported, but no native path
   gates behavior on it. Declarative label, not a version gate.
-- `async.enabled` / `async.pending_polls`: read by the
+- `scenario.async.enabled` / `scenario.async.pending_polls`: read by the
   `haskoki-ctl` scenario runner only (pending offering + poll
   count); native async paths do not consult them.
 - `engine.kind`: selects the configured engine's reported catalog
@@ -173,7 +182,7 @@ marked `E` above change behavior, and `R` rows accept a single pinned
 value. The `D` (reserved) rows (`limits.buffer_bytes`,
 `limits.attribute_entries`, `limits.attribute_depth`,
 `limits.transcript_bytes`, `limits.aggregate_payload_bytes`,
-`async.persist_detached`, plus `profile`, `interfaces` and
+`scenario.async.persist_detached`, plus `profile`, `interfaces` and
 `engine.kind`, which are validated labels selecting no behavior)
 are reported but are not enforced limits: the effective attribute
 bounds are the fixed constants in `template-bounds`,
@@ -250,7 +259,7 @@ argument (see `execStep` in `src/Haskoki/Ctl.hs`):
 | `slot-event.wait` | `nonblocking` selects the wait mode (default true) |
 | `initialize` / `finalize` | lifecycle verbs (below); the sim verbs (`token.insert`, `async.delay`, `fault.window`) are test controls needing a test-enabled instance |
 
-Pending follows the `[async]` knobs: an async session pends while polls
+Pending follows the `[scenario.async]` knobs: an async session pends while polls
 remain; a sync session never pends. Refusals route three ways, and the
 central checker compares each step's explicit result against its `expect`
 clause (a step without one accepts only `CKR_OK` and `CKR_PENDING`):

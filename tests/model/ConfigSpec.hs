@@ -59,6 +59,11 @@ spec = testGroup "Config"
   , testCase "non-folded spaces parse in comments/values (runbook gate)" caseNonFoldedAccepted
   , testCase "duplicate storage path is last-wins (runbook gate)" caseDupPathLastWins
   , testCase "nbsp section switch is honored (runbook gate)" caseNbspSection
+  , testCase "canonical [scenario.async] parses" caseScenarioAsyncParses
+  , testCase "legacy [async] migrates to canonical spelling" caseLegacyAsyncMigrates
+  , testCase "async under both headers refuses" caseBothAsyncRefuse
+  , testCase "legacy migration reports provenance" caseLegacyProvenance
+  , testCase "legacy fixture file migrates on load" caseLegacyFixtureFile
   ]
 
 fixture :: FilePath -> FilePath
@@ -636,3 +641,92 @@ caseNbspSection = do
         (Just "/abs/A") (scPath (cfgStorage cfg))
       assertEqual "trace path takes the trace value"
         "/trace/R" (tcPath (cfgTrace cfg))
+
+-- | The canonical scenario-async spelling parses with values: after
+-- the rename "async" means one thing (the scenario runner's knobs;
+-- native async never reads them).
+caseScenarioAsyncParses :: IO ()
+caseScenarioAsyncParses = do
+  let doc = unlines
+        [ "schema_version = 1"
+        , "[scenario.async]"
+        , "executor = \"logical\""
+        , "enabled = false"
+        , "pending_polls = 5"
+        ]
+  case parseConfig doc of
+    Left err -> assertFailure (show err)
+    Right cfg -> do
+      assertEqual "executor" "logical" (acExecutor (cfgAsync cfg))
+      assertEqual "enabled" False (acEnabled (cfgAsync cfg))
+      assertEqual "pending polls" 5 (acPendingPolls (cfgAsync cfg))
+
+-- | A legacy @[async]@ file behaves identically to its canonical
+-- spelling: keys migrate on load, values preserved.
+caseLegacyAsyncMigrates :: IO ()
+caseLegacyAsyncMigrates = do
+  let legacy = unlines
+        [ "schema_version = 1"
+        , "[async]"
+        , "executor = \"logical\""
+        , "enabled = false"
+        , "pending_polls = 5"
+        ]
+      canon = unlines
+        [ "schema_version = 1"
+        , "[scenario.async]"
+        , "executor = \"logical\""
+        , "enabled = false"
+        , "pending_polls = 5"
+        ]
+  case (parseConfig legacy, parseConfig canon) of
+    (Right l, Right c) ->
+      assertEqual "migrated equals canonical" (cfgAsync c) (cfgAsync l)
+    other -> assertFailure ("both spellings must parse: " ++ show other)
+
+-- | Keys under BOTH headers refuse (fail closed): an ambiguous
+-- source for the same knobs must never pick a winner silently.
+caseBothAsyncRefuse :: IO ()
+caseBothAsyncRefuse = do
+  let doc = unlines
+        [ "schema_version = 1"
+        , "[async]"
+        , "enabled = false"
+        , "[scenario.async]"
+        , "enabled = true"
+        ]
+  case parseConfig doc of
+    Left (CfgInvalid msg) -> assertEqual "exact refusal"
+      "async settings appear under both [async] and [scenario.async]: consolidate into [scenario.async]"
+      msg
+    other -> assertFailure ("both headers must refuse, got: " ++ show other)
+
+-- | The provenance flag reports whether legacy keys migrated: True
+-- for legacy-only files, False for canonical ones. Provenance, not
+-- behavior — a migrated config behaves identically to its
+-- canonical spelling (pinned by caseLegacyAsyncMigrates).
+caseLegacyProvenance :: IO ()
+caseLegacyProvenance = do
+  let legacy = unlines ["schema_version = 1", "[async]", "enabled = false"]
+      canon = unlines ["schema_version = 1", "[scenario.async]", "enabled = false"]
+  case parseConfigWithProvenance legacy of
+    Left err -> assertFailure (show err)
+    Right (_, migrated) -> assertBool "legacy reports migrated" migrated
+  case parseConfigWithProvenance canon of
+    Left err -> assertFailure (show err)
+    Right (_, migrated) -> assertBool "canonical reports clean" (not migrated)
+
+-- | The legacy fixture file loads through the file API with values
+-- migrated and provenance set: the pre-rename spelling keeps
+-- working end to end.
+caseLegacyFixtureFile :: IO ()
+caseLegacyFixtureFile = do
+  eCfg <- loadConfigFileWithProvenance (fixture "legacy-async.toml")
+  case eCfg of
+    Left err -> assertFailure (show err)
+    Right (cfg, migrated) -> do
+      assertBool "file load reports migrated" migrated
+      assertEqual "executor" "logical" (acExecutor (cfgAsync cfg))
+      assertEqual "enabled" False (acEnabled (cfgAsync cfg))
+      assertEqual "pending polls" 5 (acPendingPolls (cfgAsync cfg))
+      assertEqual "persist detached" True (acPersistDetached (cfgAsync cfg))

@@ -57,6 +57,15 @@ Developer preview: entries land per task and finalize at release.
   without the opt-in; `haskoki-ctl` destructive paths never opt
   in. Serving opens run masked with bounded, single-deadline
   cancellation cleanup.
+- Compatibility matrix (`docs/compatibility.md`, generated): every
+  binary × store × config × interface combination resolves to
+  `works`, `migrate`, or `refuse`, gated in CI. Store schemas 1
+  and 2 open only through an explicit `haskoki-ctl store migrate`.
+- Scenario-async config rename: `[async]` becomes
+  `[scenario.async]`, so "async" means one thing (the scenario
+  runner's knobs; native async never reads them). Files using only
+  the legacy header keep loading with values migrated; files with
+  keys under both headers refuse with a remedy.
 
 ## Removed
 

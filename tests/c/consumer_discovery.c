@@ -253,6 +253,20 @@ int main(int argc, char **argv) {
       CHECKX(rv == CKR_OK && pAny == NULL_PTR,
              "unknown version misses NULL (shim contract)");
     }
+    v.major = 2;
+    v.minor = 40;
+    /* Non-NULL sentinel (a NULL out-pointer rejects before version
+     * matching, which would make this pin vacuous): only a version
+     * non-match rejects here, proving 2.40 is served through
+     * C_GetFunctionList alone. */
+    pAny = (CK_INTERFACE_PTR)0x1;
+    rv = pGetInterface((CK_UTF8CHAR_PTR) "PKCS 11", &v, &pAny, 0);
+    if (!isProxy) {
+      CHECKX(rv == CKR_ARGUMENTS_BAD,
+             "2.40 via GetInterface rejected (use C_GetFunctionList)");
+    }
+    /* Proxy leg intentionally uncovered: backend catalogs may serve 2.40
+     * through GetInterface; only the native routing rule is pinned here. */
     v.major = 3;
     v.minor = 2;
     rv = pGetInterface((CK_UTF8CHAR_PTR) "PKCS 11", &v, NULL_PTR, 0);

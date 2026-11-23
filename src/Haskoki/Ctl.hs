@@ -270,7 +270,7 @@ templateBoundsLine = "template-bounds: entries=64 bytes=4194304 (pinned; limits.
 -- | The detached-durability disclosure sentence, pinned verbatim by
 -- ConfigHonestySpec: detached records always commit to the store
 -- (unconditional, durability follows storage.kind);
--- @async.persist_detached@ selects nothing.
+-- @scenario.async.persist_detached@ selects nothing.
 reservedAsyncLine :: String
 reservedAsyncLine = "reserved-async: persist_detached reserved (detached records always commit to the store; durability follows storage.kind, no knob effect)"
 

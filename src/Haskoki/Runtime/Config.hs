@@ -31,7 +31,9 @@ module Haskoki.Runtime.Config
   , configKeyCatalog
   , defaultConfig
   , parseConfig
+  , parseConfigWithProvenance
   , loadConfigFile
+  , loadConfigFileWithProvenance
   , reportLimits
   , reportSim
   , reportTokens
@@ -105,7 +107,8 @@ data EngineCfg = EngineCfg
   , ecPrivateLibraryContext :: !Bool
   } deriving (Eq, Show)
 
--- | @[async]@ section.
+-- | @[scenario.async]@ section (scenario-runner knobs; native async
+-- never reads them). Legacy @[async]@ headers migrate here on load.
 data AsyncCfg = AsyncCfg
   { acExecutor :: !String
   , acEnabled :: !Bool
@@ -257,14 +260,28 @@ data ConfigError
 -- Defaults
 -- ---------------------------------------------------------------------------
 
+-- | The config schema version the loader defaults to and accepts.
+-- Single source of truth shared by defaulting and validation (and
+-- read textually by the compatibility-matrix generator — keep the
+-- @configSchemaVersion = N@ shape on one line).
+configSchemaVersion :: Int
+configSchemaVersion = 1
+
+-- | Interface versions this binary serves and accepts. Single source
+-- shared by the default config and the validation gate (and read
+-- textually by the compatibility-matrix generator — keep the list
+-- literal on one line).
+supportedInterfaces :: [String]
+supportedInterfaces = ["2.40", "3.0", "3.1", "3.2"]
+
 -- | Defaults: demo-maximal over memory + synthetic, §3 limits, control
 -- enabled but NOT test-enabled (mutations stay gated until a config
 -- opts in).
 defaultConfig :: Config
 defaultConfig = Config
-  { cfgSchemaVersion = 1
+  { cfgSchemaVersion = configSchemaVersion
   , cfgProfile = ProfileDemoMaximal
-  , cfgInterfaces = ["2.40", "3.0", "3.1", "3.2"]
+  , cfgInterfaces = supportedInterfaces
   , cfgSeed = 1234
   , cfgStorage = StorageCfg StorageMemory Nothing 5000 True False
   , cfgEngine = EngineCfg EngineSynthetic False True
@@ -320,6 +337,11 @@ configKeyCatalog =
   , (("async", "enabled"), Enforced)
   , (("async", "pending_polls"), Enforced)
   , (("async", "persist_detached"), Reserved)
+  -- Canonical scenario-async spelling (legacy [async] migrates here).
+  , (("scenario.async", "executor"), Enforced)
+  , (("scenario.async", "enabled"), Enforced)
+  , (("scenario.async", "pending_polls"), Enforced)
+  , (("scenario.async", "persist_detached"), Reserved)
   , (("trace", "enabled"), Enforced)
   , (("trace", "path"), Enforced)
   , (("trace", "redact_secrets"), Refused)
@@ -356,7 +378,7 @@ knownKeys :: [TomlKey]
 knownKeys = map fst configKeyCatalog
 
 knownSections :: [String]
-knownSections = ["storage", "engine", "async", "trace", "control", "fixtures", "limits", "sim", "tokens"]
+knownSections = ["storage", "engine", "async", "scenario.async", "trace", "control", "fixtures", "limits", "sim", "tokens"]
 
 -- | Strip a @#@ comment (outside string literals) and trim.
 stripComment :: String -> String
@@ -457,10 +479,18 @@ parseArr s = do
 
 -- | Parse and validate a TOML document.
 parseConfig :: String -> Either ConfigError Config
-parseConfig body = do
+parseConfig body = fmap fst (parseConfigWithProvenance body)
+
+-- | Parse and validate, reporting whether legacy @[async]@ keys were
+-- migrated. The flag is provenance, not behavior: a migrated config
+-- behaves identically to its canonical spelling.
+parseConfigWithProvenance :: String -> Either ConfigError (Config, Bool)
+parseConfigWithProvenance body = do
   kvs <- parseToml body
   mapM_ rejectUnknown (Map.keys kvs)
-  build kvs
+  (migrated, legacySeen) <- migrateLegacyAsync kvs
+  cfg <- build migrated
+  pure (cfg, legacySeen)
   where
     rejectUnknown k
       | k `elem` knownKeys = Right ()
@@ -469,12 +499,35 @@ parseConfig body = do
       | null sec = key
       | otherwise = sec ++ "." ++ key
 
+-- | Migrate legacy @[async]@ keys to @[scenario.async]@: files using
+-- only the legacy header behave identically to the canonical spelling;
+-- files with keys under BOTH headers refuse (ambiguous source for the
+-- same knobs must fail closed, never pick a winner). A legacy header
+-- with no keys is vacuous (contributes nothing, migrates nothing).
+-- Returns the rewritten assignments and whether legacy keys migrated.
+migrateLegacyAsync :: Map TomlKey TomlVal -> Either ConfigError (Map TomlKey TomlVal, Bool)
+migrateLegacyAsync kvs
+  | hasLegacy && hasCanon = Left (CfgInvalid "async settings appear under both [async] and [scenario.async]: consolidate into [scenario.async]")
+  | not hasLegacy = Right (kvs, False)
+  | otherwise = Right (Map.mapKeys rewrite kvs, True)
+  where
+    hasLegacy = any (\(sec, _) -> sec == "async") (Map.keys kvs)
+    hasCanon = any (\(sec, _) -> sec == "scenario.async") (Map.keys kvs)
+    rewrite (sec, k) | sec == "async" = ("scenario.async", k)
+    rewrite key = key
+
 -- | Load, parse and validate a TOML file. The file is read
 -- strictly as bytes and decoded explicitly as UTF-8, so the result
 -- never depends on the process locale; undecodable bytes answer
 -- 'CfgInvalid', never an exception.
 loadConfigFile :: FilePath -> IO (Either ConfigError Config)
-loadConfigFile path = do
+loadConfigFile path = fmap (fmap fst) (loadConfigFileWithProvenance path)
+
+-- | 'loadConfigFile' reporting whether legacy @[async]@ keys migrated.
+-- Single read, single parse: the flag comes from the same parse that
+-- produced the config, never from re-scanning the file text.
+loadConfigFileWithProvenance :: FilePath -> IO (Either ConfigError (Config, Bool))
+loadConfigFileWithProvenance path = do
   eBytes <- try (BS.readFile path) :: IO (Either IOException BS.ByteString)
   case eBytes of
     Left _ -> pure (Left (CfgMissingFile path))
@@ -482,7 +535,7 @@ loadConfigFile path = do
       -- Fixed text, never the decode exception: `show` of it
       -- echoes one raw byte, which may belong to a PIN.
       Left _ -> pure (Left (CfgInvalid "config file is not valid UTF-8"))
-      Right text -> pure (parseConfig (T.unpack text))
+      Right text -> pure (parseConfigWithProvenance (T.unpack text))
 
 getInt :: Map TomlKey TomlVal -> TomlKey -> Integer -> Either ConfigError Int
 getInt kvs k def = case Map.lookup k kvs of
@@ -524,8 +577,8 @@ build kvs = do
       da = cfgAsync d
       dt = cfgTrace d
       df = cfgFixtures d
-  schema <- getInt kvs ("", "schema_version") 1
-  if schema /= 1
+  schema <- getInt kvs ("", "schema_version") (toInteger configSchemaVersion)
+  if schema /= configSchemaVersion
     then Left (CfgInvalid ("unsupported schema_version: " ++ show schema))
     else pure ()
   profileName <- getStr kvs ("", "profile") "demo-maximal"
@@ -535,7 +588,7 @@ build kvs = do
     "scenario" -> Right ProfileScenario
     other -> Left (CfgInvalid ("unknown profile: " ++ other))
   ifaces <- getStrArr kvs ("", "interfaces") (cfgInterfaces d)
-  if null ifaces || any (`notElem` ["2.40", "3.0", "3.1", "3.2"]) ifaces
+  if null ifaces || any (`notElem` supportedInterfaces) ifaces
     then Left (CfgInvalid ("interfaces must be a non-empty subset of 2.40/3.0/3.1/3.2: " ++ show ifaces))
     else pure ()
   seed <- getInt kvs ("", "seed") (fromIntegral (cfgSeed d))
@@ -593,13 +646,13 @@ build kvs = do
   if not privCtx
     then Left (CfgInvalid "engine.private_library_context=false is not supported (native OpenSSL4 paths always open a private OSSL_LIB_CTX): must be true")
     else pure ()
-  executor <- getStr kvs ("async", "executor") (acExecutor da)
+  executor <- getStr kvs ("scenario.async", "executor") (acExecutor da)
   if executor /= "logical"
-    then Left (CfgInvalid ("async.executor must be \"logical\": " ++ executor))
+    then Left (CfgInvalid ("scenario.async.executor must be \"logical\": " ++ executor))
     else pure ()
-  asyncOn <- getBool kvs ("async", "enabled") True
-  pendingPolls <- getInt kvs ("async", "pending_polls") 2
-  persistDet <- getBool kvs ("async", "persist_detached") False
+  asyncOn <- getBool kvs ("scenario.async", "enabled") True
+  pendingPolls <- getInt kvs ("scenario.async", "pending_polls") 2
+  persistDet <- getBool kvs ("scenario.async", "persist_detached") False
   traceOn <- getBool kvs ("trace", "enabled") False
   tracePath <- getStr kvs ("trace", "path") (tcPath dt)
   redact <- getBool kvs ("trace", "redact_secrets") True

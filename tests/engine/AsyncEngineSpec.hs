@@ -1108,7 +1108,7 @@ stdAsyncConfig envLock tag sqlite = withEnvLock envLock $ do
   writeFile path $ unlines $
     [ "schema_version = 1"
     , "profile = \"demo-maximal\""
-    , "[async]"
+    , "[scenario.async]"
     , "enabled = false"
     , "pending_polls = 19"
     , "[tokens]"
