@@ -219,9 +219,11 @@ def parse_layouts_keys(source):
     Uses ast.parse: exact Python semantics, no bytecode read or
     written, comments nonexistent by construction. Only a plain
     top-level dict literal with string keys is trusted (last one
-    wins, as at runtime); any other store to the name anywhere —
-    conditional, nested, augmented, deleted — fails closed, as
-    does any non-string key.
+    wins, repeated keys deduped, as at runtime); any other store
+    to the name anywhere — conditional, nested, augmented,
+    deleted — fails closed, as does any non-string key, any
+    subscript store/delete, any mutating-method use, and any call
+    the dict is passed to (invisible mutation).
     """
     try:
         tree = ast.parse(source)
@@ -236,7 +238,8 @@ def parse_layouts_keys(source):
             if not isinstance(k, ast.Constant) or not isinstance(k.value, str):
                 return False
             keys.append(k.value)
-        return keys
+        # Dedupe: Python keeps one entry per repeated literal key.
+        return list(dict.fromkeys(keys))
 
     found = None
     plain_stores = 0
@@ -264,7 +267,25 @@ def parse_layouts_keys(source):
             and any(a.asname == "LAYOUTS" for a in node.names))
         or (isinstance(node, ast.ExceptHandler) and node.name == "LAYOUTS")
         for node in ast.walk(tree))
-    if exotic or total_stores != plain_stores:
+    mutated = any(
+        (isinstance(node, ast.Subscript)
+         and isinstance(node.value, ast.Name)
+         and node.value.id == "LAYOUTS"
+         and isinstance(node.ctx, (ast.Store, ast.Del)))
+        or (isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "LAYOUTS"
+            and node.attr in ("update", "pop", "popitem", "clear",
+                              "setdefault", "__setitem__", "__delitem__",
+                              "__ior__"))
+        or (isinstance(node, ast.Call)
+            and any(isinstance(a, ast.Name) and a.id == "LAYOUTS"
+                    for a in list(node.args)
+                    + [k.value for k in node.keywords]
+                    + [s.value for s in node.args
+                       if isinstance(s, ast.Starred)]))
+        for node in ast.walk(tree))
+    if exotic or mutated or total_stores != plain_stores:
         return None
     return sorted(found)
 
@@ -551,6 +572,45 @@ def self_test():
         root = write_fixture(Path(tmp) / "garbage")
         (root / "src/Haskoki/Runtime/Config.hs").write_bytes(b"\xff\xfe\x00bad")
         expect("garbage input fails closed", check(root), True)
+        # Leg 19: subscript deletion fails closed (the r41 trap: the
+        # Del lives on the subscript, the name stays Load).
+        delsub = ('LAYOUTS = {\n'
+                  '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+                  '    "3.3": "CK_FUNCTION_LIST_3_2",\n'
+                  '}\n'
+                  'del LAYOUTS["3.3"]\n')
+        expect("layouts reader fails closed on subscript del",
+               [] if parse_layouts_keys(delsub) is None
+               else ["should be None, got %r" % parse_layouts_keys(delsub)],
+               False)
+        # Leg 20: repeated literal keys dedupe (Python keeps one
+        # entry per key; the gate must see the runtime set).
+        dup = ('LAYOUTS = {\n'
+               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+               '}\n')
+        expect("layouts reader dedupes repeated keys",
+               [] if parse_layouts_keys(dup) == ["3.2"]
+               else ["misparse: %r" % parse_layouts_keys(dup)], False)
+        # Leg 21: mutating-method use fails closed.
+        mut = ('LAYOUTS = {\n'
+               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+               '}\n'
+               'LAYOUTS.update({"3.3": "X"})\n')
+        expect("layouts reader fails closed on mutating method",
+               [] if parse_layouts_keys(mut) is None
+               else ["should be None, got %r" % parse_layouts_keys(mut)],
+               False)
+        # Leg 22: passing the dict to a call fails closed
+        # (invisible mutation the reader cannot see through).
+        smuggle = ('LAYOUTS = {\n'
+                   '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+                   '}\n'
+                   'f(LAYOUTS)\n')
+        expect("layouts reader fails closed on dict smuggling",
+               [] if parse_layouts_keys(smuggle) is None
+               else ["should be None, got %r" % parse_layouts_keys(smuggle)],
+               False)
 
     print("compat: self-test %s" % ("ok" if not bad else "FAIL"))
     return 1 if bad else 0
