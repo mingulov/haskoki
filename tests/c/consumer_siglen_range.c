@@ -10,7 +10,7 @@
  * (9-byte) forgeries and expects CKR_SIGNATURE_LEN_RANGE every
  * time; a right-length tampered signature still fails with
  * CKR_SIGNATURE_INVALID. Raw ECDSA also runs the zero-padded-halves
- * shape, the short-form positives (stripped P-521, padded
+ * shape, the short-form positives (stripped P-521, stripped
  * secp160r1), and the bound-plus-two refusal.
  *
  * Standalone C consumer (non-Haskell executable): dlopen()s the built
@@ -402,8 +402,8 @@ int main(int argc, char **argv) {
   }
 
   /* Raw ECDSA secp160r1: the order is 21 bytes against a 20-byte
-   * field, so the 40-byte signature pads out to the 42-byte bound
-   * form and verifies. */
+   * field, so signing emits the 42-byte order form (PKCS#11 6.3.1
+   * nLen) and it verifies. */
   {
     static CK_BYTE p160[] = { 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x08 };
     CK_OBJECT_HANDLE pub = 0, priv = 0;
@@ -431,21 +431,29 @@ int main(int argc, char **argv) {
           "EC secp160r1 pair mints (rv=0x%lx)", (unsigned long)rv);
     if (rv == CKR_OK && pub != 0 && priv != 0) {
       static CK_BYTE sig[64];
-      static CK_BYTE wide[64];
-      CK_ULONG n;
+      static CK_BYTE shortsig[64];
+      CK_ULONG tries;
+      int found = 0;
       mech.mechanism = CKM_ECDSA;
       mech.pParameter = NULL_PTR;
       mech.ulParameterLen = 0;
-      n = sign_once(sess, &mech, priv, raw20, sizeof(raw20),
-                    sig, sizeof(sig), "ecdsa-secp160r1");
-      CHECK(n == 40, "ecdsa-secp160r1: signs 40 bytes");
-      if (n == 40) {
-        wide[0] = 0;
-        memcpy(wide + 1, sig, 20);
-        wide[21] = 0;
-        memcpy(wide + 22, sig + 20, 20);
+      for (tries = 0; tries < 64 && !found; tries++) {
+        CK_ULONG n = sign_once(sess, &mech, priv, raw20, sizeof(raw20),
+                               sig, sizeof(sig), "ecdsa-secp160r1");
+        if (n != 42) {
+          CHECK(0, "ecdsa-secp160r1: signs 42 bytes");
+          break;
+        }
+        if (sig[0] == 0 && sig[21] == 0) {
+          memcpy(shortsig, sig + 1, 20);
+          memcpy(shortsig + 20, sig + 22, 20);
+          found = 1;
+        }
+      }
+      CHECK(found, "ecdsa-secp160r1: short signature found in 64 signs");
+      if (found) {
         verify_expect(sess, &mech, pub, raw20, sizeof(raw20),
-                      wide, 42, CKR_OK, "ecdsa-secp160r1");
+                      shortsig, 40, CKR_OK, "ecdsa-secp160r1");
       }
       f->C_DestroyObject(sess, pub);
       f->C_DestroyObject(sess, priv);

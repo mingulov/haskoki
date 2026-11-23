@@ -2639,9 +2639,12 @@ caseEcdsaCurvesVectors = withBackend $ \env -> do
   where
     newCurveLens :: [(String, Int)]
     newCurveLens =
-      [ ("secp160r1", 40), ("secp160r2", 40), ("secp160k1", 40)
+      -- Wider-order curves emit order-width halves (PKCS#11 §6.3.1
+      -- nLen): 161-bit orders on 160-bit fields sign 42 bytes, the
+      -- 225-bit order on the 224-bit field signs 58.
+      [ ("secp160r1", 42), ("secp160r2", 42), ("secp160k1", 42)
       , ("secp192r1", 48), ("secp192k1", 48)
-      , ("secp224r1", 56), ("secp224k1", 56), ("secp256k1", 64)
+      , ("secp224r1", 56), ("secp224k1", 58), ("secp256k1", 64)
       , ("brainpoolP224r1", 56), ("brainpoolP256r1", 64)
       , ("brainpoolP320r1", 80), ("brainpoolP384r1", 96)
       , ("brainpoolP512r1", 128)
@@ -2724,7 +2727,7 @@ caseEcdsaOddSig = withBackend $ \env -> do
 -- non-zero length up to twice the wider of the order and
 -- coordinate widths): a P-521 signature with leading-zero bytes
 -- stripped from both halves, a wider-order secp160r1 signature
--- padded out to twice the order width, and the pre-narrowing
+-- stripped back to the 40-byte field form, and the pre-narrowing
 -- 104-byte sect409k1 form. Past the bound still refuses by
 -- length.
 caseEcdsaShortForms :: IO ()
@@ -2751,19 +2754,28 @@ caseEcdsaShortForms = withBackend $ \env -> do
   assertEqual "stripped form is 130 bytes" 130 (BS.length short521)
   expectOk "p521 stripped form verifies" =<<
     verify env sraw521 q521 input521 short521
-  -- secp160r1: the order is 21 bytes against a 20-byte field, so
-  -- the 40-byte signature pads out to the 42-byte bound form and
-  -- verifies.
+  -- secp160r1: the order is 21 bytes against a 20-byte field,
+  -- so signing emits 42 bytes; a 40-byte stripped form still
+  -- verifies through the short-form tolerance.
   (p160, Just q160) <- expectOk "gen secp160r1" =<<
     generateKey env (GenEC (mkEc "secp160r1" "DER"))
   let sraw160 = SigECDSA (mkEc "secp160r1" "RAW") Nothing
       input160 = BS.replicate 20 0x33
-  sig40 <- expectOk "sign secp160r1" =<< sign env sraw160 p160 input160
-  assertEqual "secp160r1 raw width" 40 (BS.length sig40)
-  let wide42 = BS.singleton 0 <> BS.take 20 sig40
-        <> BS.singleton 0 <> BS.drop 20 sig40
-  expectOk "secp160r1 42-byte form verifies" =<<
-    verify env sraw160 q160 input160 wide42
+      findNarrow :: Int -> IO BS.ByteString
+      findNarrow tries
+        | tries <= 0 =
+            assertFailure "no short secp160r1 signature in 64 signs" >> undefined
+        | otherwise = do
+            sig <- expectOk "sign secp160r1" =<< sign env sraw160 p160 input160
+            assertEqual "secp160r1 raw width" 42 (BS.length sig)
+            let (r, s) = BS.splitAt 21 sig
+            if BS.index r 0 == 0 && BS.index s 0 == 0
+              then pure (BS.drop 1 r <> BS.drop 1 s)
+              else findNarrow (tries - 1)
+  short40 <- findNarrow 64
+  assertEqual "stripped form is 40 bytes" 40 (BS.length short40)
+  expectOk "secp160r1 40-byte form verifies" =<<
+    verify env sraw160 q160 input160 short40
   -- sect409k1: the sign side emits 102 bytes (51-byte order),
   -- but the 104-byte field-width form from before the narrowing
   -- still verifies through the compatibility bound.

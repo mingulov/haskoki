@@ -1978,14 +1978,15 @@ static int hsk_ossl4_ec_orderbits(EVP_PKEY *pkey, unsigned int *bits)
 }
 
 /* Raw ECDSA sign-side half-width for one key: the group order
- * size in bytes, clamped to the field coordinate width from the
- * encoded point. The order sizes curves whose order is narrower
- * than the field (sect409k1 emits 51-byte halves, not 52); the
- * clamp keeps every other served curve byte-identical to the
- * historical field width (including the wider-order secp160r1/r2/k1
- * and secp224k1, which keep 20- and 28-byte halves). Verify takes
- * the bound below instead. Returns the width in bytes, or -1 when
- * either size is unreadable. */
+ * size in bytes (PKCS#11 §6.3.1 nLen — scalars range over the
+ * order, not the field). Curves whose order is narrower than the
+ * field keep order halves (sect409k1 emits 51 bytes, not 52);
+ * wider-order curves emit order halves too (secp160r1/r2/k1 emit
+ * 21 bytes, secp224k1 29) — a field clamp would truncate scalars
+ * that need the full order width. The encoded point is still
+ * read to validate its shape. Verify takes the bound below
+ * instead. Returns the width in bytes, or -1 when either size is
+ * unreadable. */
 static int hsk_ossl4_ec_raw_width(EVP_PKEY *pkey)
 {
     unsigned char point[1 + 2 * HSK_OSSL4_EC_MAX_COORD]; /* 0x04 || X || Y */
@@ -2008,7 +2009,7 @@ static int hsk_ossl4_ec_raw_width(EVP_PKEY *pkey)
     orderbytes = (orderbits + 7) / 8;
     if (orderbytes == 0)
         return -1;
-    return (int)(orderbytes < coordlen ? orderbytes : coordlen);
+    return (int)orderbytes;
 }
 
 /* Raw ECDSA verify-side bound for one key (PKCS#11 §6.3.1): twice
@@ -2217,7 +2218,7 @@ long hsk_ossl4_ecdsa_sign(OSSL_LIB_CTX *ctx, const char *mdname,
         goto end;
     }
     /* DER -> raw r||s: parse the ASN.1 signature, pad each scalar to
-     * the raw half-width (order size clamped to the field width). */
+     * the raw half-width (group order size in bytes). */
     {
         const unsigned char *p = der;
         ECDSA_SIG *sig = d2i_ECDSA_SIG(NULL, &p, (long)derlen);
