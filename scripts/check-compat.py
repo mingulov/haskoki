@@ -14,11 +14,20 @@ Asserts on docs/compatibility.md:
   - the doc is byte-identical to a fresh generator run (the gate runs
     scripts/generate_compat.py against copies in a temp dir, so the
     check itself never modifies the tree)
+  - the config interface allowlist equals the native ABI inventory
+    (spec/abi-inventory.json keys): the matrix must certify neither
+    an interface native discovery rejects nor omit a served one.
+    Native service itself is pinned behaviorally by the
+    consumer_discovery legs (exact 3.2/3.1/3.0 inventory +
+    2.40-via-C_GetFunctionList); this check closes the
+    allowlist-to-native link transitively through the inventory
+    both derive from.
 
 STDLIB ONLY. Run from anywhere:
   python3 scripts/check-compat.py [--self-test]
 """
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -202,16 +211,35 @@ def check_idempotent(root):
     return []
 
 
+def check_native_interfaces(root, consts):
+    """The allowlist must equal the ABI inventory keys exactly."""
+    inv_path = root / "spec/abi-inventory.json"
+    try:
+        inv = json.loads(inv_path.read_text())
+    except (OSError, ValueError) as exc:
+        return ["cannot read ABI inventory %s: %s" % (inv_path, exc)]
+    native = sorted(inv.get("interfaces", {}).keys())
+    if not native:
+        return ["ABI inventory lists no interfaces"]
+    allowed = sorted(consts["interfaces"])
+    if allowed != native:
+        return ["config allowlist %s != ABI inventory %s: the matrix "
+                "must certify exactly what native discovery serves"
+                % (allowed, native)]
+    return []
+
+
 def check(root):
     consts, errors = read_constants(root)
     if errors:
         return errors
+    errors = check_native_interfaces(root, consts)
     doc_path = root / "docs/compatibility.md"
     try:
         doc = doc_path.read_text()
     except OSError:
-        return ["docs/compatibility.md is missing (run scripts/generate_compat.py)"]
-    errors = check_versions(doc, consts)
+        return errors + ["docs/compatibility.md is missing (run scripts/generate_compat.py)"]
+    errors += check_versions(doc, consts)
     errors += check_table(doc, consts)
     return errors
 
@@ -242,15 +270,19 @@ FIX_SQLITE = "-- fixture\nsqliteSchemaVersion :: Int\nsqliteSchemaVersion = 3\n"
 FIX_CONFIG = ("-- fixture\nconfigSchemaVersion :: Int\nconfigSchemaVersion = 1\n\n"
               "supportedInterfaces :: [String]\n"
               "supportedInterfaces = [\"2.40\", \"3.0\"]\n")
+FIX_ABI = '{"interfaces": {"2.40": {}, "3.0": {}}}'
 
 
-def write_fixture(tmp, cabal=FIX_CABAL, sqlite=FIX_SQLITE, config=FIX_CONFIG, doc=None):
+def write_fixture(tmp, cabal=FIX_CABAL, sqlite=FIX_SQLITE, config=FIX_CONFIG,
+                  abi=FIX_ABI, doc=None):
     tmp = Path(tmp)
     tmp.mkdir(parents=True, exist_ok=True)
     (tmp / "haskoki.cabal").write_text(cabal)
     (tmp / "src/Haskoki/Runtime/Storage").mkdir(parents=True, exist_ok=True)
     (tmp / "src/Haskoki/Runtime/Storage/SQLite.hs").write_text(sqlite)
     (tmp / "src/Haskoki/Runtime/Config.hs").write_text(config)
+    (tmp / "spec").mkdir(parents=True, exist_ok=True)
+    (tmp / "spec/abi-inventory.json").write_text(abi)
     (tmp / "docs").mkdir(parents=True, exist_ok=True)
     if doc is not None:
         (tmp / "docs/compatibility.md").write_text(doc)
@@ -325,6 +357,29 @@ def self_test():
             "| --- | --- | --- | --- | --- |\n"
             "| 0.6.0.0 | memory | 1 | 2.40 | works |\n"))
         expect("dropped combo fails", check(root), True)
+        # Legs 8-9: the doc is generated from the drifted
+        # allowlist, so versions/table/idempotency all pass and ONLY
+        # the native cross-check can fail each leg.
+        for name, spelling in (("wide", '["2.40", "3.0", "3.3"]'),
+                               ("narrow", '["2.40"]')):
+            root = write_fixture(
+                Path(tmp) / name,
+                config=FIX_CONFIG.replace('["2.40", "3.0"]', spelling))
+            if GENERATOR.is_file():
+                p = subprocess.run(
+                    [sys.executable, str(GENERATOR), "--root", str(root)],
+                    capture_output=True, text=True, timeout=120)
+                if p.returncode != 0:
+                    expect("%s allowlist fails" % name,
+                           ["generator failed: %s" % p.stderr[:200]], True)
+                else:
+                    errs = check(root)
+                    isolated = [e for e in errs if "ABI inventory" in e]
+                    expect("%s allowlist fails on inventory" % name,
+                           isolated, True)
+            else:
+                expect("%s allowlist fails" % name,
+                       ["generator missing (not yet written)"], True)
 
     print("compat: self-test %s" % ("ok" if not bad else "FAIL"))
     return 1 if bad else 0
