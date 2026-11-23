@@ -57,6 +57,7 @@ spec = testGroup "key import"
   , testCase "EC private import assembles PKCS#8" caseEcPrivate
   , testCase "EC public import assembles SPKI" caseEcPublic
   , testCase "EC scalar bound is the order width" caseEcScalarOrderWidths
+  , testCase "EC scalar bound measures integer value" caseEcScalarValueBound
   , testCase "DSA private import assembles PKCS#8" caseDsaPrivate
   , testCase "DSA public import assembles SPKI" caseDsaPublic
   , testCase "DSA DER readers parse openssl goldens" caseDsaDerReaders
@@ -681,6 +682,35 @@ caseEcScalarOrderWidths = do
   _ <- doCreate m0 st (tmpl oid409k1 (BS.replicate 51 0x11))
   expectReject CKR_TEMPLATE_INCONSISTENT
     (planCreateObject m0 st (tmpl oid409k1 (BS.replicate 52 0x11)))
+
+-- | The scalar bound measures the integer, not the byte string
+-- (OASIS Big integer has no minimal-encoding rule): zero-padded
+-- values load, all-zero (d=0) refuses, and over-wide integers
+-- refuse. Range above that (d < n) is NOT validated here —
+-- see the range-validation follow-up; d=n currently loads, pinned
+-- below so the follow-up flips it deliberately.
+caseEcScalarValueBound :: IO ()
+caseEcScalarValueBound = do
+  m0 <- seedModel
+  st <- getSession m0
+  let tmpl oidHex scalar =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        , (AttrEcParams, ValBytes (hex oidHex))
+        , (AttrValue, ValBytes scalar)
+        ]
+      oid160r1 = "06052b81040008"
+      oid409k1 = "06052b81040024"
+      order160r1 = hex "0100000000000000000001f4c8f927aed3ca752257"
+  -- Padded d=1 on sect409k1 (52 bytes, integer fits 51): loads.
+  _ <- doCreate m0 st (tmpl oid409k1 (BS.replicate 51 0 <> BS.singleton 1))
+  -- All-zero scalar (d=0): refuses (no positive integer value).
+  expectReject CKR_TEMPLATE_INCONSISTENT
+    (planCreateObject m0 st (tmpl oid160r1 (BS.replicate 20 0)))
+  -- d=n loads today (range unchecked — follow-up flips this).
+  _ <- doCreate m0 st (tmpl oid160r1 order160r1)
+  pure ()
 
 caseDsaPrivate :: IO ()
 caseDsaPrivate = do
