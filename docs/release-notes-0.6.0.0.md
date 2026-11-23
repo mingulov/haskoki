@@ -1,4 +1,4 @@
-# Haskoki 0.6.0 release notes (accumulating draft)
+# Haskoki 0.6.0.0 release notes (accumulating draft)
 
 Developer preview: entries land per task and finalize at release.
 
@@ -49,6 +49,14 @@ Developer preview: entries land per task and finalize at release.
 
 - Three newly served return codes (63 total): `CKR_DEVICE_ERROR`,
   `CKR_DOMAIN_PARAMS_INVALID`, `CKR_WRAPPED_KEY_LEN_RANGE`.
+- Config-gated test seams: `storage.allow_env_seams` (default
+  `false`) opts the config-driven serving open into consulting
+  `HASKOKI_PROC_ROOT` (owner liveness) and `HASKOKI_OPEN_PAUSE*`
+  (fresh-init pause on create, with a `go`-file handshake and a
+  ~30s poll-budget fallback). Env seams are inert everywhere
+  without the opt-in; `haskoki-ctl` destructive paths never opt
+  in. Serving opens run masked with bounded, single-deadline
+  cancellation cleanup.
 
 ## Removed
 
