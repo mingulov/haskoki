@@ -15,8 +15,9 @@ Asserts on docs/compatibility.md:
     scripts/generate_compat.py against copies in a temp dir, so the
     check itself never modifies the tree)
   - the interface chain closes twice: the ABI inventory keys must
-    equal the generator-defined set (fresh generate-abi.py import,
-    so a hand-added key fails), and the config allowlist must equal
+    equal the generator-defined set (anchored textual read of the
+    LAYOUTS literal — no import, so no bytecode is read or written
+    and a hand-added key fails), and the config allowlist must equal
     the inventory keys. The matrix then certifies exactly the
     defined set — neither an interface native discovery rejects
     nor omitting a served one. Native service itself is pinned
@@ -211,22 +212,24 @@ def check_idempotent(root):
     return []
 
 
-def generator_defined_interfaces():
-    """Fresh-import generate-abi.py and return its LAYOUTS keys.
-
-    The import executes module constants only (same shape as
-    validate-spec.py's INVENTORY-FRESH leg); any failure returns
-    None and the caller fails closed.
-    """
-    import importlib.util
-    gen_path = REPO / "scripts" / "generate-abi.py"
-    try:
-        spec = importlib.util.spec_from_file_location("gen_abi", gen_path)
-        gen = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(gen)
-        return sorted(gen.LAYOUTS.keys())
-    except Exception:
+def parse_layouts_keys(source):
+    """Interface keys of the LAYOUTS literal, or None when the
+    pinned shape is absent (fail closed). Textual on purpose: no
+    import, so no bytecode is read or written by this gate."""
+    m = re.search(r"^LAYOUTS = \{(.*?)^\}$", source, re.M | re.S)
+    if not m:
         return None
+    keys = re.findall(r'"([^"]+)"\s*:', m.group(1))
+    return sorted(keys) if keys else None
+
+
+def generator_defined_interfaces():
+    """LAYOUTS keys from the generate-abi.py source text."""
+    try:
+        source = (REPO / "scripts" / "generate-abi.py").read_text()
+    except OSError:
+        return None
+    return parse_layouts_keys(source)
 
 
 def check_native_interfaces(root, consts):
@@ -434,6 +437,18 @@ def self_test():
         else:
             expect("extra inventory key fails",
                    ["generator missing (not yet written)"], True)
+        # Legs 11-12: the LAYOUTS reader parses the pinned shape
+        # (trailing comments, odd spacing) and fails closed without it.
+        tricky = ('LAYOUTS = {\n'
+                  '    "2.40":  "CK_FUNCTION_LIST",\n'
+                  '    "3.0":"CK_FUNCTION_LIST_3_0",  # squeezed\n'
+                  '}\n')
+        expect("layouts reader parses shapes",
+               [] if parse_layouts_keys(tricky) == ["2.40", "3.0"]
+               else ["misparse: %r" % parse_layouts_keys(tricky)], False)
+        expect("layouts reader fails closed",
+               [] if parse_layouts_keys("# no layouts here\n") is None
+               else ["should be None"], False)
 
     print("compat: self-test %s" % ("ok" if not bad else "FAIL"))
     return 1 if bad else 0
