@@ -81,7 +81,7 @@ import Haskoki.Attribute
 import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
 import Haskoki.Der
-  (curveCoordLen, curveOidOfParams, curveOrderLen, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
+  (curveCoordLen, curveOidOfParams, curveOrderOfOid, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
    ecParamsNameOfOid, ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
    edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
    montgomeryOidOfParams, montgomeryPrivateDer, montgomeryPublicDer,
@@ -821,12 +821,12 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     ecPrivate = do
       params <- need AttrEcParams
       scalar <- need AttrValue
-      (oid, _, orderLen) <- orReject
+      (oid, _, orderBytes) <- orReject
         (CKR_CURVE_NOT_SUPPORTED, "unsupported EC curve parameters")
         (resolveCurve params)
       scalar' <- orReject (CKR_TEMPLATE_INCONSISTENT,
           "EC scalar length does not match the curve")
-        (checkScalar orderLen scalar)
+        (checkScalar orderBytes scalar)
       pure (Map.insert AttrValue
         (ValBytes (ecPrivateDer oid scalar')) attrs)
     ecPublic = do
@@ -1073,23 +1073,27 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     resolveCurve params = do
       oid <- curveOidOfParams params
       coordLen <- curveCoordLen oid
-      orderLen <- curveOrderLen oid
-      pure (oid, coordLen, orderLen)
-    -- | Private scalars are order-width quantities (SEC1 §2.3.6):
-    -- bound by the group order width, not the field coordinate
-    -- width (they differ on wider-order and narrower-order
-    -- curves). Points stay coordinate-width (unwrapEcPoint).
-    -- Measures the integer (OASIS Big integer has no
-    -- minimal-encoding rule): zero-padded values load, all-zero
-    -- (d=0) refuses. Returns the order-width normalization
-    -- (left-pad with zeros), so padding can never blow past
-    -- downstream size limits. Range above that (d < n) is NOT
-    -- checked here (see the range-validation follow-up).
-    checkScalar orderLen s =
+      orderBytes <- curveOrderOfOid oid
+      pure (oid, coordLen, orderBytes)
+    -- | Private scalars must satisfy 1 ≤ d < n (SEC1 §2.3.6,
+    -- PKCS#11 §6.3.4): measures the integer (OASIS Big integer
+    -- has no minimal-encoding rule, so zero-padded values load),
+    -- all-zero (d=0) refuses, over-wide refuses, and full-width
+    -- values compare lexicographically against the order (equal
+    -- length big-endian). Shorter values are always below the
+    -- order (fewer bytes than its minimal encoding). Returns the
+    -- order-width normalization (left-pad with zeros), so padding
+    -- can never blow past downstream size limits.
+    checkScalar orderBytes s =
       let stripped = BS.dropWhile (== 0) s
+          orderLen = BS.length orderBytes
       in if BS.null stripped || BS.length stripped > orderLen
          then Nothing
-         else Just (BS.replicate (orderLen - BS.length stripped) 0 <> stripped)
+         else if BS.length stripped < orderLen
+              then Just (BS.replicate (orderLen - BS.length stripped) 0 <> stripped)
+              else if stripped < orderBytes
+                   then Just stripped
+                   else Nothing
     secretKey k
       | isAsymmetricKeyType k = Left (CKR_TEMPLATE_INCONSISTENT,
           "asymmetric key type on a secret object")

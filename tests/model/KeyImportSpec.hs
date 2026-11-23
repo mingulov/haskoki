@@ -26,7 +26,7 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), decodeValue, encodeValue, getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, curveOrderLen, curveTable, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, ecPublicDer, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, slhdsaCkpOfOid, slhdsaPkcs8Fields, slhdsaSpkiFields, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, curveOrderLen, curveOrderOfOid, curveTable, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, ecPublicDer, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, slhdsaCkpOfOid, slhdsaPkcs8Fields, slhdsaSpkiFields, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DhSpec (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KemSpec (..), KeyMaterial (..), PqcKemAlg (..), PqcSigAlg (..), SigSpec (..))
@@ -675,7 +675,7 @@ caseEcScalarOrderWidths = do
         ]
       oid160r1 = "06052b81040008"
       oid409k1 = "06052b81040024"
-  _ <- doCreate m0 st (tmpl oid160r1 (BS.replicate 21 0x11))
+  _ <- doCreate m0 st (tmpl oid160r1 (BS.singleton 1 <> BS.replicate 19 0 <> BS.singleton 1))
   _ <- doCreate m0 st (tmpl oid160r1 (BS.replicate 20 0x11))
   expectReject CKR_TEMPLATE_INCONSISTENT
     (planCreateObject m0 st (tmpl oid160r1 (BS.replicate 22 0x11)))
@@ -715,8 +715,14 @@ caseEcScalarValueBound = do
   -- All-zero scalar (d=0): refuses (no positive integer value).
   expectReject CKR_TEMPLATE_INCONSISTENT
     (planCreateObject m0 st (tmpl oid160r1 (BS.replicate 20 0)))
-  -- d=n loads today (range unchecked — follow-up flips this).
-  _ <- doCreate m0 st (tmpl oid160r1 order160r1)
+  -- d=n refuses (1 ≤ d < n enforced); d=n-1 and the 2^160
+  -- boundary load.
+  expectReject CKR_TEMPLATE_INCONSISTENT
+    (planCreateObject m0 st (tmpl oid160r1 order160r1))
+  let sub1 = hex "0100000000000000000001f4c8f927aed3ca752256"
+      pow160 = BS.singleton 1 <> BS.replicate 20 0
+  _ <- doCreate m0 st (tmpl oid160r1 sub1)
+  _ <- doCreate m0 st (tmpl oid160r1 pow160)
   pure ()
 
 caseDsaPrivate :: IO ()
@@ -1483,9 +1489,21 @@ caseCurveTableAgreement = do
     assertEqual ("core resolves DER " ++ name) (Just (hex oid)) (curveOidOfParams (hex oid))
     assertEqual ("core width " ++ name) (Just width) (curveCoordLen (hex oid))
     assertEqual ("core order width " ++ name) (Just orderW) (curveOrderLen (hex oid))
+    case curveOrderOfOid (hex oid) of
+      Nothing -> assertFailure ("core order missing " ++ name)
+      Just orderBytes -> do
+        assertEqual ("order byte length " ++ name) orderW (BS.length orderBytes)
+        case BS.uncons orderBytes of
+          Just (top, _) -> assertBool ("order minimal " ++ name) (top /= 0)
+          Nothing -> assertFailure ("order empty " ++ name)
     assertEqual ("ffi emits " ++ name) (hex oid) (ecParamsToWire (BS8.pack name))
     assertEqual ("ffi parses " ++ name) (BS8.pack name) (ecParamsFromWire (hex oid))
     ) curves
+  -- Spot check against the independently transcribed OpenSSLSpec
+  -- fixture (same SEC 2 value, different transcription).
+  assertEqual "160r1 order matches engine fixture"
+    (Just (hex "0100000000000000000001F4C8F927AED3CA752257"))
+    (curveOrderOfOid (hex "06052b81040008"))
 
 caseEcExecutes :: IO ()
 caseEcExecutes = withRealEnv $ \env -> do
