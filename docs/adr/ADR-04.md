@@ -2,7 +2,7 @@
 
 Status: Accepted
 
-Source: `ws/docs/incoming/haskell-pkcs11-design/docs/11-decisions-and-risks.md` (imported verbatim).
+Source: the upstream Haskell PKCS#11 design archive, decisions-and-risks chapter (imported verbatim; the archive is not kept in git).
 
 **Decision:** typed plan/reservation/execute/commit with structured outcomes.
 

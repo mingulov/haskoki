@@ -297,8 +297,7 @@ operation (no installed command): one atomic delta, validated against the projec
 layout (unknown tokens, occupied targets, clashing targets,
 duplicated movers, negative slots, and home-anchor violations
 refuse; see `renderSlotMoveRefusal`). Swaps and rotation chains
-commit
-atomically in one plan; a lone move onto an occupied slot
+commit atomically in one plan; a lone move onto an occupied slot
 reroutes through a free slot first. Objects, jobs, labels,
 generations, and auth counters ride along untouched. An
 interrupted sequence reopens refused under both the old and the
@@ -376,8 +375,8 @@ Two boundaries stay outside this contract. Binary rollback across
 schema 3 refuses loudly (old binaries do not open a migrated store;
 `scripts/qualify-store-upgrade.sh` checks the refusal and the unchanged
 file); rolling back means restoring the pre-migration backup. A moved
-store under schema 2 or older is history: v0.5 never serves it until
-migrated. And the C
+store under schema 2 or older is history: no v0.5+ binary serves it
+until migrated. And the C
 initialization path reports store-open failures generically
 (CKR_GENERAL_ERROR), with the typed cause best-effort emitted as a
 trace row (see the init-refusal table under What check and migrate
@@ -1067,9 +1066,9 @@ store path, and run `store check`. A pre-migration backup is the
 store as it was when the backup was taken: usually a schema 1 or
 2 store
 (v0.3.1.0 opens schema 1 only; v0.4.0.0 opens schema 2 and migrates
-schema 1 on open; v0.5 needs `store migrate` again), but a run that
+schema 1 on open; v0.5+ needs `store migrate` again), but a run that
 only supplies missing credential rows backs up a schema-3 store,
-which old binaries refuse and v0.5 must migrate again. Restoring
+which old binaries refuse and v0.5+ must migrate again. Restoring
 brings back the credentials as they were when the backup was taken:
 PINs changed since then revert. A rowless backup instead restores
 the rows as missing; the next migration supplies them from the
@@ -1168,8 +1167,9 @@ One async table of capacity `8` belongs to each standard instance;
 borrowed session views share its environment, backend, and table.
 The adapter uses a fixed two-poll submission policy, with one existing
 poll per valid Complete and completion when ready. Scenario-runner
-`async.enabled` and `async.pending_polls` do not configure this native
-policy. There are no new threads, timers, or configuration semantics.
+`scenario.async.enabled` and `scenario.async.pending_polls` do not
+configure this native policy. There are no new threads, timers, or
+configuration semantics.
 
 Standard memory mode has no detached store: attached execution
 works, but GetID for a resolved live job and Join on a view without a

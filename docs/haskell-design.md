@@ -89,7 +89,7 @@ request/outcome contracts (`planCall`, `finishEffect`,
 `publishDelta`) through the two private libraries
 (`haskoki-core`, `haskoki-internal`; `visibility: private`, so no
 downstream package can depend on them — see
-`docs/private-apis.md`). The 30 implementation modules below are
+`docs/private-apis.md`). The 32 implementation modules below are
 developer interfaces; their names and shapes may change. (The
 0.5.0.0 stub facade, `Haskoki.PKCS11`, was deleted with this
 policy.)
@@ -98,6 +98,7 @@ policy.)
 |---|---|---|---|---|
 | `Haskoki.Engine.Backend`, `Haskoki.Engine.Driver` | Backend interface and its interpreter over planned effects | Internal | Backends own native contexts; the driver borrows | Backend operations hold the exclusive environment gate (environment-then-registry lock order), atomic with close; native digest contexts are borrowed under a registry lock |
 | `Haskoki.Engine.OpenSSL4` | Native backend over the pinned static libcrypto | Internal | Same as above | Same as above |
+| `Haskoki.FFI.OpenSSL4.Raw` | Private OpenSSL 4 foreign imports over the `ossl4_ctx` shim | Internal | The backend owns the resulting buffers; native copies cleared after each copy | Called only from the OpenSSL4 backend; no other Haskell module imports `Foreign.*` for the engine |
 | `Haskoki.Engine.Synthetic` | Labeled fake bytes for engine suites and scenario runs | Test-only; absent from the foreign library | None served | None served |
 | `Haskoki.Ctl` | Control tool and scenario-runner surface | Internal; absent from the foreign library | Owns its in-memory model only | One command at a time |
 | `Haskoki.Ctl.Store` | `store check` / `store migrate` CLI: argument parsing, exit codes, redacted text | Internal; absent from the foreign library | Owns nothing (renders `Preflight` verdicts; config errors report kind and line only, never the message body) | One command at a time |
@@ -108,6 +109,7 @@ policy.)
 | `Haskoki.Runtime.Lifecycle` | Provider intervals: initialize/finalize, close obligations | Internal | The instance owns the interval | Finalize runs under the state lock; it closes every open session, cancels the PKCS#11 surface's attached jobs, retires still-live joined attachments as canceled (best effort; already-terminal ones keep their fate), keeps detached idle records, and never stops the RTS; caller-owned native async contexts are unaffected (`validateFinalize` governs only the internal `Lifecycle.finalize` API) |
 | `Haskoki.Runtime.Async` | Attached job tables | Internal | The instance owns tables and retained bytes | STM coordination; attached terminal tombstones bounded (4096 records, 64 MiB); the just-committed job is always retained; no background reaper |
 | `Haskoki.Runtime.Detached` | Persistent async records | Internal | The store owns terminal records | Detached terminal records stay stored; separate from attached-table retention. Attachment claims go through the store handle's shared claim authority (per token): detach contexts are views over it, so one persistent id has at most one live binding across every context on the handle, and a context retires only the tables it joined through |
+| `Haskoki.Runtime.Attach` | The shared claim authority itself: one per open store handle | Internal | The store handle owns its authority; every context over the handle reads and writes the same one | No cross-handle sharing; a reopen starts with a fresh, empty authority |
 | `Haskoki.Runtime.Storage`, `Haskoki.Runtime.Storage.Memory`, `Haskoki.Runtime.Storage.SQLite` | Store interface and its two backends | Internal | The store handle owns token/object rows; single-writer. Each open handle also owns one detached-job claim authority, which lives only in this process, is never saved to disk, and starts empty on reopen | Commits serialize; quarantine refuses until an authoritative reload clears it |
 | `Haskoki.Runtime.Storage.Preflight` | Offline store preflight and explicit migration: read-only diagnosis, owned migration, redacted renderings | Internal; absent from the foreign library | The migration owns the store file while it runs (verified backup + receipt); the serving open never imports this module | Single-writer; one migration at a time |
 | `Haskoki.Runtime.SlotEvents` | Public slot-flag service | Internal | The interval owns the slot service | One flag has one consumer; close discards flags and wakes waiters |
@@ -221,7 +223,7 @@ modules were absent from the foreign library while flib-only
 `Haskoki.FFI.Types` had zero in-tree importers. See gaps D1 and D4 in the
 inventory for the H3 follow-ups. Freshness: at this tree there is no
 public library at all (`docs/private-apis.md`); the private
-`haskoki-internal` holds the 30 implementation modules, the foreign
+`haskoki-internal` holds the 32 implementation modules, the foreign
 library bundles its own sources, and `haskoki-core` holds the pure
 core. The D1 facade row is closed (facade deleted); the
 supported-path answer to D4 is the Public Haskell surface section

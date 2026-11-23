@@ -1011,7 +1011,7 @@ caseShadowDanglingSkipped =
     drops <- droppedTraces tr
     assertEqual "the skipped row is counted" 1 drops
 
--- | The G2 shape through a bind mount: the trace names the
+-- | The dangling-target shape through a bind mount: the trace names the
 -- dangling target through the other mount, so only the
 -- parent-identity leg (on the resolved sidecar target) can match.
 -- Needs HASKOKI_ALIAS_BIND_DANGLING_STORE (a store whose -wal is
