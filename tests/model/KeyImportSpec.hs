@@ -26,7 +26,7 @@ import Test.Tasty.HUnit
 import Haskoki.Attribute
   (AttributeResult (..), AttributeType (..), AttributeValue (..),
    PartialReads (..), decodeValue, encodeValue, getAttributes)
-import Haskoki.Der (curveCoordLen, curveOidOfParams, curveTable, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, ecPublicDer, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, slhdsaCkpOfOid, slhdsaPkcs8Fields, slhdsaSpkiFields, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
+import Haskoki.Der (curveCoordLen, curveOidOfParams, curveOrderLen, curveTable, dhPkcs8Fields, dhSpkiFields, dsaPkcs8Fields, dsaSpkiFields, ecPublicDer, eddsaPkcs8Fields, eddsaPrivateDer, eddsaPublicDer, eddsaSpkiFields, edwardsNameOfOid, edwardsOidOfParams, edwardsTable, edwardsWidthsOfParams, mldsaOidOfCkp, montgomeryNameOfOid, montgomeryOidOfParams, montgomeryPkcs8Fields, montgomeryPrivateDer, montgomeryPublicDer, montgomerySpkiFields, montgomeryTable, montgomeryWidthOfParams, mldsaPkcs8Fields, mldsaPrivateDer, mldsaPublicDer, mldsaSpkiFields, mldsaTable, mldsaWidthsOfOid, mlkemEkWellFormed, mlkemOidOfCkp, mlkemPkcs8Fields, mlkemPrivateDer, mlkemPublicDer, mlkemSpkiFields, mlkemTable, mlkemWidthsOfOid, parseDsaParams, slhdsaCkpOfOid, slhdsaPkcs8Fields, slhdsaSpkiFields, unwrapEcPoint, unwrapEdwardsPoint, unwrapMontgomeryPoint)
 import Haskoki.Engine.Backend
   (CryptoBackend (..), DhSpec (..), DigestAlg (..), EcSpec (..),
    EngineResult (..), KemSpec (..), KeyMaterial (..), PqcKemAlg (..), PqcSigAlg (..), SigSpec (..))
@@ -56,6 +56,7 @@ spec = testGroup "key import"
   , testCase "RSA public import derives modulus bits" caseRsaImportModulusBits
   , testCase "EC private import assembles PKCS#8" caseEcPrivate
   , testCase "EC public import assembles SPKI" caseEcPublic
+  , testCase "EC scalar bound is the order width" caseEcScalarOrderWidths
   , testCase "DSA private import assembles PKCS#8" caseDsaPrivate
   , testCase "DSA public import assembles SPKI" caseDsaPublic
   , testCase "DSA DER readers parse openssl goldens" caseDsaDerReaders
@@ -655,6 +656,32 @@ caseEcPublic = do
   assertEqual "SPKI golden" ecSpkiGold der
   assertEqual "point kept" (Just (ValBytes ecPointWrapped)) (Map.lookup AttrEcPoint attrs)
 
+-- | EC private scalars are order-width quantities (SEC1 §2.3.6):
+-- a 161-bit order on a 160-bit field admits 21-byte scalars, and
+-- a 51-byte order on a 52-byte field refuses 52-byte scalars.
+-- (Order widths measured against the pinned libcrypto through
+-- the sign-width battery.)
+caseEcScalarOrderWidths :: IO ()
+caseEcScalarOrderWidths = do
+  m0 <- seedModel
+  st <- getSession m0
+  let tmpl oidHex scalar =
+        [ (AttrClass, ValULong ckoPrivateKey)
+        , (AttrKeyType, ValULong ckkEc)
+        , (AttrToken, ValBool False)
+        , (AttrEcParams, ValBytes (hex oidHex))
+        , (AttrValue, ValBytes scalar)
+        ]
+      oid160r1 = "06052b81040008"
+      oid409k1 = "06052b81040024"
+  _ <- doCreate m0 st (tmpl oid160r1 (BS.replicate 21 0x11))
+  _ <- doCreate m0 st (tmpl oid160r1 (BS.replicate 20 0x11))
+  expectReject CKR_TEMPLATE_INCONSISTENT
+    (planCreateObject m0 st (tmpl oid160r1 (BS.replicate 22 0x11)))
+  _ <- doCreate m0 st (tmpl oid409k1 (BS.replicate 51 0x11))
+  expectReject CKR_TEMPLATE_INCONSISTENT
+    (planCreateObject m0 st (tmpl oid409k1 (BS.replicate 52 0x11)))
+
 caseDsaPrivate :: IO ()
 caseDsaPrivate = do
   m0 <- seedModel
@@ -951,7 +978,7 @@ caseViewNamesAllCurves = do
   -- and foreign OIDs pass through untouched. The per-table
   -- agreement tests pin the table contents against hardcoded
   -- vectors; this pins the view coverage over the tables.
-  let entries = [(name, oid) | (name, oid, _) <- curveTable]
+  let entries = [(name, oid) | (name, oid, _, _) <- curveTable]
         ++ [(name, oid) | (name, oid, _, _) <- edwardsTable]
         ++ [(name, oid) | (name, oid, _) <- montgomeryTable]
       stored params = Map.fromList
@@ -1389,35 +1416,36 @@ caseCurveTableAgreement = do
   -- The core OID table and the FFI wire mapping agree both ways on
   -- all 22 oracle-collected curves (OID bytes verified against the
   -- oracle's own table); anything else passes through untouched.
-  -- (name, DER OID hex, coordinate width)
+  -- (name, DER OID hex, coordinate width, order width)
   let curves =
-        [ ("P-256", "06082a8648ce3d030107", 32)
-        , ("P-384", "06052b81040022", 48)
-        , ("P-521", "06052b81040023", 66)
-        , ("secp160r1", "06052b81040008", 20)
-        , ("secp160r2", "06052b8104001e", 20)
-        , ("secp160k1", "06052b81040009", 20)
-        , ("secp192k1", "06052b8104001f", 24)
-        , ("secp192r1", "06082a8648ce3d030101", 24)
-        , ("secp224k1", "06052b81040020", 28)
-        , ("secp224r1", "06052b81040021", 28)
-        , ("secp256k1", "06052b8104000a", 32)
-        , ("brainpoolP224r1", "06092b2403030208010105", 28)
-        , ("brainpoolP256r1", "06092b2403030208010107", 32)
-        , ("brainpoolP320r1", "06092b2403030208010109", 40)
-        , ("brainpoolP384r1", "06092b240303020801010b", 48)
-        , ("brainpoolP512r1", "06092b240303020801010d", 64)
-        , ("sect283k1", "06052b81040010", 36)
-        , ("sect283r1", "06052b81040011", 36)
-        , ("sect409k1", "06052b81040024", 52)
-        , ("sect409r1", "06052b81040025", 52)
-        , ("sect571k1", "06052b81040026", 72)
-        , ("sect571r1", "06052b81040027", 72)
+        [ ("P-256", "06082a8648ce3d030107", 32, 32)
+        , ("P-384", "06052b81040022", 48, 48)
+        , ("P-521", "06052b81040023", 66, 66)
+        , ("secp160r1", "06052b81040008", 20, 21)
+        , ("secp160r2", "06052b8104001e", 20, 21)
+        , ("secp160k1", "06052b81040009", 20, 21)
+        , ("secp192k1", "06052b8104001f", 24, 24)
+        , ("secp192r1", "06082a8648ce3d030101", 24, 24)
+        , ("secp224k1", "06052b81040020", 28, 29)
+        , ("secp224r1", "06052b81040021", 28, 28)
+        , ("secp256k1", "06052b8104000a", 32, 32)
+        , ("brainpoolP224r1", "06092b2403030208010105", 28, 28)
+        , ("brainpoolP256r1", "06092b2403030208010107", 32, 32)
+        , ("brainpoolP320r1", "06092b2403030208010109", 40, 40)
+        , ("brainpoolP384r1", "06092b240303020801010b", 48, 48)
+        , ("brainpoolP512r1", "06092b240303020801010d", 64, 64)
+        , ("sect283k1", "06052b81040010", 36, 36)
+        , ("sect283r1", "06052b81040011", 36, 36)
+        , ("sect409k1", "06052b81040024", 52, 51)
+        , ("sect409r1", "06052b81040025", 52, 52)
+        , ("sect571k1", "06052b81040026", 72, 72)
+        , ("sect571r1", "06052b81040027", 72, 72)
         ]
-  mapM_ (\(name, oid, width) -> do
+  mapM_ (\(name, oid, width, orderW) -> do
     assertEqual ("core resolves " ++ name) (Just (hex oid)) (curveOidOfParams (BS8.pack name))
     assertEqual ("core resolves DER " ++ name) (Just (hex oid)) (curveOidOfParams (hex oid))
     assertEqual ("core width " ++ name) (Just width) (curveCoordLen (hex oid))
+    assertEqual ("core order width " ++ name) (Just orderW) (curveOrderLen (hex oid))
     assertEqual ("ffi emits " ++ name) (hex oid) (ecParamsToWire (BS8.pack name))
     assertEqual ("ffi parses " ++ name) (BS8.pack name) (ecParamsFromWire (hex oid))
     ) curves

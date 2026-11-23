@@ -2776,7 +2776,7 @@ ecCurveOf
   -> Either KeyDeny ByteString
 ecCurveOf pubA privA = case Map.lookup AttrEcParams pubA of
   Just (ValBytes curve)
-    | curve `elem` [n | (n, _, _) <- curveTable] -> case Map.lookup AttrEcParams privA of
+    | curve `elem` [n | (n, _, _, _) <- curveTable] -> case Map.lookup AttrEcParams privA of
         Nothing -> Right curve
         Just (ValBytes curve')
           | curve' == curve -> Right curve

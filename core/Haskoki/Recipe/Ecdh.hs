@@ -139,17 +139,17 @@ ecdhParamsValid _ params = case decodeEcdhParams params of
 -- ('Nothing' for anything off-table).
 curveWidthOfName :: Text -> Maybe Int
 curveWidthOfName name = case find hit curveTable of
-  Just (_, _, w) -> Just w
+  Just (_, _, w, _) -> Just w
   Nothing -> Nothing
   where
-    hit (n, _, _) = TE.encodeUtf8 name == n
+    hit (n, _, _, _) = TE.encodeUtf8 name == n
 
 -- | The maximum coordinate width over the covered curves (the
 -- sect571 width): unscannable base material (synthetic opaque
 -- bytes) plans against this so the planner never caps it lower;
 -- the real backend refuses unscannable keys itself.
 ecdhSecretWidthMax :: Int
-ecdhSecretWidthMax = maximum [w | (_, _, w) <- curveTable]
+ecdhSecretWidthMax = maximum [w | (_, _, w, _) <- curveTable]
 
 -- | The Montgomery curve for DER key bytes: the first
 -- 'Haskoki.Der.montgomeryTable' OID found as a substring, table
@@ -209,7 +209,7 @@ ecdhPeerWidth bs = case ecdsaCurveOfDer bs >>= curveWidthOfName of
     , w `elem` knownWidths -> Just w
     | otherwise -> Nothing
   where
-    knownWidths = [w | (_, _, w) <- curveTable]
+    knownWidths = [w | (_, _, w, _) <- curveTable]
 
 -- | Both covered mechanisms with their cofactor flags.
 ecdhRecipes :: [EcdhRecipe]

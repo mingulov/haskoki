@@ -81,7 +81,7 @@ import Haskoki.Attribute
 import Haskoki.Attribute.Generated
   (classNameById, generatedTemplateRules, mustClassId, mustKeyTypeId)
 import Haskoki.Der
-  (curveCoordLen, curveOidOfParams, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
+  (curveCoordLen, curveOidOfParams, curveOrderLen, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dhSpkiFields, dsaPrivateDer, dsaPublicDer, dsaSpkiFields,
    ecParamsNameOfOid, ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
    edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
    montgomeryOidOfParams, montgomeryPrivateDer, montgomeryPublicDer,
@@ -821,18 +821,18 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     ecPrivate = do
       params <- need AttrEcParams
       scalar <- need AttrValue
-      (oid, coordLen) <- orReject
+      (oid, _, orderLen) <- orReject
         (CKR_CURVE_NOT_SUPPORTED, "unsupported EC curve parameters")
         (resolveCurve params)
       scalar' <- orReject (CKR_TEMPLATE_INCONSISTENT,
           "EC scalar length does not match the curve")
-        (checkScalar coordLen scalar)
+        (checkScalar orderLen scalar)
       pure (Map.insert AttrValue
         (ValBytes (ecPrivateDer oid scalar')) attrs)
     ecPublic = do
       params <- need AttrEcParams
       point <- need AttrEcPoint
-      (oid, coordLen) <- orReject
+      (oid, coordLen, _) <- orReject
         (CKR_CURVE_NOT_SUPPORTED, "unsupported EC curve parameters")
         (resolveCurve params)
       raw <- orReject (CKR_TEMPLATE_INCONSISTENT,
@@ -1072,11 +1072,16 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       | otherwise = Nothing
     resolveCurve params = do
       oid <- curveOidOfParams params
-      n <- curveCoordLen oid
-      pure (oid, n)
-    checkScalar coordLen s
+      coordLen <- curveCoordLen oid
+      orderLen <- curveOrderLen oid
+      pure (oid, coordLen, orderLen)
+    -- | Private scalars are order-width quantities (SEC1 §2.3.6):
+    -- bound by the group order width, not the field coordinate
+    -- width (they differ on wider-order and narrower-order
+    -- curves). Points stay coordinate-width (unwrapEcPoint).
+    checkScalar orderLen s
       | BS.null s = Nothing
-      | BS.length s > coordLen = Nothing
+      | BS.length s > orderLen = Nothing
       | otherwise = Just s
     secretKey k
       | isAsymmetricKeyType k = Left (CKR_TEMPLATE_INCONSISTENT,

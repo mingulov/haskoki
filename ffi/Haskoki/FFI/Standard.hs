@@ -1701,7 +1701,7 @@ ecParamsToWire bs = case lookup bs nameToOid of
   Just oid -> oid
   Nothing -> bs
   where
-    nameToOid = [(name, oid) | (name, oid, _) <- curveTable]
+    nameToOid = [(name, oid) | (name, oid, _, _) <- curveTable]
       ++ [(name, oid) | (name, oid, _, _) <- edwardsTable]
       ++ [(name, oid) | (name, oid, _) <- montgomeryTable]
 

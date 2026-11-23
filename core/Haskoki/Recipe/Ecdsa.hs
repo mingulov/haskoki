@@ -113,10 +113,10 @@ ecdsaRecipes =
 -- never mis-sign.
 ecdsaCurveOfDer :: ByteString -> Maybe Text
 ecdsaCurveOfDer der = case find hit curveTable of
-  Just (name, _, _) -> Just (TE.decodeUtf8 name)
+  Just (name, _, _, _) -> Just (TE.decodeUtf8 name)
   Nothing -> Nothing
   where
-    hit (_, oid, _) = oid `BS.isInfixOf` der
+    hit (_, oid, _, _) = oid `BS.isInfixOf` der
 
 -- | Resolve a mechanism id to its ECDSA recipe, if covered.
 ecdsaRecipeFor :: MechanismId -> Maybe EcdsaRecipe
