@@ -28,6 +28,7 @@ STDLIB ONLY. Run from anywhere:
   python3 scripts/check-compat.py [--self-test]
 """
 import argparse
+import ast
 import json
 import re
 import shutil
@@ -49,7 +50,7 @@ def read_constants(root):
     consts = {}
     try:
         cabal = (root / "haskoki.cabal").read_text()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return None, ["cannot read haskoki.cabal: %s" % exc]
     m = re.search(r"^version:\s+(\d+\.\d+\.\d+\.\d+)\s*$", cabal, re.M)
     if not m:
@@ -58,7 +59,7 @@ def read_constants(root):
         consts["binary"] = m.group(1)
     try:
         sqlite = (root / "src/Haskoki/Runtime/Storage/SQLite.hs").read_text()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return None, ["cannot read Storage/SQLite.hs: %s" % exc]
     m = re.search(r"^sqliteSchemaVersion = (\d+)$", sqlite, re.M)
     if not m:
@@ -67,7 +68,7 @@ def read_constants(root):
         consts["store"] = m.group(1)
     try:
         config = (root / "src/Haskoki/Runtime/Config.hs").read_text()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return None, ["cannot read Runtime/Config.hs: %s" % exc]
     m = re.search(r"^configSchemaVersion = (\d+)$", config, re.M)
     if not m:
@@ -213,36 +214,66 @@ def check_idempotent(root):
 
 
 def parse_layouts_keys(source):
-    """Interface keys of the LAYOUTS literal, or None when the
-    pinned shape is absent (fail closed). Textual on purpose: no
-    import, so no bytecode is read or written by this gate. Only
-    full entry lines count (`"key": "value",` plus an optional
-    trailing comment), so quoted text inside comments can neither
-    break the gate nor certify a key. Blank lines and full-line
-    comments are skipped; any other unrecognized line fails the
-    whole read closed (silently dropping it would under-read a
-    reshaped literal)."""
-    m = re.search(r"^LAYOUTS = \{(.*?)^\}$", source, re.M | re.S)
-    if not m:
+    """Interface keys of the LAYOUTS dict, or None (fail closed).
+
+    Uses ast.parse: exact Python semantics, no bytecode read or
+    written, comments nonexistent by construction. Only a plain
+    top-level dict literal with string keys is trusted (last one
+    wins, as at runtime); any other store to the name anywhere —
+    conditional, nested, augmented, deleted — fails closed, as
+    does any non-string key.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
         return None
-    entry = re.compile(r'^\s*"([^"]+)"\s*:\s*"[^"]*"\s*,?\s*(?:#.*)?$')
-    skip = re.compile(r"^\s*(?:#.*)?$")
-    keys = []
-    for line in m.group(1).splitlines():
-        if skip.match(line):
-            continue
-        g = entry.match(line)
-        if not g:
-            return None
-        keys.append(g.group(1))
-    return sorted(keys) if keys else None
+
+    def plain_keys(node):
+        if not isinstance(node, ast.Dict):
+            return False
+        keys = []
+        for k in node.keys:
+            if not isinstance(k, ast.Constant) or not isinstance(k.value, str):
+                return False
+            keys.append(k.value)
+        return keys
+
+    found = None
+    plain_stores = 0
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id == "LAYOUTS":
+            found = plain_keys(node.value)
+            plain_stores += 1
+        elif isinstance(node, ast.AnnAssign) \
+                and isinstance(node.target, ast.Name) \
+                and node.target.id == "LAYOUTS" and node.value is not None:
+            found = plain_keys(node.value)
+            plain_stores += 1
+    if found is None or found is False or not found:
+        return None
+    total_stores = sum(
+        1 for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "LAYOUTS"
+        and isinstance(node.ctx, (ast.Store, ast.Del)))
+    exotic = any(
+        (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                           ast.ClassDef)) and node.name == "LAYOUTS")
+        or (isinstance(node, (ast.Import, ast.ImportFrom))
+            and any(a.asname == "LAYOUTS" for a in node.names))
+        or (isinstance(node, ast.ExceptHandler) and node.name == "LAYOUTS")
+        for node in ast.walk(tree))
+    if exotic or total_stores != plain_stores:
+        return None
+    return sorted(found)
 
 
 def generator_defined_interfaces():
     """LAYOUTS keys from the generate-abi.py source text."""
     try:
         source = (REPO / "scripts" / "generate-abi.py").read_text()
-    except OSError:
+    except (OSError, ValueError):
         return None
     return parse_layouts_keys(source)
 
@@ -284,6 +315,8 @@ def check(root):
         doc = doc_path.read_text()
     except OSError:
         return errors + ["docs/compatibility.md is missing (run scripts/generate_compat.py)"]
+    except ValueError as exc:
+        return errors + ["docs/compatibility.md is not valid UTF-8: %s" % exc]
     errors += check_versions(doc, consts)
     errors += check_table(doc, consts)
     return errors
@@ -473,16 +506,51 @@ def self_test():
         expect("layouts reader ignores comment keys",
                [] if parse_layouts_keys(trapped) == ["3.2"]
                else ["misparse: %r" % parse_layouts_keys(trapped)], False)
-        # Leg 14: an unrecognized entry shape fails closed (the r39
-        # trap: silently dropping it would under-read the set).
+        # Leg 14: the reader follows Python semantics exactly (the
+        # r39 trap, re-decided for the AST reader): a parenthesized
+        # value IS a defined entry at runtime, so it counts. A real
+        # generator addition then fails loudly downstream (native C
+        # legs pin count==3) instead of being silently dropped here.
         odd = ('LAYOUTS = {\n'
                '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
                '    "3.3": ("CK_FUNCTION_LIST_3_2"),\n'
                '}\n')
-        expect("layouts reader fails closed on odd shapes",
-               [] if parse_layouts_keys(odd) is None
-               else ["should be None, got %r" % parse_layouts_keys(odd)],
+        expect("layouts reader follows Python semantics",
+               [] if parse_layouts_keys(odd) == ["3.2", "3.3"]
+               else ["misparse: %r" % parse_layouts_keys(odd)], False)
+        # Legs 15-16: non-plain definitions fail closed (the reader
+        # only trusts a plain top-level dict literal).
+        cond = ('LAYOUTS = {\n'
+                '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+                '}\n'
+                'if True:\n'
+                '    LAYOUTS = {"3.3": "X"}\n')
+        expect("layouts reader fails closed on conditional redefine",
+               [] if parse_layouts_keys(cond) is None
+               else ["should be None, got %r" % parse_layouts_keys(cond)],
                False)
+        aug = ('LAYOUTS = {\n'
+               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+               '}\n'
+               'LAYOUTS |= {"3.3": "X"}\n')
+        expect("layouts reader fails closed on augmented update",
+               [] if parse_layouts_keys(aug) is None
+               else ["should be None, got %r" % parse_layouts_keys(aug)],
+               False)
+        # Leg 17: exotic rebindings fail closed (representative of
+        # the def/class/import-as/except-as class).
+        exotic_src = ('LAYOUTS = {\n'
+                      '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
+                      '}\n'
+                      'import os as LAYOUTS\n')
+        expect("layouts reader fails closed on exotic rebinding",
+               [] if parse_layouts_keys(exotic_src) is None
+               else ["should be None, got %r"
+                     % parse_layouts_keys(exotic_src)], False)
+        # Leg 18: undecodable input files fail closed (no traceback).
+        root = write_fixture(Path(tmp) / "garbage")
+        (root / "src/Haskoki/Runtime/Config.hs").write_bytes(b"\xff\xfe\x00bad")
+        expect("garbage input fails closed", check(root), True)
 
     print("compat: self-test %s" % ("ok" if not bad else "FAIL"))
     return 1 if bad else 0
