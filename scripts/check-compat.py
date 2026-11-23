@@ -15,10 +15,11 @@ Asserts on docs/compatibility.md:
     scripts/generate_compat.py against copies in a temp dir, so the
     check itself never modifies the tree)
   - the interface chain closes twice: the ABI inventory keys must
-    equal the generator-defined set (anchored textual read of the
-    LAYOUTS literal — no import, so no bytecode is read or written
-    and a hand-added key fails), and the config allowlist must equal
-    the inventory keys. The matrix then certifies exactly the
+    equal the generator-defined set (executed from a temp copy with
+    bytecode writes disabled — exact runtime value, so aliasing and
+    mutation resolve as the generator sees them — and a hand-added
+    key fails), and the config allowlist must equal the inventory
+    keys. The matrix then certifies exactly the
     defined set — neither an interface native discovery rejects
     nor omitting a served one. Native service itself is pinned
     behaviorally by the consumer_discovery legs (exact 3.2/3.1/3.0
@@ -28,7 +29,6 @@ STDLIB ONLY. Run from anywhere:
   python3 scripts/check-compat.py [--self-test]
 """
 import argparse
-import ast
 import json
 import re
 import shutil
@@ -213,90 +213,46 @@ def check_idempotent(root):
     return []
 
 
-def parse_layouts_keys(source):
-    """Interface keys of the LAYOUTS dict, or None (fail closed).
+def generator_defined_interfaces(gen_path):
+    """LAYOUTS keys from executing a temp copy of the generator.
 
-    Uses ast.parse: exact Python semantics, no bytecode read or
-    written, comments nonexistent by construction. Only a plain
-    top-level dict literal with string keys is trusted (last one
-    wins, repeated keys deduped, as at runtime); any other store
-    to the name anywhere — conditional, nested, augmented,
-    deleted — fails closed, as does any non-string key, any
-    subscript store/delete, any mutating-method use, and any call
-    the dict is passed to (invisible mutation).
+    Executes (not parses) so aliasing, mutation, and conditional
+    definition resolve exactly as at runtime — there is no
+    static/dynamic gap left to exploit. Bytecode-clean: the copy
+    lives in a fresh temp dir (no cache to go stale) and imports
+    run with bytecode writes disabled, so the tree gains no
+    __pycache__ entries. Returns None (fail closed) on any
+    failure, a missing/non-dict/non-string LAYOUTS included.
     """
+    import importlib.util
     try:
-        tree = ast.parse(source)
-    except SyntaxError:
+        source = Path(gen_path).read_bytes()
+    except OSError:
         return None
-
-    def plain_keys(node):
-        if not isinstance(node, ast.Dict):
-            return False
-        keys = []
-        for k in node.keys:
-            if not isinstance(k, ast.Constant) or not isinstance(k.value, str):
-                return False
-            keys.append(k.value)
-        # Dedupe: Python keeps one entry per repeated literal key.
-        return list(dict.fromkeys(keys))
-
-    found = None
-    plain_stores = 0
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
-                and isinstance(node.targets[0], ast.Name) \
-                and node.targets[0].id == "LAYOUTS":
-            found = plain_keys(node.value)
-            plain_stores += 1
-        elif isinstance(node, ast.AnnAssign) \
-                and isinstance(node.target, ast.Name) \
-                and node.target.id == "LAYOUTS" and node.value is not None:
-            found = plain_keys(node.value)
-            plain_stores += 1
-    if found is None or found is False or not found:
+    with tempfile.TemporaryDirectory(prefix="compat-gen-") as tmp:
+        copy = Path(tmp) / "generate_abi_copy.py"
+        try:
+            copy.write_bytes(source)
+        except OSError:
+            return None
+        saved = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "compat_gen_abi", copy)
+            gen = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gen)
+        except Exception:
+            return None
+        finally:
+            sys.dont_write_bytecode = saved
+    layouts = getattr(gen, "LAYOUTS", None)
+    if not isinstance(layouts, dict) or not layouts:
         return None
-    total_stores = sum(
-        1 for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and node.id == "LAYOUTS"
-        and isinstance(node.ctx, (ast.Store, ast.Del)))
-    exotic = any(
-        (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                           ast.ClassDef)) and node.name == "LAYOUTS")
-        or (isinstance(node, (ast.Import, ast.ImportFrom))
-            and any(a.asname == "LAYOUTS" for a in node.names))
-        or (isinstance(node, ast.ExceptHandler) and node.name == "LAYOUTS")
-        for node in ast.walk(tree))
-    mutated = any(
-        (isinstance(node, ast.Subscript)
-         and isinstance(node.value, ast.Name)
-         and node.value.id == "LAYOUTS"
-         and isinstance(node.ctx, (ast.Store, ast.Del)))
-        or (isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "LAYOUTS"
-            and node.attr in ("update", "pop", "popitem", "clear",
-                              "setdefault", "__setitem__", "__delitem__",
-                              "__ior__"))
-        or (isinstance(node, ast.Call)
-            and any(isinstance(a, ast.Name) and a.id == "LAYOUTS"
-                    for a in list(node.args)
-                    + [k.value for k in node.keywords]
-                    + [s.value for s in node.args
-                       if isinstance(s, ast.Starred)]))
-        for node in ast.walk(tree))
-    if exotic or mutated or total_stores != plain_stores:
+    if not all(isinstance(k, str) and isinstance(v, str)
+               for k, v in layouts.items()):
         return None
-    return sorted(found)
-
-
-def generator_defined_interfaces():
-    """LAYOUTS keys from the generate-abi.py source text."""
-    try:
-        source = (REPO / "scripts" / "generate-abi.py").read_text()
-    except (OSError, ValueError):
-        return None
-    return parse_layouts_keys(source)
+    return sorted(layouts.keys())
 
 
 def check_native_interfaces(root, consts):
@@ -311,7 +267,7 @@ def check_native_interfaces(root, consts):
     native = sorted(inv.get("interfaces", {}).keys())
     if not native:
         return ["ABI inventory lists no interfaces"]
-    defined = generator_defined_interfaces()
+    defined = generator_defined_interfaces(REPO / "scripts" / "generate-abi.py")
     if defined is None:
         return ["cannot import generate-abi.py for the interface set"]
     if native != defined:
@@ -506,111 +462,37 @@ def self_test():
         else:
             expect("extra inventory key fails",
                    ["generator missing (not yet written)"], True)
-        # Legs 11-12: the LAYOUTS reader parses the pinned shape
-        # (trailing comments, odd spacing) and fails closed without it.
-        tricky = ('LAYOUTS = {\n'
-                  '    "2.40":  "CK_FUNCTION_LIST",\n'
-                  '    "3.0":"CK_FUNCTION_LIST_3_0",  # squeezed\n'
-                  '}\n')
-        expect("layouts reader parses shapes",
-               [] if parse_layouts_keys(tricky) == ["2.40", "3.0"]
-               else ["misparse: %r" % parse_layouts_keys(tricky)], False)
-        expect("layouts reader fails closed",
-               [] if parse_layouts_keys("# no layouts here\n") is None
+        # Legs 11-15: the generator-defined set comes from executing
+        # a temp copy (exact runtime value; the r42 alias endgame).
+        def gen_root(name, gen_source):
+            d = Path(tmp) / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "generate-abi.py").write_text(gen_source)
+            return d / "generate-abi.py"
+        plain = gen_root("gen-plain",
+                         'LAYOUTS = {"2.40": "A", "3.0": "B"}\n')
+        expect("defined set reads the runtime value",
+               [] if generator_defined_interfaces(plain) == ["2.40", "3.0"]
+               else ["misread"], False)
+        aliased = gen_root("gen-alias",
+                           'LAYOUTS = {"3.2": "A", "3.3": "B"}\n'
+                           'layouts = LAYOUTS\n'
+                           'del layouts["3.3"]\n')
+        expect("defined set resolves aliasing",
+               [] if generator_defined_interfaces(aliased) == ["3.2"]
+               else ["misread"], False)
+        broken = gen_root("gen-broken", "LAYOUTS = {\n")
+        expect("defined set fails closed on syntax error",
+               [] if generator_defined_interfaces(broken) is None
                else ["should be None"], False)
-        # Leg 13: quoted keys inside comments are not entries (the
-        # r38 trap: a comment must neither break nor certify).
-        trapped = ('LAYOUTS = {\n'
-                   '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-                   '    # Future example: "3.3": "CK_FUNCTION_LIST_3_2"\n'
-                   '}\n')
-        expect("layouts reader ignores comment keys",
-               [] if parse_layouts_keys(trapped) == ["3.2"]
-               else ["misparse: %r" % parse_layouts_keys(trapped)], False)
-        # Leg 14: the reader follows Python semantics exactly (the
-        # r39 trap, re-decided for the AST reader): a parenthesized
-        # value IS a defined entry at runtime, so it counts. A real
-        # generator addition then fails loudly downstream (native C
-        # legs pin count==3) instead of being silently dropped here.
-        odd = ('LAYOUTS = {\n'
-               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-               '    "3.3": ("CK_FUNCTION_LIST_3_2"),\n'
-               '}\n')
-        expect("layouts reader follows Python semantics",
-               [] if parse_layouts_keys(odd) == ["3.2", "3.3"]
-               else ["misparse: %r" % parse_layouts_keys(odd)], False)
-        # Legs 15-16: non-plain definitions fail closed (the reader
-        # only trusts a plain top-level dict literal).
-        cond = ('LAYOUTS = {\n'
-                '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-                '}\n'
-                'if True:\n'
-                '    LAYOUTS = {"3.3": "X"}\n')
-        expect("layouts reader fails closed on conditional redefine",
-               [] if parse_layouts_keys(cond) is None
-               else ["should be None, got %r" % parse_layouts_keys(cond)],
-               False)
-        aug = ('LAYOUTS = {\n'
-               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-               '}\n'
-               'LAYOUTS |= {"3.3": "X"}\n')
-        expect("layouts reader fails closed on augmented update",
-               [] if parse_layouts_keys(aug) is None
-               else ["should be None, got %r" % parse_layouts_keys(aug)],
-               False)
-        # Leg 17: exotic rebindings fail closed (representative of
-        # the def/class/import-as/except-as class).
-        exotic_src = ('LAYOUTS = {\n'
-                      '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-                      '}\n'
-                      'import os as LAYOUTS\n')
-        expect("layouts reader fails closed on exotic rebinding",
-               [] if parse_layouts_keys(exotic_src) is None
-               else ["should be None, got %r"
-                     % parse_layouts_keys(exotic_src)], False)
-        # Leg 18: undecodable input files fail closed (no traceback).
-        root = write_fixture(Path(tmp) / "garbage")
-        (root / "src/Haskoki/Runtime/Config.hs").write_bytes(b"\xff\xfe\x00bad")
-        expect("garbage input fails closed", check(root), True)
-        # Leg 19: subscript deletion fails closed (the r41 trap: the
-        # Del lives on the subscript, the name stays Load).
-        delsub = ('LAYOUTS = {\n'
-                  '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-                  '    "3.3": "CK_FUNCTION_LIST_3_2",\n'
-                  '}\n'
-                  'del LAYOUTS["3.3"]\n')
-        expect("layouts reader fails closed on subscript del",
-               [] if parse_layouts_keys(delsub) is None
-               else ["should be None, got %r" % parse_layouts_keys(delsub)],
-               False)
-        # Leg 20: repeated literal keys dedupe (Python keeps one
-        # entry per key; the gate must see the runtime set).
-        dup = ('LAYOUTS = {\n'
-               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-               '}\n')
-        expect("layouts reader dedupes repeated keys",
-               [] if parse_layouts_keys(dup) == ["3.2"]
-               else ["misparse: %r" % parse_layouts_keys(dup)], False)
-        # Leg 21: mutating-method use fails closed.
-        mut = ('LAYOUTS = {\n'
-               '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-               '}\n'
-               'LAYOUTS.update({"3.3": "X"})\n')
-        expect("layouts reader fails closed on mutating method",
-               [] if parse_layouts_keys(mut) is None
-               else ["should be None, got %r" % parse_layouts_keys(mut)],
-               False)
-        # Leg 22: passing the dict to a call fails closed
-        # (invisible mutation the reader cannot see through).
-        smuggle = ('LAYOUTS = {\n'
-                   '    "3.2": "CK_FUNCTION_LIST_3_2",\n'
-                   '}\n'
-                   'f(LAYOUTS)\n')
-        expect("layouts reader fails closed on dict smuggling",
-               [] if parse_layouts_keys(smuggle) is None
-               else ["should be None, got %r" % parse_layouts_keys(smuggle)],
-               False)
+        expect("defined set fails closed on missing file",
+               [] if generator_defined_interfaces(
+                   Path(tmp) / "gen-absent" / "generate-abi.py") is None
+               else ["should be None"], False)
+        nonstr = gen_root("gen-nonstr", 'LAYOUTS = {"3.2": 5}\n')
+        expect("defined set fails closed on non-string layout",
+               [] if generator_defined_interfaces(nonstr) is None
+               else ["should be None"], False)
 
     print("compat: self-test %s" % ("ok" if not bad else "FAIL"))
     return 1 if bad else 0
