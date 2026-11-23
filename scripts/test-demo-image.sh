@@ -349,10 +349,6 @@ if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
-failed test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp160r1]
-failed test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp224k1]
-failed test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp160r1]
-failed test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp224k1]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_160_HMAC]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_256_HMAC]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_384_HMAC]
@@ -399,19 +395,15 @@ failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_componen
 failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[slhdsa-import-unsealed]
 failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[x942-import-unsealed]
 EOF
-[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 49 ] || fail "driver: want 49 expected direct findings"
+[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 45 ] || fail "driver: want 45 expected direct findings"
 if ! diff -u "$OUT/exp-full-direct.txt" "$RUN_DIR/findings.txt"; then
-  fail "check direct/full findings differ from the exact expected 49"
+  fail "check direct/full findings differ from the exact expected 45"
 fi
-echo "check direct/full: exact 49 findings match"
+echo "check direct/full: exact 45 findings match"
 
 run_check proxy full 1
 RUN_DIR=$(latest_run "check-proxy-full")
 cat > "$OUT/exp-full-proxy.txt" <<'EOF'
-failed test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp160r1]
-failed test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp224k1]
-failed test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp160r1]
-failed test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp224k1]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_160_HMAC]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_256_HMAC]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_384_HMAC]
@@ -458,7 +450,7 @@ failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_componen
 failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[slhdsa-import-unsealed]
 failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[x942-import-unsealed]
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 49 ] || fail "driver: want 49 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 45 ] || fail "driver: want 45 stable-core proxy findings"
 # R5 strict (codex I4): the failed pair's {pass, fail} bound is
 # historical (older pin) — v0.2.0 never demonstrated the flip, so
 # no failure form is suppressed here; any variance fails loud and
@@ -583,7 +575,7 @@ timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
   "/out/$CC_RUN" > "$OUT/classify.log" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] || fail "in-image compare-classify exited $rc, want 0"
-grep -q 'compare-classify-ok: 65 known-difference + shared 49/49 exact' \
+grep -q 'compare-classify-ok: 65 known-difference + shared 45/45 exact' \
   "$OUT/classify.log" || fail "compare-classify ok marker missing"
 [ -f "$RUN_DIR/classification.json" ] || fail "classification.json missing"
 python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
@@ -592,8 +584,8 @@ c = json.load(open(sys.argv[1]))["counts"]
 assert c.pop("flaky_accepted") in (0, 1), c
 assert c == {"known_difference": 65, "direct_only": 0, "flaky": 0,
              "unexpected_difference": 0, "missing_known": 0,
-             "duplicate_diff_lines": 0, "shared_expected": 49,
-             "shared_actual": 49, "shared_exact": True}, c
+             "duplicate_diff_lines": 0, "shared_expected": 45,
+             "shared_actual": 45, "shared_exact": True}, c
 PY
 # Drift controls on run-dir copies (the raw run dir is untouched):
 # an injected line must surface as unexpected=1, a removed frozen
