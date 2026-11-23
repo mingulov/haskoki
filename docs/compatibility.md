@@ -5,10 +5,10 @@ Every cell resolves to works, migrate, or refuse; there are no blanks.
 
 ## Versions
 
-- Binary: `0.6.0.0` (authority: `haskoki.cabal`; the CLI derives it, pinned by `caseVersionExact`).
+- Binary: `0.6.0.0` (authority: `haskoki.cabal`; the CLI carries it, pinned by `caseVersionExact`).
 - Store schema served: `3` (authority: `sqliteSchemaVersion`).
 - Config schema accepted: `1` (absent means default).
-- Interfaces: `2.40`, `3.0`, `3.1`, `3.2` (config allowlist; advertisement parity pinned by the discovery legs).
+- Interfaces: `2.40`, `3.0`, `3.1`, `3.2` (config allowlist, cross-checked against the ABI inventory; advertisement parity pinned by the discovery legs).
 
 ## Rules
 
