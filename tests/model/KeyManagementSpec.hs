@@ -2434,7 +2434,7 @@ caseEcKeygenCurves = withSynth $ \answer -> do
       go m (c : cs) = do
         m' <- gen m c
         go m' cs
-  _ <- go m0 [n | (n, _, _) <- curveTable]
+  _ <- go m0 [n | (n, _, _, _) <- curveTable]
   pure ()
 
 caseRsaKeygen :: IO ()

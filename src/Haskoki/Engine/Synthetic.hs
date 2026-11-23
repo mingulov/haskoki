@@ -1341,7 +1341,7 @@ resolveKeyBytes env (KeyRefMaterial (KeyRef rid _)) = do
 -- | Synthetic keygen admits every covered curve: pairs are opaque
 -- tagged bytes (see 'genPair'), so no per-curve material applies.
 genCurveOk :: String -> Bool
-genCurveOk c = BC8.pack c `elem` [n | (n, _, _) <- curveTable]
+genCurveOk c = BC8.pack c `elem` [n | (n, _, _, _) <- curveTable]
 
 genSupported :: BackendEnv Synthetic -> KeyGenSpec -> Maybe String
 genSupported _ spec = case spec of

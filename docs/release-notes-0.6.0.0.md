@@ -73,3 +73,14 @@ Developer preview: entries land per task and finalize at release.
   The stub facade (`Haskoki.PKCS11`, already deprecated) and its
   top-level re-export are deleted; out-of-tree `import Haskoki.*`
   now fails at dependency resolution (checked in CI).
+
+## Fixed
+
+- ECDSA raw signatures on wider-order curves are order-width now
+  (PKCS#11 §6.3.1 nLen): secp160r1/r2/k1 sign 42 bytes (was 40),
+  secp224k1 signs 58 (was 56). Short even forms still verify, so
+  previously emitted signatures keep verifying.
+- EC private import bounds scalars by the group order (SEC1
+  §2.3.6): 21-byte scalars load on the 160-bit curves with
+  161-bit orders (were refused); 52-byte scalars refuse on
+  sect409k1 (51-byte order; were accepted).

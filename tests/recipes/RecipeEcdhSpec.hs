@@ -232,7 +232,7 @@ caseWidth = do
   assertEqual "P-521 width" 66 (ecdhSecretWidth p521Pub)
   -- Every table row resolves its width from the bare OID (the
   -- substring scan on real DER is pinned by the ECDSA sniff test).
-  mapM_ (\(_, oid, w) ->
+  mapM_ (\(_, oid, w, _) ->
     assertEqual ("width " ++ show w) w (ecdhSecretWidth oid)) curveTable
   assertEqual "max width is the sect571 width" 72 ecdhSecretWidthMax
   assertEqual "unscannable defaults to the max width" 72
@@ -249,7 +249,7 @@ casePeerWidth = do
   -- Bare points resolve widths, never curves: 65 bytes is 32 wide
   -- whether the curve is P-256, secp256k1, or brainpoolP256r1.
   let point w = BS.cons 0x04 (BS.replicate (2 * w) 0x11)
-  mapM_ (\(_, _, w) ->
+  mapM_ (\(_, _, w, _) ->
     assertEqual ("bare width " ++ show w) (Just w) (ecdhPeerWidth (point w))
     ) curveTable
   assertEqual "compressed refuses" Nothing
