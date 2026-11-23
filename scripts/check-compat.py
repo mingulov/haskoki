@@ -14,14 +14,14 @@ Asserts on docs/compatibility.md:
   - the doc is byte-identical to a fresh generator run (the gate runs
     scripts/generate_compat.py against copies in a temp dir, so the
     check itself never modifies the tree)
-  - the config interface allowlist equals the native ABI inventory
-    (spec/abi-inventory.json keys): the matrix must certify neither
-    an interface native discovery rejects nor omit a served one.
-    Native service itself is pinned behaviorally by the
-    consumer_discovery legs (exact 3.2/3.1/3.0 inventory +
-    2.40-via-C_GetFunctionList); this check closes the
-    allowlist-to-native link transitively through the inventory
-    both derive from.
+  - the interface chain closes twice: the ABI inventory keys must
+    equal the generator-defined set (fresh generate-abi.py import,
+    so a hand-added key fails), and the config allowlist must equal
+    the inventory keys. The matrix then certifies exactly the
+    defined set — neither an interface native discovery rejects
+    nor omitting a served one. Native service itself is pinned
+    behaviorally by the consumer_discovery legs (exact 3.2/3.1/3.0
+    inventory + 2.40-via-C_GetFunctionList).
 
 STDLIB ONLY. Run from anywhere:
   python3 scripts/check-compat.py [--self-test]
@@ -211,8 +211,28 @@ def check_idempotent(root):
     return []
 
 
+def generator_defined_interfaces():
+    """Fresh-import generate-abi.py and return its LAYOUTS keys.
+
+    The import executes module constants only (same shape as
+    validate-spec.py's INVENTORY-FRESH leg); any failure returns
+    None and the caller fails closed.
+    """
+    import importlib.util
+    gen_path = REPO / "scripts" / "generate-abi.py"
+    try:
+        spec = importlib.util.spec_from_file_location("gen_abi", gen_path)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        return sorted(gen.LAYOUTS.keys())
+    except Exception:
+        return None
+
+
 def check_native_interfaces(root, consts):
-    """The allowlist must equal the ABI inventory keys exactly."""
+    """Two links: inventory keys must equal the generator-defined
+    set (a hand-added key fails even when the allowlist matches
+    it), and the allowlist must equal the inventory keys."""
     inv_path = root / "spec/abi-inventory.json"
     try:
         inv = json.loads(inv_path.read_text())
@@ -221,6 +241,13 @@ def check_native_interfaces(root, consts):
     native = sorted(inv.get("interfaces", {}).keys())
     if not native:
         return ["ABI inventory lists no interfaces"]
+    defined = generator_defined_interfaces()
+    if defined is None:
+        return ["cannot import generate-abi.py for the interface set"]
+    if native != defined:
+        return ["ABI inventory keys %s != generator-defined %s: "
+                "hand-added interface keys are not served"
+                % (native, defined)]
     allowed = sorted(consts["interfaces"])
     if allowed != native:
         return ["config allowlist %s != ABI inventory %s: the matrix "
@@ -269,8 +296,9 @@ FIX_CABAL = "cabal-version: 3.0\nname: haskoki\nversion:            0.6.0.0\n"
 FIX_SQLITE = "-- fixture\nsqliteSchemaVersion :: Int\nsqliteSchemaVersion = 3\n"
 FIX_CONFIG = ("-- fixture\nconfigSchemaVersion :: Int\nconfigSchemaVersion = 1\n\n"
               "supportedInterfaces :: [String]\n"
-              "supportedInterfaces = [\"2.40\", \"3.0\"]\n")
-FIX_ABI = '{"interfaces": {"2.40": {}, "3.0": {}}}'
+              "supportedInterfaces = [\"2.40\", \"3.0\", \"3.1\", \"3.2\"]\n")
+FIX_ABI = ('{"interfaces": {"2.40": {}, "3.0": {}, "3.1": {}, '
+           '"3.2": {}}}')
 
 
 def write_fixture(tmp, cabal=FIX_CABAL, sqlite=FIX_SQLITE, config=FIX_CONFIG,
@@ -318,14 +346,14 @@ def self_test():
             "# Compatibility matrix\n\nDo not edit by hand: regenerate with "
             "`python3 scripts/generate_compat.py`.\n\n## Versions\n\n"
             "- Binary: `9.9.9.9` (x)\n- Store schema served: `3` (x)\n"
-            "- Config schema accepted: `1` (x)\n- Interfaces: `2.40`, `3.0` (x)\n"))
+            "- Config schema accepted: `1` (x)\n- Interfaces: `2.40`, `3.0`, `3.1`, `3.2` (x)\n"))
         expect("drifted binary fails", check(root), True)
         # Leg 3: blank verdict fails.
         root = write_fixture(Path(tmp) / "blank", doc=(
             "# Compatibility matrix\n\nDo not edit by hand: regenerate with "
             "`python3 scripts/generate_compat.py`.\n\n## Versions\n\n"
             "- Binary: `0.6.0.0` (x)\n- Store schema served: `3` (x)\n"
-            "- Config schema accepted: `1` (x)\n- Interfaces: `2.40`, `3.0` (x)\n\n"
+            "- Config schema accepted: `1` (x)\n- Interfaces: `2.40`, `3.0`, `3.1`, `3.2` (x)\n\n"
             "## Matrix\n\n| Binary | Store | Config | Interface | Verdict |\n"
             "| --- | --- | --- | --- | --- |\n"
             "| 0.6.0.0 | memory | 1 | 2.40 |  |\n"))
@@ -338,7 +366,7 @@ def self_test():
             "# Compatibility matrix\n\nDo not edit by hand: regenerate with "
             "`python3 scripts/generate_compat.py`.\n\n## Versions\n\n"
             "- Binary: `0.6.0.0` (x)\n- Store schema served: `3` (x)\n"
-            "- Config schema accepted: `1` (x)\n- Interfaces: `2.40`, `3.0` (x)\n\n"
+            "- Config schema accepted: `1` (x)\n- Interfaces: `2.40`, `3.0`, `3.1`, `3.2` (x)\n\n"
             "## Matrix\n\n| Binary | Store | Config | Interface | Verdict |\n"
             "| --- | --- | --- | --- | --- |\n"
             "| 0.6.0.0 | 1 | 1 | 2.40 | works |\n"))
@@ -352,7 +380,7 @@ def self_test():
             "# Compatibility matrix\n\nDo not edit by hand: regenerate with "
             "`python3 scripts/generate_compat.py`.\n\n## Versions\n\n"
             "- Binary: `0.6.0.0` (x)\n- Store schema served: `3` (x)\n"
-            "- Config schema accepted: `1` (x)\n- Interfaces: `2.40`, `3.0` (x)\n\n"
+            "- Config schema accepted: `1` (x)\n- Interfaces: `2.40`, `3.0`, `3.1`, `3.2` (x)\n\n"
             "## Matrix\n\n| Binary | Store | Config | Interface | Verdict |\n"
             "| --- | --- | --- | --- | --- |\n"
             "| 0.6.0.0 | memory | 1 | 2.40 | works |\n"))
@@ -360,11 +388,12 @@ def self_test():
         # Legs 8-9: the doc is generated from the drifted
         # allowlist, so versions/table/idempotency all pass and ONLY
         # the native cross-check can fail each leg.
-        for name, spelling in (("wide", '["2.40", "3.0", "3.3"]'),
-                               ("narrow", '["2.40"]')):
+        for name, spelling in (("wide", '["2.40", "3.0", "3.1", "3.2", "3.3"]'),
+                               ("narrow", '["2.40", "3.0", "3.1"]')):
             root = write_fixture(
                 Path(tmp) / name,
-                config=FIX_CONFIG.replace('["2.40", "3.0"]', spelling))
+                config=FIX_CONFIG.replace('["2.40", "3.0", "3.1", "3.2"]',
+                                          spelling))
             if GENERATOR.is_file():
                 p = subprocess.run(
                     [sys.executable, str(GENERATOR), "--root", str(root)],
@@ -380,6 +409,31 @@ def self_test():
             else:
                 expect("%s allowlist fails" % name,
                        ["generator missing (not yet written)"], True)
+        # Leg 10: coordinated drift fails (the r36 repro):
+        # allowlist AND inventory both gain 3.3, so the pairwise
+        # check passes and only the generator-defined set catches it.
+        root = write_fixture(
+            Path(tmp) / "extrakey",
+            config=FIX_CONFIG.replace(
+                '["2.40", "3.0", "3.1", "3.2"]',
+                '["2.40", "3.0", "3.1", "3.2", "3.3"]'),
+            abi=('{"interfaces": {"2.40": {}, "3.0": {}, "3.1": {}, '
+                 '"3.2": {}, "3.3": {}}}'))
+        if GENERATOR.is_file():
+            p = subprocess.run(
+                [sys.executable, str(GENERATOR), "--root", str(root)],
+                capture_output=True, text=True, timeout=120)
+            if p.returncode != 0:
+                expect("extra inventory key fails",
+                       ["generator failed: %s" % p.stderr[:200]], True)
+            else:
+                errs = check(root)
+                isolated = [e for e in errs if "ABI inventory" in e]
+                expect("extra inventory key fails on inventory",
+                       isolated, True)
+        else:
+            expect("extra inventory key fails",
+                   ["generator missing (not yet written)"], True)
 
     print("compat: self-test %s" % ("ok" if not bad else "FAIL"))
     return 1 if bad else 0
