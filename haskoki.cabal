@@ -449,6 +449,7 @@ test-suite haskoki-model-tests
     ByteFormatSpec
     BytesSpec
     CertificateSpec
+    CompatMatrixSpec
     ConfigHonestySpec
     ConfigSpec
     ControlSpec

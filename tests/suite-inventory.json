@@ -198,6 +198,7 @@
         "ByteFormatSpec",
         "BytesSpec",
         "CertificateSpec",
+        "CompatMatrixSpec",
         "ConfigHonestySpec",
         "ConfigSpec",
         "ControlSpec",
@@ -314,6 +315,9 @@
         ],
         "CertificateSpec": [
           "Certificates"
+        ],
+        "CompatMatrixSpec": [
+          "Compatibility matrix"
         ],
         "ConfigHonestySpec": [
           "Config honesty"

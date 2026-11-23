@@ -20,7 +20,7 @@ controls another process's loaded provider. [CtlSpec](../../model/CtlSpec.hs)
 and [SimBridgeSpec](../../model/SimBridgeSpec.hs) exercise these examples.
 Its `rules` array stays empty: the scenario loader rejects nonempty
 rules because the runner executes steps only. Pending comes from the
-`[async] pending_polls` setting plus the `async.delay` verb (extra
+`[scenario.async] pending_polls` setting plus the `async.delay` verb (extra
 polls on a session), never from rules; `fault.window` selects the
 device-error window.
 

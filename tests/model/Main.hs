@@ -8,6 +8,7 @@ import qualified AsyncSpec
 import qualified ByteFormatSpec
 import qualified BytesSpec
 import qualified CertificateSpec
+import qualified CompatMatrixSpec
 import qualified ConfigHonestySpec
 import qualified ConfigSpec
 import qualified ControlSpec
@@ -172,6 +173,7 @@ tests = testGroup "haskoki model + lifecycle"
   , ByteFormatSpec.spec
   , BytesSpec.spec
   , CertificateSpec.spec
+  , CompatMatrixSpec.spec
   , DetachedSpec.spec
   , ErrorDetailSpec.spec
   , ErrorInterpSpec.spec

@@ -84,6 +84,8 @@ python3 scripts/check-denominators.py
 python3 scripts/check-attributes.py
 python3 scripts/check-ossl4-surface.py
 python3 scripts/check-version.py
+python3 scripts/check-compat.py
+python3 scripts/check-compat.py --self-test
 python3 scripts/check-ckr.py
 python3 scripts/check-seed-honesty.py
 python3 scripts/check-seed-honesty.py --self-test

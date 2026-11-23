@@ -191,7 +191,7 @@ jobs:
         run: |
           set -euo pipefail
           for g in check-core-boundary check-mechanisms check-denominators \
-              check-attributes check-ossl4-surface check-version check-ckr \
+              check-attributes check-ossl4-surface check-version check-compat check-ckr \
               check-seed-honesty check-warnings-zero check-docs \
               check-fork-stance check-gates-parity check-test-wiring check-test-evidence check-test-execution \
               check-coverage-boundary \
@@ -203,6 +203,7 @@ jobs:
           python3 scripts/check-history-codes.py --self-test
           python3 scripts/check-sealed-callwork.py --self-test
           python3 scripts/check-ossl4-laziness.py --self-test
+          python3 scripts/check-compat.py --self-test
           # Final-review M-1: the pin gate defaults to ci.yml — cover
           # every workflow so later lanes cannot drift to a mutable tag.
           python3 scripts/check-actions-pinned.py .github/workflows/hpc.yml

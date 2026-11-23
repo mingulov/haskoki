@@ -443,11 +443,13 @@ casePrivCtxTrue =
 
 -- | ENFORCED-by-validation: only the logical executor exists.
 caseExecutorBad :: IO ()
-caseExecutorBad =
-  case parseConfig (unlines ["schema_version = 1", "[async]", "executor = \"threads\""]) of
-    Left (CfgInvalid msg) ->
-      assertEqual "exact refusal" "async.executor must be \"logical\": threads" msg
-    other -> assertFailure ("non-logical executor must be refused, got: " ++ show other)
+caseExecutorBad = mapM_ refusal ["[async]", "[scenario.async]"]
+  where
+    refusal header =
+      case parseConfig (unlines ["schema_version = 1", header, "executor = \"threads\""]) of
+        Left (CfgInvalid msg) ->
+          assertEqual ("exact refusal (" ++ header ++ ")") "scenario.async.executor must be \"logical\": threads" msg
+        other -> assertFailure ("non-logical executor must be refused, got: " ++ show other)
 
 -- | Temp config + temp scenario runners (unique tag per case; the
 -- scenario path mirrors SimBridgeSpec, the config is minimal).
@@ -1114,7 +1116,7 @@ compareKeyTable doc =
 caseKeyTableMatches :: IO ()
 caseKeyTableMatches = do
   doc <- honestyCatalog
-  assertEqual "45 catalog keys" 45 (length configKeyCatalog)
+  assertEqual "49 catalog keys" 49 (length configKeyCatalog)
   assertEqual "doc table vs parser catalog" [] (compareKeyTable doc)
 
 dropRow :: String -> String -> String
@@ -1164,7 +1166,7 @@ undisclosedReserved out =
 caseReservedOnLines :: IO ()
 caseReservedOnLines = withTimeout "capabilities run" $ do
   r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
-  assertEqual "reserved keys in the catalog" 9
+  assertEqual "reserved keys in the catalog" 10
     (length [ () | (_, Reserved) <- configKeyCatalog ])
   assertEqual "undisclosed reserved keys" [] (undisclosedReserved (ceOut r))
 
@@ -1173,7 +1175,7 @@ caseReservedLineMissing = withTimeout "capabilities run" $ do
   r <- runCtl ["capabilities", "--config", fixture "maximal-demo.toml"]
   let without = unlines (filter (not . ("reserved-async" `isPrefixOf`)) (lines (ceOut r)))
   assertEqual "capabilities without the reserved-async line"
-    ["async.persist_detached"] (undisclosedReserved without)
+    ["async.persist_detached", "scenario.async.persist_detached"] (undisclosedReserved without)
 
 -- ---------------------------------------------------------------------------
 -- Effective inventory: every catalog key carries a non-empty Effective
@@ -1240,8 +1242,8 @@ caseReservedLimitsLineMissing = withTimeout "capabilities run" $ do
 -- | Negative control for the reserved top-level/engine leaves:
 -- dropping the three new disclosure lines (plus reserved-async,
 -- whose storage.kind mention also covers the "kind" leaf) must
--- surface exactly profile, interfaces, engine.kind and
--- async.persist_detached.
+-- surface exactly profile, interfaces, engine.kind and both
+-- persist_detached spellings.
 caseReservedTopLineMissing :: IO ()
 caseReservedTopLineMissing = withTimeout "capabilities run" $ do
   r <- runCtl ["capabilities", "--config", fixture "real-crypto.toml"]
@@ -1249,8 +1251,8 @@ caseReservedTopLineMissing = withTimeout "capabilities run" $ do
         [ ln | ln <- lines (ceOut r)
              , not (any (`isPrefixOf` ln) tags) ]
   assertEqual "capabilities without the new disclosure lines"
-    (sort ["async.persist_detached", "engine.kind", "interfaces"
-          , "profile"])
+    (sort ["async.persist_detached", "scenario.async.persist_detached"
+          , "engine.kind", "interfaces", "profile"])
     (sort (undisclosedReserved
             (without ["reserved-async", "reserved-profile"
                      , "reserved-interfaces", "reserved-engine"])))

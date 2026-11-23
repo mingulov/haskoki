@@ -13,7 +13,7 @@ kind = "openssl"
 allow_synthetic_fallback = false
 private_library_context = true
 
-[async]
+[scenario.async]
 executor = "logical"
 enabled = false
 pending_polls = 2

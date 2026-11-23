@@ -35,6 +35,7 @@ spec = testGroup "Haskoki-ctl"
   , testCase "openssl catalog serves CKM_SHA256" caseSha256Served
   , testCase "interfaces line names configured and effective values" caseInterfacesEffective
   , testCase "scenario result names the simulator scope" caseScenarioScope
+  , testCase "version prints complete cabal stdout" caseVersionExact
   ]
 
 fixture :: FilePath -> FilePath
@@ -198,6 +199,16 @@ caseScenarioScope = do
   assertEqual "simulator scope and step count stated"
     ["scenario-ok (owned logical simulation, 12 steps)"]
     (filter ("scenario-ok" `isPrefixOf`) (lines (ceOut r)))
+
+-- | --version prints the complete cabal version stdout, byte-exact:
+-- derivation must not append, truncate, or reformat it. Update the
+-- literal on every release bump (check-version.py pins the same).
+caseVersionExact :: IO ()
+caseVersionExact = do
+  r <- runCtl ["--version"]
+  assertEqual "version exits 0" 0 (ceCode r)
+  assertEqual "complete version stdout" "haskoki-ctl 0.6.0.0\n" (ceOut r)
+  assertEqual "no stderr" "" (ceErr r)
 
 caseHelpHonest :: IO ()
 caseHelpHonest = do

@@ -14,7 +14,7 @@ exclusive_provider_ownership = true
 [engine]
 kind = "synthetic"
 
-[async]
+[scenario.async]
 executor = "logical"
 enabled = true
 pending_polls = 2

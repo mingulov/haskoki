@@ -360,6 +360,7 @@ spec mkScope = testGroup "store contract"
       , testCase "garbage file is rejected without rewrite" testGarbageRejected
       , testCase "future schema version rejected without rewrite" testFutureVersionRejected
       , testCase "version-1 database refuses without writing" testV1RefusesWithoutWriting
+      , testCase "version-2 database refuses without writing" testV2RefusesWithoutWriting
       , testCase "async store open refuses a version-1 store without writing" testV1AsyncRefusalWritesNothing
       , testCase "async store open seeds the home credential and reopens" testAsyncOpenSeedsHomeCredential
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
@@ -1357,6 +1358,42 @@ testV1RefusesWithoutWriting =
       Left other -> assertFailure ("wrong refusal: " ++ show other)
       Right s -> storeClose s >> assertFailure "a version-1 database opened"
     assertUnchanged "version-1 database after a refused open" before path
+
+-- | The v2 half of the migratable set: a version-2 database
+-- refuses as migration-required and the refused open writes
+-- nothing (same bar as v1: marker row, bytes, and sidecars
+-- untouched). v1 is pinned by testV1RefusesWithoutWriting.
+testV2RefusesWithoutWriting :: IO ()
+testV2RefusesWithoutWriting =
+  bracket (makeTempDir "haskoki-storage-v2-refuse") removeDirectoryRecursive $ \dir -> do
+    let path = dir </> "store.db"
+    mapM_ (rawExec path . T.pack)
+      (v2SchemaDdl ++ ["INSERT INTO store_meta(key, value) VALUES ('p6-migration-marker', 'kept')"])
+    before <- captureState path
+    eStore <- openSQLiteStore path
+    case eStore of
+      Left (StoreNeedsMigration 2 3) -> pure ()
+      Left other -> assertFailure ("wrong refusal: " ++ show other)
+      Right s -> storeClose s >> assertFailure "a version-2 database opened"
+    assertUnchanged "version-2 database after a refused open" before path
+
+-- | The version-2 schema. Frozen history (v1 tables plus the
+-- credentials table, @schema_version@ 2 — the credential-seeding
+-- shape), not a live reference: it must never track the current
+-- schema.
+v2SchemaDdl :: [String]
+v2SchemaDdl =
+  [ "CREATE TABLE store_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)"
+  , "CREATE TABLE tokens (token_id TEXT PRIMARY KEY NOT NULL, slot_key BLOB NOT NULL CHECK (typeof(slot_key) = 'blob' AND length(slot_key) = 8), generation_key BLOB NOT NULL CHECK (typeof(generation_key) = 'blob' AND length(generation_key) = 8), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1), UNIQUE(slot_key))"
+  , "CREATE TABLE objects (object_id TEXT PRIMARY KEY NOT NULL, token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, class_key BLOB NOT NULL CHECK (typeof(class_key) = 'blob' AND length(class_key) = 8), key_type_key BLOB CHECK (key_type_key IS NULL OR (typeof(key_type_key) = 'blob' AND length(key_type_key) = 8)), attributes_json TEXT NOT NULL, material_encoding TEXT NOT NULL, material_blob BLOB, revision INTEGER NOT NULL CHECK (revision > 0), format_version INTEGER NOT NULL CHECK (format_version = 1))"
+  , "CREATE INDEX objects_by_token ON objects(token_id)"
+  , "CREATE TABLE detached_jobs (persistent_id_key BLOB PRIMARY KEY NOT NULL CHECK (typeof(persistent_id_key) = 'blob' AND length(persistent_id_key) = 8), token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, token_generation_key BLOB NOT NULL CHECK (typeof(token_generation_key) = 'blob' AND length(token_generation_key) = 8), function_name TEXT NOT NULL, execution_state TEXT NOT NULL CHECK (execution_state IN ('queued','ready','failed','canceled','delivered')), record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
+  , "CREATE INDEX jobs_by_token ON detached_jobs(token_id)"
+  , "CREATE TABLE credentials (token_id TEXT PRIMARY KEY NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
+  , "INSERT INTO store_meta(key, value) VALUES ('store_format', 'haskoki-demo-v1')"
+  , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '2')"
+  , "INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001')"
+  ]
 
 -- | The version-1 schema. Frozen history (copied from the
 -- pre-provisioning @spec/storage-schema.sql@), not a live

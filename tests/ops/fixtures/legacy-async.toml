@@ -1,0 +1,9 @@
+# Legacy-spelling fixture: pre-rename [async] header. Must keep loading
+# with values migrated to the canonical [scenario.async] spelling.
+schema_version = 1
+
+[async]
+executor = "logical"
+enabled = false
+pending_polls = 5
+persist_detached = true
