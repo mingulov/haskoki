@@ -3,7 +3,7 @@
 Totality + determinism over hostile documents, plus universal
 rejection of unknown keys. The parser is total by construction
 (Either/Maybe, -Werror on incomplete patterns); these laws pin
-that against future drift. Kept-over Task 12 acceptance (the
+that against future drift. Kept-over fuzz-harness acceptance (the
 fuzz harness itself stays deferred).
 -}
 module ConfigProps (spec) where
