@@ -46,7 +46,7 @@ pin differs from the image's checker pin; keep their results separate.
 
 ## Current demo findings
 
-The frozen full profile has 49 findings shared by direct and proxy modes (0.3.0 re-freeze, CI run 44530783308; the 21 v0.5 ids all pass at 0.3.0 — 16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run, rows retired):
+The frozen full profile has 45 findings shared by direct and proxy modes (0.3.0 re-freeze, CI run 44530783308, minus the 4 ECDSA subgroup-width ids fixed in 0.6.0.0 — provider fix verified by re-run, rows retired; the 21 v0.5 ids all pass at 0.3.0 — 16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run, rows retired):
 
 | Family | Count | Interpretation |
 | --- | ---: | --- |
@@ -54,7 +54,7 @@ The frozen full profile has 49 findings shared by direct and proxy modes (0.3.0 
 | Attribute value encodings | 8 | Provider limitation: reads return DER/textual forms instead of raw bytes (R-08 DER row) |
 | Public CKA_VALUE exposure | 4 | Provider over-exposure: EC/Edwards public keys expose CKA_VALUE though their tables define none; removal needs a consumer-impact review |
 | Sealed-component reads | 8 | Provider gap, probably DER-family: unsealed import reads report impossible lengths (size/bytes mismatch) |
-| ECDSA subgroup width | 4 | Checker suspect: expects 42/58 bytes where 2*nLen gives 40/56, consistent with nLen = bitlen//8+1 (sect409k1 passes); needs an independent scalar confirmation |
+| ECDSA subgroup width | 0 (was 4, retired) | Provider fixed in 0.6.0.0: the checker was right (SEC 2 orders are 161/225-bit, nLen is order width); sign halves are order bytes now (42/58), scalars order-bounded |
 | BLAKE2 generic-secret KAT | 4 | Provider-side, import path: 85 sibling BLAKE2 tests pass, so the primitive is sound; only generic-secret-keyed message KATs mismatch |
 
 The AES-GCM and AES-GMAC message flags were withdrawn because those routes
