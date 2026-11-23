@@ -144,7 +144,7 @@
         "owner": "mechanism maintainer",
         "phase": "0.6.1",
         "trigger": "OASIS base-spec template prose vendored (or byte-locked template-table extract with redistribution clearance) + per-creation-path supply/demand matrix recorded in the plan ledger",
-        "exit_check": "TemplateRulesSpec + check-attributes + denominators green on enforced per-class required/forbidden tables incl. C_CreateObject; forbidden lists stay empty until then",
+        "exit_check": "TemplateRulesSpec + check-attributes + denominators passing on enforced per-class required/forbidden tables incl. C_CreateObject; forbidden lists stay empty until then",
         "stance": "deferred carry: reviewed 4-rule subset enforced; nothing invented"
       }
     },
@@ -206,9 +206,9 @@
         "owner": "mechanism maintainer",
         "phase": "Phase 3",
         "trigger": "per-row triggers below",
-        "exit_check": "each row resolved or carried with rationale; refusal pins stay green",
+        "exit_check": "each row resolved or carried with rationale; refusal pins stay passing",
         "rows": {
-          "SHA512_T family": "trigger: SHA512_T truncation prose/table vendored; exit: conforming backend + family tests green",
+          "SHA512_T family": "trigger: SHA512_T truncation prose/table vendored; exit: conforming backend + family tests passing",
           "CMS": "carry until CMS profile prose + approved Raw-surface exception yield passing native tests",
           "PBA": "carry until a usable pinned semantic source yields implementation + conformance tests",
           "LYNKS": "permanent non-goal with continued refusal coverage (RegistrySpec/SyntheticSpec pins); reopenable only by ADR with a usable source",
