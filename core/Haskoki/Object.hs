@@ -1081,13 +1081,15 @@ importMaterial attrs = case (classOf, keyTypeOf) of
     -- curves). Points stay coordinate-width (unwrapEcPoint).
     -- Measures the integer (OASIS Big integer has no
     -- minimal-encoding rule): zero-padded values load, all-zero
-    -- (d=0) refuses. Range above that (d < n) is NOT checked
-    -- here (see the range-validation follow-up).
+    -- (d=0) refuses. Returns the order-width normalization
+    -- (left-pad with zeros), so padding can never blow past
+    -- downstream size limits. Range above that (d < n) is NOT
+    -- checked here (see the range-validation follow-up).
     checkScalar orderLen s =
       let stripped = BS.dropWhile (== 0) s
       in if BS.null stripped || BS.length stripped > orderLen
          then Nothing
-         else Just s
+         else Just (BS.replicate (orderLen - BS.length stripped) 0 <> stripped)
     secretKey k
       | isAsymmetricKeyType k = Left (CKR_TEMPLATE_INCONSISTENT,
           "asymmetric key type on a secret object")

@@ -704,7 +704,14 @@ caseEcScalarValueBound = do
       oid409k1 = "06052b81040024"
       order160r1 = hex "0100000000000000000001f4c8f927aed3ca752257"
   -- Padded d=1 on sect409k1 (52 bytes, integer fits 51): loads.
-  _ <- doCreate m0 st (tmpl oid409k1 (BS.replicate 51 0 <> BS.singleton 1))
+  (_, _, padAttrs) <- doCreate m0 st (tmpl oid409k1 (BS.replicate 51 0 <> BS.singleton 1))
+  -- Normalization: padded and minimal encodings of one integer
+  -- store byte-identical DER (order-width scalar), so padding
+  -- can never blow past the store record limit downstream.
+  (_, _, minAttrs) <- doCreate m0 st (tmpl oid409k1 (BS.singleton 1))
+  padDer <- storedValue padAttrs
+  minDer <- storedValue minAttrs
+  assertEqual "padded and minimal store identically" minDer padDer
   -- All-zero scalar (d=0): refuses (no positive integer value).
   expectReject CKR_TEMPLATE_INCONSISTENT
     (planCreateObject m0 st (tmpl oid160r1 (BS.replicate 20 0)))
