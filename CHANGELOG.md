@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0.0] - unreleased (RnD)
+
+Testable RnD release. The per-change list is
+[docs/release-notes-0.6.0.0.md](docs/release-notes-0.6.0.0.md):
+exact per-function errors, config-gated test seams
+(`storage.allow_env_seams`, default off), and the serving-open
+hardening that goes with them. Reports `libraryVersion` 0.6 and
+`haskoki-ctl 0.6.0.0`.
+
 ## [0.5.0.0] - 2026-10-19
 
 First public release. The complete per-change list is in the
