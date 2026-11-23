@@ -55,8 +55,8 @@ import Haskoki.Runtime.Storage.SQLite
 
 import StoreFixtures
 
-spec :: TestTree
-spec = testGroup "Store preflight"
+spec :: IO EnvScope -> TestTree
+spec mkScope = testGroup "Store preflight"
   [ testGroup "released fixtures"
       [ testCase "sha-256 is the standard digest" caseSha256Vector
       , testCase "sha-256 of the empty string" caseSha256Empty
@@ -76,20 +76,20 @@ spec = testGroup "Store preflight"
       , testCase "schema 1 with a credentials table is corrupt, unchanged" caseV1WithCredentialsCorrupt
       , testCase "unknown schema versions refuse unchanged" caseUnknownVersionsRefuse
       , testCase "schema-3 rowless tokens still name their ids" caseV3RowlessNamesIds
-      , testCase "a foreign WAL refuses the serving open, merging nothing" caseServingRefusesForeignWal
-      , testCase "a FIFO store refuses the serving open without hanging" caseServingRefusesFifoStore
+      , testCase "a foreign WAL refuses the serving open, merging nothing" (caseServingRefusesForeignWal mkScope)
+      , testCase "a FIFO store refuses the serving open without hanging" (caseServingRefusesFifoStore mkScope)
       ]
   , testGroup "snapshot"
       [ testCase "snapshot reads a released store without writing" caseSnapshotReadsFixture
       , testCase "snapshot never creates a missing store" caseSnapshotNeverCreates
       , testCase "snapshot reads a store in a read-only directory" caseSnapshotReadOnlyDir
       , testCase "snapshot refuses a hot journal, touching nothing" caseSnapshotRefusesJournal
-      , testCase "snapshot refuses a symlinked, FIFO or device journal without hanging" caseSnapshotRefusesNonRegularJournal
+      , testCase "snapshot refuses a symlinked, FIFO or device journal without hanging" (caseSnapshotRefusesNonRegularJournal mkScope)
       , testCase "snapshot diagnoses garbage and corrupt records" caseSnapshotDiagnoses
       , testCase "owner probe: absent and in-process live" caseProbeAbsentAndLive
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
-          testCase "owner probe: stale lock reported and left in place" caseProbeStaleLeftInPlace
-      , testCase "owner probe: unreadable lock is live" caseProbeUnreadableLive
+          testCase "owner probe: stale lock reported and left in place" (caseProbeStaleLeftInPlace mkScope)
+      , testCase "owner probe: unreadable lock is live" (caseProbeUnreadableLive mkScope)
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
           caseProbeStaleTakeover
       ]
@@ -147,7 +147,7 @@ spec = testGroup "Store preflight"
       , testCase "a failure after the clear still reports the clearing" caseMigrateReportsClearOnFailure
       , testCase "a schema-3 store plus a cold journal needs nothing, journal untouched" caseMigrateSchema3ColdNotNeeded
       , testCase "a migration with no cold journal records cold-journal-removed: no" caseMigrateReceiptColdJournalNo
-      , testCase "a cold journal while another process holds RESERVED refuses" caseColdJournalReservedRefuses
+      , testCase "a cold journal while another process holds RESERVED refuses" (caseColdJournalReservedRefuses mkScope)
       , testCase "a store changed after the plan refuses" caseMigrateStoreChanged
       , testCase "an existing backup name is never overwritten" caseMigrateNeverOverwrites
       , testCase "all 100 backup names taken refuses" caseMigrateBackupNamesExhausted
@@ -159,7 +159,7 @@ spec = testGroup "Store preflight"
       , testCase "a failed read-back after commit is reported with the backup" caseMigrateVerifyFails
       , testCase "a receipt name taken after the backup is never overwritten" caseMigrateReceiptFails
       , testCase "a stale receipt temporary from a crash is ignored, not fatal" caseMigrateStaleReceiptTmpIgnored
-      , testCase "a stale receipt temporary from a dead pid is cleaned on the next migrate" caseMigrateStaleReceiptTmpCleaned
+      , testCase "a stale receipt temporary from a dead pid is cleaned on the next migrate" (caseMigrateStaleReceiptTmpCleaned mkScope)
       , testCase "repeated interrupted backup writes leave no file" caseMigrateInterruptedWriteRepeated
       , testCase "a link failure for want of hard links falls back to a direct receipt write" caseMigrateReceiptLinkFallback
       , testCase "the link fallback never overwrites a taken receipt name" caseMigrateReceiptLinkFallbackNeverOverwrites
@@ -176,11 +176,11 @@ spec = testGroup "Store preflight"
       ]
   , testGroup "recovery"
       [ after AllFinish "/death after reservation leaves a gap, never reuse/" $
-          testCase "a killed migration: refused, rolled back by the open, retried" caseKilledMigrationRecovers
+          testCase "a killed migration: refused, rolled back by the open, retried" (caseKilledMigrationRecovers mkScope)
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
-          testCase "a killed migration: restore with the journal moved aside" caseKilledRestoreMovesJournal
+          testCase "a killed migration: restore with the journal moved aside" (caseKilledRestoreMovesJournal mkScope)
       , after AllFinish "/death after reservation leaves a gap, never reuse/" $
-          testCase "a killed small migration leaves a cold journal that migrate clears" caseKilledSmallMigrationClears
+          testCase "a killed small migration leaves a cold journal that migrate clears" (caseKilledSmallMigrationClears mkScope)
       , testCase "restore brings back the older credentials and schema" caseRestoreBringsBackOldCredentials
       , testCase "a newer schema is refused by open, check and migrate" caseNewerSchemaRefusedEverywhere
       , testCase "check reports from a read-only directory; migrate cannot own it" caseCheckNeverOwns
@@ -310,13 +310,13 @@ caseV3RowlessNamesIds = withScratch "refused-open" $ \dir -> do
 -- A valid foreign WAL beside a current store refuses the serving
 -- open before any SQLite connection opens: the store bytes are
 -- unchanged, the WAL stays in place, and no lock or -shm remains.
-caseServingRefusesForeignWal :: IO ()
-caseServingRefusesForeignWal = withScratch "refused-open" $ \dir -> do
+caseServingRefusesForeignWal :: IO EnvScope -> IO ()
+caseServingRefusesForeignWal mkScope = withScratch "refused-open" $ \dir -> do
   let store = dir </> "store.db"
   makeSchemaStore 3 store [fixtureToken 1 0 "haskoki-demo", fixtureToken 2 1 "haskoki-ops"]
     [ CredentialRecord (TokenId 1) "58213946" (Just "12873465")
     , CredentialRecord (TokenId 2) "69324057" (Just "34095687") ]
-  plantForeignWal store "meta"
+  plantForeignWal mkScope store "meta"
   dbBefore <- BS.readFile store
   wBefore <- BS.readFile (store ++ "-wal")
   r <- openSQLiteStore store
@@ -334,11 +334,11 @@ caseServingRefusesForeignWal = withScratch "refused-open" $ \dir -> do
 -- A FIFO at the store path refuses the serving open by lstat,
 -- never opened: the held writer only keeps a regression from
 -- hanging the suite.
-caseServingRefusesFifoStore :: IO ()
-caseServingRefusesFifoStore = withScratch "refused-open" $ \dir -> do
+caseServingRefusesFifoStore :: IO EnvScope -> IO ()
+caseServingRefusesFifoStore mkScope = withScratch "refused-open" $ \dir -> do
   let store = dir </> "store.db"
   createNamedPipe store 0o600
-  withFifoWriter store "not a database file, only pipe garbage" $ do
+  withFifoWriter mkScope store "not a database file, only pipe garbage" $ do
     r <- openSQLiteStore store
     case r of
       Left (StoreIO m) -> assertBool "names non-regular" ("not a regular file" `isInfixOf` m)
@@ -417,15 +417,15 @@ caseSnapshotRefusesJournal = withScratch "snapshot" $ \dir -> do
 -- refusal) and fails instead of hanging the suite; the timeout is
 -- only a backstop. A device read is interruptible, so the /dev/zero
 -- probe keeps the timeout alone.
-caseSnapshotRefusesNonRegularJournal :: IO ()
-caseSnapshotRefusesNonRegularJournal = withScratch "snapshot" $ \dir -> do
+caseSnapshotRefusesNonRegularJournal :: IO EnvScope -> IO ()
+caseSnapshotRefusesNonRegularJournal mkScope = withScratch "snapshot" $ \dir -> do
   (store, _) <- copyReleasedFixture "v0.4.0.0" dir
   let journal = store ++ "-journal"
       zeros = BS.replicate 512 0
   let fifo = dir </> "fifo"
   createNamedPipe fifo 0o600
   createSymbolicLink fifo journal
-  mr1 <- withFifoWriter fifo zeros (timeout 5000000 (readStoreSnapshot store))
+  mr1 <- withFifoWriter mkScope fifo zeros (timeout 5000000 (readStoreSnapshot store))
   case mr1 of
     Nothing -> assertFailure "snapshot hung on a symlinked FIFO journal"
     Just r1 -> case r1 of
@@ -433,7 +433,7 @@ caseSnapshotRefusesNonRegularJournal = withScratch "snapshot" $ \dir -> do
       other -> assertFailure ("symlink FIFO: " ++ show (fmap snapSchema other))
   removeFile journal
   createNamedPipe journal 0o600
-  mr2 <- withFifoWriter journal zeros (timeout 5000000 (readStoreSnapshot store))
+  mr2 <- withFifoWriter mkScope journal zeros (timeout 5000000 (readStoreSnapshot store))
   case mr2 of
     Nothing -> assertFailure "snapshot hung on a FIFO journal"
     Just r2 -> case r2 of
@@ -468,11 +468,11 @@ caseProbeAbsentAndLive :: IO ()
 caseProbeAbsentAndLive = withScratch "probe" $ \dir -> do
   let store = dir </> "store.db"
   makeSchemaStore 3 store [] []
-  probeOwner store >>= assertEqual "offline" OwnerAbsent
+  probeOwner False store >>= assertEqual "offline" OwnerAbsent
   e <- openSQLiteStore store
   s <- either (assertFailure . show) pure e
   lockBefore <- BS.readFile (store ++ ".lock")
-  p <- probeOwner store
+  p <- probeOwner False store
   case p of
     OwnerLive _ -> pure ()
     other -> assertFailure ("held store not live: " ++ show other)
@@ -481,27 +481,27 @@ caseProbeAbsentAndLive = withScratch "probe" $ \dir -> do
   assertEqual "owner keeps serving" Committed r
   storeClose s
 
-caseProbeStaleLeftInPlace :: IO ()
-caseProbeStaleLeftInPlace = withScratch "probe" $ \dir -> do
+caseProbeStaleLeftInPlace :: IO EnvScope -> IO ()
+caseProbeStaleLeftInPlace mkScope = withScratch "probe" $ \dir -> do
   let store = dir </> "store.db"
   makeSchemaStore 3 store [] []
-  pid <- reapedPid
+  pid <- reapedPid mkScope
   writeFile (store ++ ".lock") (show pid ++ "\n")
   before <- BS.readFile (store ++ ".lock")
-  probeOwner store >>= assertEqual "stale" (OwnerStale pid)
+  probeOwner False store >>= assertEqual "stale" (OwnerStale pid)
   BS.readFile (store ++ ".lock") >>= assertEqual "stale lock left in place" before
 
-caseProbeUnreadableLive :: IO ()
-caseProbeUnreadableLive = withScratch "probe" $ \dir -> do
+caseProbeUnreadableLive :: IO EnvScope -> IO ()
+caseProbeUnreadableLive mkScope = withScratch "probe" $ \dir -> do
   let store = dir </> "store.db"
   makeSchemaStore 3 store [] []
   euid <- getEffectiveUserID
   if euid == 0
     then putStrLn "skipped: chmod 000 does not deny root"
     else do
-      dead <- reapedPid
+      dead <- reapedPid mkScope
       writeFile (store ++ ".lock") (show dead ++ "\n")
-      p <- withFileMode (store ++ ".lock") 0o000 (probeOwner store)
+      p <- withFileMode (store ++ ".lock") 0o000 (probeOwner False store)
       case p of
         OwnerLive _ -> pure ()
         other -> assertFailure ("unreadable lock not live: " ++ show other)
@@ -538,7 +538,7 @@ caseProbeStaleTakeover = testGroup "owner probe: stale locks are offline when no
       makeSchemaStore 3 store [] []
       writeFile (store ++ ".lock") content
       before <- BS.readFile (store ++ ".lock")
-      p <- probeOwner store
+      p <- probeOwner False store
       assertEqual (tag ++ ": stale lock offline with no holder") OwnerAbsent p
       BS.readFile (store ++ ".lock") >>= assertEqual (tag ++ ": probe left the lock in place") before
     testHeld tag content expectHeld = withScratch ("probe-held-" ++ tag) $ \dir -> do
@@ -548,7 +548,7 @@ caseProbeStaleTakeover = testGroup "owner probe: stale locks are offline when no
       bracket (openFd store ReadOnly defaultFileFlags) closeFd $ \fd -> do
         rc <- c_flockT (fromIntegral fd) 2
         assertEqual (tag ++ ": test holds the db lock") 0 rc
-        p <- probeOwner store
+        p <- probeOwner False store
         case p of
           OwnerLive why -> do
             assertBool (tag ++ ": held refusal names " ++ expectHeld ++ ", got: " ++ why)
@@ -557,7 +557,7 @@ caseProbeStaleTakeover = testGroup "owner probe: stale locks are offline when no
               assertBool ("empty held must not say unreadable, got: " ++ why)
                 (not ("unreadable" `isInfixOf` why))
           other -> assertFailure (tag ++ ": held lock not live: " ++ show other)
-      p2 <- probeOwner store
+      p2 <- probeOwner False store
       assertEqual (tag ++ ": offline after the holder released") OwnerAbsent p2
 
 -- | Store check takes over the same stale sidecars, one case
@@ -898,7 +898,7 @@ frozen =
 
 runOwned :: FilePath -> SQLiteMigration -> MigrationHooks -> IO (Either StoreError ())
 runOwned store mig hooks = do
-  r <- withOwnedStoreFile store (\o -> migrateOwned o mig hooks)
+  r <- withOwnedStoreFile False store (\o -> migrateOwned o mig hooks)
   pure $ case r of
     Left e -> Left e
     Right (Left te) -> Left (txnStoreError te)
@@ -1034,7 +1034,7 @@ caseOwnedRefusesLive = withScratch "owned" $ \dir -> do
   makeSchemaStore 3 store v1Tokens []
   e <- openSQLiteStore store
   s <- either (assertFailure . show) pure e
-  r <- withOwnedStoreFile store (\_ -> pure ())
+  r <- withOwnedStoreFile False store (\_ -> pure ())
   storeClose s
   case r of
     Left (StoreSecondWriter _) -> pure ()
@@ -1043,7 +1043,7 @@ caseOwnedRefusesLive = withScratch "owned" $ \dir -> do
 caseOwnedNeverCreates :: IO ()
 caseOwnedNeverCreates = withScratch "owned" $ \dir -> do
   let store = dir </> "absent.db"
-  r <- withOwnedStoreFile store (\_ -> pure ())
+  r <- withOwnedStoreFile False store (\_ -> pure ())
   case r of
     Left (StoreIO _) -> pure ()
     other -> assertFailure ("wrong result: " ++ show other)
@@ -1514,8 +1514,8 @@ caseMigrateReceiptColdJournalNo = withScratch "migrate" $ \dir -> do
 -- the database. The holder is a separate OS process, so the BUSY
 -- must come through kernel locks, not SQLite's in-process inode
 -- table. Releasing the lock lets the retry clear and migrate.
-caseColdJournalReservedRefuses :: IO ()
-caseColdJournalReservedRefuses = withScratch "migrate" $ \dir -> do
+caseColdJournalReservedRefuses :: IO EnvScope -> IO ()
+caseColdJournalReservedRefuses mkScope = withScratch "migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let backups = dir </> "backups"
       journal = store ++ "-journal"
@@ -1526,7 +1526,7 @@ caseColdJournalReservedRefuses = withScratch "migrate" $ \dir -> do
   cfg <- loadConfigOrFail cfgPath
   BS.writeFile journal (BS.replicate 512 0)
   reaped <- newIORef False
-  bracket (spawnReservedHolder store ready go) (releaseHolder reaped) $ \ph -> do
+  bracket (spawnReservedHolder mkScope store ready go) (releaseHolder reaped) $ \ph -> do
     waitForFileOrExit ph ready 3000
     r <- migrateStore store cfg backups
     case r of
@@ -1557,10 +1557,11 @@ reservedHolderMain store readyFile goFile = do
 
 -- | Spawn the RESERVED holder child (separate OS process, no shared
 -- SQLite state, stdio inherited).
-spawnReservedHolder :: FilePath -> FilePath -> FilePath -> IO ProcessHandle
-spawnReservedHolder store ready go = do
+spawnReservedHolder :: IO EnvScope -> FilePath -> FilePath -> FilePath -> IO ProcessHandle
+spawnReservedHolder mkScope store ready go = do
+  (_, _, frozenEnv) <- mkScope
   exe <- getExecutablePath
-  (_, _, _, ph) <- createProcess (proc exe ["--reserved-holder", store, ready, go]) { close_fds = True }
+  (_, _, _, ph) <- createProcess (proc exe ["--reserved-holder", store, ready, go]) { close_fds = True, env = Just frozenEnv }
   pure ph
 
 -- | Wait for a child to create a file, failing fast if the child
@@ -1827,14 +1828,14 @@ caseMigrateStaleReceiptTmpIgnored = withScratch "migrate" $ \dir -> do
 -- A stale new-format temporary (<receipt>.tmp.<pid>.<nonce>) from a
 -- dead pid is removed when the next migration writes its receipt;
 -- only provably-dead owners are cleaned.
-caseMigrateStaleReceiptTmpCleaned :: IO ()
-caseMigrateStaleReceiptTmpCleaned = withScratch "migrate" $ \dir -> do
+caseMigrateStaleReceiptTmpCleaned :: IO EnvScope -> IO ()
+caseMigrateStaleReceiptTmpCleaned mkScope = withScratch "migrate" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let backups = dir </> "backups"
       bak = backups </> "store.sqlite.pre-migrate.schema2.1700000000.bak"
       receipt = bak ++ ".receipt"
   createDirectory backups
-  dead <- reapedPid
+  dead <- reapedPid mkScope
   let stale = receipt ++ ".tmp." ++ show dead ++ ".0"
   writeFile stale "stale temporary from a crashed run"
   cfg <- loadConfigOrFail cfgPath
@@ -2169,15 +2170,15 @@ migrateChildSmallMain store cfgPath backups ready = do
 -- runs under a bracket (killed and reaped on any failure), its stdio
 -- goes to a log file, and the ready wait fails fast if the child
 -- exits early.
-killPausedMigration :: String -> FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
-killPausedMigration childFlag dir = do
+killPausedMigration :: IO EnvScope -> String -> FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
+killPausedMigration mkScope childFlag dir = do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let backups = dir </> "backups"; ready = dir </> "ready"; logPath = dir </> "migrate-child.log"
   createDirectory backups
   pre <- BS.readFile store
   exe <- getExecutablePath
   reaped <- newIORef False
-  bracket (spawnMigrateChild exe childFlag store cfgPath backups ready logPath) (releaseHolder reaped) $ \ph -> do
+  bracket (spawnMigrateChild mkScope exe childFlag store cfgPath backups ready logPath) (releaseHolder reaped) $ \ph -> do
     waitForFileOrExit ph ready 3000
     getPid ph >>= maybe (assertFailure "migrate child exited early") (signalProcess sigKILL)
     _ <- waitForProcess ph
@@ -2186,18 +2187,19 @@ killPausedMigration childFlag dir = do
 
 -- | Spawn a migrate child with its stdio captured to a log file (a
 -- child that dies early must not noise the runner's output).
-spawnMigrateChild :: FilePath -> String -> FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> IO ProcessHandle
-spawnMigrateChild exe childFlag store cfgPath backups ready logPath = do
+spawnMigrateChild :: IO EnvScope -> FilePath -> String -> FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> IO ProcessHandle
+spawnMigrateChild mkScope exe childFlag store cfgPath backups ready logPath = do
+  (_, _, frozenEnv) <- mkScope
   h <- openFile logPath AppendMode
   (_, _, _, ph) <- createProcess ((proc exe [childFlag, store, cfgPath, backups, ready])
-    { close_fds = True, std_in = NoStream, std_out = UseHandle h, std_err = UseHandle h })
+    { close_fds = True, std_in = NoStream, std_out = UseHandle h, std_err = UseHandle h, env = Just frozenEnv })
     `onException` hClose h
   hClose h
   pure ph
 
-killMidMigration :: FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
-killMidMigration dir = do
-  (store, cfgPath, backups, pre) <- killPausedMigration "--migrate-child" dir
+killMidMigration :: IO EnvScope -> FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
+killMidMigration mkScope dir = do
+  (store, cfgPath, backups, pre) <- killPausedMigration mkScope "--migrate-child" dir
   -- Premise of the killed-migration scenario: the journal carries a
   -- finalized header (SQLite's documented magic), i.e. it is hot and
   -- the next serving open rolls it back. A zeroed header would be a
@@ -2210,9 +2212,9 @@ killMidMigration dir = do
 -- | Kill a small paused migration: the transaction never spills from
 -- the page cache, so the journal is cold (zeroed header) and the
 -- database is unchanged, as a real small migration kill leaves them.
-killMidMigrationSmall :: FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
-killMidMigrationSmall dir = do
-  (store, cfgPath, backups, pre) <- killPausedMigration "--migrate-child-small" dir
+killMidMigrationSmall :: IO EnvScope -> FilePath -> IO (FilePath, FilePath, FilePath, BS.ByteString)
+killMidMigrationSmall mkScope dir = do
+  (store, cfgPath, backups, pre) <- killPausedMigration mkScope "--migrate-child-small" dir
   jBytes <- BS.readFile (store ++ "-journal")
   assertBool "the killed small transaction left a journal" (BS.length jBytes > 0)
   assertEqual "the small journal is cold (zeroed header)"
@@ -2220,9 +2222,9 @@ killMidMigrationSmall dir = do
   BS.readFile store >>= \b -> assertBool "the small transaction never spilled" (b == pre)
   pure (store, cfgPath, backups, pre)
 
-caseKilledMigrationRecovers :: IO ()
-caseKilledMigrationRecovers = withScratch "killed" $ \dir -> do
-  (store, cfgPath, backups, pre) <- killMidMigration dir
+caseKilledMigrationRecovers :: IO EnvScope -> IO ()
+caseKilledMigrationRecovers mkScope = withScratch "killed" $ \dir -> do
+  (store, cfgPath, backups, pre) <- killMidMigration mkScope dir
   let journal = store ++ "-journal"
   jSize <- fileSize <$> getFileStatus journal
   assertBool "the killed transaction left a hot journal" (jSize > 0)
@@ -2258,9 +2260,9 @@ caseKilledMigrationRecovers = withScratch "killed" $ \dir -> do
   afterBytes <- BS.readFile store
   assertBool "the 20MB spill value is gone (db back to normal size)" (BS.length afterBytes < 1000000)
 
-caseKilledRestoreMovesJournal :: IO ()
-caseKilledRestoreMovesJournal = withScratch "killed" $ \dir -> do
-  (store, cfgPath, backups, pre) <- killMidMigration dir
+caseKilledRestoreMovesJournal :: IO EnvScope -> IO ()
+caseKilledRestoreMovesJournal mkScope = withScratch "killed" $ \dir -> do
+  (store, cfgPath, backups, pre) <- killMidMigration mkScope dir
   let aside = dir </> "aside"
   createDirectory aside
   renameFile store (aside </> "store.sqlite")
@@ -2281,9 +2283,9 @@ caseKilledRestoreMovesJournal = withScratch "killed" $ \dir -> do
 -- the check names it distinctly, and migrate clears it under
 -- exclusive locks and completes, recording the clearing on stdout
 -- and in the receipt.
-caseKilledSmallMigrationClears :: IO ()
-caseKilledSmallMigrationClears = withScratch "killed" $ \dir -> do
-  (store, cfgPath, backups, pre) <- killMidMigrationSmall dir
+caseKilledSmallMigrationClears :: IO EnvScope -> IO ()
+caseKilledSmallMigrationClears mkScope = withScratch "killed" $ \dir -> do
+  (store, cfgPath, backups, pre) <- killMidMigrationSmall mkScope dir
   let journal = store ++ "-journal"
   c <- runCtl ["store", "check", "--path", store, "--config", cfgPath]
   assertEqual "check refuses" 1 (ceCode c)

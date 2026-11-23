@@ -1068,7 +1068,7 @@ caseResidueRetriedByNextOpen = withPrivateDir $ \dir -> do
   (counting, _) <- countingAcquisitionOver asyncAcquisition
     { aaOpenStore = \cp -> do
         p <- peekCString cp
-        either (const (Left ())) Right <$> openSQLiteStoreWith p defaultLimits inj
+        either (const (Left ())) Right <$> openSQLiteStoreWith False p defaultLimits inj
     }
   let acq = counting
         { aaStep = \s -> do

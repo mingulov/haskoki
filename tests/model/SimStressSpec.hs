@@ -514,7 +514,7 @@ withStressSQLite :: (Store -> IO ()) -> IO ()
 withStressSQLite use =
   bracket (makeStressTempDir "haskoki-sim-stress") removeDirectoryRecursive $ \dir ->
     bracket
-      (openSQLiteStoreWith (dir </> "store.db") defaultLimits noFaults
+      (openSQLiteStoreWith False (dir </> "store.db") defaultLimits noFaults
         >>= either (assertFailure . show) pure)
       storeClose
       use

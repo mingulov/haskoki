@@ -12,7 +12,7 @@ The file is read strictly as bytes and decoded explicitly as UTF-8
 regardless of the process locale; undecodable bytes answer
 `CfgInvalid`, never an exception.
 
-## Accepted settings (44 keys)
+## Accepted settings (45 keys)
 
 `E` = ENFORCED, `R` = REFUSED (non-default/misleading values),
 `D` = CONFIG-NOT-POLICY (reserved, disclosed).
@@ -27,6 +27,7 @@ regardless of the process locale; undecodable bytes answer
 | `storage.path` | E/R | sqlite opens it; memory+path refused (ignored otherwise) | `FfiAsyncSpec` + `ConfigHonestySpec` memory-path refusal | sqlite opens it; memory plus path refuses (native open) |
 | `storage.busy_timeout_ms` | R | pinned 5000 at open; only 5000 accepted | `ConfigHonestySpec` busy refusal | 5000 only (native sqlite open; pinned busy timeout) |
 | `storage.exclusive_provider_ownership` | R | always single-writer O_EXCL; `false` refused | `ConfigHonestySpec` exclusive refusal | true only (native store create; always single-writer O_EXCL) |
+| `storage.allow_env_seams` | E | false (default): env seams inert everywhere; true lets the config-driven serving open consult HASKOKI_PROC_ROOT (owner liveness) and HASKOKI_OPEN_PAUSE* (fresh-init pause on create); store check/migrate ownership checks consult liveness only and never pause | `ConfigHonestySpec` allow-env default + accept | default false (configured serving opens; path-only async open, direct openSQLiteStore, and config-less reset stay inert) |
 | `engine.kind` | D | reserved: validated selector + reported active catalog; native paths always bind OpenSSL4 (disclosed by the `native-engine` line) | `ConfigHonestySpec` class + `reserved-engine` line; `CtlSpec` native-scope | synthetic or openssl, reported catalog only (config-not-policy; native always binds OpenSSL4) |
 | `engine.allow_synthetic_fallback` | R | no fallback exists; `true` refused | `ConfigHonestySpec` fallback refusal | false only, read by nothing (config loader; both) |
 | `engine.private_library_context` | R | native OpenSSL4 always opens a private libctx; `false` refused, default `true` | `ConfigHonestySpec` privctx refusal + default | true only (native OpenSSL4 open; always private libctx) |

@@ -50,8 +50,8 @@ import Haskoki.Types (TokenId (..))
 
 import StoreFixtures
 
-spec :: TestTree
-spec = testGroup "Store commands"
+spec :: IO EnvScope -> TestTree
+spec mkScope = testGroup "Store commands"
   [ testCase "inspect reads an offline store" caseInspect
   , testCase "reset refuses a live store" caseResetLive
   , testCase "reset refuses a kernel-held store whose lock was removed" caseResetRefusesKernelHeld
@@ -79,16 +79,16 @@ spec = testGroup "Store commands"
   , testCase "check: --async-home plans the v0.4 async shape" caseCheckAsyncHomeV04
   , testCase "check: --async-home as a flag value is a usage error" caseCheckAsyncHomeValue
   , testCase "check: a -wal or -shm file is refused" caseCheckWalShm
-  , testCase "check: a foreign WAL through a symlink refuses and writes no shm" caseCheckSymlinkWal
+  , testCase "check: a foreign WAL through a symlink refuses and writes no shm" (caseCheckSymlinkWal mkScope)
   , testCase "check: a hot journal through a symlink names the journal" caseCheckSymlinkHotJournal
-  , testCase "migrate: a foreign WAL through a symlink refuses, keeping the credential" caseMigrateSymlinkWal
+  , testCase "migrate: a foreign WAL through a symlink refuses, keeping the credential" (caseMigrateSymlinkWal mkScope)
   , testCase "migrate: a bare symlink migrates the target" caseMigrateSymlinkBare
   , testCase "migrate: a failure after the clear still reports the clearing" caseMigrateCliReportsClearOnFailure
   , testCase "migrate: a backup that fails verification is removed" caseMigrateBadBackupRemoved
-  , testCase "check: a FIFO store is refused without hanging" caseCheckFifoStore
-  , testCase "migrate: a FIFO store is refused without hanging" caseMigrateFifoStore
-  , testCase "check: a FIFO lock is refused without hanging" caseCheckFifoLock
-  , testCase "check: a symlinked lock is refused without following it" caseCheckSymlinkLock
+  , testCase "check: a FIFO store is refused without hanging" (caseCheckFifoStore mkScope)
+  , testCase "migrate: a FIFO store is refused without hanging" (caseMigrateFifoStore mkScope)
+  , testCase "check: a FIFO lock is refused without hanging" (caseCheckFifoLock mkScope)
+  , testCase "check: a symlinked lock is refused without following it" (caseCheckSymlinkLock mkScope)
   , testCase "check: an oversized lock without a pid line is unreadable" caseCheckOversizedLock
   , testCase "migrate: a v0.4 store migrates (exit 0) and then checks ok" caseMigrateCliV04
   , testCase "migrate: a current store needs nothing (exit 0)" caseMigrateCliNotNeeded
@@ -100,7 +100,7 @@ spec = testGroup "Store commands"
   , testCase "migrate: a -shm file refuses (exit 1), everything untouched" caseMigrateCliShm
   , testCase "migrate: a cold journal plus a -wal refuses (exit 1), everything untouched" caseMigrateCliColdWal
   , testCase "migrate: a current store with a cold journal needs nothing, journal untouched" caseMigrateCliSchema3Cold
-  , testCase "check: a symlinked, FIFO or device journal is refused without hanging" caseCheckNonRegularJournal
+  , testCase "check: a symlinked, FIFO or device journal is refused without hanging" (caseCheckNonRegularJournal mkScope)
   , testCase "migrate: --async-home as a flag value is a usage error" caseMigrateCliAsyncHomeValue
   , testCase "migrate: a missing backup dir refuses (exit 1), nothing written" caseMigrateCliMissingBackupDir
   , testCase "migrate: an unwritable backup dir refuses (exit 1), nothing written" caseMigrateCliUnwritableBackupDir
@@ -115,11 +115,11 @@ spec = testGroup "Store commands"
   , testCase "migrate: an unknown COMMIT outcome uses the migrate-commit-unknown tag" caseMigrateCommitUnknownTag
   , testCase "migrate: a non-interrupt async exception is rethrown, not reported" caseMigrateAsyncRethrown
   , testCase "check: an interrupt is exit 130, never store-unreadable" caseCheckInterrupt130
-  , testCase "check: a relative path through an absolute symlink reaches the target" caseCheckRelativeThroughAbsoluteLink
-  , testCase "check: a relative path with dotdot through an absolute symlink reaches the target" caseCheckRelativeDotDotThroughAbsoluteLink
-  , testCase "migrate: a relative path through an absolute symlink migrates the target" caseMigrateRelativeThroughAbsoluteLink
-  , testCase "open: a relative storage.path through an absolute symlink serves the target" caseOpenRelativeThroughAbsoluteLink
-  , testCase "open: a relative storage.path never serves a mirrored directory" caseOpenRelativeThroughAbsoluteLinkMirror
+  , testCase "check: a relative path through an absolute symlink reaches the target" (caseCheckRelativeThroughAbsoluteLink mkScope)
+  , testCase "check: a relative path with dotdot through an absolute symlink reaches the target" (caseCheckRelativeDotDotThroughAbsoluteLink mkScope)
+  , testCase "migrate: a relative path through an absolute symlink migrates the target" (caseMigrateRelativeThroughAbsoluteLink mkScope)
+  , testCase "open: a relative storage.path through an absolute symlink serves the target" (caseOpenRelativeThroughAbsoluteLink mkScope)
+  , testCase "open: a relative storage.path never serves a mirrored directory" (caseOpenRelativeThroughAbsoluteLinkMirror mkScope)
   , testCase "check: a dangling symlink refuses, creating nothing at the target" caseCheckDanglingLink
   , testCase "migrate: a dangling symlink refuses, creating nothing at the target" caseMigrateDanglingLink
   , testCase "open: a dangling symlink refuses, creating nothing at the target" caseOpenDanglingLink
@@ -497,10 +497,10 @@ caseCheckWalShm = do
 -- A foreign WAL beside the real file is refused through a symlink:
 -- the guard follows the link to the real file's sidecars, the store
 -- bytes are unchanged, and no -shm appears at either name.
-caseCheckSymlinkWal :: IO ()
-caseCheckSymlinkWal = withScratch "ctl-check" $ \dir -> do
+caseCheckSymlinkWal :: IO EnvScope -> IO ()
+caseCheckSymlinkWal mkScope = withScratch "ctl-check" $ \dir -> do
   (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
-  plantForeignWal real "meta"
+  plantForeignWal mkScope real "meta"
   dbBefore <- BS.readFile real
   wBefore <- BS.readFile (real ++ "-wal")
   r <- check link cfgPath
@@ -669,14 +669,14 @@ caseMigrateCliShm = withScratch "ctl-migrate" $ \dir -> do
 -- check reads the file bytes: the original token-2 SO PIN stays and
 -- the WAL's replacement never lands), and the WAL stays in place
 -- for the operator.
-caseMigrateSymlinkWal :: IO ()
-caseMigrateSymlinkWal = withScratch "ctl-migrate" $ \dir -> do
+caseMigrateSymlinkWal :: IO EnvScope -> IO ()
+caseMigrateSymlinkWal mkScope = withScratch "ctl-migrate" $ \dir -> do
   (link, cfgPath, real) <- withSymlinkedFixture "v0.4.0.0" dir
   let backups = dir </> "backups"
       originalSo = "NjkzMjQwNTc="    -- token 2's v0.4 SO PIN, base64
       foreignSo = "MTExMTExMTE="     -- the WAL's replacement value
   createDirectory backups
-  plantForeignWal real "credential"
+  plantForeignWal mkScope real "credential"
   dbBefore <- BS.readFile real
   wBefore <- BS.readFile (real ++ "-wal")
   assertBool "the WAL carries the replacement" (foreignSo `BS.isInfixOf` wBefore)
@@ -749,12 +749,12 @@ caseMigrateBadBackupRemoved = withScratch "ctl-migrate" $ \dir -> do
 -- A FIFO at the store path is refused by lstat, never opened: the
 -- held writer only keeps a regression from hanging the suite (an
 -- open would read its garbage instead of blocking).
-caseCheckFifoStore :: IO ()
-caseCheckFifoStore = withScratch "ctl-check" $ \dir -> do
+caseCheckFifoStore :: IO EnvScope -> IO ()
+caseCheckFifoStore mkScope = withScratch "ctl-check" $ \dir -> do
   let store = dir </> "store.sqlite"
   createNamedPipe store 0o600
   cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
-  withFifoWriter store "not a database file, only pipe garbage" $ do
+  withFifoWriter mkScope store "not a database file, only pipe garbage" $ do
     r <- check store cfgPath
     assertEqual "exit 1" 1 (ceCode r)
     assertEqual "no plan printed" "" (ceOut r)
@@ -762,13 +762,13 @@ caseCheckFifoStore = withScratch "ctl-check" $ \dir -> do
     assertBool "names non-regular" ("not a regular file" `isInfixOf` ceErr r)
 
 -- Likewise for migrate: no backup, nothing written beside the FIFO.
-caseMigrateFifoStore :: IO ()
-caseMigrateFifoStore = withScratch "ctl-migrate" $ \dir -> do
+caseMigrateFifoStore :: IO EnvScope -> IO ()
+caseMigrateFifoStore mkScope = withScratch "ctl-migrate" $ \dir -> do
   let store = dir </> "store.sqlite"; backups = dir </> "backups"
   createNamedPipe store 0o600
   createDirectory backups
   cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
-  withFifoWriter store "not a database file, only pipe garbage" $ do
+  withFifoWriter mkScope store "not a database file, only pipe garbage" $ do
     r <- migrateCli store cfgPath backups
     assertEqual "exit 1" 1 (ceCode r)
     assertBool "tag" ("store-unreadable:" `isPrefixOf` ceErr r)
@@ -777,11 +777,11 @@ caseMigrateFifoStore = withScratch "ctl-migrate" $ \dir -> do
 
 -- A FIFO at the lock path is refused by lstat: the writer offers a
 -- dead pid, which an open would accept and plan from.
-caseCheckFifoLock :: IO ()
-caseCheckFifoLock = withScratch "ctl-check" $ \dir -> do
+caseCheckFifoLock :: IO EnvScope -> IO ()
+caseCheckFifoLock mkScope = withScratch "ctl-check" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   createNamedPipe (store ++ ".lock") 0o600
-  withFifoWriter (store ++ ".lock") "999999999\n" $ do
+  withFifoWriter mkScope (store ++ ".lock") "999999999\n" $ do
     r <- check store cfgPath
     assertEqual "exit 1" 1 (ceCode r)
     assertEqual "no plan printed" "" (ceOut r)
@@ -791,13 +791,13 @@ caseCheckFifoLock = withScratch "ctl-check" $ \dir -> do
 -- A symlink at the lock path is refused, never followed: the link
 -- target offers pid 1 (alive), which a follow would report as the
 -- holder instead.
-caseCheckSymlinkLock :: IO ()
-caseCheckSymlinkLock = withScratch "ctl-check" $ \dir -> do
+caseCheckSymlinkLock :: IO EnvScope -> IO ()
+caseCheckSymlinkLock mkScope = withScratch "ctl-check" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let fifo = dir </> "target.fifo"
   createNamedPipe fifo 0o600
   createSymbolicLink fifo (store ++ ".lock")
-  withFifoWriter fifo "1\n" $ do
+  withFifoWriter mkScope fifo "1\n" $ do
     r <- check store cfgPath
     assertEqual "exit 1" 1 (ceCode r)
     assertEqual "no plan printed" "" (ceOut r)
@@ -876,8 +876,8 @@ caseMigrateCliSchema3Cold = withScratch "ctl-migrate" $ \dir -> do
 -- refusal) and fails instead of hanging the suite; the timeout is
 -- only a backstop. A device read is interruptible, so the /dev/zero
 -- probe keeps the timeout alone.
-caseCheckNonRegularJournal :: IO ()
-caseCheckNonRegularJournal = withScratch "ctl-check" $ \dir -> do
+caseCheckNonRegularJournal :: IO EnvScope -> IO ()
+caseCheckNonRegularJournal mkScope = withScratch "ctl-check" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   let journal = store ++ "-journal"
       runCheck = runCtl ["store", "check", "--path", store, "--config", cfgPath]
@@ -885,7 +885,7 @@ caseCheckNonRegularJournal = withScratch "ctl-check" $ \dir -> do
   let fifo = dir </> "fifo"
   createNamedPipe fifo 0o600
   createSymbolicLink fifo journal
-  mc <- withFifoWriter fifo zeros (timeout 5000000 runCheck)
+  mc <- withFifoWriter mkScope fifo zeros (timeout 5000000 runCheck)
   case mc of
     Nothing -> assertFailure "check hung on a symlinked FIFO journal"
     Just c -> do
@@ -894,7 +894,7 @@ caseCheckNonRegularJournal = withScratch "ctl-check" $ \dir -> do
         ("store-journal-present:" `isPrefixOf` ceErr c)
   removeFile journal
   createNamedPipe journal 0o600
-  mf <- withFifoWriter journal zeros (timeout 5000000 runCheck)
+  mf <- withFifoWriter mkScope journal zeros (timeout 5000000 runCheck)
   case mf of
     Nothing -> assertFailure "check hung on a FIFO journal"
     Just f -> do
@@ -1249,10 +1249,11 @@ openRelStore cfgPath = do
 -- | Spawn this test binary as a @--rel-child@ with its working
 -- directory set to @workdir@. Bounded: a wedged child is killed at
 -- 30s and fails loudly instead of hanging the suite.
-runRelChild :: FilePath -> [String] -> IO ()
-runRelChild workdir args = do
+runRelChild :: IO EnvScope -> FilePath -> [String] -> IO ()
+runRelChild mkScope workdir args = do
+  (_, _, frozenEnv) <- mkScope
   exe <- getExecutablePath
-  (_, _, _, ph) <- createProcess ((proc exe ("--rel-child" : args)) { cwd = Just workdir, close_fds = True })
+  (_, _, _, ph) <- createProcess ((proc exe ("--rel-child" : args)) { cwd = Just workdir, close_fds = True, env = Just frozenEnv })
   mCode <- timeout 30000000 (waitForProcess ph)
   case mCode of
     Nothing -> do
@@ -1272,8 +1273,8 @@ readRelChild result = do
 -- A relative --path through an absolute symlink resolves to the
 -- absolute target: the mangling that drops the leading slash
 -- reports the target as missing instead of planning it.
-caseCheckRelativeThroughAbsoluteLink :: IO ()
-caseCheckRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
+caseCheckRelativeThroughAbsoluteLink :: IO EnvScope -> IO ()
+caseCheckRelativeThroughAbsoluteLink mkScope = withScratch "ctl-rel" $ \dir -> do
   let realDir = dir </> "real"; workdir = dir </> "cwd"; result = dir </> "result.txt"
   createDirectory realDir
   (realStore, _) <- copyReleasedFixture "v0.4.0.0" realDir
@@ -1281,7 +1282,7 @@ caseCheckRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
   createSymbolicLink realStore (workdir </> "store.sqlite")
   cfgPath <- writeStoreConfig (dir </> "config.toml") "store.sqlite" fixtureLabels fixtureSo fixtureUser
   dbBefore <- BS.readFile realStore
-  runRelChild workdir ["check", "store.sqlite", cfgPath, "-", result]
+  runRelChild mkScope workdir ["check", "store.sqlite", cfgPath, "-", result]
   (code, out, err) <- readRelChild result :: IO (Int, String, String)
   assertEqual "exit 1" 1 code
   assertBool "plan names migration" ("verdict: migration-required" `isInfixOf` out)
@@ -1291,8 +1292,8 @@ caseCheckRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
 -- A relative path with dotdot after an absolute symlink still
 -- resolves against the absolute target, not against the mangled
 -- relative spelling.
-caseCheckRelativeDotDotThroughAbsoluteLink :: IO ()
-caseCheckRelativeDotDotThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
+caseCheckRelativeDotDotThroughAbsoluteLink :: IO EnvScope -> IO ()
+caseCheckRelativeDotDotThroughAbsoluteLink mkScope = withScratch "ctl-rel" $ \dir -> do
   let workdir = dir </> "cwd"; realDir = workdir </> "realdir"; result = dir </> "result.txt"
       relpath = "./pd/../pd/store.sqlite"
   createDirectory workdir
@@ -1301,7 +1302,7 @@ caseCheckRelativeDotDotThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
   createSymbolicLink realDir (workdir </> "pd")
   cfgPath <- writeStoreConfig (dir </> "config.toml") relpath fixtureLabels fixtureSo fixtureUser
   dbBefore <- BS.readFile realStore
-  runRelChild workdir ["check", relpath, cfgPath, "-", result]
+  runRelChild mkScope workdir ["check", relpath, cfgPath, "-", result]
   (code, out, err) <- readRelChild result :: IO (Int, String, String)
   assertEqual "exit 1" 1 code
   assertBool "plan names migration" ("verdict: migration-required" `isInfixOf` out)
@@ -1310,8 +1311,8 @@ caseCheckRelativeDotDotThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
 
 -- A relative --path through an absolute symlink migrates the real
 -- file: the receipt names the absolute target.
-caseMigrateRelativeThroughAbsoluteLink :: IO ()
-caseMigrateRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
+caseMigrateRelativeThroughAbsoluteLink :: IO EnvScope -> IO ()
+caseMigrateRelativeThroughAbsoluteLink mkScope = withScratch "ctl-rel" $ \dir -> do
   let realDir = dir </> "real"; workdir = dir </> "cwd"; backups = dir </> "backups"
       result = dir </> "result.txt"
   createDirectory realDir
@@ -1320,7 +1321,7 @@ caseMigrateRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
   createDirectory backups
   createSymbolicLink realStore (workdir </> "store.sqlite")
   cfgPath <- writeStoreConfig (dir </> "config.toml") "store.sqlite" fixtureLabels fixtureSo fixtureUser
-  runRelChild workdir ["migrate", "store.sqlite", cfgPath, backups, result]
+  runRelChild mkScope workdir ["migrate", "store.sqlite", cfgPath, backups, result]
   (code, out, err) <- readRelChild result :: IO (Int, String, String)
   assertEqual "exit 0" 0 code
   assertEqual "quiet stderr" "" err
@@ -1332,8 +1333,8 @@ caseMigrateRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
 -- The serving open with a relative storage.path through an absolute
 -- symlink serves the target: the mangled spelling refuses a config
 -- the release serves.
-caseOpenRelativeThroughAbsoluteLink :: IO ()
-caseOpenRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
+caseOpenRelativeThroughAbsoluteLink :: IO EnvScope -> IO ()
+caseOpenRelativeThroughAbsoluteLink mkScope = withScratch "ctl-rel" $ \dir -> do
   let realDir = dir </> "real"; workdir = dir </> "cwd"; result = dir </> "result.txt"
       realStore = realDir </> "store.sqlite"
   createDirectory realDir
@@ -1344,7 +1345,7 @@ caseOpenRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
   createSymbolicLink realStore (workdir </> "store.sqlite")
   relCfg <- writeStoreConfig (dir </> "config.toml") "store.sqlite" fixtureLabels fixtureSo fixtureUser
   dbBefore <- BS.readFile realStore
-  runRelChild workdir ["open", "-", relCfg, "-", result]
+  runRelChild mkScope workdir ["open", "-", relCfg, "-", result]
   (ok, note) <- readRelChild result :: IO (Bool, String)
   assertBool ("serving open refused: " ++ note) ok
   BS.readFile realStore >>= \b -> assertBool "store untouched" (b == dbBefore)
@@ -1352,8 +1353,8 @@ caseOpenRelativeThroughAbsoluteLink = withScratch "ctl-rel" $ \dir -> do
 -- The worst case: the mangled relative directory exists under the
 -- working directory. The serving open must still serve the real
 -- store, never create or serve a store at the mangled path.
-caseOpenRelativeThroughAbsoluteLinkMirror :: IO ()
-caseOpenRelativeThroughAbsoluteLinkMirror = withScratch "ctl-rel" $ \dir -> do
+caseOpenRelativeThroughAbsoluteLinkMirror :: IO EnvScope -> IO ()
+caseOpenRelativeThroughAbsoluteLinkMirror mkScope = withScratch "ctl-rel" $ \dir -> do
   let realDir = dir </> "real"; workdir = dir </> "cwd"; result = dir </> "result.txt"
       mirrorBase = workdir </> dropWhile (== '/') realDir
       realStore = realDir </> "store.sqlite"
@@ -1365,7 +1366,7 @@ caseOpenRelativeThroughAbsoluteLinkMirror = withScratch "ctl-rel" $ \dir -> do
   createSymbolicLink realStore (workdir </> "store.sqlite")
   createDirectoryIfMissing True mirrorBase
   relCfg <- writeStoreConfig (dir </> "config.toml") "store.sqlite" fixtureLabels fixtureSo fixtureUser
-  runRelChild workdir ["open", "-", relCfg, "-", result]
+  runRelChild mkScope workdir ["open", "-", relCfg, "-", result]
   (ok, note) <- readRelChild result :: IO (Bool, String)
   assertBool ("serving open refused: " ++ note) ok
   mirrorLeft <- doesFileExist (mirrorBase </> "store.sqlite")

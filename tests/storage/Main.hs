@@ -22,7 +22,7 @@ import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session (tokenAuthNew)
 import Haskoki.Types (Generation (..), SlotId (..), TokenId (..))
-import StoreFixtures (fifoWriterMain, walChildMain, withScratch)
+import StoreFixtures (fifoWriterMain, newEnvScope, walChildMain, withScratch)
 
 -- | The storage suite; re-invoked with @--holder@ it runs a lock
 -- holder child instead (see 'StoreSpec.spawnHolder').
@@ -64,12 +64,19 @@ main = do
       -- into -N2.
       caps <- getNumCapabilities
       warmupCommitPath
+      -- One env-mutation scope for the whole binary, acquired before
+      -- tasty forks any worker: the gate serializes StoreSpec's
+      -- process-wide env mutators, and every test child in every
+      -- spec is spawned from the frozen snapshot (never a live
+      -- 'getEnvironment' that could race a concurrent restore).
+      scope <- StoreFixtures.newEnvScope
+      let mkScope = pure scope
       defaultMain $ localOption (NumThreads (min 2 caps)) $ testGroup "haskoki storage"
-        [ StoreSpec.spec
+        [ StoreSpec.spec mkScope
         , CommitSpec.spec
-        , StoreCtlSpec.spec
-        , PreflightSpec.spec
-        , MultiSessionSpec.spec
+        , StoreCtlSpec.spec mkScope
+        , PreflightSpec.spec mkScope
+        , MultiSessionSpec.spec mkScope
         ]
 
 -- | GHC #27272 warm-up MITIGATION (not a fix): run one seat-token

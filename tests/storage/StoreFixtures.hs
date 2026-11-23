@@ -5,6 +5,7 @@ committed released-binary stores, and redaction assertions.
 -}
 module StoreFixtures
   ( makeTempDir, storePackageRoot, rawExec, rawTexts, roTexts, withScratch
+  , EnvScope, newEnvScope
   , openReconciled, closeAcquired
   , copyReleasedFixture, readManifest, loadConfigOrFail
   , fixtureLabels, fixtureSo, fixtureUser, fixturePins, assertNoPins
@@ -17,7 +18,7 @@ module StoreFixtures
   , pragmaInt, waitForFile
   ) where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (MVar, ThreadId, newMVar, threadDelay)
 import Control.Exception (bracket, bracket_)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
@@ -27,7 +28,7 @@ import Data.List (isPrefixOf, sort)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
-import System.Environment (getExecutablePath)
+import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Error (catchIOError, isAlreadyExistsError, isDoesNotExistError, tryIOError)
@@ -51,6 +52,23 @@ import Haskoki.Runtime.Storage
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore)
 import Haskoki.Session (tokenAuthNew)
 import Haskoki.Types (Generation (..), SlotId (..), TokenId (..))
+
+-- | The suite-wide env-mutation scope: an atomic gate, the
+-- registry of forked opener workers, and the process environment
+-- snapshot taken once at suite start. Test children are spawned
+-- from the snapshot, never from a live 'getEnvironment' that could
+-- race a concurrent restore. Acquired once in the suite 'Main' and
+-- passed down as @IO EnvScope@.
+type EnvScope = (MVar (), IORef [(ThreadId, ThreadId, MVar (), IO ())], [(String, String)])
+
+-- | Create a fresh scope: free gate, no tracked workers, and a
+-- frozen copy of this process's environment for child spawns.
+newEnvScope :: IO EnvScope
+newEnvScope = do
+  gate <- newMVar ()
+  reg <- newIORef []
+  frozenEnv <- getEnvironment
+  pure (gate, reg, frozenEnv)
 
 -- | Run with a fresh scratch directory, removed afterwards.
 withScratch :: String -> (FilePath -> IO a) -> IO a
@@ -180,11 +198,13 @@ rawTexts db sql =
 
 -- | Open the store file at the path through the production
 -- acquisition (the same 'openStdStore' the instance open
--- threads): typed reconciliation errors, no assembly.
+-- threads): typed reconciliation errors, no assembly. The caller's
+-- env-seam opt-in is preserved: forcing it off here would silently
+-- discard a setting the caller deliberately enabled.
 openReconciled :: FilePath -> Config -> IO (Either StdStoreError (Maybe StdStore))
 openReconciled path cfg = do
   env <- newEnv (rulesFromConfig cfg)
-  openStdStore env cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+  openStdStore env cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True (scAllowEnvSeams (cfgStorage cfg)) }
 
 -- | Close an acquired store handle, if any.
 closeAcquired :: Maybe StdStore -> IO ()
@@ -277,22 +297,23 @@ walChildMain store mode = do
 -- mode) and the resulting -wal file is copied beside the target,
 -- whose own bytes stay exactly as they were. Mirrors a WAL left by
 -- foreign tooling.
-plantForeignWal :: FilePath -> String -> IO ()
-plantForeignWal target mode = do
+plantForeignWal :: IO EnvScope -> FilePath -> String -> IO ()
+plantForeignWal mkScope target mode = do
+  (_, _, frozenEnv) <- mkScope
   let dir = takeDirectory target
       scratch = dir </> "wal-scratch.sqlite"
   BS.readFile target >>= BS.writeFile scratch
   mapM_ removeIfExists [scratch ++ "-wal", scratch ++ "-shm"]
   exe <- getExecutablePath
   reaped <- newIORef False
-  bracket (spawnWalChild exe scratch mode) (releaseHolder reaped) $ \ph ->
+  bracket (spawnWalChild frozenEnv exe scratch mode) (releaseHolder reaped) $ \ph ->
     awaitHolderExit reaped ph "wal-child"
   walBytes <- BS.readFile (scratch ++ "-wal")
   assertBool "the WAL child left a non-empty WAL" (not (BS.null walBytes))
   BS.writeFile (target ++ "-wal") walBytes
   where
-    spawnWalChild exe scratch m = do
-      (_, _, _, ph) <- createProcess ((proc exe ["--wal-child", scratch, m]) { close_fds = True })
+    spawnWalChild frozen exe scratch m = do
+      (_, _, _, ph) <- createProcess ((proc exe ["--wal-child", scratch, m]) { close_fds = True, env = Just frozen })
       pure ph
     removeIfExists p = do
       exists <- doesFileExist p
@@ -310,15 +331,16 @@ plantForeignWal target mode = do
 -- FIFO is deleted, or after two minutes (so a killed run cannot
 -- leak it forever). Keeps a regression from hanging the suite: it
 -- fails instead.
-withFifoWriter :: FilePath -> BS.ByteString -> IO a -> IO a
-withFifoWriter fifo bytes act = do
+withFifoWriter :: IO EnvScope -> FilePath -> BS.ByteString -> IO a -> IO a
+withFifoWriter mkScope fifo bytes act = do
+  (_, _, frozenEnv) <- mkScope
   exe <- getExecutablePath
   reaped <- newIORef False
-  bracket (spawnWriter exe) (releaseHolder reaped) (const act)
+  bracket (spawnWriter frozenEnv exe) (releaseHolder reaped) (const act)
   where
-    spawnWriter exe = do
+    spawnWriter frozen exe = do
       (_, _, _, ph) <- createProcess
-        ((proc exe ["--fifo-writer", fifo, hexEncode bytes]) { close_fds = True })
+        ((proc exe ["--fifo-writer", fifo, hexEncode bytes]) { close_fds = True, env = Just frozen })
       pure ph
 
 -- | The @--fifo-writer@ child: loop blocking opens of the FIFO,
@@ -368,21 +390,22 @@ withSymlinkedFixture tag dir = do
 -- store descriptors, reap it, and confirm @\/proc@ has no entry
 -- (a reused pid is retried). A raw fork can keep another parallel
 -- test's database guard locked after that test closes its store.
-reapedPid :: IO Int
-reapedPid = go (0 :: Int)
+reapedPid :: IO EnvScope -> IO Int
+reapedPid mkScope = go (0 :: Int)
   where
     go n
       | n > 50 = assertFailure "could not reap a dead pid"
       | otherwise = do
+          (_, _, frozenEnv) <- mkScope
           reaped <- newIORef False
-          bracket spawnReaper (releaseHolder reaped) $ \ph -> do
+          bracket (spawnReaper frozenEnv) (releaseHolder reaped) $ \ph -> do
             pid <- spawnedPid ph "dead-pid"
             awaitHolderExit reaped ph "dead-pid"
             alive <- fileExist ("/proc/" ++ show (fromIntegral pid :: Int))
             if alive then go (n + 1) else pure (fromIntegral pid)
-    spawnReaper :: IO ProcessHandle
-    spawnReaper = do
-      (_, _, _, ph) <- createProcess ((proc "/bin/true" []) { close_fds = True })
+    spawnReaper :: [(String, String)] -> IO ProcessHandle
+    spawnReaper frozenEnv = do
+      (_, _, _, ph) <- createProcess ((proc "/bin/true" []) { close_fds = True, env = Just frozenEnv })
       pure ph
 
 -- | Everything a refused open must leave as it was. Credential

@@ -150,13 +150,18 @@ import StoreSpec
   , releaseHolder
   , seedStore
   , spawnHolderEnv
+  , EnvScope
+  , withEnvGate
+  , withOpenPause
+  , forkOpener
+  , closeStdResult
   )
 
 -- | Open a store on the case identity with the given limits and faults.
 type OpenWith = StoreLimits -> FaultInjector -> IO (Either StoreError Store)
 
-spec :: TestTree
-spec = testGroup "Multi-session store"
+spec :: IO EnvScope -> TestTree
+spec mkScope = testGroup "Multi-session store"
   [ testGroup "memory"
       [ testCase "interleaved commits lose no updates" $
           withMemoryIdentity testInterleaved
@@ -198,7 +203,8 @@ spec = testGroup "Multi-session store"
           withSQLiteIdentity testConcurrentMove
       ]
   , testCase "commit tests observe death deterministically (no busy-spin)" caseNoBusySpin
-  , testCase "login lockout persists across close, reopen, and a second process" caseLoginLockoutDurable
+  , testCase "login lockout persists across close, reopen, and a second process" (caseLoginLockoutDurable mkScope)
+  , testCase "scripted-fault acquisition preserves the opt-in" (withEnvGate mkScope (testRealUnknownAcquisitionHonorsOptIn mkScope))
   , testCase "edited config PINs never replace seeded durable credentials" caseConfigPinEditIgnored
   , testCase "a stored token without a credential row refuses the open" caseRowlessTokenFailsClosed
   , testCase "a rowless token admitted past the open serves no login" caseUnbackedSlotFailsClosed
@@ -225,9 +231,9 @@ spec = testGroup "Multi-session store"
       , testCase "injected unknown COMMIT keeps the token quarantined, never replays" caseInitTokenCommitUnknown
       ]
   , testGroup "provision journey"
-      [ testCase "fresh processes run provision, change, lockout, recovery and reset" caseProvisionJourneyFresh
-      , testCase "sibling rows survive the journey byte-equal" caseProvisionSiblingIsolation
-      , testCase "a completed change refuses the stale PIN in a fresh process" caseProvisionStaleRefused
+      [ testCase "fresh processes run provision, change, lockout, recovery and reset" (caseProvisionJourneyFresh mkScope)
+      , testCase "sibling rows survive the journey byte-equal" (caseProvisionSiblingIsolation mkScope)
+      , testCase "a completed change refuses the stale PIN in a fresh process" (caseProvisionStaleRefused mkScope)
       ]
   ]
 
@@ -304,7 +310,7 @@ withMemoryIdentity use = do
 withSQLiteIdentity :: (OpenWith -> IO ()) -> IO ()
 withSQLiteIdentity use =
   bracket (makeTempDir "haskoki-multisession-test") removeDirectoryRecursive $ \dir ->
-    use (\lim inj -> openSQLiteStoreWith (dir </> "store.db") lim inj)
+    use (\lim inj -> openSQLiteStoreWith False (dir </> "store.db") lim inj)
 
 -- | Two sessions plan through one store handle with interleaved
 -- commits: plan A via session 1, plan B via session 2, commit A,
@@ -939,8 +945,8 @@ testConcurrentMove openWith =
 -- process observes the same counters and lockout while the SO
 -- role stays independent. A raw store read after each restart
 -- pins the durable counters behind the observed return codes.
-caseLoginLockoutDurable :: IO ()
-caseLoginLockoutDurable =
+caseLoginLockoutDurable :: IO EnvScope -> IO ()
+caseLoginLockoutDurable mkScope =
   bracket (makeTempDir "haskoki-auth-test") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "auth.db"
         doneFile = dir </> "done"
@@ -973,7 +979,7 @@ caseLoginLockoutDurable =
     -- exercises the independent SO role.
     reaped <- newIORef False
     bracket
-      (spawnHolderEnv
+      (spawnHolderEnv mkScope
         [ ("HASKOKI_HOLDER_MODE", "auth-probe")
         , ("HASKOKI_AUTH_SCRIPT", "info,u-good,s-bad,s-good,logout")
         , ("HASKOKI_AUTH_RESULT", resultFile)
@@ -1018,7 +1024,7 @@ withAuthInstanceOn
 withAuthInstanceOn sa path = withAuthInstanceOnCfg sa sqliteCfg
   where
     sqliteCfg = defaultConfig
-      { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True }
+      { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False }
 
 -- | 'withAuthInstanceOn' over an explicit config (multi-token
 -- catalogs).
@@ -1141,8 +1147,43 @@ caseLoginUnknownLanded =
 realUnknownAcquisition :: FaultInjector -> StdAcquisition
 realUnknownAcquisition inj = stdAcquisition
   { saOpenStore = \env cfg ->
-      openStdStoreWith (\p -> openSQLiteStoreWith p defaultLimits inj) env cfg
+      openStdStoreWith (\p -> openSQLiteStoreWith (scAllowEnvSeams (cfgStorage cfg)) p defaultLimits inj) env cfg
   }
+
+-- | The scripted-fault acquisition preserves the caller's opt-in:
+-- an opted-in config pauses a fresh creation until the @go@ file
+-- appears, exactly like the direct serving open. (The fixture used
+-- to force the flag off; that version never writes the marker here
+-- and fails this test.)
+testRealUnknownAcquisitionHonorsOptIn :: IO EnvScope -> IO ()
+testRealUnknownAcquisitionHonorsOptIn mkScope =
+  bracket (makeTempDir "haskoki-multisession-unknownoptin") removeDirectoryRecursive $ \dir ->
+    bracket (makeTempDir "haskoki-multisession-unknownoptindir") removeDirectoryRecursive $ \pauseDir -> do
+      let path = dir </> "store.db"
+          pausedFile = pauseDir </> "paused"
+          goFile = pauseDir </> "go"
+          cfg = defaultConfig
+            { cfgStorage = (cfgStorage defaultConfig)
+              { scKind = StorageSQLite, scPath = Just path, scAllowEnvSeams = True }
+            }
+      env <- newEnv (rulesFromConfig cfg)
+      withOpenPause mkScope pauseDir path $ do
+        resVar <- forkOpener mkScope closeStdResult (saOpenStore (realUnknownAcquisition noFaults) env cfg)
+        let awaitPaused 0 = assertFailure "unknownoptin: acquisition did not pause under opt-in"
+            awaitPaused n = do
+              here <- doesFileExist pausedFile
+              if here then pure () else threadDelay 100000 >> awaitPaused (n - 1 :: Int)
+        awaitPaused (100 :: Int)
+        writeFile goFile "go\n"
+        -- Peek, don't take: the reap drain owns the single close.
+        mDone <- timeout (5 * 1000000) (readMVar resVar)
+        eAcq <- case mDone of
+          Nothing -> assertFailure "unknownoptin: acquisition did not resume on go file"
+          Just e -> pure e
+        case eAcq of
+          Left err -> assertFailure ("unknownoptin: acquisition failed: " ++ show err)
+          Right Nothing -> assertFailure "unknownoptin: acquisition returned no store"
+          Right (Just _) -> pure ()
 
 -- | Read the serving instance's live quarantine list (fails
 -- unless the instance holds a store).
@@ -1411,7 +1452,7 @@ threeTokenConfig path labels soPins userPins ids = case parseConfig (unlines (
   , "user_pins = " ++ show userPins
   ] ++ ["token_ids = " ++ show ids | not (null ids)])) of
     Left err -> assertFailure ("three-token config must parse: " ++ show err)
-    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })
+    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False })
 
 -- | Read one slot's 16-byte serial through the export into a
 -- buffer pre-filled with @Z@, returning the code and the bytes.
@@ -1434,7 +1475,7 @@ pinnedTwoTokenConfig path ids = case parseConfig (unlines
   , "token_ids = " ++ show ids
   ]) of
     Left err -> assertFailure ("pinned two-token config must parse: " ++ show err)
-    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })
+    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False })
 
 -- | Call InitPIN on a session with a Haskell-string PIN.
 callInitPin :: StablePtr StdInstance -> CULong -> String -> IO CULong
@@ -1643,7 +1684,7 @@ twoTokenConfigPins path soPins userPins = case parseConfig (unlines
   , "user_pins = " ++ show userPins
   ]) of
     Left err -> assertFailure ("two-token config must parse: " ++ show err)
-    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True })
+    Right cfg -> pure (cfg { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False })
 
 -- | A stored token whose credential row is gone never falls back
 -- to the configured PINs: the next open refuses the whole store
@@ -1782,7 +1823,7 @@ newInitTokenSeams = InitTokenSeams <$> newIORef Nothing <*> newTxnSeam <*> newCo
 seamAcquisition :: InitTokenSeams -> StdAcquisition
 seamAcquisition seams = stdAcquisition
   { saOpenStore = \env cfg ->
-      openStdStoreWith (\p -> openSQLiteStoreWithHooks p defaultLimits noFaults hooks) env cfg
+      openStdStoreWith (\p -> openSQLiteStoreWithHooks (scAllowEnvSeams (cfgStorage cfg)) p defaultLimits noFaults hooks) env cfg
   }
   where
     hooks = noSQLiteTestHooks
@@ -1979,7 +2020,7 @@ rvUserPinNotInitialized = CULong 0x102
 -- file (slot 0 demo, slot 1 ops).
 journeyConfig :: FilePath -> Config
 journeyConfig path = defaultConfig
-  { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True
+  { cfgStorage = StorageCfg StorageSQLite (Just path) 5000 True False
   , cfgTokens = (cfgTokens defaultConfig)
       { tcEntries = [("haskoki-demo", "5678", "1234"), ("haskoki-ops", "6789", "2345")] }
   }
@@ -2033,11 +2074,11 @@ journeyCredential path tid = do
 -- join it, and return its exact result lines. The parent holds no
 -- live instance or store across the spawn (one owner at a time);
 -- every child must exit 0.
-runProvisionChild :: FilePath -> FilePath -> FilePath -> String -> IO [String]
-runProvisionChild dir path result script = do
+runProvisionChild :: IO EnvScope -> FilePath -> FilePath -> FilePath -> String -> IO [String]
+runProvisionChild mkScope dir path result script = do
   reaped <- newIORef False
   bracket
-    (spawnHolderEnv
+    (spawnHolderEnv mkScope
       [ ("HASKOKI_HOLDER_MODE", "provision")
       , ("HASKOKI_PROVISION_SCRIPT", script)
       , ("HASKOKI_PROVISION_RESULT", result)
@@ -2164,8 +2205,8 @@ journeySlotRows path tid = do
 -- back public: a logged-in change, a public change, a three-strike
 -- lockout, SO recovery, and a reset that drops only its own
 -- token's rows and unsets only its own user PIN.
-caseProvisionJourneyFresh :: IO ()
-caseProvisionJourneyFresh =
+caseProvisionJourneyFresh :: IO EnvScope -> IO ()
+caseProvisionJourneyFresh mkScope =
   bracket (makeTempDir "haskoki-provision-journey") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "journey.db"
         cfg = journeyConfig path
@@ -2190,7 +2231,7 @@ caseProvisionJourneyFresh =
       (length witnessObjs, length witnessJobs)
     -- Leg 1: a logged-in change to B.
     let (script1, expected1) = journeyChild 1
-    childOut1 <- runProvisionChild dir path (dir </> "result-1") script1
+    childOut1 <- runProvisionChild mkScope dir path (dir </> "result-1") script1
     assertEqual "leg 1 lines" expected1 childOut1
     cred1 <- journeyCredential path (trId tokDemo)
     assertBool "leg 1: SO PIN unchanged" (crSoPin cred1 == BC8.pack "5678")
@@ -2202,21 +2243,21 @@ caseProvisionJourneyFresh =
       sessionLoginOf ctx h1 >>= assertEqual "leg 1: slot-1 session public" (CULong 0)
     -- Leg 2: a public change to C (no prior login).
     let (script2, expected2) = journeyChild 2
-    childOut2 <- runProvisionChild dir path (dir </> "result-2") script2
+    childOut2 <- runProvisionChild mkScope dir path (dir </> "result-2") script2
     assertEqual "leg 2 lines" expected2 childOut2
     cred2 <- journeyCredential path (trId tokDemo)
     assertBool "leg 2: SO PIN unchanged" (crSoPin cred2 == BC8.pack "5678")
     assertBool "leg 2: user PIN is C" (crUserPin cred2 == Just (BC8.pack pinCharlie))
     -- Leg 3: three strikes lock the role; the right PIN then locks too.
     let (script3, expected3) = journeyChild 3
-    childOut3 <- runProvisionChild dir path (dir </> "result-3") script3
+    childOut3 <- runProvisionChild mkScope dir path (dir </> "result-3") script3
     assertEqual "leg 3 lines" expected3 childOut3
     auth3 <- journeyTokenAuth path (trId tokDemo)
     assertEqual "leg 3: user locked" True (taUserLocked auth3)
     assertEqual "leg 3: three attempts" 3 (taUserAttempts auth3)
     -- Leg 4: SO recovery sets D and clears the lock.
     let (script4, expected4) = journeyChild 4
-    childOut4 <- runProvisionChild dir path (dir </> "result-4") script4
+    childOut4 <- runProvisionChild mkScope dir path (dir </> "result-4") script4
     assertEqual "leg 4 lines" expected4 childOut4
     cred4 <- journeyCredential path (trId tokDemo)
     assertBool "leg 4: SO PIN unchanged" (crSoPin cred4 == BC8.pack "5678")
@@ -2229,7 +2270,7 @@ caseProvisionJourneyFresh =
     assertEqual "leg 5 pre: slot-0 seeded rows read back" (2, 2)
       (length slot0ObjsBefore, length slot0JobsBefore)
     let (script5, expected5) = journeyChild 5
-    childOut5 <- runProvisionChild dir path (dir </> "result-5") script5
+    childOut5 <- runProvisionChild mkScope dir path (dir </> "result-5") script5
     assertEqual "leg 5 lines" expected5 childOut5
     (slot0Objs, slot0Jobs) <- journeySlotRows path (trId tokDemo)
     assertEqual "leg 5: slot-0 objects dropped" [] slot0Objs
@@ -2257,8 +2298,8 @@ caseProvisionJourneyFresh =
 -- end to end. A credential-targeted perturbation of the snapshot
 -- must mismatch, so the equality is a witnessed comparison,
 -- never a degenerate empty pass.
-caseProvisionSiblingIsolation :: IO ()
-caseProvisionSiblingIsolation =
+caseProvisionSiblingIsolation :: IO EnvScope -> IO ()
+caseProvisionSiblingIsolation mkScope =
   bracket (makeTempDir "haskoki-provision-isolation") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "isolation.db"
         cfg = journeyConfig path
@@ -2286,7 +2327,7 @@ caseProvisionSiblingIsolation =
     assertBool "isolation: credentials in snapshot" (not (null (rowsOfTable "credentials")))
     mapM_ (\n -> do
       let (script, expected) = journeyChild n
-      out <- runProvisionChild dir path (dir </> ("result-" ++ show n)) script
+      out <- runProvisionChild mkScope dir path (dir </> ("result-" ++ show n)) script
       assertEqual ("isolation leg " ++ show n) expected out) [1, 2, 3, 4, 5]
     after <- slotSnapshot path (trId tokOps)
     assertTablesEqual before after
@@ -2332,8 +2373,8 @@ perturbCredentialRows (r : rs) = case r of
 -- | A completed change leaves no stale grant behind: after one
 -- child moves the user PIN 1234 -> A -> B, a fresh process finds
 -- A refused and B serving.
-caseProvisionStaleRefused :: IO ()
-caseProvisionStaleRefused =
+caseProvisionStaleRefused :: IO EnvScope -> IO ()
+caseProvisionStaleRefused mkScope =
   bracket (makeTempDir "haskoki-provision-stale") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "stale.db"
         cfg = journeyConfig path
@@ -2352,7 +2393,7 @@ caseProvisionStaleRefused =
           , "close=0"
           ]
     withAuthInstanceOnCfg stdAcquisition cfg $ \_ -> pure ()
-    outA <- runProvisionChild dir path (dir </> "result-1") scriptA
+    outA <- runProvisionChild mkScope dir path (dir </> "result-1") scriptA
     assertEqual "establish A then B" expectedA outA
-    outB <- runProvisionChild dir path (dir </> "result-2") scriptB
+    outB <- runProvisionChild mkScope dir path (dir </> "result-2") scriptB
     assertEqual "stale A refused, B serves" expectedB outB

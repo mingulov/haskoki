@@ -95,6 +95,7 @@ data StorageCfg = StorageCfg
   , scPath :: !(Maybe FilePath)
   , scBusyTimeoutMs :: !Int
   , scExclusiveOwnership :: !Bool
+  , scAllowEnvSeams :: !Bool
   } deriving (Eq, Show)
 
 -- | @[engine]@ section.
@@ -265,7 +266,7 @@ defaultConfig = Config
   , cfgProfile = ProfileDemoMaximal
   , cfgInterfaces = ["2.40", "3.0", "3.1", "3.2"]
   , cfgSeed = 1234
-  , cfgStorage = StorageCfg StorageMemory Nothing 5000 True
+  , cfgStorage = StorageCfg StorageMemory Nothing 5000 True False
   , cfgEngine = EngineCfg EngineSynthetic False True
   , cfgAsync = AsyncCfg "logical" True 2 False
   , cfgTrace = TraceCfg False "./haskoki-{pid}.jsonl" True 4096
@@ -311,6 +312,7 @@ configKeyCatalog =
   , (("storage", "path"), EnforcedRefused)
   , (("storage", "busy_timeout_ms"), Refused)
   , (("storage", "exclusive_provider_ownership"), Refused)
+  , (("storage", "allow_env_seams"), Enforced)
   , (("engine", "kind"), Reserved)
   , (("engine", "allow_synthetic_fallback"), Refused)
   , (("engine", "private_library_context"), Refused)
@@ -568,6 +570,11 @@ build kvs = do
   if not excl
     then Left (CfgInvalid "storage.exclusive_provider_ownership=false is not supported (the store is always single-writer with O_EXCL create): must be true")
     else pure ()
+  allowEnv <- getBool kvs ("storage", "allow_env_seams") False
+  -- Unlike the knobs above, @true@ is honored, not refused: it opts
+  -- the store open into consulting HASKOKI_PROC_ROOT (owner-liveness
+  -- root) and HASKOKI_OPEN_PAUSE* (fresh-init pause handshake).
+  -- Absent (the default) both seams are inert.
   engineKindName <- getStr kvs ("engine", "kind") "synthetic"
   engineKind <- case engineKindName of
     "synthetic" -> Right EngineSynthetic
@@ -661,7 +668,7 @@ build kvs = do
     , cfgProfile = profile
     , cfgInterfaces = ifaces
     , cfgSeed = seed
-    , cfgStorage = StorageCfg storageKind storagePath busyMs excl
+    , cfgStorage = StorageCfg storageKind storagePath busyMs excl allowEnv
     , cfgEngine = EngineCfg engineKind allowFallback privCtx
     , cfgAsync = AsyncCfg executor asyncOn pendingPolls persistDet
     , cfgTrace = TraceCfg traceOn tracePath redact traceQ

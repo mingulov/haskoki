@@ -7,7 +7,11 @@ subcommands live in the storage suite (needs file/SQLite deps).
 module CtlSpec (spec) where
 
 import qualified Data.ByteString.Char8 as BC8
+import Control.Exception (bracket)
 import Data.List (isInfixOf, isPrefixOf)
+import Data.Unique (hashUnique, newUnique)
+import System.Directory (createDirectory, getTemporaryDirectory, removeDirectoryRecursive)
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -22,6 +26,7 @@ spec :: TestTree
 spec = testGroup "Haskoki-ctl"
   [ testCase "config check accepts the example TOMLs" caseConfigAccept
   , testCase "config check rejects a bad key" caseConfigReject
+  , testCase "config check surfaces the env-seam flag" caseConfigCheckSeams
   , testCase "capabilities reports catalog + gaps" caseCapabilities
   , testCase "capabilities scopes the native engine binding" caseNativeScope
   , testCase "scenario run executes deterministically" caseScenario
@@ -48,6 +53,22 @@ caseConfigReject :: IO ()
 caseConfigReject = do
   r <- runCtl ["config", "check", "--config", fixture "scenario.json"]
   assertBool "scenario.json is not a config" (ceCode r /= 0)
+
+caseConfigCheckSeams :: IO ()
+caseConfigCheckSeams = do
+  r1 <- runCtl ["config", "check", "--config", fixture "maximal-demo.toml"]
+  assertEqual "maximal exit 0" 0 (ceCode r1)
+  assertBool "default False surfaced" ("storage.allow_env_seams=False" `isInfixOf` ceOut r1)
+  bracket (do tmp <- getTemporaryDirectory
+              u <- newUnique
+              let dir = tmp </> ("haskoki-seamcheck-" ++ show (hashUnique u))
+              createDirectory dir
+              pure dir) removeDirectoryRecursive $ \dir -> do
+    let cfgPath = dir </> "seams-on.toml"
+    writeFile cfgPath (unlines ["schema_version = 1", "[storage]", "allow_env_seams = true"])
+    r2 <- runCtl ["config", "check", "--config", cfgPath]
+    assertEqual "seams-on exit 0" 0 (ceCode r2)
+    assertBool "opt-in True surfaced" ("storage.allow_env_seams=True" `isInfixOf` ceOut r2)
 
 caseCapabilities :: IO ()
 caseCapabilities = do

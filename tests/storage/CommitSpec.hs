@@ -204,7 +204,7 @@ withMemoryIdentity use = do
 withSQLiteIdentity :: (OpenWith -> IO ()) -> IO ()
 withSQLiteIdentity use =
   bracket (makeTempDir "haskoki-commit-test") removeDirectoryRecursive $ \dir ->
-    use (\lim inj -> openSQLiteStoreWith (dir </> "store.db") lim inj)
+    use (\lim inj -> openSQLiteStoreWith False (dir </> "store.db") lim inj)
 
 -- | The protocol cases every backend runs.
 protocolCases :: ((OpenWith -> IO ()) -> IO ()) -> [TestTree]
@@ -2063,7 +2063,7 @@ injectedBodyFailure kind expectAutoCommit =
     let tid = trId tok
     before <- dumpTables path
     probe <- newBodyProbe
-    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe loggedTables (failTokenUpsert kind))
+    s <- openSQLiteStoreWithHooks False path defaultLimits noFaults (probeHooks probe loggedTables (failTokenUpsert kind))
       >>= expectRight "open hooked"
     result <- storeCommit s delta
     case result of
@@ -2095,7 +2095,7 @@ injectedBodyFailure kind expectAutoCommit =
     -- identical delta commits on an unhooked handle (the failure
     -- was the stimulus alone, and every later group's write is
     -- observable when it does land).
-    sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen"
+    sR <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "reopen"
     assertEqual "reopen keeps the provisioned user PIN"
       [Just "user-pin-7"] =<< userPinsOf sR tid
     assertEqual "reopen keeps the old token" [tok] =<< tokensWithId sR tid
@@ -2124,7 +2124,7 @@ data MixedFixture = MixedFixture TokenRecord StoreDelta [StoredDoc]
 -- and the deleted-job mark coverage (g10).
 seedMixedFixture :: FilePath -> [TokenRecord] -> IO MixedFixture
 seedMixedFixture path bystanders = do
-  s0 <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "open seed"
+  s0 <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "open seed"
   (tok, objs) <- seedStore s0
   let tid = trId tok
   dropped <- case objs of
@@ -2149,7 +2149,7 @@ seedMixedFixture path bystanders = do
 assertMixedOld :: FilePath -> TokenRecord -> IO ()
 assertMixedOld path tok = do
   let tid = trId tok
-  sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen"
+  sR <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "reopen"
   assertEqual "reopen keeps the provisioned user PIN"
     [Just "user-pin-7"] =<< userPinsOf sR tid
   assertEqual "reopen keeps the old token" [tok] =<< tokensWithId sR tid
@@ -2251,7 +2251,7 @@ runPackedLayout (count, filler) =
           , sdPutCredentials = [cred Nothing]
           , sdPutMeta = [("probe", "2")]
           }
-    s0 <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "open packed"
+    s0 <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "open packed"
     commitOk s0 "seed packed layout" emptyDelta
       { sdPutTokens = tokens
       , sdPutCredentials = [cred (Just "1234")]
@@ -2266,7 +2266,7 @@ runPackedLayout (count, filler) =
           pages <- queryInt db "PRAGMA main.page_count"
           writeIORef pagesRef pages
           S.exec db (T.pack ("PRAGMA main.max_page_count = " ++ show pages))
-    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe laterTables capPages)
+    s <- openSQLiteStoreWithHooks False path defaultLimits noFaults (probeHooks probe laterTables capPages)
       >>= expectRight "open capped"
     result <- storeCommit s delta
     autoAt <- readIORef (bpAutoCommit probe)
@@ -2320,7 +2320,7 @@ runPackedLayout (count, filler) =
         ops <- txnOps probe
         assertEqual "transaction-control statements"
           (if branch == FullAutoRolledBack then ["BEGIN"] else ["BEGIN", "ROLLBACK"]) ops
-        sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen packed"
+        sR <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "reopen packed"
         assertEqual "reopen keeps the provisioned user PIN" [Just "1234"] =<< userPinsOf sR tid
         assertEqual "reopen keeps the old target token" [target] =<< tokensWithId sR tid
         commitOk sR "control: the identical delta commits uncapped" delta
@@ -2397,7 +2397,7 @@ caseCommitBusyRollsBackWholeDelta =
     MixedFixture tok delta docsBefore <- seedMixedFixture path []
     before <- dumpTables path
     probe <- newBodyProbe
-    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe loggedTables (\_ -> pure ()))
+    s <- openSQLiteStoreWithHooks False path defaultLimits noFaults (probeHooks probe loggedTables (\_ -> pure ()))
       >>= expectRight "open hooked"
     t0 <- getMonotonicTime
     mResult <- timeout (30 * 1000000) (withSharedReadLock path (storeCommit s delta))
@@ -2426,7 +2426,7 @@ caseCommitBusyRollsBackWholeDelta =
     after <- dumpTables path
     assertTablesEqual before after
     assertMixedOld path tok
-    sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen control"
+    sR <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "reopen control"
     commitOk sR "control: the identical delta commits uncontended" delta
     storeClose sR
     version <- readIORef (bpVersion probe)
@@ -2450,7 +2450,7 @@ caseCommitOutcomeUnknownQuarantines =
     before <- dumpTables path
     probe <- newBodyProbe
     let failCommit _ = writeIORef (csFailNext (bpCommit probe)) True
-    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe loggedTables failCommit)
+    s <- openSQLiteStoreWithHooks False path defaultLimits noFaults (probeHooks probe loggedTables failCommit)
       >>= expectRight "open hooked"
     result <- storeCommit s delta
     case result of
@@ -2522,7 +2522,7 @@ caseCleanupFailureQuarantinesConnection atCommit =
             if atCommit
               then deny ["COMMIT", "ROLLBACK"]
               else failTokenUpsert "ABORT" db >> deny ["ROLLBACK"]
-    s <- openSQLiteStoreWithHooks path defaultLimits noFaults (probeHooks probe loggedTables stimulus)
+    s <- openSQLiteStoreWithHooks False path defaultLimits noFaults (probeHooks probe loggedTables stimulus)
       >>= expectRight "open hooked"
     result <- storeCommit s delta
     case result of
@@ -2580,13 +2580,13 @@ caseReserveCleanupFailureQuarantines :: IO String
 caseReserveCleanupFailureQuarantines =
   bracket (makeTempDir "haskoki-reserve-cleanup") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "store.db"
-    s0 <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "open seed"
+    s0 <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "open seed"
     (tok, _) <- seedStore s0
     markBefore <- metaOf s0 jobIdCounterKey
     storeClose s0
     probe <- newBodyProbe
     let deny ops = writeIORef (tsDeny (bpTxn probe)) ops
-    s <- openSQLiteStoreWithHooks path defaultLimits noFaults
+    s <- openSQLiteStoreWithHooks False path defaultLimits noFaults
       (probeHooks probe laterTables (\_ -> deny ["COMMIT", "ROLLBACK"]))
       >>= expectRight "open hooked"
     failed <- storeReserveJobId s
@@ -2603,7 +2603,7 @@ caseReserveCleanupFailureQuarantines =
     assertEqual "resolved: quarantine cleared" [] =<< storeQuarantined s
     assertEqual "the durable mark never moved" markBefore =<< metaOf s jobIdCounterKey
     storeClose s
-    sC <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "control"
+    sC <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "control"
     control <- storeReserveJobId sC >>= expectRight "control reserve"
     storeClose sC
     pure ("injected reservation COMMIT+ROLLBACK denial; " ++ show failed ++ "; transaction statements "
@@ -2620,7 +2620,7 @@ casePartialReloadIsUnknown :: IO ()
 casePartialReloadIsUnknown =
   bracket (makeTempDir "haskoki-partial-reload") removeDirectoryRecursive $ \dir -> do
     let path = dir </> "store.db"
-    s0 <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "open seed"
+    s0 <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "open seed"
     (tok, _) <- seedStore s0
     commitOk s0 "seed meta" emptyDelta { sdPutMeta = [("probe", "old")] }
     storeClose s0
@@ -2636,7 +2636,7 @@ casePartialReloadIsUnknown =
               _ -> pure False
           }
         relabelled = tok { trLabel = "partially-landed" }
-    s <- openSQLiteStoreWith path defaultLimits inj >>= expectRight "open"
+    s <- openSQLiteStoreWith False path defaultLimits inj >>= expectRight "open"
     result <- storeCommit s emptyDelta { sdPutTokens = [relabelled], sdPutMeta = [("probe", "new")] }
     case result of
       CommitUnknown _ -> pure ()
@@ -2646,7 +2646,7 @@ casePartialReloadIsUnknown =
     assertEqual "no commit counted" 0 (ssCommits stats)
     assertEqual "one verification reload" 1 (ssVerifyReloads stats)
     storeClose s
-    sR <- openSQLiteStoreWith path defaultLimits noFaults >>= expectRight "reopen"
+    sR <- openSQLiteStoreWith False path defaultLimits noFaults >>= expectRight "reopen"
     assertEqual "the token half is durable" [relabelled] =<< tokensWithId sR (trId tok)
     assertEqual "the meta half is not" (Just "old") =<< metaOf sR "probe"
     storeClose sR
@@ -2687,7 +2687,7 @@ caseRollbackErrorEndsTxnQuarantinesTokens =
           when fire (failTokenUpsert "ABORT" db >> deny ["ROLLBACK"])
         endTxn db = deny [] >> S.exec db "ROLLBACK"
         hooks = (probeHooks probe loggedTables stimulus) { sthAfterRollbackFailure = endTxn }
-    s <- openSQLiteStoreWithHooks path defaultLimits noFaults hooks >>= expectRight "open hooked"
+    s <- openSQLiteStoreWithHooks False path defaultLimits noFaults hooks >>= expectRight "open hooked"
     result <- storeCommit s delta
     case result of
       CommitUnknown (StoreIO msg) | "ROLLBACK" `isInfixOf` msg, "not authorized" `isInfixOf` msg -> pure ()
