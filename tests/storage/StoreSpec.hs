@@ -1467,8 +1467,8 @@ caseUriAfterResolve = do
         storeClose st
         assertFailure "resolved-URI spelling opened"
     ) `finally` do
-      after <- filterM doesFileExist litterNames
-      mapM_ scrub (filter (`notElem` before) after)
+      present <- filterM doesFileExist litterNames
+      mapM_ scrub (filter (`notElem` before) present)
   where
     rel = "./file:spelling-recheck-060probe.sqlite"
     decoded = "spelling-recheck-060probe.sqlite"
@@ -1499,8 +1499,8 @@ caseMemoryRefuses = do
         storeClose st
         assertFailure ":memory: opened"
     ) `finally` do
-      after <- filterM doesFileExist litterNames
-      mapM_ scrub (filter (`notElem` before) after)
+      present <- filterM doesFileExist litterNames
+      mapM_ scrub (filter (`notElem` before) present)
   where
     litterNames =
       [ ":memory:"
