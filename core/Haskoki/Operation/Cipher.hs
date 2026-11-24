@@ -209,9 +209,10 @@ encryptInput mech spec buf
 -- part) into the streamable prefix and the retained suffix, in
 -- bytes. Unframed ciphers (AEAD, asymmetric) never stream: AEAD
 -- decryption must not release plaintext before the tag verifies,
--- and asymmetric multipart is degenerate. CTS never streams
--- either: the steal pair intertwines the last two blocks, so only
--- the final (which sees the whole buffer) runs the effect. OFB
+-- and asymmetric multipart is degenerate. CTS buffers its whole
+-- input by haskoki's choice (CBC-CS1 could stream the prefix as
+-- ordinary CBC): only the final (which sees the whole buffer)
+-- runs the effect. OFB
 -- never streams either: its register evolves through the block
 -- cipher, underivable from the answer tail. Wraps never stream
 -- either: one-shot integrity covers the whole buffer (KW-PKCS7

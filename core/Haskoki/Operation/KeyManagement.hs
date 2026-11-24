@@ -3431,12 +3431,12 @@ planGenerateKey rules model st mech params tmpl =
       -- DH PKCS parameter generation frames the same (L, N)
       -- pair as X9.42 (on the OpenSSL backend 186-2 at 1024/160,
       -- 186-4 above; same driver entry point, same DER DSS-Parms
-      -- framing),
-      -- published on the OpenSSL backend as PKCS#3 DH domain
-      -- parameters (synthetic passes opaque bytes through
-      -- unstamped) -- but the
-      -- subprime size defaults from L (the oracle sends
-      -- CKA_PRIME_BITS only and expects CKR_OK).
+      -- framing). Both backends publish the typed PKCS#3 object;
+      -- p/q/g stamping reads OpenSSL's DER, with q plus its width
+      -- as haskoki-specific readback (v3.2 section 6.4.9 specifies
+      -- p, g, and prime width; synthetic passes opaque bytes
+      -- through unstamped) -- but the subprime size defaults from
+      -- L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK).
       | mech == dhPkcsParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkDh tmpl of
           Left deny -> Left deny

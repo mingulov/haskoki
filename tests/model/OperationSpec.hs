@@ -1223,9 +1223,9 @@ caseUpdateSplitTable = do
       assertEqual ("ctr dec " ++ show total) want
         (cipherUpdateSplit ctr stream DirDecrypt total)
     ) [(0, (0, 0)), (15, (0, 15)), (16, (16, 0)), (20, (16, 4)), (31, (16, 15)), (32, (32, 0))]
-  -- CTS never streams: the steal pair intertwines the last two
-  -- blocks, so every update buffers and only the final runs the
-  -- effect over the whole input.
+  -- CTS buffers whole input by haskoki's choice (CBC-CS1 could
+  -- stream the prefix as ordinary CBC): every update buffers and
+  -- only the final runs the effect over the whole input.
   let cts = aesCtsMech
   mapM_ (\(total, want) -> do
       assertEqual ("cts enc " ++ show total) want

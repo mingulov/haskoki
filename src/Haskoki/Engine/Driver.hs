@@ -2265,10 +2265,11 @@ runEffect env resolve fx = case fx of
           -- DH PKCS parameter generation runs the same DSA entry
           -- point (186-2 at 1024/160, 186-4 above on the OpenSSL
           -- backend; DHX unwired, as for X9.42); the pending attrs
-          -- stamped by the planner
-          -- publish it on the OpenSSL backend as PKCS#3 DH domain
-          -- parameters (synthetic passes opaque bytes through
-          -- unstamped).
+          -- stamped by the planner publish it as a typed PKCS#3
+          -- object on both backends, with p/q/g stamping reading
+          -- OpenSSL's DER -- q plus its width are haskoki-specific
+          -- readback (v3.2 section 6.4.9 specifies p, g, prime
+          -- width).
           (m, GenDsaParams p q) | m == dhPkcsParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
           (m, GenDsaKeypair der) | m == dsaKeyPairGenMech ->
