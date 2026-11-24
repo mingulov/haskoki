@@ -2800,7 +2800,7 @@ long hsk_ossl4_dsa_gen_params(OSSL_LIB_CTX *ctx, const char *propq,
 
     if (ctx == NULL || propq == NULL || out == NULL)
         return HSK_OSSL4_ERR_BADPARAM;
-    /* Approved FIPS 186-4 (L, N) pairs only. */
+    /* Approved (L, N) pairs: (1024,160) runs FIPS 186-2, the rest FIPS 186-4. */
     if (!((pbits == 1024 && qbits == 160) ||
           (pbits == 2048 && (qbits == 224 || qbits == 256)) ||
           (pbits == 3072 && qbits == 256)))

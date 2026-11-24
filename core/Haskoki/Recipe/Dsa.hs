@@ -29,9 +29,10 @@ Consumers:
 Deferred family members (not recipes, named gaps):
 @CKM_DSA_PROBABILISTIC_PARAMETER_GEN@,
 @CKM_DSA_SHAWE_TAYLOR_PARAMETER_GEN@ and @CKM_DSA_FIPS_G_GEN@
-(seeded FIPS 186-4 generation: haskoki does not wire the
-provider FFC seed/gindex controls into these routes; see
-mechanisms.json honesty notes).
+(seeded FIPS 186-4 generation: haskoki has no seed-returning
+prime generation, provable-prime Shawe-Taylor construction, or
+seed/index-driven g derivation; see mechanisms.json honesty
+notes).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Dsa
