@@ -856,7 +856,7 @@ eddsaBaselines _ = [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2]
 -- one descriptor per recipe row, codec from 'eddsaCodecFor',
 -- sign and verify routes citing synthetic A37 and real-KAT A39 (no
 -- A16: the backends offer one-shot sign only). Key bounds are the
--- served seed range 256..456 bits (Ed25519..Ed448).
+-- v3.2 section 6.3.14 field sizes 255..448 bits (Ed25519..Ed448).
 eddsaDescs :: [Descriptor]
 eddsaDescs =
   [ promotedDesc (redName r) (eddsaBaselines (redName r)) FamilyEc
@@ -866,7 +866,7 @@ eddsaDescs =
       , mechRoute OpMessageSign (redName r) ["A37", "A39"]
       , mechRoute OpMessageVerify (redName r) ["A37", "A39"]
       ]
-      KeyBits 256 456
+      KeyBits 255 448
   | r <- eddsaRecipes
   ]
 
