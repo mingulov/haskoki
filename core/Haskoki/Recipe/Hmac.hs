@@ -34,10 +34,11 @@ Deferred family members (not recipes, named gaps):
 @CKM_RIPEMD128_HMAC@\/@CKM_RIPEMD128_HMAC_GENERAL@ (no EVP in the
 pinned provider), @CKM_GOSTR3411_HMAC@ (needs an engine, no
 provider), @CKM_SHA512_T_HMAC@\/@CKM_SHA512_T_HMAC_GENERAL@
-(no general-t provider digest, unsupported — see mechanisms.json
+(no general-t provider digest, unsupported -- see mechanisms.json
 honesty notes), @CKM_PBA_SHA1_WITH_SHA1_HMAC@ (a PBA
-constructor, not the HMAC shape), and the non-HMAC MACs (CBC-MAC
-and protocol-MAC sub-shapes, no engine entry yet).
+constructor, not the HMAC shape), and the remaining non-HMAC MACs
+(CBC-MAC and protocol-MAC rows without their own recipe; AES
+CBC-MAC and the SSL3 MACs have theirs, see CbcMac/Ssl3).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Hmac

@@ -5885,7 +5885,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11o): unsupported-with-reason. CKM_SHA512_T needs per-t initial values (FIPS 180-4 SHA-512/t is NOT truncation of SHA-512); the pinned provider exposes only the fixed SHA-512/224 and SHA-512/256 digests (already served as their own rows) and no general-t primitive. Implementing the compression function in-house would violate the engine-backed rule.",
+      "notes": "Stance (slice 11o): unsupported-with-reason. CKM_SHA512_T needs per-t initial values (FIPS 180-4 SHA-512/t is NOT truncation of SHA-512); the pinned provider exposes only two fixed SHA-512/t variants (SHA-512/224 and SHA-512/256, already served as their own rows) next to full SHA-512 and SHA-384, and no general-t primitive. Implementing the compression function in-house would violate the engine-backed rule.",
       "numeric_id": "0x00000050",
       "routes": [],
       "source_refs": [

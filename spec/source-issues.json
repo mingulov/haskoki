@@ -200,7 +200,7 @@
       "affected": "CKM_SHA512_T/CKM_SHA512_T_HMAC/CKM_SHA512_T_HMAC_GENERAL/CKM_SHA512_T_KEY_DERIVATION stay unsupported-with-reason (behavior, synthetic, real; ABI planned). CKM_CMS_SIG, CKM_PBA_SHA1_WITH_SHA1_HMAC, CKM_KEY_WRAP_LYNKS stay unsupported-with-reason (behavior, synthetic, real; ABI planned). CKM_FASTHASH keeps its marking with the 11n vendor stance recorded.",
       "decision": "Leave as marked. Close (a) with a general-t SHA-512 backend (provider digest or a pinned software construction) plus family tests; close (b) with the CMS behavior plus an approved Raw-surface exception; close (c) and (d) by building the haskoki routes with conformance tests.",
       "scope": "Specials batch; blocks the listed rows except CKM_FASTHASH (stance-closed in 11n).",
-      "tests": "N/A (no behavior claimed; the rows are pinned catalog-only by RegistrySpec and refusing by SyntheticSpec).",
+      "tests": "N/A (no behavior claimed; the rows are pinned catalog-only by RegistrySpec, and CMS plus FASTHASH are additionally refusing by SyntheticSpec).",
       "blocks_completeness": true,
       "disposition": {
         "owner": "mechanism maintainer",
