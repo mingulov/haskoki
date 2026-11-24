@@ -28,8 +28,9 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_XEDDSA@ (no provider equivalent), @CKM_GOSTR3410*@ (no
-provider equivalent) -- see mechanisms.json honesty notes.
+@CKM_XEDDSA@ (no provider equivalent), @CKM_GOSTR3410*@ (absent
+from the pinned default and legacy providers) -- see mechanisms.json
+honesty notes.
 (@CKM_EDDSA@ is served: 'Haskoki.Recipe.Eddsa'. Plain and
 cofactor ECDH derive are served: 'Haskoki.Recipe.Ecdh'.)
 -}

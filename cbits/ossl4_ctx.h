@@ -373,9 +373,10 @@ int hsk_ossl4_dsa_verify(OSSL_LIB_CTX *ctx, const char *mdname,
                          size_t siglen, int is_raw, int no_hash);
 
 /* --- DSA paramgen + keygen -------------------------------------------- */
-/* hsk_ossl4_dsa_gen_params mints FIPS 186-4 domain parameters for an
- * approved (pbits, qbits) pair — (1024,160), (2048,224),
- * (2048,256), (3072,256); anything else is BADPARAM — and answers
+/* hsk_ossl4_dsa_gen_params mints domain parameters for an
+ * approved (pbits, qbits) pair -- 186-2 at (1024,160), 186-4 at
+ * (2048,224), (2048,256), (3072,256); anything else is BADPARAM --
+ * and answers
  * the DER-encoded DSS-Parms SEQUENCE (byte length on success).
  * hsk_ossl4_dsa_gen_keypair mints a pair from DER params and
  * answers the PKCS#8 private + SPKI public DER halves

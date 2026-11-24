@@ -2659,7 +2659,7 @@ caseX942ParamSizesPlanner = do
           KeyDenied (KeyDeny code _) -> Left code
           other -> error ("unexpected plan shape: " ++ show other)
   -- Explicit served pairs plan (the DSA frame: the driver
-  -- runs the DSA FIPS 186-4 entry point).
+  -- runs the DSA entry point (186-2 at 1024/160, 186-4 above)).
   assertEqual "explicit (1024, 160)" (Right (Just (GenDsaParams 1024 160)))
     (argsOf (x942ParamsTmpl 1024 160))
   assertEqual "explicit (2048, 224)" (Right (Just (GenDsaParams 2048 224)))
@@ -2696,7 +2696,8 @@ caseDhPkcsParamSizesPlanner = do
           KeyDenied (KeyDeny code _) -> Left code
           other -> error ("unexpected plan shape: " ++ show other)
   -- Explicit served pairs plan (the DSA frame: the driver
-  -- runs the DSA FIPS 186-4 entry point, as for X9.42).
+  -- runs the DSA entry point (186-2 at 1024/160, 186-4 above),
+  -- as for X9.42).
   assertEqual "explicit (1024, 160)" (Right (Just (GenDsaParams 1024 160)))
     (argsOf (dhPkcsParamsTmpl 1024 160))
   assertEqual "explicit (2048, 256)" (Right (Just (GenDsaParams 2048 256)))

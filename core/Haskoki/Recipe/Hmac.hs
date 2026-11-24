@@ -32,8 +32,8 @@ Consumers:
 Deferred family members (not recipes, named gaps):
 @CKM_MD2_HMAC@\/@CKM_MD2_HMAC_GENERAL@ and
 @CKM_RIPEMD128_HMAC@\/@CKM_RIPEMD128_HMAC_GENERAL@ (no EVP in
-either pinned provider), @CKM_GOSTR3411_HMAC@ (needs an engine;
-absent from the pinned default and legacy providers),
+either pinned provider), @CKM_GOSTR3411_HMAC@ (absent from the
+pinned default and legacy providers),
 @CKM_SHA512_T_HMAC@\/@CKM_SHA512_T_HMAC_GENERAL@
 (no general-t provider digest, unsupported -- see mechanisms.json
 honesty notes), @CKM_PBA_SHA1_WITH_SHA1_HMAC@ (a PBA
