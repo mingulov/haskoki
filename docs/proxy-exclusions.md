@@ -10,12 +10,21 @@ This page records the dated evidence for each remaining entry. Receipt
 paths below name files in the development workspace; they are not
 shipped with the release, so re-run the re-probe to re-check them.
 
-Pinned pair (`/opt/pkcs11-proxy-ng`, proxy commit `1ed7cc15`, v0.2.2):
+Pinned pair (`/opt/pkcs11-proxy-ng`, proxy commit `ed803d46`, v0.3.1):
 
 - daemon `pkcs11-proxy-ng` sha256
-  `91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b`
+  `26b9a6f4b898fb4b9ffad0c967d00e3ee7ce5f411c6e51757c42e8a7506bbd50`
 - shim `libpkcs11_proxy_ng_shim.so` sha256
-  `87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75`
+  `645f896af88fdb4c342679ea739c49e30606ce0c334554af5b876cec95bb2b3c`
+
+v0.3.x admission model (R10): the daemon defaults
+`[proxy] max_contexts = 1` (single logical client per daemon, per
+upstream v0.3.1 release notes). Haskoki dev/test configs
+(`test-proxy-parity.sh`, demo `check` lanes, proxy-example) set
+`max_contexts = 8`: the harness runs parent+child contexts
+concurrently, and the dual-init smoke case fails closed at the
+default. Production guidance is unchanged (one logical client
+per daemon).
 
 ## Re-probe mode
 
@@ -112,15 +121,17 @@ stale-handle behavior as sqlite. Receipt (development workspace):
 cells hold). The divergences are listed in the table below and in the
 findings ledger.
 
-## Remaining entries (re-probed 2026-10-15)
+## Remaining entries (re-probed 2026-11-24 on v0.3.1; no graduations)
 
-Receipts (development workspace): `ws/evidence/v050-wp11/task3/`
-(`reprobe-artifacts/reprobe.tsv`). Every row ran against the pinned
-pair above.
+Receipts (development workspace): `ws/r10-evidence/`
+(`reprobe.tsv`, `reprobe-031.log`). Every row ran against the pinned
+pair above. A control re-probe against the v0.2.2 pair the same day
+gave identical codes and counts, so no row below is a v0.3.1
+regression.
 
 | Entry | Upstream | Re-probe result | Why it stays |
 | --- | --- | --- | --- |
-| `message_routed` | [#23](https://github.com/mingulov/pkcs11-proxy-ng/issues/23) | error (exit 1) | 10 failed checks: `C_EncryptMessageNext` IV repair, supply-at-end and replace-at-end; five GCM IV-placement shapes (supply-at-end and recover, sealed and opened); and the GCM KAT sweep (sealed, opened). |
+| `message_routed` | [#23](https://github.com/mingulov/pkcs11-proxy-ng/issues/23) | error (exit 1) | 11 failed checks: `C_EncryptMessageNext` IV repair, supply-at-end and replace-at-end; five GCM IV-placement shapes (supply-at-end and recover, sealed and opened); the GCM KAT sweep (sealed, opened); and `hotp-message/classic-code` (a post-R9 leg, failing identically on v0.2.2). |
 | `async_routed` | [#24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24) | error (exit 1) | 80 failed checks, and the table-proof child dies with signal 11 under 3.2. Async completion does not preserve the caller's output bindings. |
 | `notifications_routed` | [#25](https://github.com/mingulov/pkcs11-proxy-ng/issues/25) | error (exit 2) | All 72 matrix legs report `setup-error reason=discovery-symbols`. Callback association and provider control are not transported. |
 

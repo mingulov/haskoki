@@ -182,7 +182,7 @@ signal crossing the ABI is promised. Calls on different sessions serialize;
 there is no concurrent or nested callback promise. SERIAL remains required;
 OS-locking permission is not obsolete parallel-session support.
 
-Rich notification transport remains excluded on the pinned v0.2.2 proxy;
+Rich notification transport remains excluded on the pinned v0.3.1 proxy;
 blocking waits return `CKR_FUNCTION_NOT_SUPPORTED`. Ordinary forwarded
 polling and direct rich-notification tests have separate scopes in the
 [parity driver](../scripts/test-proxy-parity.sh).
@@ -1187,7 +1187,7 @@ memory sessions. Private exports continue to own their context/job
 tokens, publish version `1`, return `CKR_PENDING` on successful Join,
 and support their existing query/short-buffer and optional-need dialogue.
 
-At the pinned proxy v0.2.2 (`1ed7cc15`),
+At the pinned proxy v0.3.1 (`ed803d46`),
 `async_routed` is explicitly `DIRECT-ONLY` in the parity driver under
 [proxy issue 24](https://github.com/mingulov/pkcs11-proxy-ng/issues/24).
 The pinned transport returns fixed GetID/Join refusals and cannot

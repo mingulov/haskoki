@@ -14,22 +14,27 @@
 #
 # Proxy provenance (external binaries, never built into the repo):
 #   source: https://github.com/mingulov/pkcs11-proxy-ng
-#   commit: 1ed7cc15c838de2e56ba03ac34f426847ffce049 (tag v0.2.2,
-#             "Record v0.2.2 quality receipt"; annotated-tag object
-#             e500cec9; R9 re-pin — v0.2.0 superseded: v0.2.2 fixes
-#             upstream #35 (logout DATA loss), #36 (cert-find hole),
-#             #37 (daemon death on message params), and #39
-#             (IV-shaped message-init 0x71, unclaimed upstream).
-#             Behavior notes (v0.2.1-origin, kept in v0.2.2): the
+#   commit: ed803d463eb886cc42dff47afe5c03b162b37286 (tag v0.3.1,
+#             "Record v0.3.1 quality receipt"; annotated-tag object
+#             5e83039; R10 re-pin — v0.2.2 superseded: v0.3.x fixes
+#             upstream close-state completion (Q01 rounds),
+#             InitToken label bytes (Q03), and mechanism ABI
+#             discovery (Q04); no new haskoki-side divergences,
+#             parity 111 holds.
+#             Behavior notes (v0.2.1-origin, kept in v0.3.1): the
 #             live shim catalog merges the backend-published 3.1
 #             (4 entries, functional); init params forward to the
 #             backend (backend codes surface); derive garbage fails
 #             closed 0x71 before key-type/args checks (3 known
 #             divergences, branched in consumer_roundtrip).
-#             v0.2.1 was attempted and REJECTED (upstream #35/#36/#37;
-#             v0.2.0 history: fixed PBE OUT-IV writeback,
-#             embedded-handle mapping, unknown-attr forwarding, and
-#             NULL-input normalization over a48b60b).
+#             R9 pin was v0.2.2 (commit 1ed7cc15…: fixed upstream
+#             #35 logout DATA loss, #36 cert-find hole, #37 daemon
+#             death on message params, and #39 IV-shaped
+#             message-init 0x71); v0.2.1 was attempted and
+#             REJECTED (upstream #35/#36/#37; v0.2.0 history:
+#             fixed PBE OUT-IV writeback, embedded-handle mapping,
+#             unknown-attr forwarding, and NULL-input
+#             normalization over a48b60b).
 #   built:  throwaway rust:1.94-bookworm container,
 #             apt-get install protobuf-compiler && cargo build --release --locked
 #           (effective toolchain 1.98.1 via the repo's
@@ -43,11 +48,11 @@
 #
 # Canonical build (the ONLY authoritative hashes):
 #   daemon sha256:
-#     91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b  pkcs11-proxy-ng
+#     26b9a6f4b898fb4b9ffad0c967d00e3ee7ce5f411c6e51757c42e8a7506bbd50  pkcs11-proxy-ng
 #   shim sha256:
-#     87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75  libpkcs11_proxy_ng_shim.so
+#     645f896af88fdb4c342679ea739c49e30606ce0c334554af5b876cec95bb2b3c  libpkcs11_proxy_ng_shim.so
 #   Cargo.lock sha256 (of the source tree at the commit above):
-#     5452b6bd6ab47d72e8172a04a8f8a72460dabc17f66ced110b930f6d5d75b7d3  Cargo.lock
+#     e55d03139d162c5a87bb508b063047122ca4a4f486bcfd195a5b97e8d486b633  Cargo.lock
 #   repro: from a pristine checkout of the source above at the commit
 #   above (no target/ dir), run the pinned-toolchain recipe:
 #     timeout -s KILL 2400 docker run --rm --network host \
@@ -56,8 +61,8 @@
 #         protobuf-compiler && cargo build --release --locked'
 #     sha256sum target/release/pkcs11-proxy-ng \
 #       target/release/libpkcs11_proxy_ng_shim.so
-#   The two hashes MUST match the pair above (recorded 2026-10-06
-#   from a pristine v0.2.2 build; byte-identity is re-verified by
+#   The two hashes MUST match the pair above (recorded 2026-11-24
+#   from a pristine v0.3.1 build; byte-identity is re-verified by
 #   the demo image proxy stage, which rebuilds from the same commit
 #   SHA + locked recipe and asserts commit, Cargo.lock, and this
 #   pair via PROXY_CANON_* — fail closed on ANY mismatch, FINAL-35).
@@ -129,7 +134,7 @@ HERE=$(dirname "$0")
 PKG="$HERE/.."
 cd "$PKG" || exit 1
 
-PROXY_COMMIT="1ed7cc15c838de2e56ba03ac34f426847ffce049"
+PROXY_COMMIT="ed803d463eb886cc42dff47afe5c03b162b37286"
 PROXY_DIR="${HASKOKI_PROXY_DIR:-/opt/pkcs11-proxy-ng}"
 PROXY_PORT="${HASKOKI_PROXY_PORT:-17512}"
 ENDPOINT="http://127.0.0.1:$PROXY_PORT"
@@ -475,6 +480,9 @@ lease_seconds = 600
 request_timeout_secs = 60
 max_concurrent_backend_calls = 200
 max_blocking_threads = 512
+# v0.3.x defaults max_contexts=1 (single-client model); the harness runs
+# parent+child contexts concurrently, so admit 8 (R10 requal).
+max_contexts = 8
 
 [mechanisms]
 config_path = "$TMPD/mechanisms-override.toml"

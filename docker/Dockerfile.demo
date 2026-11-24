@@ -64,7 +64,7 @@ ARG SOURCE=https://github.com/mingulov/haskoki
 # ---------------------------------------------------------------------------
 FROM rust:1.94-bookworm AS proxy
 
-ARG PROXY_COMMIT=1ed7cc15c838de2e56ba03ac34f426847ffce049
+ARG PROXY_COMMIT=ed803d463eb886cc42dff47afe5c03b162b37286
 
 # Canonical source + artifact hashes for the release pin, quoted from
 # scripts/test-proxy-parity.sh ("Proxy provenance" + "Canonical build",
@@ -72,23 +72,24 @@ ARG PROXY_COMMIT=1ed7cc15c838de2e56ba03ac34f426847ffce049
 # SHA and FAILS CLOSED on ANY mismatch (FINAL-35): a moved tag, a
 # --build-arg override to another commit, or a drifted Cargo.lock all
 # fail the build — hashes are never "recorded, not asserted".
-# R9: pin is pkcs11-proxy-ng v0.2.2 (commit 1ed7cc15…; the v0.2.2 tag
-# is a human label only, never the checkout ref; parity 70 holds;
-# checker-lane re-qualification + known deltas recorded in the R9
+# R10: pin is pkcs11-proxy-ng v0.3.1 (commit ed803d46…; the v0.3.1 tag
+# is a human label only, never the checkout ref; parity 111 holds;
+# checker-lane re-qualification + known deltas recorded in the R10
 # report before this pin commits).
-# v0.2.1 was attempted and REJECTED (upstream #35 visibility loss,
-# #36 cert-find hole, #37 daemon death on message params — the last
-# blocks all full proxy checker lanes); v0.2.0 was the R5 pin.
+# R9 pin was v0.2.2 (commit 1ed7cc15…); v0.2.1 was attempted and
+# REJECTED (upstream #35 visibility loss, #36 cert-find hole, #37
+# daemon death on message params — the last blocks all full proxy
+# checker lanes); v0.2.0 was the R5 pin.
 # Re-pins REQUIRE reviewed requalification, never silent acceptance:
 # rebuild the canonical pair per the parity-script recipe, re-run the
 # parity driver (scripts/test-proxy-parity.sh, all topologies) and the
 # full demo-image lanes (scripts/test-demo-image.sh), record the report
 # (ws/r*-evidence style), THEN update PROXY_COMMIT / PROXY_CANON_*
 # in this stage together.
-ENV PROXY_CANON_COMMIT=1ed7cc15c838de2e56ba03ac34f426847ffce049
-ENV PROXY_CANON_LOCK=5452b6bd6ab47d72e8172a04a8f8a72460dabc17f66ced110b930f6d5d75b7d3
-ENV PROXY_CANON_DAEMON=91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b
-ENV PROXY_CANON_SHIM=87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75
+ENV PROXY_CANON_COMMIT=ed803d463eb886cc42dff47afe5c03b162b37286
+ENV PROXY_CANON_LOCK=e55d03139d162c5a87bb508b063047122ca4a4f486bcfd195a5b97e8d486b633
+ENV PROXY_CANON_DAEMON=26b9a6f4b898fb4b9ffad0c967d00e3ee7ce5f411c6e51757c42e8a7506bbd50
+ENV PROXY_CANON_SHIM=645f896af88fdb4c342679ea739c49e30606ce0c334554af5b876cec95bb2b3c
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates protobuf-compiler \
