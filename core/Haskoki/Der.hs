@@ -326,9 +326,9 @@ curveOrderLen oid = case find hit curveTable of
 -- order-byte length, no leading zeros except the width the order
 -- needs). Measured from the pinned libcrypto
 -- (EC_GROUP_get_order per curveTable name; re-measure on every
--- OpenSSL repin — re-measured identical 4.0.2 to 4.1.0 on
+-- OpenSSL repin -- re-measured identical 4.0.2 to 4.1.0 on
 -- 2026-11-24; see the sign-width battery, which emits these
--- widths). Used only for scalar range validation (1 ≤ d < n);
+-- widths). Used only for scalar range validation (1 <= d < n);
 -- widths stay in 'curveTable'.
 curveOrderValues :: [(ByteString, ByteString)]
 curveOrderValues =
@@ -839,7 +839,7 @@ montgomeryPublicDer oid point =
 
 -- | PKCS#8 for an ML-DSA private key from the DER algorithm OID
 -- and the raw expanded key (NOT the Edwards nested-seed shape:
--- haskoki's import path requires the flat expanded key — the
+-- haskoki's import path requires the flat expanded key -- the
 -- provider documents seed expansion, but haskoki never supplies
 -- seed-only PKCS#8; expanded-key import proven by probe against
 -- a wycheproof vector, sign+verify roundtrip).

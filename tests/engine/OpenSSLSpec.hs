@@ -5418,7 +5418,7 @@ caseCapsNotes = withBackend $ \env -> do
   caps <- queryCapabilities env
   case Map.lookup "provider" (bcParamNotes caps) of
     Just note -> assertBool ("provider note: " ++ note)
-      ("default only; propquery " `isPrefixOf` note)
+      ("default+legacy; propquery " `isPrefixOf` note)
     Nothing -> assertFailure "no provider note"
   assertEqual "cipher note"
     (Just "no padding; key 32 bytes, iv 16 bytes, input block-aligned")

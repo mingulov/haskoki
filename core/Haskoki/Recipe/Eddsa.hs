@@ -6,7 +6,7 @@ context string. The struct is optional (v3.2 Table 73:
 Ed25519 params Not Required; the rc2 oracle registry marks
 @param_required=False@): missing parameters decode to pure,
 and of the explicit combinations only pure (phFlag clear,
-empty context — the only combination haskoki
+empty context -- the only combination haskoki
 serves) validates.
 Non-pure combinations translate to the canonical image and
 refuse at the recipe (@CKR_MECHANISM_PARAM_INVALID@ at init);
@@ -36,7 +36,7 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_XEDDSA@ (no 4.1.0 provider signature entry) — see
+@CKM_XEDDSA@ (no 4.1.0 provider signature entry) -- see
 mechanisms.json honesty notes.
 -}
 {-# LANGUAGE OverloadedStrings #-}
@@ -102,8 +102,8 @@ encodeEddsaParams ph ctx =
 
 -- | Decode EdDSA parameters: empty decodes to pure (haskoki
 -- accepts empty input for both served curves; v3.2 Table 73
--- scopes Not Required to Ed25519 — Ed448 requires params for
--- the RFC 8032 profile, while §6.3.14 defines the RFC 8410 OID
+-- scopes Not Required to Ed25519 -- Ed448 requires params for
+-- the RFC 8032 profile, while section 6.3.14 defines the RFC 8410 OID
 -- profile as implicitly pure); truncation, overrun lengths,
 -- non-0/1 flag words, and trailing bytes all fail (never a
 -- crash, never a partial read).
@@ -125,7 +125,7 @@ decodeEddsaParams bs
 
 -- | EdDSA parameter validation: pure only (flag clear,
 -- empty context), explicit or NULL. Prehash and context are
--- honest refusals — haskoki serves pure only (the provider
+-- honest refusals -- haskoki serves pure only (the provider
 -- documents context and prehash instances, unimplemented here).
 eddsaParamsValid :: EddsaRecipe -> ByteString -> Bool
 eddsaParamsValid _ params = case decodeEddsaParams params of

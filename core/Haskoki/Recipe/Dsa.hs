@@ -27,12 +27,10 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_DSA_PARAMETER_GEN@ and @CKM_DSA_KEY_PAIR_GEN@ (generation,
-planned alongside this group), @CKM_DSA_PROBABILISTIC_PARAMETER_GEN@,
+@CKM_DSA_PROBABILISTIC_PARAMETER_GEN@,
 @CKM_DSA_SHAWE_TAYLOR_PARAMETER_GEN@ and @CKM_DSA_FIPS_G_GEN@
-(seeded FIPS 186-4 generation: no provider equivalent),
-@CKM_ML_DSA@\/@CKM_HASH_ML_DSA@ (later slice) — see
-mechanisms.json honesty notes.
+(seeded FIPS 186-4 generation: no provider equivalent; see
+mechanisms.json honesty notes).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Dsa
