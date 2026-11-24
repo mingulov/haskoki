@@ -481,9 +481,8 @@ lease_seconds = 600
 request_timeout_secs = 60
 max_concurrent_backend_calls = 200
 max_blocking_threads = 512
-# v0.3.x defaults max_contexts=1 (single-client model); the harness runs
-# parent+child contexts concurrently, so admit 8 (R10 requal).
-max_contexts = 8
+# No max_contexts: legs run sequentially (111 PASS at the v0.3.x
+# single-client default); only the demo check lanes need 8 (R10).
 
 [mechanisms]
 config_path = "$TMPD/mechanisms-override.toml"
