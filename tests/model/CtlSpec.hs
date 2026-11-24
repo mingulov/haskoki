@@ -36,6 +36,7 @@ spec = testGroup "Haskoki-ctl"
   , testCase "interfaces line names configured and effective values" caseInterfacesEffective
   , testCase "scenario result names the simulator scope" caseScenarioScope
   , testCase "version prints complete cabal stdout" caseVersionExact
+  , testCase "store inspect refuses query URIs" caseInspectQueryRefused
   ]
 
 fixture :: FilePath -> FilePath
@@ -209,6 +210,18 @@ caseVersionExact = do
   assertEqual "version exits 0" 0 (ceCode r)
   assertEqual "complete version stdout" "haskoki-ctl 0.6.0.0\n" (ceOut r)
   assertEqual "no stderr" "" (ceErr r)
+
+-- | The inspect entry normalizes spellings like the open: a query
+-- URI refuses as store-invalid (not store-missing).
+caseInspectQueryRefused :: IO ()
+caseInspectQueryRefused = do
+  let q = "file:/definitely/missing.db?mode=memory"
+  r <- runCtl ["store", "inspect", "--path", q]
+  assertEqual "inspect exits 1" 1 (ceCode r)
+  assertEqual "exact refusal" "" (ceOut r)
+  assertEqual "exact stderr"
+    ("store-invalid: file: URI with query/fragment refused (bare paths only): " ++ q ++ "\n")
+    (ceErr r)
 
 caseHelpHonest :: IO ()
 caseHelpHonest = do

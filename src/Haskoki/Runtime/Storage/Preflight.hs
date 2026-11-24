@@ -65,8 +65,9 @@ import Haskoki.Runtime.Storage
 import Haskoki.Runtime.Storage.SQLite
   ( MigrateTxnError (..), MigrationHooks, OwnedStoreFile, OwnerState (..), SQLiteMigration (..), StoreSnapshot (..)
   , clearColdJournalOwned, guardFlags, migrateOwned, noMigrationHooks, pidIsDead, probeOwner, readFileCloexec
-  , readStoreSnapshot, readStoreSnapshotAllowCold, requireRegularStore, resolveStorePath, sqliteSchemaVersion
-  , withOwnedStoreFile )
+  , readStoreSnapshot, readStoreSnapshotAllowCold, requireRegularStore, resolveStoreSpelling, sqliteSchemaVersion
+  , withOwnedStoreFile, withStoreSpelling )
+import Haskoki.Runtime.Trace (renderSpellingRefusal)
 import Haskoki.Types (TokenId)
 
 -- | One-shot digest from the pinned libcrypto (see @openssl/evp.h@):
@@ -199,15 +200,14 @@ planVerdict p = case sopIdentity p of
 -- and reasons only. The path is resolved once up front: every
 -- sidecar and every open below derives from the real file —
 -- under a UTF-8 filesystem encoding (other locales may
--- double-encode non-ASCII names) — except through a @file:@
--- URI spelling, where SQLite opens the decoded file instead
--- (URI/spelling consistency is a separate work item).
--- Spellings that do not round-trip through UTF-8 are out of
--- scope (POSIX uses the original bytes while SQLite opens the
+-- double-encode non-ASCII names). Bare @file:@ URIs decode once
+-- up front, so guards and SQLite agree on the decoded file;
+-- query/fragment, undecodable, nested, and empty spellings
+-- refuse. Spellings that do not round-trip through UTF-8 are out
+-- of scope (POSIX uses the original bytes while SQLite opens the
 -- replacement spelling).
 checkStoreOpen :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
-checkStoreOpen path0 cfg = do
-  path <- resolveStorePath path0
+checkStoreOpen path0 cfg = withStoreSpelling path0 $ \path -> do
   eReg <- requireRegularStore path
   case eReg of
     Left err -> pure (Left err)
@@ -222,8 +222,7 @@ checkStoreOpen path0 cfg = do
 -- cold journal may be cleared, and by @store check@ to accept a
 -- current store whose only blocker is the cold journal.
 checkStoreOpenAllowCold :: FilePath -> Config -> IO (Either StoreError StoreOpenPlan)
-checkStoreOpenAllowCold path0 cfg = do
-  path <- resolveStorePath path0
+checkStoreOpenAllowCold path0 cfg = withStoreSpelling path0 $ \path -> do
   eReg <- requireRegularStore path
   case eReg of
     Left err -> pure (Left err)
@@ -448,20 +447,26 @@ infixl 1 >>?
 -- (the default hook is a no-op; the error value itself carries
 -- no clear status).
 migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
-migrateStoreWith hooks path0 cfg backupDir =
-  (first MigrateConfig <$> configSelectsStore path0 cfg) >>? \() -> do
-    path <- resolveStorePath path0
-    checkBackupDir path backupDir >>? \() ->
-      migrateResolved hooks path cfg backupDir
+migrateStoreWith hooks path0 cfg backupDir = do
+  -- Spelling refusal first (precise diagnosis); the config check
+  -- then runs on the operator's spelling as before (a URI twin
+  -- of the configured path mismatches conservatively).
+  ePath <- resolveStoreSpelling path0
+  case ePath of
+    Left r -> pure (Left (MigrateStore (StoreIO (renderSpellingRefusal r path0))))
+    Right path ->
+      (first MigrateConfig <$> configSelectsStore path0 cfg) >>? \() ->
+        checkBackupDir path backupDir >>? \() ->
+          migrateResolved hooks path cfg backupDir
 
 -- | 'migrateStoreWith' on an already-resolved path: the config check
 -- ran on the operator's spelling, the backup-directory guard ran on
 -- the resolved path (a link must not smuggle backups beside the
 -- real file), and every sidecar and every open below derives from
 -- the real file — under a UTF-8 filesystem encoding (other
--- locales may double-encode non-ASCII names) — except through a
--- @file:@ URI spelling, where SQLite opens the decoded file
--- instead (URI/spelling consistency is a separate work item).
+-- locales may double-encode non-ASCII names). Bare @file:@ URIs
+-- decode once up front (see the spelling rule); anything that
+-- would split guards from the opener refuses instead.
 -- Spellings that do not round-trip through UTF-8 are out of
 -- scope (POSIX uses the original bytes while SQLite opens the
 -- replacement spelling).

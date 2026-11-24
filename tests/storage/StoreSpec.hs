@@ -45,7 +45,7 @@ module StoreSpec
 import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, myThreadId, threadDelay, withMVar)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar, tryReadMVar, tryTakeMVar)
 import Control.Exception (AsyncException (ThreadKilled, UserInterrupt), SomeException, bracket, bracket_, finally, fromException, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
-import Control.Monad (forM, forM_, replicateM_, unless, when)
+import Control.Monad (filterM, forM, forM_, replicateM_, unless, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.Char (isAlphaNum, isSpace)
@@ -361,6 +361,10 @@ spec mkScope = testGroup "store contract"
       , testCase "future schema version rejected without rewrite" testFutureVersionRejected
       , testCase "version-1 database refuses without writing" testV1RefusesWithoutWriting
       , testCase "version-2 database refuses without writing" testV2RefusesWithoutWriting
+      , testCase "URI twin sees the same sidecars" caseUriTwinSidecar
+      , testCase "undecodable URI refuses cleanly" caseUriUndecodable
+      , testCase "URI with query refuses" caseUriQuery
+      , testCase "nested file: URI refuses" caseUriNested
       , testCase "async store open refuses a version-1 store without writing" testV1AsyncRefusalWritesNothing
       , testCase "async store open seeds the home credential and reopens" testAsyncOpenSeedsHomeCredential
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
@@ -1358,6 +1362,77 @@ testV1RefusesWithoutWriting =
       Left other -> assertFailure ("wrong refusal: " ++ show other)
       Right s -> storeClose s >> assertFailure "a version-1 database opened"
     assertUnchanged "version-1 database after a refused open" before path
+
+-- | URI twin sees the same sidecars: a store plus a -wal
+-- sibling opened through a %2e%2e twin spelling refuses exactly
+-- like the POSIX spelling (guards and SQLite agree on the
+-- decoded file).
+caseUriTwinSidecar :: IO ()
+caseUriTwinSidecar =
+  bracket (makeTempDir "haskoki-storage-uri-twin") removeDirectoryRecursive $ \dir -> do
+    let db = dir </> "a.db"
+    bracket (either (assertFailure . show) pure =<< openSQLiteStore db) storeClose $ \_ -> pure ()
+    BS.writeFile (db ++ "-wal") "foreign frames"
+    ePosix <- openSQLiteStore db
+    case ePosix of
+      Left (StoreForeignSidecar p) -> assertEqual "posix sidecar path" (db ++ "-wal") p
+      Left other -> assertFailure ("posix spelling must see the sidecar, got: " ++ show other)
+      Right s -> storeClose s >> assertFailure "posix spelling missed the sidecar"
+    let twin = "file:" ++ dir ++ "/x/%2e%2e/a.db"
+    eTwin <- openSQLiteStore twin
+    case eTwin of
+      Left (StoreForeignSidecar p) -> assertEqual "twin sidecar path" (db ++ "-wal") p
+      Left other -> assertFailure ("twin must refuse by sidecar, got: " ++ show other)
+      Right s -> storeClose s >> assertFailure "twin spelling missed the sidecar"
+
+-- | Undecodable URIs refuse cleanly (never reach SQLite).
+caseUriUndecodable :: IO ()
+caseUriUndecodable =
+  bracket (makeTempDir "haskoki-storage-uri-bad") removeDirectoryRecursive $ \dir -> do
+    let bad0 = "file:" ++ dir ++ "/a%00.db"
+        badFF = "file:" ++ dir ++ "/a%FF.db"
+    e0 <- openSQLiteStore bad0
+    case e0 of
+      Left (StoreIO msg) -> assertEqual "exact refusal"
+        ("file: URI does not decode: " ++ bad0) msg
+      Left other -> assertFailure ("NUL URI must refuse cleanly, got: " ++ show other)
+      Right st -> storeClose st >> assertFailure "NUL URI opened"
+    eFF <- openSQLiteStore badFF
+    case eFF of
+      Left (StoreIO msg) -> assertEqual "exact refusal"
+        ("file: URI does not decode: " ++ badFF) msg
+      Left other -> assertFailure ("non-UTF8 URI must refuse cleanly, got: " ++ show other)
+      Right st -> storeClose st >> assertFailure "non-UTF8 URI opened"
+
+-- | URIs with query strings refuse (their semantics —
+-- mode=memory, shared cache — are invisible to the guards).
+caseUriQuery :: IO ()
+caseUriQuery =
+  bracket (makeTempDir "haskoki-storage-uri-query") removeDirectoryRecursive $ \dir -> do
+    let q = "file:" ++ dir ++ "/missing.db?mode=memory"
+    eQ <- openSQLiteStore q
+    case eQ of
+      Left (StoreIO msg) -> assertEqual "exact refusal"
+        ("file: URI with query/fragment refused (bare paths only): " ++ q) msg
+      Left other -> assertFailure ("query URI must refuse by spelling, got: " ++ show other)
+      Right st -> storeClose st >> assertFailure "query URI opened"
+
+-- | A nested file: URI refuses (decoding it would re-enter
+-- URI interpretation in SQLite).
+caseUriNested :: IO ()
+caseUriNested =
+  bracket (makeTempDir "haskoki-storage-uri-nested") removeDirectoryRecursive $ \_dir -> do
+    let nested = "file:file%3Ax"
+    eN <- openSQLiteStore nested
+    case eN of
+      Left (StoreIO msg) -> assertEqual "exact refusal"
+        ("nested file: URI refused: " ++ nested) msg
+      Left other -> assertFailure ("nested URI must refuse by spelling, got: " ++ show other)
+      Right s -> storeClose s >> assertFailure "nested URI opened"
+    -- Refusal precedes all I/O: no lock, sidecar, or database may
+    -- appear under the working directory.
+    litter <- filterM doesFileExist ["file:x", "file:x.lock"]
+    assertEqual "no refusal litter" [] litter
 
 -- | The v2 half of the migratable set: a version-2 database
 -- refuses as migration-required and the refused open writes

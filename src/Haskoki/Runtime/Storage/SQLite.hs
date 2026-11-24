@@ -71,6 +71,9 @@ module Haskoki.Runtime.Storage.SQLite
   , StoreSnapshot (..)
   , resolveStorePath
   , resolveStorePathTracked
+  , resolveStoreSpelling
+  , resolveStoreSpellingTracked
+  , withStoreSpelling
   , requireRegularStore
   , readStoreSnapshot
   , readStoreSnapshotAllowCold
@@ -169,6 +172,7 @@ import Haskoki.Runtime.Storage
   , storeClosed
   , zeroStats
   )
+import Haskoki.Runtime.Trace (SpellingRefusal (..), effectiveStorePath, renderSpellingRefusal)
 import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), SlotId (..), TokenId (..))
 
 -- | The schema version this backend creates and serves. Version 3
@@ -283,39 +287,44 @@ openSQLiteStoreWith allowEnv path limits inj =
 
 -- | 'openSQLiteStoreWith' plus test-only connection hooks
 -- ('SQLiteTestHooks'); the storage suites use it to stimulate
--- real statement failures on the store's own connection. The path
--- is resolved once up front: every sidecar and every open below
--- derives from the real file — under a UTF-8 filesystem encoding
--- (other locales may double-encode non-ASCII names) — except
--- through a @file:@ URI spelling, where SQLite opens the decoded
--- file instead (URI/spelling consistency is a separate work
--- item). Spellings that do not round-trip through UTF-8 are out
--- of scope (POSIX uses the original bytes while SQLite opens the
--- replacement spelling). A store
--- path whose own final component
--- is a dangling symlink refuses: no store is created at that link's
--- target. A missing store under a symlinked parent directory is
--- created at the resolved path, as before.
+-- real statement failures on the store's own connection. The
+-- spelling normalizes first (bare @file:@ URIs decode once;
+-- query/fragment, undecodable, nested, and empty spellings
+-- refuse), then the path is resolved once up front: every
+-- sidecar and every open below derives from the real file —
+-- under a UTF-8 filesystem encoding (other locales may
+-- double-encode non-ASCII names). Spellings that do not
+-- round-trip through UTF-8 are out of scope (POSIX uses the
+-- original bytes while SQLite opens the replacement spelling).
+-- A store path whose own final component is a dangling symlink
+-- refuses: no store is created at that link's target. A missing
+-- store under a symlinked parent directory is created at the
+-- resolved path, as before.
 openSQLiteStoreWithHooks
   :: Bool -> FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
   -> IO (Either StoreError Store)
 openSQLiteStoreWithHooks allowEnv path0 limits inj hooks = do
-  (path, sawLink) <- resolveStorePathTracked path0
-  if not sawLink
-    then openSQLiteStoreResolved allowEnv path limits inj hooks
-    else do
-      -- A final-component link that resolves to a missing target
-      -- is dangling (a moved store, an unmounted volume): refuse
-      -- before taking ownership, so neither the target nor its lock
-      -- is created.
-      -- Only a proven-missing target refuses; anything else takes
-      -- the normal path and fails closed downstream.
-      eSt <- lstatOpt path
-      case eSt of
-        Right Nothing -> pure (Left (StoreIO
-          ("dangling symlink " ++ path0 ++ " (target " ++ path
-            ++ " is missing); refusing to create a store at a link target")))
-        _ -> openSQLiteStoreResolved allowEnv path limits inj hooks
+  eResolved <- resolveStoreSpellingTracked path0
+  case eResolved of
+    Left r -> pure (Left (StoreIO (renderSpellingRefusal r path0)))
+    Right (path, sawLink) -> openAfterResolve path sawLink
+  where
+    openAfterResolve path sawLink =
+      if not sawLink
+        then openSQLiteStoreResolved allowEnv path limits inj hooks
+        else do
+          -- A final-component link that resolves to a missing target
+          -- is dangling (a moved store, an unmounted volume): refuse
+          -- before taking ownership, so neither the target nor its lock
+          -- is created.
+          -- Only a proven-missing target refuses; anything else takes
+          -- the normal path and fails closed downstream.
+          eSt <- lstatOpt path
+          case eSt of
+            Right Nothing -> pure (Left (StoreIO
+              ("dangling symlink " ++ path0 ++ " (target " ++ path
+                ++ " is missing); refusing to create a store at a link target")))
+            _ -> openSQLiteStoreResolved allowEnv path limits inj hooks
 
 -- | 'openSQLiteStoreWithHooks' on an already-resolved path.
 openSQLiteStoreResolved
@@ -2569,6 +2578,35 @@ anySidecarExists path = do
 -- closed). No @filepath@ dependency: the splitting is local.
 resolveStorePath :: FilePath -> IO FilePath
 resolveStorePath p = fst <$> resolveStorePathTracked p
+
+-- | Normalize a store spelling, then resolve it: bare @file:@
+-- URIs decode once up front, so every guard and SQLite itself
+-- act on the same decoded POSIX path. Anything that would let
+-- the two diverge (query/fragment, undecodable, nested, or
+-- empty) refuses instead. Relative @file:@ spellings decode
+-- like any other; the rehearsal mandates absolute paths
+-- regardless, so a relative spelling can never hide a URI
+-- there.
+resolveStoreSpelling :: FilePath -> IO (Either SpellingRefusal FilePath)
+resolveStoreSpelling p = fmap fst <$> resolveStoreSpellingTracked p
+
+-- | Like 'resolveStoreSpelling', also reporting whether the
+-- store path's own final component was a symlink (same contract
+-- as 'resolveStorePathTracked', on the effective spelling).
+resolveStoreSpellingTracked :: FilePath -> IO (Either SpellingRefusal (FilePath, Bool))
+resolveStoreSpellingTracked p = case effectiveStorePath p of
+  Left r -> pure (Left r)
+  Right eff -> Right <$> resolveStorePathTracked eff
+
+-- | Run a store operation on the normalized spelling: refusal
+-- short-circuits in 'StoreError' before anything touches the
+-- filesystem.
+withStoreSpelling :: FilePath -> (FilePath -> IO (Either StoreError a)) -> IO (Either StoreError a)
+withStoreSpelling path0 act = do
+  ePath <- resolveStoreSpelling path0
+  case ePath of
+    Left r -> pure (Left (StoreIO (renderSpellingRefusal r path0)))
+    Right path -> act path
 
 -- | Like 'resolveStorePath', also reporting whether the store
 -- path's own final component was a symlink. The serving open

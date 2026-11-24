@@ -28,6 +28,9 @@ module Haskoki.Runtime.Trace
   , spellingDropsWith
   , tracerFilePath
   , uriEffective
+  , SpellingRefusal (..)
+  , effectiveStorePath
+  , renderSpellingRefusal
   , noteTraceDropped
   , emitTrace
   , DrainReport (..)
@@ -470,6 +473,51 @@ uriEffective :: FilePath -> Maybe FilePath
 uriEffective p
   | "file:" `isPrefixOf` p = decodeUriPath (takeWhile (\c -> c /= '?' && c /= '#') (drop 5 p))
   | otherwise = Nothing
+
+-- | Why a store spelling cannot become an effective path.
+data SpellingRefusal
+  = SpellingEmpty
+    -- ^ Nothing to open (an empty path would make SQLite open a
+    -- throwaway temporary database while the guards stat garbage).
+  | UriQueryOrFragment
+    -- ^ @file:@ URIs must be bare paths: query parameters change
+    -- open semantics (mode=memory, shared cache) that the guards
+    -- cannot see, so stripping them silently would lie.
+  | UriUndecodable
+    -- ^ Percent-decoding failed (truncated escape, NUL byte, or
+    -- non-UTF-8): the opener cannot place the file.
+  | UriNested
+    -- ^ The decoded path is itself a @file:@ URI: passing it on
+    -- would re-enter URI interpretation.
+  deriving (Eq, Show)
+
+-- | Normalize a store spelling to the single POSIX path every
+-- guard and SQLite itself must use: POSIX spellings pass
+-- through, bare @file:@ URIs decode exactly once, and anything
+-- that would let the guards and the opener diverge refuses.
+effectiveStorePath :: FilePath -> Either SpellingRefusal FilePath
+effectiveStorePath p
+  | null p = Left SpellingEmpty
+  | not ("file:" `isPrefixOf` p) = Right p
+  | any (`elem` rest) "?#" = Left UriQueryOrFragment
+  | otherwise = case decodeUriPath rest of
+      Nothing -> Left UriUndecodable
+      Just "" -> Left SpellingEmpty
+      Just eff
+        | "file:" `isPrefixOf` eff -> Left UriNested
+        | otherwise -> Right eff
+  where
+    rest = drop 5 p
+
+-- | Render a spelling refusal against the offending input. Single
+-- source: every layer wraps it in its own taxonomy.
+renderSpellingRefusal :: SpellingRefusal -> FilePath -> String
+renderSpellingRefusal r p = case r of
+  SpellingEmpty -> "store path is empty, refusing"
+  UriQueryOrFragment ->
+    "file: URI with query/fragment refused (bare paths only): " ++ p
+  UriUndecodable -> "file: URI does not decode: " ++ p
+  UriNested -> "nested file: URI refused: " ++ p
 
 -- | Whether a path carries surrogate escapes (undecodable
 -- filename bytes): the guard drops such rows, since POSIX
