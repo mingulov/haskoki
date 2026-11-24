@@ -59,7 +59,7 @@ separately by [the parity driver](../scripts/test-proxy-parity.sh).
 ## Run and interpret the checks
 
 [Try Haskoki](try-it.md) gives the image setup and commands. The image pins
-`pkcs11-check` 0.2.3 and `pkcs11-proxy-ng` v0.2.2. Smoke/full select offline
+`pkcs11-check` 0.3.0 and `pkcs11-proxy-ng` v0.3.1. Smoke/full select offline
 cases, excluding vector corpora, stress, fuzz, and slow tests. Timeouts are
 180 seconds per direct case and 360 per proxy case. `doctor` must pass first.
 
