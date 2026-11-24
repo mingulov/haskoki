@@ -5929,7 +5929,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over SHA-512/t: t arrives via CK_MAC_GENERAL_PARAMS (t in bits, v3.2 section 6.27.4) but the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nThe t parameter is specified (CK_MAC_GENERAL_PARAMS, t in bits); the missing piece is the general-t backend, not the parameter shape; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
+      "notes": "HMAC over SHA-512/t: t arrives via CK_MAC_GENERAL_PARAMS (t in bits, v3.2 section 6.27.4) but the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nThe t parameter is specified (CK_MAC_GENERAL_PARAMS, t in bits); the missing piece is the general-t backend, not the parameter shape; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000051",
       "routes": [],
       "source_refs": [
@@ -5957,7 +5957,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over SHA-512/t (general length): the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest, so no backend exists; see GAP-SPECIALS.\nGeneral-length sibling of CKM_SHA512_T_HMAC (output length via CK_MAC_GENERAL_PARAMS, v3.2 section 6.27.3). General-t backend missing; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
+      "notes": "HMAC over SHA-512/t (general length): the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest, so no backend exists; see GAP-SPECIALS.\nGeneral-length sibling of CKM_SHA512_T_HMAC (output length via CK_MAC_GENERAL_PARAMS, v3.2 section 6.27.3). General-t backend missing; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000052",
       "routes": [],
       "source_refs": [
@@ -5985,7 +5985,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SHA-512/t key derivation: the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest, so no backend exists for the width-parameterized derivation (v3.2 section 6.27.5 specifies a ceil(t/8) width without a t parameter); see GAP-SPECIALS.\nTruncation-width sibling of the SHA-KD rows. General-t backend missing; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance).",
+      "notes": "SHA-512/t key derivation: the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest, so no backend exists for the width-parameterized derivation (v3.2 section 6.27.5 specifies a ceil(t/8) width without a t parameter); see GAP-SPECIALS.\nTruncation-width sibling of the SHA-KD rows. General-t backend missing; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance).",
       "numeric_id": "0x00000053",
       "routes": [],
       "source_refs": [
@@ -25631,8 +25631,8 @@
           "CKF_MESSAGE_VERIFY"
         ],
         "key_size_unit": "bits",
-        "min_key_size": 256,
-        "max_key_size": 456
+        "min_key_size": 255,
+        "max_key_size": 448
       },
       "notes": "EdDSA recipe (core/Haskoki/Recipe/Eddsa.hs): pure EdDSA only (phFlag clear, empty context; prehash/context refuse at the recipe); eddsa-params/1 carries the flag plus the length-prefixed context (empty defaults pure: NULL params and the pure CK_EDDSA_PARAMS struct both serve). Served curves Ed25519/Ed448 (seed widths 32/57, sig widths 64/114); keys carry the curve OID (DER SPKI/PKCS#8 storage, raw point stamped for reads). Real execution pinned (OpenSSLSpec caseEddsa against the pinned libcrypto: Wycheproof TEST 1 + roundtrips both curves); synthetic per-curve constructions pinned (SyntheticSpec caseEddsa); init enforces pure params (RecipeEddsaSpec).",
       "numeric_id": "0x00001057",
