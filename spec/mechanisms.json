@@ -3889,7 +3889,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "X9.42 DH hybrid derive: needs the MQV two-key agreement plus a second derive leg; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: DH/X9.42 agreement present in 4.1.0 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 DH hybrid derive: needs the MQV two-key agreement plus a second derive leg; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: the pinned provider offers no MQV key exchange (plain X9.42 DH derive is served); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000032",
       "routes": [],
       "source_refs": [
@@ -3917,7 +3917,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: DH/X9.42 agreement present in 4.1.0 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: the pinned provider offers no MQV key exchange (plain X9.42 DH derive is served); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000033",
       "routes": [],
       "source_refs": [
@@ -7394,7 +7394,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC2 block-cipher MAC: RC2 is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC2 block-cipher MAC: haskoki has no CBC-MAC route for RC2 (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC2 in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000103",
       "routes": [],
       "source_refs": [
@@ -7422,7 +7422,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC2 block-cipher MAC: RC2 is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC2 block-cipher MAC: haskoki has no CBC-MAC route for RC2 (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC2 in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000104",
       "routes": [],
       "source_refs": [
@@ -8084,7 +8084,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Single-DES block-cipher MAC: Single-DES is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "Single-DES block-cipher MAC: haskoki has no CBC-MAC route for Single-DES (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for Single-DES in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000123",
       "routes": [],
       "source_refs": [
@@ -8112,7 +8112,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Single-DES block-cipher MAC: Single-DES is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "Single-DES block-cipher MAC: haskoki has no CBC-MAC route for Single-DES (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for Single-DES in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000124",
       "routes": [],
       "source_refs": [
@@ -9387,7 +9387,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CDMF block-cipher MAC: CDMF is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CDMF block-cipher MAC: haskoki has no CBC-MAC route for CDMF (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CDMF in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000143",
       "routes": [],
       "source_refs": [
@@ -9415,7 +9415,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CDMF block-cipher MAC: CDMF is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CDMF block-cipher MAC: haskoki has no CBC-MAC route for CDMF (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CDMF in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000144",
       "routes": [],
       "source_refs": [
@@ -14174,7 +14174,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000303",
       "routes": [],
       "source_refs": [
@@ -14202,7 +14202,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000304",
       "routes": [],
       "source_refs": [
@@ -14669,7 +14669,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000313",
       "routes": [],
       "source_refs": [
@@ -14697,7 +14697,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000314",
       "routes": [],
       "source_refs": [
@@ -15172,7 +15172,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000323",
       "routes": [],
       "source_refs": [
@@ -15202,7 +15202,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000324",
       "routes": [],
       "source_refs": [
@@ -15515,7 +15515,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC5 block-cipher MAC: RC5 is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC5 block-cipher MAC: haskoki has no CBC-MAC route for RC5 (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC5 in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000333",
       "routes": [],
       "source_refs": [
@@ -15543,7 +15543,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC5 block-cipher MAC: RC5 is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC5 block-cipher MAC: haskoki has no CBC-MAC route for RC5 (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC5 in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000334",
       "routes": [],
       "source_refs": [
@@ -15932,7 +15932,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "IDEA block-cipher MAC: IDEA is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "IDEA block-cipher MAC: haskoki has no CBC-MAC route for IDEA (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for IDEA in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000343",
       "routes": [],
       "source_refs": [
@@ -15960,7 +15960,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "IDEA block-cipher MAC: IDEA is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "IDEA block-cipher MAC: haskoki has no CBC-MAC route for IDEA (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for IDEA in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000344",
       "routes": [],
       "source_refs": [
@@ -17206,7 +17206,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "TLS-PRF recipe (core/Haskoki/Recipe/TlsPrf.hs): TLS 1.0/1.1 PRF(secret, label, seed) = P_MD5(first-half, label ++ seed) XOR P_SHA1(second-half, label ++ seed) (RFC 2246 section 5; the halves share the middle byte on odd lengths). Parameters are the label + seed frame (tls-prf-params/1); the output length arrives via the derived template CKA_VALUE_LEN, capped by the 255-block ceiling. The driver executes P_hash over the HMAC-MD5/SHA-1 routes (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsPrf: pinned OpenSSL 4.1.0 CLI per-block HMAC oracle, even + odd secrets); planner ceilings pinned (RecipeTlsPrfSpec).",
+      "notes": "TLS-PRF recipe (core/Haskoki/Recipe/TlsPrf.hs): TLS 1.0/1.1 PRF(secret, label, seed) = P_MD5(first-half, label ++ seed) XOR P_SHA1(second-half, label ++ seed) (RFC 2246 section 5; the halves share the middle byte on odd lengths). Parameters are the label + seed frame (tls-prf-params/1); the output length arrives via the derived template CKA_VALUE_LEN, capped by the 255-block ceiling. The driver executes P_hash over the HMAC-MD5/SHA-1 routes (real HMAC on the real backend (pinned 4.1.0 libcrypto), test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsPrf: OpenSSL 4.0.2 CLI per-block HMAC oracle, even + odd secrets); planner ceilings pinned (RecipeTlsPrfSpec).",
       "numeric_id": "0x00000378",
       "routes": [
         {
@@ -20713,7 +20713,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: CAMELLIA rows at 128/192/256 (pinned 4.1.0 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: CAMELLIA rows at 128/192/256 (OpenSSL 4.0.2 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000551",
       "routes": [
         {
@@ -20835,7 +20835,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: CAMELLIA rows at 128/192/256 (pinned 4.1.0 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: CAMELLIA rows at 128/192/256 (OpenSSL 4.0.2 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000552",
       "routes": [
         {
@@ -21302,7 +21302,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_CAMELLIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_CAMELLIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the OpenSSL 4.0.2 CLI); real route executes against the pinned 4.1.0 libcrypto; planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00000556",
       "routes": [
         {
@@ -21377,7 +21377,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_CAMELLIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_CAMELLIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the OpenSSL 4.0.2 CLI); real route executes against the pinned 4.1.0 libcrypto; planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00000557",
       "routes": [
         {
@@ -21655,7 +21655,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA rows at 128/192/256 (pinned 4.1.0 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA rows at 128/192/256 (OpenSSL 4.0.2 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000561",
       "routes": [
         {
@@ -21777,7 +21777,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA rows at 128/192/256 (pinned 4.1.0 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA rows at 128/192/256 (OpenSSL 4.0.2 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000562",
       "routes": [
         {
@@ -22244,7 +22244,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_ARIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_ARIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the OpenSSL 4.0.2 CLI); real route executes against the pinned 4.1.0 libcrypto; planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00000566",
       "routes": [
         {
@@ -22319,7 +22319,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_ARIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_ARIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the OpenSSL 4.0.2 CLI); real route executes against the pinned 4.1.0 libcrypto; planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00000567",
       "routes": [
         {
@@ -22709,7 +22709,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SEED block-cipher MAC: SEED is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "SEED block-cipher MAC: haskoki has no CBC-MAC route for SEED (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for SEED in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000653",
       "routes": [],
       "source_refs": [
@@ -22737,7 +22737,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SEED block-cipher MAC: SEED is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "SEED block-cipher MAC: haskoki has no CBC-MAC route for SEED (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for SEED in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000654",
       "routes": [],
       "source_refs": [
@@ -28579,7 +28579,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_DES3 key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_DES3 key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the OpenSSL 4.0.2 CLI); real route executes against the pinned 4.1.0 libcrypto; planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00001102",
       "routes": [
         {
@@ -28654,7 +28654,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_DES3 key (CBC with the 8-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_DES3 key (CBC with the 8-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the OpenSSL 4.0.2 CLI); real route executes against the pinned 4.1.0 libcrypto; planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00001103",
       "routes": [
         {
@@ -28729,7 +28729,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_AES key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_AES key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the OpenSSL 4.0.2 CLI); real route executes against the pinned 4.1.0 libcrypto; planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00001104",
       "routes": [
         {
@@ -28804,7 +28804,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_AES key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_AES key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the OpenSSL 4.0.2 CLI); real route executes against the pinned 4.1.0 libcrypto; planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00001105",
       "routes": [
         {
@@ -29146,7 +29146,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.1.0 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers; only an out-of-tree engine provides it, which is not pinned).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.1.0 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers).",
       "numeric_id": "0x00001221",
       "routes": [],
       "source_refs": [
@@ -29190,7 +29190,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.1.0 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers; only an out-of-tree engine provides it, which is not pinned).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.1.0 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers).",
       "numeric_id": "0x00001222",
       "routes": [],
       "source_refs": [
@@ -29916,7 +29916,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): FIPS 186-4 verifiable p/q generation needs a seed/counter/index path; OpenSSL 4.1.0 exposes none (legacy DSA_generate_parameters_ex fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): FIPS 186-4 verifiable p/q generation needs a seed/counter/index path; haskoki serves only unseeded DSA paramgen (CKM_DSA_PARAMETER_GEN) and has no probable-prime generation route -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no seeded paramgen route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002003",
       "routes": [],
       "source_refs": [
@@ -29944,7 +29944,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): FIPS 186-4 Shawe-Taylor verifiable p/q generation needs a seed/counter/index path; OpenSSL 4.1.0 exposes none (legacy DSA_generate_parameters_ex fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): FIPS 186-4 Shawe-Taylor verifiable p/q generation needs a seed/counter/index path; haskoki has no Shawe-Taylor route (unseeded DSA paramgen is served as CKM_DSA_PARAMETER_GEN) -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no Shawe-Taylor route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002004",
       "routes": [],
       "source_refs": [
@@ -29972,7 +29972,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): verifiable g derivation from (p, q, seed, index) needs the FIPS 186-4 seed path; OpenSSL 4.1.0 exposes none (legacy entry fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): verifiable g derivation from (p, q, seed, index) needs the FIPS 186-4 seed path; haskoki has no verifiable generator-derivation route -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no generator-derivation route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002005",
       "routes": [],
       "source_refs": [

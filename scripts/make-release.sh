@@ -430,7 +430,7 @@ OSSL_SHA=$(grep -m1 '^tarball-sha256' toolchain.lock | awk '{print $3}')
   echo "engine builds:"
   echo "  openssl4 prefix: /opt/openssl-4.1.0"
   /opt/openssl-4.1.0/bin/openssl version 2>/dev/null | sed 's/^/  pinned openssl: /' || echo "  pinned openssl: CLI unavailable"
-  echo "  linkage: static libcrypto.a into libhaskoki.so (extra-libraries: crypto)"
+  echo "  linkage: static libcrypto.a into libhaskoki.so (extra-libraries: :libcrypto.a, exact filename)"
   echo "artifact sha256:"
   (cd "$OUT" && find lib bin smoke licenses -type f | sort | xargs sha256sum)
 } > "$OUT/toolchain-record.txt"

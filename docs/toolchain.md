@@ -17,9 +17,10 @@ image and the larger developer image below have different purposes.
 GHC 9.10 warning classes; older compilers are not supported.
 
 The OpenSSL prefix must be `/opt/openssl-4.1.0`, with headers under `include`
-and the static archive under `lib/libcrypto.a`. A shared library beside the
-archive can change the link result; the release builder checks the module
-closure. Bundled provider modules must resolve inside the artifact.
+and the static archive under `lib/libcrypto.a`, selected by exact filename
+(`extra-libraries: :libcrypto.a`), so a neighboring shared library cannot
+change the link result; the release builder checks the module closure.
+Bundled provider modules must resolve inside the artifact.
 
 ## Optional local Docker build
 

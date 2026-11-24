@@ -1561,8 +1561,8 @@ caseAesRoundtrip = withBackend $ \env -> do
 -- on the then-pinned OpenSSL 4.0.2 provider before transcription.
 -- DES-CFB64,
 -- DES-CFB8 and DES-OFB64 have no oracle vector file, so those
--- pins are cross-checked between the pinned provider and the
--- system 3.5.5 CLI instead (CFB64/OFB first blocks also equal
+-- pins are cross-checked between the OpenSSL 4.0.2 provider and
+-- the system 3.5.5 CLI instead (CFB64/OFB first blocks also equal
 -- ECB_K(IV) xored with the plaintext by construction).
 desEcbKey, desEcbPt, desEcbCt :: ByteString
 desEcbKey = hex "ae7a5bff9a66ccd4"
