@@ -47,10 +47,11 @@ own nonce\/tag recipe), the PBE constructors, @CKM_DES_OFB8@
 provider-absent cipher (RC5, CDMF, SKIPJACK, BATON,
 JUNIPER, GOST, KASUMI, TWOFISH, SALSA20 — see mechanisms.json
 honesty notes and the pinned-provider probe record). Single
-DES, RC2, RC4, CAST-128 (including the CAST and CAST3
-key-width identities, fetched as CAST5-*; the bare CAST name
-aliases CAST5-CBC), IDEA, SEED and Blowfish ride the
-@legacy@ provider (loaded alongside @default@ since 11p).
+DES, RC2, RC4, CAST-128 (haskoki maps its CAST and CAST3 rows
+onto the legacy CAST5-* fetch at fixed 5- and 10-byte key
+widths; the bare CAST name aliases CAST5-CBC), IDEA, SEED and
+Blowfish ride the @legacy@ provider (loaded alongside
+@default@ since 11p).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Cipher
