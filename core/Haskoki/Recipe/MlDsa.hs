@@ -157,7 +157,7 @@ decodeMldsaParams bs
 -- context of at most 255 bytes (the FIPS 204 bound). Missing
 -- parameters validate (empty decodes to the default);
 -- overlong contexts and unmapped hedge words are honest
--- refusals — the pinned provider serves neither.
+-- refusals — validated here, never reaching the provider.
 mldsaParamsValid :: MldsaRecipe -> ByteString -> Bool
 mldsaParamsValid _ params = case decodeMldsaParams params of
   Just (_, ctx) -> BS.length ctx <= 255
