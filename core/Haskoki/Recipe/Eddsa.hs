@@ -100,10 +100,11 @@ encodeEddsaParams ph ctx =
   encodeWord64 (if ph then 1 else 0)
     <> encodeWord64 (BS.length ctx) <> ctx
 
--- | Decode EdDSA parameters: empty decodes to pure (NULL
--- means pure per v3.2 Table 73); truncation, overrun
--- lengths, non-0/1 flag words, and trailing bytes all fail
--- (never a crash, never a partial read).
+-- | Decode EdDSA parameters: empty decodes to pure (haskoki
+-- accepts empty input for both served curves; v3.2 Table 73
+-- scopes Not Required to Ed25519 — Ed448 requires params);
+-- truncation, overrun lengths, non-0/1 flag words, and
+-- trailing bytes all fail (never a crash, never a partial read).
 decodeEddsaParams :: ByteString -> Maybe (Bool, ByteString)
 decodeEddsaParams bs
   | BS.null bs = Just (False, BS.empty)

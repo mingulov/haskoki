@@ -4,8 +4,8 @@ The SLH-DSA group: one header mechanism, @CKM_SLH_DSA@, with the
 optional @CK_SIGN_ADDITIONAL_CONTEXT@ parameter shape —
 @slhdsa-params\/1@: a hedge word plus a context string (our
 engine convention, the ML-DSA mirror). The struct is OPTIONAL
-(OASIS v3.2 §SLH-DSA Signature: no parameter means
-hedge-preferred with an empty context): missing parameters
+(OASIS v3.2 §SLH-DSA Signature: no parameter means an empty
+context; haskoki's decoder supplies hedge-preferred): missing parameters
 decode to the default and validate. All three hedge variants
 serve (preferred/required ride the provider default, proven
 hedged; deterministic sets the provider @deterministic@ param),
