@@ -10,8 +10,8 @@ empty context -- the only combination haskoki
 serves) validates.
 Non-pure combinations translate to the canonical image and
 refuse at the recipe (@CKR_MECHANISM_PARAM_INVALID@ at init);
-@CKM_XEDDSA@ is not a recipe (no provider equivalent — a
-named gap, see mechanisms.json honesty notes).
+@CKM_XEDDSA@ is not a recipe (absent from both pinned providers --
+a named gap, see mechanisms.json honesty notes).
 
 This module owns the group's canonical codec, parameter
 validation, and mechanism table. Pure core only.
