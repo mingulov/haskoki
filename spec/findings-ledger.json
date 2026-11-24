@@ -4698,7 +4698,7 @@
    "test": "tests/engine/OpenSSLSpec.hs::newCurveLens roundtrip + caseEcdsaShortForms; tests/model/KeyImportSpec.hs::caseEcScalarOrderWidths",
    "receipt": "tests/c/consumer_siglen_range.c::ecdsa-secp160r1 legs",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
-   "retired_by": ["e271431"],
+   "retired_by": ["cc41235"],
    "refreeze_evidence": "fast lane no-data run at b0467f4 (checker 289cc4e): 11366 collected, 45 failed; IDs absent from failed set"
   },
   {
@@ -4715,7 +4715,7 @@
    "test": "tests/engine/OpenSSLSpec.hs::newCurveLens roundtrip + caseEcdsaShortForms; tests/model/KeyImportSpec.hs::caseEcScalarOrderWidths",
    "receipt": "tests/c/consumer_siglen_range.c::ecdsa-secp160r1 legs",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
-   "retired_by": ["e271431"],
+   "retired_by": ["cc41235"],
    "refreeze_evidence": "fast lane no-data run at b0467f4 (checker 289cc4e): 11366 collected, 45 failed; IDs absent from failed set"
   },
   {
@@ -4732,7 +4732,7 @@
    "test": "tests/engine/OpenSSLSpec.hs::newCurveLens roundtrip + caseEcdsaShortForms; tests/model/KeyImportSpec.hs::caseEcScalarOrderWidths",
    "receipt": "tests/c/consumer_siglen_range.c::ecdsa-secp160r1 legs",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
-   "retired_by": ["e271431"],
+   "retired_by": ["cc41235"],
    "refreeze_evidence": "fast lane no-data run at b0467f4 (checker 289cc4e): 11366 collected, 45 failed; IDs absent from failed set"
   },
   {
@@ -4749,7 +4749,7 @@
    "test": "tests/engine/OpenSSLSpec.hs::newCurveLens roundtrip + caseEcdsaShortForms; tests/model/KeyImportSpec.hs::caseEcScalarOrderWidths",
    "receipt": "tests/c/consumer_siglen_range.c::ecdsa-secp160r1 legs",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
-   "retired_by": ["e271431"],
+   "retired_by": ["cc41235"],
    "refreeze_evidence": "fast lane no-data run at b0467f4 (checker 289cc4e): 11366 collected, 45 failed; IDs absent from failed set"
   },
   {
