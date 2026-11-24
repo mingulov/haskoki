@@ -28,9 +28,9 @@ texts beside it. Contents:
   `LICENSE`): Apache-2.0.
 - OpenSSL 4.0.2 libcrypto (`licenses/OpenSSL-LICENSE.txt`,
   copied from repo `licenses/openssl-LICENSE.txt`; tarball
-  sha256 pinned in `toolchain.lock`): Apache-2.0, statically
-  linked into `lib/libhaskoki.so`, plus the pinned provider
-  files.
+  sha256 pinned in `toolchain.lock` at tag `v0.3.0.0`):
+  Apache-2.0, statically linked into `lib/libhaskoki.so`,
+  plus the pinned provider files.
 - GHC runtime closure (`lib/libHS*.so`, 24 libs):
   `licenses/GHC-copyright` (copied from the builder's
   `/usr/share/doc/ghc/copyright`, Ubuntu ghc 9.10.3). The
