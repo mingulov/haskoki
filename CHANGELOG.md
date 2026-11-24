@@ -2,12 +2,57 @@
 
 ## [0.6.0.0] - unreleased (RnD)
 
-Testable RnD release. The per-change list is
-[docs/release-notes-0.6.0.0.md](docs/release-notes-0.6.0.0.md):
-exact per-function errors, config-gated test seams
-(`storage.allow_env_seams`, default off), and the serving-open
-hardening that goes with them. Reports `libraryVersion` 0.6 and
-`haskoki-ctl 0.6.0.0`.
+Testable RnD release. The per-change detail is in
+[docs/release-notes-0.6.0.0.md](docs/release-notes-0.6.0.0.md).
+Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.0.0`.
+
+### Added
+
+- Compatibility matrix (`docs/compatibility.md`, generated): every
+  binary × store × config × interface combination resolves to
+  `works`, `migrate`, or `refuse`, gated in CI. Store schemas 1
+  and 2 open only through an explicit `haskoki-ctl store migrate`.
+- Three newly served return codes (63 total): `CKR_DEVICE_ERROR`,
+  `CKR_DOMAIN_PARAMS_INVALID`, `CKR_WRAPPED_KEY_LEN_RANGE`.
+- Config-gated test seams: `storage.allow_env_seams` (default
+  `false`) opts the config-driven serving open into consulting
+  `HASKOKI_PROC_ROOT` (owner liveness) and `HASKOKI_OPEN_PAUSE*`
+  (fresh-init pause on create, with a `go`-file handshake and a
+  ~30s poll-budget fallback). Serving opens run masked with
+  bounded, single-deadline cancellation cleanup.
+- Firefox client-authentication example (`examples/firefox`):
+  a disposable scripted-browser desktop doing client-auth through
+  the PKCS#11 module, with a Marionette acceptance client.
+
+### Changed
+
+- Exact per-function errors: rejected key material, over-length
+  input, lost backend state, and ceilings report the OASIS-listed
+  code for the calling function instead of `CKR_GENERAL_ERROR`;
+  deliberately unclassified failures keep it and emit one JSONL
+  trace row each with the typed cause.
+- Scenario-async config rename: `[async]` becomes
+  `[scenario.async]`. Files using only the legacy header keep
+  loading with values migrated; files with keys under both
+  headers refuse with a remedy.
+
+### Removed
+
+- No public Haskell library: the package exposes only the C ABI.
+  The stub facade (`Haskoki.PKCS11`, already deprecated) and its
+  top-level re-export are deleted; out-of-tree `import Haskoki.*`
+  now fails at dependency resolution (checked in CI).
+
+### Fixed
+
+- ECDSA raw signatures on wider-order curves are order-width now
+  (PKCS#11 §6.3.1 nLen): secp160r1/r2/k1 sign 42 bytes (was 40),
+  secp224k1 signs 58 (was 56). Short even forms still verify, so
+  previously emitted signatures keep verifying.
+- EC private import bounds scalars by the group order (SEC1
+  §2.3.6) and enforces 1 ≤ d < n: 21-byte scalars load on the
+  160-bit curves with 161-bit orders (were refused); 52-byte
+  scalars refuse on sect409k1 (51-byte order; were accepted).
 
 ## [0.5.0.0] - 2026-10-19
 
