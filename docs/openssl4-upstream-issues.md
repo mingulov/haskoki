@@ -1,6 +1,6 @@
-# OpenSSL 4.0.2 limitations
+# OpenSSL 4.1.0 limitations
 
-Haskoki uses the pinned OpenSSL 4.0.2 build described in
+Haskoki uses the pinned OpenSSL 4.1.0 build described in
 [toolchain.lock](../toolchain.lock). These are implementation constraints
 and downstream choices, not a list of filed upstream bugs.
 

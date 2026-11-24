@@ -3,7 +3,7 @@ whose stored value is the PKCS#8/SPKI DER the engine consumes
 (the same shape key generation stores), with the components kept
 verbatim for reads.
 
-Fixtures are pinned OpenSSL 4.0.2 vectors (an RSA-2048 key and a
+Fixtures are OpenSSL 4.0.2 vectors (an RSA-2048 key and a
 P-256 key, generated once); the DER goldens are openssl-emitted
 bytes, so golden equality is an independent cross-check of the
 assembly, not self-agreement.

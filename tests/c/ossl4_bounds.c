@@ -252,7 +252,7 @@ static const unsigned char kEcPubSpki[] = {
   0x7a, 0xcd, 0x6d, 0x40, 0xbd, 0xd1, 0x78,
 };
 
-/* Fixed RSA-2048 pair (pinned 4.0.2 CLI genpkey, shared with the
+/* Fixed RSA-2048 pair (OpenSSL 4.0.2 CLI genpkey, shared with the
  * engine KAT) for the ECDSA-confusion legs: PKCS#8 private (1216
  * bytes) and SPKI public (294 bytes). */
 static const unsigned char kRsaPrivP8[] = {

@@ -31,8 +31,8 @@ fail() {
 # prefix under lib64/ (the image uses lib/); pass it through when
 # present so :libcrypto.a resolves in both places.
 EXTRA_LIB_DIRS=""
-if [ -d /opt/openssl-4.0.2/lib64 ]; then
-  EXTRA_LIB_DIRS="--extra-lib-dirs=/opt/openssl-4.0.2/lib64"
+if [ -d /opt/openssl-4.1.0/lib64 ]; then
+  EXTRA_LIB_DIRS="--extra-lib-dirs=/opt/openssl-4.1.0/lib64"
 fi
 # The test-hook macro belongs to the private implementation
 # library stanza only. Anywhere else in haskoki.cabal (the
@@ -82,7 +82,7 @@ export LC_ALL=C
 SYMS=tests/c/ossl4_test_symbols.txt
 [ -s "$SYMS" ] || fail "missing $SYMS"
 TMPO="${TMPDIR:-/tmp}/haskoki-ossl4-variants"; mkdir -p "$TMPO" || fail "cannot create $TMPO"
-CFL="-std=c11 -Wall -Wextra -Werror -pthread -I/opt/openssl-4.0.2/include"
+CFL="-std=c11 -Wall -Wextra -Werror -pthread -I/opt/openssl-4.1.0/include"
 cc $CFL -c -o "$TMPO/prod.o" cbits/ossl4_ctx.c || fail "production-config shim did not compile"
 cc $CFL -DHSK_OSSL4_TEST_HOOKS -c -o "$TMPO/hooks.o" cbits/ossl4_ctx.c || fail "test-config shim did not compile"
 globals() { nm --defined-only -g "$1" | awk 'NF==3 && $2 ~ /^[TDBR]$/ {print $3}' | sort -u; }

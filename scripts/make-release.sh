@@ -25,7 +25,7 @@
 #     INSTALL.md                 host deps + no-env setup (self-resolving bundle)
 #
 # Closure policy (reviewed in closure/review.txt): libcrypto is
-# STATICALLY linked from the pinned /opt/openssl-4.0.2 build (no
+# STATICALLY linked from the pinned /opt/openssl-4.1.0 build (no
 # libcrypto/libssl in the module's ldd — stronger than "pinned .so
 # only"); the dynamic closure is exactly {libHS* (bundled),
 # libm/libgmp/libffi/libnuma/libc (host deps)}. No host-global
@@ -182,10 +182,10 @@ echo "bundled GHC closure libs: $BUNDLED"
 # this dir exists (dev tree keeps the baked default).
 mkdir -p "$OUT/lib/ossl-modules" || fail "cannot create provider dir"
 MODDIR=""
-for cand in /opt/openssl-4.0.2/lib64/ossl-modules /opt/openssl-4.0.2/lib/ossl-modules; do
+for cand in /opt/openssl-4.1.0/lib64/ossl-modules /opt/openssl-4.1.0/lib/ossl-modules; do
   if [ -f "$cand/legacy.so" ]; then MODDIR="$cand"; break; fi
 done
-[ -n "$MODDIR" ] || fail "pinned legacy.so not found (need ossl-modules under /opt/openssl-4.0.2 lib64/ or lib/)"
+[ -n "$MODDIR" ] || fail "pinned legacy.so not found (need ossl-modules under /opt/openssl-4.1.0 lib64/ or lib/)"
 cp "$MODDIR/legacy.so" "$OUT/lib/ossl-modules/legacy.so" || fail "copy legacy.so"
 if readelf -d "$OUT/lib/ossl-modules/legacy.so" | grep -q 'NEEDED.*libcrypto'; then
   # Module-build legacy.so (host layout): it binds libcrypto.so.4, so
@@ -287,10 +287,10 @@ echo "glibc floor: $FLOOR"
   echo "closure review — haskoki $VER ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
   echo "module: $SO"
   echo ""
-  echo "libcrypto: STATIC, pinned /opt/openssl-4.0.2 build (libcrypto.a"
+  echo "libcrypto: STATIC, pinned /opt/openssl-4.1.0 build (libcrypto.a"
   echo "linked into libhaskoki.so at build; ldd shows no libcrypto/libssl;"
   echo "no host-global libcrypto can interpose). Engine self-report:"
-  /opt/openssl-4.0.2/bin/openssl version 2>/dev/null || echo "(pinned openssl CLI not on PATH; see toolchain-record)"
+  /opt/openssl-4.1.0/bin/openssl version 2>/dev/null || echo "(pinned openssl CLI not on PATH; see toolchain-record)"
   echo ""
   echo "provider (shipped, \$ORIGIN-anchored): lib/$PROVIDER_FILES"
   echo "($PROVIDER_KIND) from the pinned prefix ($MODDIR);"
@@ -371,7 +371,7 @@ OSSL_SHA=$(grep -m1 '^tarball-sha256' toolchain.lock | awk '{print $3}')
   echo ""
   echo "Apache License 2.0 — full text: licenses/Haskoki-LICENSE."
   echo ""
-  echo "## OpenSSL 4.0.2 (libcrypto)"
+  echo "## OpenSSL 4.1.0 (libcrypto)"
   echo ""
   echo "Apache License 2.0 — full text: licenses/OpenSSL-LICENSE.txt."
   echo "Source: $OSSL_URL"
@@ -428,8 +428,8 @@ OSSL_SHA=$(grep -m1 '^tarball-sha256' toolchain.lock | awk '{print $3}')
   echo "freeze: cabal.project.freeze sha256 $(sha256sum cabal.project.freeze 2>/dev/null | awk '{print $1}')"
   echo "toolchain.lock sha256 $(sha256sum toolchain.lock 2>/dev/null | awk '{print $1}') (build-time snapshot; the release manifest carries the packaging-time snapshot)"
   echo "engine builds:"
-  echo "  openssl4 prefix: /opt/openssl-4.0.2"
-  /opt/openssl-4.0.2/bin/openssl version 2>/dev/null | sed 's/^/  pinned openssl: /' || echo "  pinned openssl: CLI unavailable"
+  echo "  openssl4 prefix: /opt/openssl-4.1.0"
+  /opt/openssl-4.1.0/bin/openssl version 2>/dev/null | sed 's/^/  pinned openssl: /' || echo "  pinned openssl: CLI unavailable"
   echo "  linkage: static libcrypto.a into libhaskoki.so (extra-libraries: crypto)"
   echo "artifact sha256:"
   (cd "$OUT" && find lib bin smoke licenses -type f | sort | xargs sha256sum)
@@ -457,7 +457,7 @@ OSSL_SHA=$(grep -m1 '^tarball-sha256' toolchain.lock | awk '{print $3}')
   echo "- System libraries: libc, libm, libgmp.so.10, libffi.so.8,"
   echo "  libnuma.so.1 (Debian/Ubuntu: \`apt-get install libgmp10"
   echo "  libffi8 libnuma1\`)."
-  echo "- libcrypto is statically linked from the pinned OpenSSL 4.0.2"
+  echo "- libcrypto is statically linked from the pinned OpenSSL 4.1.0"
   echo "  build; NO system libcrypto is used or required. (The legacy"
   echo "  cipher provider ships under \`lib/\` as pinned bytes, resolved"
   echo "  inside lib/ — never the host libcrypto. \`$PROVIDER_FILES\`.)"

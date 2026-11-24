@@ -9,7 +9,7 @@ pins the table, id resolution, codec identity, the empty-only
 parameter matrix, the raw digest-length rule, and the driver
 mapping.
 
-Ground truth (pinned 4.0.2 CLI + provider probes, independent
+Ground truth (OpenSSL 4.0.2 CLI + provider probes, independent
 of the token): X9.31 sign needs the digest set before the pad
 mode (@invalid x931 digest@ otherwise); prehash roundtrips for
 20\/32\/48\/64-byte inputs (SHA-1\/SHA-256\/SHA-384\/SHA-512

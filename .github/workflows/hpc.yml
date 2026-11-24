@@ -108,8 +108,8 @@ jobs:
         id: ossl-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ossl-cache/openssl-4.0.2.tar.gz
-          key: openssl-4.0.2-static-v1
+          path: ossl-cache/openssl-4.1.0.tar.gz
+          key: openssl-4.1.0-static-v1
       - name: Build OpenSSL prefix (cache miss only)
         if: steps.ossl-cache.outputs.cache-hit != 'true'
         run: |
@@ -117,20 +117,20 @@ jobs:
           mkdir -p /tmp/ossl-build ossl-cache
           cd /tmp/ossl-build
           OSSL_URL=https://github.com/openssl/openssl/releases/download
-          curl -fsSLO "$OSSL_URL/openssl-4.0.2/openssl-4.0.2.tar.gz"
-          OSSL_SHA=736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
-          echo "$OSSL_SHA  openssl-4.0.2.tar.gz" | sha256sum -c -
-          tar xzf openssl-4.0.2.tar.gz
-          cd openssl-4.0.2
-          perl ./Configure --prefix=/opt/openssl-4.0.2 --openssldir=/opt/openssl-4.0.2/ssl \
+          curl -fsSLO "$OSSL_URL/openssl-4.1.0/openssl-4.1.0.tar.gz"
+          OSSL_SHA=50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
+          echo "$OSSL_SHA  openssl-4.1.0.tar.gz" | sha256sum -c -
+          tar xzf openssl-4.1.0.tar.gz
+          cd openssl-4.1.0
+          perl ./Configure --prefix=/opt/openssl-4.1.0 --openssldir=/opt/openssl-4.1.0/ssl \
             --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
           make -j"$(nproc)"
           make install_sw
-          /opt/openssl-4.0.2/bin/openssl version
-          tar czf "$GITHUB_WORKSPACE/ossl-cache/openssl-4.0.2.tar.gz" -C / opt/openssl-4.0.2
+          /opt/openssl-4.1.0/bin/openssl version
+          tar czf "$GITHUB_WORKSPACE/ossl-cache/openssl-4.1.0.tar.gz" -C / opt/openssl-4.1.0
       - name: Install cached OpenSSL prefix
         if: steps.ossl-cache.outputs.cache-hit == 'true'
-        run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /
+        run: tar xzf ossl-cache/openssl-4.1.0.tar.gz -C /
       - name: Restore cabal store cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

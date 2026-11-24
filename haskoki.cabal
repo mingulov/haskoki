@@ -221,7 +221,7 @@ library haskoki-internal
     Haskoki.FFI.OpenSSL4.Raw
     Haskoki.Runtime.Attach
   -- Narrow ossl4 shim, linked against the pinned static libcrypto
-  -- at $OPENSSL4_PREFIX (/opt/openssl-4.0.2 in the image; bind-mount the
+  -- at $OPENSSL4_PREFIX (/opt/openssl-4.1.0 in the image; bind-mount the
   -- staged prefix there when building outside the rebuilt image).
   c-sources:
     cbits/ossl4_ctx.c
@@ -231,9 +231,9 @@ library haskoki-internal
   include-dirs:
     cbits
     spec/vendor
-    /opt/openssl-4.0.2/include
+    /opt/openssl-4.1.0/include
   extra-lib-dirs:
-    /opt/openssl-4.0.2/lib
+    /opt/openssl-4.1.0/lib
   -- Exact-archive match: force the STATIC libcrypto.a even where the
   -- prefix also ships libcrypto.so (host lib64/). GNU ld -l:filename
   -- bypasses .so/.a search preference; both the container lib/ and
@@ -324,12 +324,12 @@ foreign-library haskoki
   -- for cbits/exports.c and ffi/Haskoki/FFI/Types.hsc. The mirror TU
   -- (function_tables.c) does not include them.
   -- Plus the pinned OpenSSL 4 headers; the module links the pinned
-  -- static libcrypto ($OPENSSL4_PREFIX=/opt/openssl-4.0.2 in the image).
+  -- static libcrypto ($OPENSSL4_PREFIX=/opt/openssl-4.1.0 in the image).
   include-dirs:
     spec/vendor
-    /opt/openssl-4.0.2/include
+    /opt/openssl-4.1.0/include
   extra-lib-dirs:
-    /opt/openssl-4.0.2/lib
+    /opt/openssl-4.1.0/lib
   -- Exact-archive match: force the STATIC libcrypto.a even where the
   -- prefix also ships libcrypto.so (host lib64/). GNU ld -l:filename
   -- bypasses .so/.a search preference; both the container lib/ and

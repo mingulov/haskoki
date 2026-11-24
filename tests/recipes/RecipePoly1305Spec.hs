@@ -10,7 +10,7 @@ off-length keys). This spec pins the table, id resolution, codec
 identity, the empty-only parameter matrix, the key rule, and
 the driver mapping.
 
-Ground truth (pinned 4.0.2 CLI @openssl mac POLY1305@ vs
+Ground truth (OpenSSL 4.0.2 CLI @openssl mac POLY1305@ vs
 python-cryptography, agreeing): key
 60ae20bd9302aea34cafbc620011e17b7774e97764b9bb6e035ffb2b8b63be9f
 over "Poly1305 KAT message, second vector" tags

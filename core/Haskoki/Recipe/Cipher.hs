@@ -40,7 +40,7 @@ The @CKM_*_ENCRYPT_DATA@ single-part data shape is its own
 recipe ('Haskoki.Recipe.EncryptData'), not a row here.
 
 Deferred family members (not recipes, named gaps): @CKM_AES_CFB64@
-(provider 4.0.2 has no CFB64 mode for AES),
+(provider 4.1.0 has no CFB64 mode for AES),
 @CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
 own nonce\/tag recipe), the PBE constructors, @CKM_DES_OFB8@
 (no 8-bit OFB for DES in the provider), and every

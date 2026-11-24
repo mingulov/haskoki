@@ -13,10 +13,10 @@ image and the larger developer image below have different purposes.
 
 [toolchain.lock](../toolchain.lock) and
 [cabal.project.freeze](../cabal.project.freeze) record GHC 9.10.3, OpenSSL
-4.0.2, package versions, and the Hackage index state. The Cabal file uses
+4.1.0, package versions, and the Hackage index state. The Cabal file uses
 GHC 9.10 warning classes; older compilers are not supported.
 
-The OpenSSL prefix must be `/opt/openssl-4.0.2`, with headers under `include`
+The OpenSSL prefix must be `/opt/openssl-4.1.0`, with headers under `include`
 and the static archive under `lib/libcrypto.a`. A shared library beside the
 archive can change the link result; the release builder checks the module
 closure. Bundled provider modules must resolve inside the artifact.
@@ -53,21 +53,21 @@ Install GHC 9.10.3, Cabal, and build prerequisites, then prepare OpenSSL:
 
 ```sh
 sudo apt-get install ghc cabal-install build-essential libgmp-dev
-curl -fsSLO https://github.com/openssl/openssl/releases/download/openssl-4.0.2/openssl-4.0.2.tar.gz
-echo '736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8  openssl-4.0.2.tar.gz' | sha256sum -c -
-tar -xzf openssl-4.0.2.tar.gz
+curl -fsSLO https://github.com/openssl/openssl/releases/download/openssl-4.1.0/openssl-4.1.0.tar.gz
+echo '50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd  openssl-4.1.0.tar.gz' | sha256sum -c -
+tar -xzf openssl-4.1.0.tar.gz
 (
-  cd openssl-4.0.2
-  perl ./Configure --prefix=/opt/openssl-4.0.2 \
-    --openssldir=/opt/openssl-4.0.2/ssl --libdir=lib \
+  cd openssl-4.1.0
+  perl ./Configure --prefix=/opt/openssl-4.1.0 \
+    --openssldir=/opt/openssl-4.1.0/ssl --libdir=lib \
     no-docs no-tests threads no-shared no-pinshared linux-x86_64
   make -j"$(nproc)"
   sudo make install_sw
-  /opt/openssl-4.0.2/bin/openssl version
+  /opt/openssl-4.1.0/bin/openssl version
 )
 ```
 
-The version must be `OpenSSL 4.0.2 25 Aug 2026`. The upstream OpenSSL test
+The version must be `OpenSSL 4.1.0 23 Oct 2026`. The upstream OpenSSL test
 suite is not run by this recipe (`no-tests`); Haskoki's engine and native
 smoke checks exercise the resulting crypto build.
 

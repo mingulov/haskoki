@@ -324,11 +324,12 @@ curveOrderLen oid = case find hit curveTable of
 
 -- | Group-order values by DER curve OID (big-endian, exact
 -- order-byte length, no leading zeros except the width the order
--- needs). Measured from the pinned libcrypto 4.0.2
--- (EC_GROUP_get_order per curveTable name; re-measure on OpenSSL
--- repin — see the sign-width battery, which emits these widths).
--- Used only for scalar range validation (1 ≤ d < n); widths stay
--- in 'curveTable'.
+-- needs). Measured from the pinned libcrypto
+-- (EC_GROUP_get_order per curveTable name; re-measure on every
+-- OpenSSL repin — re-measured identical 4.0.2 to 4.1.0 on
+-- 2026-11-24; see the sign-width battery, which emits these
+-- widths). Used only for scalar range validation (1 ≤ d < n);
+-- widths stay in 'curveTable'.
 curveOrderValues :: [(ByteString, ByteString)]
 curveOrderValues =
   [ (BS.pack [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07], BS.pack [0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51])

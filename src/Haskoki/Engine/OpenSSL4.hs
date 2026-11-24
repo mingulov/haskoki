@@ -195,8 +195,8 @@ openBackendWith newEnv loadProv propq = mask $ \restore -> do
               pure (Left (BackendNative "open" legacyRc ("load legacy provider: " ++ detail)))
             else do
               version <- Raw.libVersion
-              if not ("4.0.2" `isInfixOf` version)
-                then pure (Left (BackendNative "open" (-1) ("libcrypto pin mismatch, want 4.0.2, got " ++ version)))
+              if not ("4.1.0" `isInfixOf` version)
+                then pure (Left (BackendNative "open" (-1) ("libcrypto pin mismatch, want 4.1.0, got " ++ version)))
                 else do
                   ctx <- Raw.envCtx envp
                   pure (Right (ctx, version))

@@ -28,8 +28,8 @@ loading a downloaded native bundle on your own host. For a first run, use
   [dependency inventory](docs/dependency-inventory.md)). Keep
   `lib/libhaskoki.so` next to the bundled `libHS*.so` files.
   There is no `ldconfig` or setuid component.
-- libcrypto is STATICALLY linked from the pinned OpenSSL 4.0.2
-  build (`/opt/openssl-4.0.2`, `libcrypto.a`); no system libcrypto
+- libcrypto is STATICALLY linked from the pinned OpenSSL 4.1.0
+  build (`/opt/openssl-4.1.0`, `libcrypto.a`); no system libcrypto
   is used, required, or interposable. `ldd` shows no
   `libcrypto`/`libssl` (gated in `make-release.sh`). The bundle
   also carries OpenSSL's legacy provider

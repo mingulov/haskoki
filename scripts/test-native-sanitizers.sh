@@ -24,7 +24,7 @@ if [ -e "$ART" ]; then
   echo "previous sanitizer art moved aside: $PREV"
 fi
 mkdir -p "$ART/bin" "$ART/logs" || exit 1
-CC=${CC:-gcc}; OSSL=/opt/openssl-4.0.2
+CC=${CC:-gcc}; OSSL=/opt/openssl-4.1.0
 COMMON="-std=c11 -Wall -Wextra -Werror -pthread -Icbits -I$OSSL/include"
 SAN="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all"
 PLAIN="-O1 -g"

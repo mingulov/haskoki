@@ -154,7 +154,7 @@
       "status": "resolved",
       "sources": [
         "S-PD-32 header (CKM_BLAKE2B_160/256/384/512 identity only)",
-        "OpenSSL 4.0.2 provider: BLAKE2b settable ctx param OSSL_DIGEST_PARAM_SIZE (native nn parameterization)",
+        "OpenSSL 4.1.0 provider: BLAKE2b settable ctx param OSSL_DIGEST_PARAM_SIZE (native nn parameterization)",
         "pkcs11-check test_blake2.py reference: hashlib.blake2b(digest_size=nn) + hmac.new over it (independent byte oracle)",
         "PKCS#11 3.1 6.33.3-6.36.3 key tables (\"generic secret or CKK_BLAKE2B_n_HMAC\"): the KeyMatrix accepting generic-secret keys is spec-correct; the 16 checker wrong-key-type findings are a checker defect (v0.5 key-matrix ruling; native legs consumer_roundtrip blake2b-key-type)"
       ],
@@ -194,7 +194,7 @@
       "sources": [
         "S-PD-32 pkcs11.h (CKM_SHA512_T 0x50 family defines + CKK_SHA512_T_HMAC, no truncation-parameter struct; CKM_CMS_SIG, CKM_PBA_SHA1_WITH_SHA1_HMAC, CKM_KEY_WRAP_LYNKS, CKM_FASTHASH defines only, zero supporting structs; 11n: pkcs11-hist 2.13 prose located for CKM_FASTHASH -- MISSI unpublished digest -- so FASTHASH leaves the identifier-only clause with its stance recorded)",
         "PKCS#11 base-spec mechanism prose (NOT vendored for any of these rows)",
-        "Pinned OpenSSL 4.0.2 provider survey (SHA-512 present; CMS is non-provider API)"
+        "Pinned OpenSSL 4.1.0 provider survey (SHA-512 present; CMS is non-provider API)"
       ],
       "inconsistency": "(a) SHA512_T family (digest, HMAC, HMAC_GENERAL, KEY_DERIVATION): SHA-512/t truncation is parameterized (FIPS 180-4), but whether the singleton CKM_SHA512_T takes a truncation parameter or each use fixes t out-of-band is defined in the base-spec prose, not the headers. Picking a t without prose would be invented semantics (same class as GAP-BLAKE2B BLAKE2B). (b) CKM_CMS_SIG: CMS signatures need the libcrypto CMS API, which is not provider API, so serving it needs both CMS-profile prose and an architecture exception to the provider-only Raw surface. (c) CKM_PBA_SHA1_WITH_SHA1_HMAC, CKM_KEY_WRAP_LYNKS: identifier-only in the vendored header; no parameter struct, no attribute profile, no prose. There is nothing implementable. (CKM_FASTHASH retired from this clause in 11n: pkcs11-hist 2.13 defines it as MISSI's unpublished U.S. government digest, 40-byte output, no parameter; the stance -- unpublished algorithm, no OpenSSL primitive, no vectors -- is recorded on the row.)",
       "affected": "CKM_SHA512_T/CKM_SHA512_T_HMAC/CKM_SHA512_T_HMAC_GENERAL/CKM_SHA512_T_KEY_DERIVATION stay planned (all columns). CKM_CMS_SIG, CKM_PBA_SHA1_WITH_SHA1_HMAC, CKM_KEY_WRAP_LYNKS stay unsupported-with-reason (all columns). CKM_FASTHASH keeps its marking with the 11n vendor stance recorded.",
