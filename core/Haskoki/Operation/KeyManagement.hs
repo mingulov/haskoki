@@ -3413,7 +3413,9 @@ planGenerateKey rules model st mech params tmpl =
       -- at 1024/160, 186-4 above; provider DHX unwired), so
       -- the driver runs
       -- the DSA paramgen entry point and the (P, Q, G) triple
-      -- publishes as X9.42 DH domain parameters -- the same
+      -- publishes on the OpenSSL backend as X9.42 DH domain
+      -- parameters (synthetic passes opaque bytes through
+      -- unstamped) -- the same
       -- FIPS 186 math, the same DER DSS-Parms framing the
       -- finisher stamps).
       | mech == x9_42DhParameterGenMech =
@@ -3430,7 +3432,9 @@ planGenerateKey rules model st mech params tmpl =
       -- pair as X9.42 (on the OpenSSL backend 186-2 at 1024/160,
       -- 186-4 above; same driver entry point, same DER DSS-Parms
       -- framing),
-      -- published as PKCS#3 DH domain parameters -- but the
+      -- published on the OpenSSL backend as PKCS#3 DH domain
+      -- parameters (synthetic passes opaque bytes through
+      -- unstamped) -- but the
       -- subprime size defaults from L (the oracle sends
       -- CKA_PRIME_BITS only and expects CKR_OK).
       | mech == dhPkcsParameterGenMech =

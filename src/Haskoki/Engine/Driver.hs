@@ -2256,15 +2256,19 @@ runEffect env resolve fx = case fx of
           -- point (the OpenSSL backend runs FIPS 186-2 at 1024/160,
           -- 186-4 above; provider DHX unwired, though it also
           -- yields Q); the (P, Q, G)
-          -- triple publishes as X9.42 DH domain parameters
-          -- through the shared DSS-Parms finisher.
+          -- triple publishes on the OpenSSL backend as X9.42 DH
+          -- domain parameters through the shared DSS-Parms
+          -- finisher (synthetic passes opaque bytes through
+          -- unstamped).
           (m, GenDsaParams p q) | m == x9_42DhParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
           -- DH PKCS parameter generation runs the same DSA entry
           -- point (186-2 at 1024/160, 186-4 above on the OpenSSL
           -- backend; DHX unwired, as for X9.42); the pending attrs
           -- stamped by the planner
-          -- publish it as PKCS#3 DH domain parameters.
+          -- publish it on the OpenSSL backend as PKCS#3 DH domain
+          -- parameters (synthetic passes opaque bytes through
+          -- unstamped).
           (m, GenDsaParams p q) | m == dhPkcsParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
           (m, GenDsaKeypair der) | m == dsaKeyPairGenMech ->
