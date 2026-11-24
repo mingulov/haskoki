@@ -2253,15 +2253,17 @@ runEffect env resolve fx = case fx of
           (m, GenDsaParams p q) | m == dsaParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
           -- X9.42 DH parameter generation runs the DSA entry
-          -- point (FIPS 186-2 at 1024/160, 186-4 above; provider
-          -- DHX unwired, though it also yields Q); the (P, Q, G)
+          -- point (the OpenSSL backend runs FIPS 186-2 at 1024/160,
+          -- 186-4 above; provider DHX unwired, though it also
+          -- yields Q); the (P, Q, G)
           -- triple publishes as X9.42 DH domain parameters
           -- through the shared DSS-Parms finisher.
           (m, GenDsaParams p q) | m == x9_42DhParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
           -- DH PKCS parameter generation runs the same DSA entry
-          -- point (186-2 at 1024/160, 186-4 above; DHX unwired, as
-          -- for X9.42); the pending attrs stamped by the planner
+          -- point (186-2 at 1024/160, 186-4 above on the OpenSSL
+          -- backend; DHX unwired, as for X9.42); the pending attrs
+          -- stamped by the planner
           -- publish it as PKCS#3 DH domain parameters.
           (m, GenDsaParams p q) | m == dhPkcsParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)

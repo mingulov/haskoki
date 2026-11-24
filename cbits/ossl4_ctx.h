@@ -183,10 +183,10 @@ long hsk_ossl4_cipher_legacy(OSSL_LIB_CTX *ctx, const char *ciphername,
 
 /* --- AES-CTS (CBC-CS1 over the fetched ECB primitive) ------------------ */
 
-/* enc: 1 = encrypt, 0 = decrypt. The provider has no CTS mode (fetch
- * probe record: "AES-128-CTS" unimplemented), so the shim runs the
- * NIST SP 800-38A Addendum CBC-CS1 construction with the fetched
- * ECB cipher as the block primitive. Wire order is short-tail
+/* enc: 1 = encrypt, 0 = decrypt. The shim runs the NIST SP 800-38A
+ * Addendum CBC-CS1 construction with the fetched ECB cipher as the
+ * block primitive (instead of the provider AES-CBC-CTS fetch).
+ * Wire order is short-tail
  * first, full pair block second (pinned by the ACVP CBC-CS1
  * vectors, not the RFC 3962 order).
  * Key length must match the fetched ECB cipher; iv is one block;

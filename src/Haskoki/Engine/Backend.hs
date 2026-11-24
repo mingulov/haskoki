@@ -789,8 +789,8 @@ data KeyGenSpec
   | GenEC { genEc :: !EcSpec }
   | GenDSAParams { genDsaPBits :: !Int, genDsaQBits :: !Int }
     -- ^ DSA domain parameters ((L, N) pair; the OpenSSL backend
-    -- runs 186-2 at 1024/160, 186-4 above -- synthetic emits
-    -- opaque test bytes); answers lone DER params.
+    -- runs 186-2 at 1024/160, 186-4 above and answers lone DER
+    -- params; synthetic emits opaque test bytes).
   | GenDSAKeypair { genDsaParams :: !ByteString }
     -- ^ DSA keypair from DER domain parameters; answers the
     -- PKCS#8/SPKI DER halves.
