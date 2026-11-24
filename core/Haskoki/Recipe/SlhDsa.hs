@@ -5,7 +5,7 @@ One header mechanism, @CKM_SLH_DSA@, with the optional
 @slhdsa-params\/1@: a hedge word plus a context string. The
 struct is OPTIONAL (OASIS v3.2 §SLH-DSA Signature: no
 parameter means an empty context; haskoki's decoder supplies
-@CKH_HEDGE_PREFERRED@ — the ML-DSA mirror): missing parameters
+@CKH_HEDGE_PREFERRED@ -- the ML-DSA mirror): missing parameters
 decode to the default
 and validate. All three hedge variants serve (preferred and
 required ride the provider default, proven hedged by probe —
@@ -156,7 +156,7 @@ decodeSlhdsaParams bs
 -- context of at most 255 bytes (the FIPS 205 bound). Missing
 -- parameters validate (empty decodes to the default);
 -- overlong contexts and unmapped hedge words are honest
--- refusals — validated here, never reaching the provider.
+-- refusals -- validated here, never reaching the provider.
 slhdsaParamsValid :: SlhdsaRecipe -> ByteString -> Bool
 slhdsaParamsValid _ params = case decodeSlhdsaParams params of
   Just (_, ctx) -> BS.length ctx <= 255

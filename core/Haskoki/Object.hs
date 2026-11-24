@@ -744,7 +744,7 @@ certImmutable =
 -- refuse as 'CKR_CURVE_NOT_SUPPORTED'. ML-DSA halves assemble
 -- from the parameter set plus the raw key value (the public
 -- value, the private expanded key); a seed-only private
--- template refuses — haskoki requires the expanded value (the
+-- template refuses -- haskoki requires the expanded value (the
 -- provider documents seed expansion, but the template gate
 -- rejects before the provider is reached). DH halves assemble
 -- from prime/base plus the raw value

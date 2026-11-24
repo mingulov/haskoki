@@ -1100,7 +1100,7 @@ generateKeyECGated gate be ec =
 ossl4Caps :: String -> String -> BackendCaps
 ossl4Caps version propq = forceCaps ossl4StaticCaps
   { bcVersion = version
-  , bcParamNotes = Map.insert "provider" ("default only; propquery " ++ propq)
+  , bcParamNotes = Map.insert "provider" ("default+legacy; propquery " ++ propq)
       (bcParamNotes ossl4StaticCaps)
   }
 
