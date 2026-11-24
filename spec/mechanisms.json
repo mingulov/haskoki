@@ -17528,7 +17528,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "MD2 key derivation: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
+      "notes": "MD2 key derivation: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported-with-reason: MD2 absent from both providers (extends the CKM_MD2 precedent). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
       "numeric_id": "0x00000391",
       "routes": [],
       "source_refs": [
@@ -23418,7 +23418,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "SKIPJACK: absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001008",
       "routes": [],
       "source_refs": [
@@ -23446,7 +23446,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "SKIPJACK: absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001009",
       "routes": [],
       "source_refs": [
@@ -23474,7 +23474,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "SKIPJACK: absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x0000100a",
       "routes": [],
       "source_refs": [
@@ -23830,7 +23830,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001034",
       "routes": [],
       "source_refs": [
@@ -23858,7 +23858,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001035",
       "routes": [],
       "source_refs": [
@@ -23886,7 +23886,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001036",
       "routes": [],
       "source_refs": [
@@ -25903,7 +25903,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001063",
       "routes": [],
       "source_refs": [
@@ -25931,7 +25931,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001064",
       "routes": [],
       "source_refs": [
@@ -25959,7 +25959,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001065",
       "routes": [],
       "source_refs": [
@@ -28961,7 +28961,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "GOST key wrap: GOST is absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001203",
       "routes": [],
       "source_refs": [
@@ -28989,7 +28989,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.10 derive: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no route exists.\nReal unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey). Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
+      "notes": "GOST R 34.10 derive: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no route exists.\nReal unsupported-with-reason: GOST absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded). Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
       "numeric_id": "0x00001204",
       "routes": [],
       "source_refs": [
@@ -29234,7 +29234,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no route exists.\nReal unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance).",
+      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no route exists.\nReal unsupported-with-reason: GOST absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance).",
       "numeric_id": "0x00001223",
       "routes": [],
       "source_refs": [
@@ -29262,7 +29262,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "GOST key wrap: GOST is absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00001224",
       "routes": [],
       "source_refs": [
@@ -29790,7 +29790,7 @@
         "min_key_size": 1024,
         "max_key_size": 3072
       },
-      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42; CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (the provider DH paramgen emits P+G only, no Q in any mode \u2014 CLI- and EVP-probed, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
+      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42; CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (haskoki does not wire the provider DHX FIPS 186-4 path, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002001",
       "routes": [
         {
@@ -29853,7 +29853,7 @@
         "min_key_size": 1024,
         "max_key_size": 3072
       },
-      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA; CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (the provider DH paramgen emits P+G only, no Q in any mode \u2014 CLI- and EVP-probed). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
+      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA; CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (haskoki does not wire the provider DHX FIPS 186-4 path). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002002",
       "routes": [
         {
@@ -33680,7 +33680,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Salsa20-Poly1305: Salsa20 is absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey).",
+      "notes": "Salsa20-Poly1305: Salsa20 is absent from both providers in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded).",
       "numeric_id": "0x00004022",
       "routes": [],
       "source_refs": [

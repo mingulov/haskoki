@@ -33,10 +33,11 @@ Consumers:
   the real backend, test constructions on synthetic) — pinned by
   RoutingE2ESpec vectors and SyntheticSpec constructions.
 
-Deferred family members (not recipes, named gaps): the TLS\/SSL
-protocol KDFs (a later protocol-specials slice) and
-@CKM_HKDF_KEY_GEN@ (a keygen affordance, later) — see
-mechanisms.json honesty notes. @CKM_HKDF_DATA@ is served by the
+Deferred family members (not recipes, named gaps): the WTLS
+protocol KDFs (a later protocol-specials slice) -- see
+mechanisms.json honesty notes. @CKM_HKDF_KEY_GEN@ is served by
+the keygen sweep ('Haskoki.Operation.KeyManagement').
+@CKM_HKDF_DATA@ is served by the
 HKDF-DATA arm of 'Haskoki.Operation.Derive.planDerive' (same KDF
 as HKDF-DERIVE, data-object outputs), not by this recipe.
 -}

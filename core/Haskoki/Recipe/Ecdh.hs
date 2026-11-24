@@ -34,11 +34,10 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_ECMQV_DERIVE@ (no provider equivalent),
-@CKM_ECDH_AES_KEY_WRAP@, @CKM_ECDH_X_AES_KEY_WRAP@,
-@CKM_ECDH_COF_AES_KEY_WRAP@ (ECDH+KDF+AES-KW compositions, a later
-wrap-composition slice), and every non-null ECDH KDF selector —
-see mechanisms.json honesty notes.
+@CKM_ECMQV_DERIVE@ (no provider equivalent), and every non-null
+ECDH KDF selector -- see mechanisms.json honesty notes.
+(The three ECDH AES-wrap compositions are served:
+'Haskoki.Recipe.WrapComp'.)
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Ecdh

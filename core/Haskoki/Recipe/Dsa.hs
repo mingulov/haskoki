@@ -29,7 +29,8 @@ Consumers:
 Deferred family members (not recipes, named gaps):
 @CKM_DSA_PROBABILISTIC_PARAMETER_GEN@,
 @CKM_DSA_SHAWE_TAYLOR_PARAMETER_GEN@ and @CKM_DSA_FIPS_G_GEN@
-(seeded FIPS 186-4 generation: no provider equivalent; see
+(seeded FIPS 186-4 generation: haskoki does not wire the
+provider FFC seed/gindex controls into these routes; see
 mechanisms.json honesty notes).
 -}
 {-# LANGUAGE OverloadedStrings #-}

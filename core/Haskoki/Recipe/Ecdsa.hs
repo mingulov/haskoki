@@ -27,11 +27,11 @@ Consumers:
   the libcrypto interop vectors execute the bindings pinned here
   (SyntheticSpec, OpenSSLSpec).
 
-Deferred family members (not recipes, named gaps): @CKM_ECDH1_DERIVE@
-and @CKM_ECDH1_COFACTOR_DERIVE@ (the ECDH shape, next slice),
+Deferred family members (not recipes, named gaps):
 @CKM_XEDDSA@ (no provider equivalent), @CKM_GOSTR3410*@ (no
-provider equivalent) — see mechanisms.json honesty notes.
-(@CKM_EDDSA@ is served: 'Haskoki.Recipe.Eddsa'.)
+provider equivalent) -- see mechanisms.json honesty notes.
+(@CKM_EDDSA@ is served: 'Haskoki.Recipe.Eddsa'. Plain and
+cofactor ECDH derive are served: 'Haskoki.Recipe.Ecdh'.)
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Ecdsa
