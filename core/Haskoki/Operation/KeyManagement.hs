@@ -3409,8 +3409,9 @@ planGenerateKey rules model st mech params tmpl =
               , FxGenerateKey mech BS.empty (encodeGenArgs (GenDsaParams l n))
               )
       -- X9.42 DH parameter generation frames the same
-      -- (L, N) pair as DSA (FIPS 186-2 at 1024/160, 186-4
-      -- above; provider DHX unwired), so the driver runs
+      -- (L, N) pair as DSA (on the OpenSSL backend FIPS 186-2
+      -- at 1024/160, 186-4 above; provider DHX unwired), so
+      -- the driver runs
       -- the DSA paramgen entry point and the (P, Q, G) triple
       -- publishes as X9.42 DH domain parameters -- the same
       -- FIPS 186 math, the same DER DSS-Parms framing the
@@ -3426,8 +3427,9 @@ planGenerateKey rules model st mech params tmpl =
               , FxGenerateKey mech BS.empty (encodeGenArgs (GenDsaParams l n))
               )
       -- DH PKCS parameter generation frames the same (L, N)
-      -- pair as X9.42 (186-2 at 1024/160, 186-4 above; same
-      -- driver entry point, same DER DSS-Parms framing),
+      -- pair as X9.42 (on the OpenSSL backend 186-2 at 1024/160,
+      -- 186-4 above; same driver entry point, same DER DSS-Parms
+      -- framing),
       -- published as PKCS#3 DH domain parameters -- but the
       -- subprime size defaults from L (the oracle sends
       -- CKA_PRIME_BITS only and expects CKR_OK).

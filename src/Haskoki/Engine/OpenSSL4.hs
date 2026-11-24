@@ -1950,10 +1950,11 @@ runGuarded (OSSL4Backend env) op miss action = case miss of
 -- | Provider fetch names per cipher spec, verified by
 -- executing the OpenSSLSpec KATs against the pinned libcrypto.
 -- Triple-DES ECB fetches @DES-EDE3@ (the provider's ECB alias).
--- CTS labels are capability-report names only: the provider has no
--- CTS mode, so 'cipherProbeName' / 'ctsEcbName' resolve the
--- underlying ECB primitive the shim builds the stealing
--- construction over. CFB128 fetches @AES-*-CFB@ (the provider has
+-- CTS labels are capability-report names only:
+-- 'cipherProbeName' / 'ctsEcbName' resolve the underlying ECB
+-- primitive the shim builds the stealing construction over
+-- (instead of the provider AES-CBC-CTS fetch). CFB128 fetches
+-- @AES-*-CFB@ (the provider has
 -- no @-CFB128@ alias; bare CFB is the 128-bit feedback). XTS has
 -- no 192 width (the provider has no @AES-192-XTS@).
 cipherFetchName :: CipherSpec -> String

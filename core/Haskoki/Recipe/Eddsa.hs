@@ -36,7 +36,7 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_XEDDSA@ (no 4.1.0 provider signature entry) -- see
+@CKM_XEDDSA@ (absent from both pinned providers) -- see
 mechanisms.json honesty notes.
 -}
 {-# LANGUAGE OverloadedStrings #-}
