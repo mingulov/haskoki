@@ -44,10 +44,12 @@ Deferred family members (not recipes, named gaps): @CKM_AES_CFB64@
 @CKM_*_GCM@\/@CCM@ (AEAD shape, needs its
 own nonce\/tag recipe), the PBE constructors, @CKM_DES_OFB8@
 (no 8-bit OFB for DES in the provider), and every
-provider-absent cipher (RC5, CAST, CAST3, CDMF, SKIPJACK, BATON,
+provider-absent cipher (RC5, CDMF, SKIPJACK, BATON,
 JUNIPER, GOST, KASUMI, TWOFISH, SALSA20 — see mechanisms.json
 honesty notes and the pinned-provider probe record). Single
-DES, RC2, RC4, CAST-128, IDEA, SEED and Blowfish ride the
+DES, RC2, RC4, CAST-128 (including the CAST and CAST3
+key-width identities, fetched as CAST5-*; the bare CAST name
+aliases CAST5-CBC), IDEA, SEED and Blowfish ride the
 @legacy@ provider (loaded alongside @default@ since 11p).
 -}
 {-# LANGUAGE OverloadedStrings #-}
