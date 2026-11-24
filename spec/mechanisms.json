@@ -5885,7 +5885,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11o): unsupported-with-reason. CKM_SHA512_T needs per-t initial values (FIPS 180-4 SHA-512/t is NOT truncation of SHA-512); the pinned provider exposes only two fixed SHA-512/t variants (SHA-512/224 and SHA-512/256, already served as their own rows) next to full SHA-512 and SHA-384, and no general-t primitive. Implementing the compression function in-house would violate the engine-backed rule.",
+      "notes": "Stance (slice 11o): unsupported-with-reason. CKM_SHA512_T needs per-t initial values (FIPS 180-4 SHA-512/t is NOT truncation of SHA-512); the default provider exposes full SHA-512 and SHA-384 plus the fixed 224- and 256-bit variants (SHA-512/224 and SHA-512/256, already served as their own rows), and neither pinned provider exposes a general-t primitive. Implementing the compression function in-house would violate the engine-backed rule.",
       "numeric_id": "0x00000050",
       "routes": [],
       "source_refs": [
@@ -29234,7 +29234,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no route exists.\nReal unsupported-with-reason: GOST absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance).",
+      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no route exists.\nReal unsupported-with-reason: GOST absent from both providers in pinned OpenSSL 4.1.0 (fetch probe 2026-11-24: absent with both providers loaded). Real/behavior/synthetic unsupported-with-reason: neither pinned 4.1.0 provider has a GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance).",
       "numeric_id": "0x00001223",
       "routes": [],
       "source_refs": [
@@ -30122,7 +30122,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "AES-CFB64: neither pinned OpenSSL 4.1.0 provider has a CFB64 mode (only CFB/CFB8/CFB1/OFB), and CFB128 output cannot be sliced into CFB64 feedback.\nReal unsupported-with-reason: neither pinned 4.1.0 provider has an AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB). Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
+      "notes": "AES-CFB64: neither pinned OpenSSL 4.1.0 provider has an AES CFB64 mode (only CFB/CFB8/CFB1/OFB), and CFB128 output cannot be sliced into CFB64 feedback.\nReal unsupported-with-reason: neither pinned 4.1.0 provider has an AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB). Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
       "numeric_id": "0x00002105",
       "routes": [],
       "source_refs": [

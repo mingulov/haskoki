@@ -3542,9 +3542,10 @@ planGenerateKey rules model st mech params tmpl =
 -- | The DSA @(L, N)@ size pair for parameter generation:
 -- @AttrPrimeBits@ is required, @AttrSubprimeBits@ defaults per L
 -- (@{1024: 160, 2048: 256, 3072: 256}@). Served pairs are the
--- (L, N) set the backends approve -- (1024, 160) runs 186-2,
--- (2048, 224), (2048, 256), (3072, 256) run 186-4 -- anything
--- else is inconsistent,
+-- (L, N) set the backends approve -- on the OpenSSL backend
+-- (1024, 160) runs 186-2 and (2048, 224), (2048, 256),
+-- (3072, 256) run 186-4 (synthetic emits opaque test bytes) --
+-- anything else is inconsistent,
 -- mirroring 'rsaBitsOf' (unserved keygen sizes refuse as
 -- inconsistent, never silently substituted). Shared by DSA and
 -- X9.42 DH parameter generation (the same FIPS 186 math); the
