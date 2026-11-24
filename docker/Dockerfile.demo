@@ -76,7 +76,7 @@ ARG PROXY_COMMIT=ed803d463eb886cc42dff47afe5c03b162b37286
 # is a human label only, never the checkout ref; parity 111 holds;
 # checker-lane re-qualification + known deltas recorded in the R10
 # report before this pin commits; v0.3.x single-client default
-# max_contexts=1, harness admits 8).
+# max_contexts=1, demo check lanes admit 8).
 # R9 pin was v0.2.2 (commit 1ed7cc15…); v0.2.1 was attempted and
 # REJECTED (upstream #35 visibility loss, #36 cert-find hole, #37
 # daemon death on message params — the last blocks all full proxy

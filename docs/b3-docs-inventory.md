@@ -153,7 +153,7 @@ is fixed reason-side.
 | `try-it.md`: smoke collects 743 cases (not 743 passes) | `summary.json` `total: 743` both smoke lanes | holds |
 | `try-it.md`: `proxy-example-ok: 5/5`, `p11-kit-demo-ok: 7/7` | `examples/release/p11-kit-example:104`; `test-demo-image.sh:553`; `test-demo-onboarding.sh:91,99` | holds |
 | `try-it.md`: `shell` / `proxy-demo` / `p11-kit-demo` modes | `docker/haskoki-demo:1121-1123` dispatch; usage `:50-58` | holds |
-| `try-it.md`: image pins checker 0.3.0, proxy v0.3.1 | checker gates `docker/Dockerfile.demo:160,237`; proxy `ARG PROXY_COMMIT` `:67` + v0.3.1 note `:75`, provenance gate `:101` | holds |
+| `try-it.md`: image pins checker 0.3.0, proxy v0.3.1 | checker gates `docker/Dockerfile.demo:160,237`; proxy `ARG PROXY_COMMIT` `:67` + v0.3.1 note `:75`, provenance gate `:101-102` | holds |
 | `try-it.md`: image sizes 112.45 MiB compressed / 341.97 MiB unpacked (v0.3.0.0), 346.66 MiB candidate | cited CI run/job links in the text | stated with links; runs live outside the tree, not re-measured here |
 | `release-notes-0.3.0.0.md`: published Oct 9 from `c49aa45`, workflow run 37961585654, 5 unsigned assets | same run id cited in `try-it.md` and `publishing.md`; asset table matches the publishing asset list | holds |
 | `release-notes-0.3.1.0.md`: bare `docker run <image>` runs the demo | `docker/Dockerfile.demo:252-253` (`ENTRYPOINT` + `CMD ["demo"]`) | holds |
