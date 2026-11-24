@@ -1573,12 +1573,12 @@ dX9_42DhKeyPairGen = promotedDesc "CKM_X9_42_DH_KEY_PAIR_GEN" allBaselines Famil
 dEdwardsKeyPairGen :: Descriptor
 dEdwardsKeyPairGen = promotedDesc "CKM_EC_EDWARDS_KEY_PAIR_GEN" [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyKeyPair
   noParams [mechRoute OpGenerateKeyPair "CKM_EC_EDWARDS_KEY_PAIR_GEN" ["A20", "A37"]]
-  KeyBits 256 456
+  KeyBits 255 448
 
 dMontgomeryKeyPairGen :: Descriptor
 dMontgomeryKeyPairGen = promotedDesc "CKM_EC_MONTGOMERY_KEY_PAIR_GEN" [Pkcs11_3_0, Pkcs11_3_1, Pkcs11_3_2] FamilyKeyPair
   noParams [mechRoute OpGenerateKeyPair "CKM_EC_MONTGOMERY_KEY_PAIR_GEN" ["A20", "A37"]]
-  KeyBits 256 448
+  KeyBits 255 448
 
 dMlDsaKeyPairGen :: Descriptor
 dMlDsaKeyPairGen = promotedDesc "CKM_ML_DSA_KEY_PAIR_GEN" [Pkcs11_3_2] FamilyKeyPair

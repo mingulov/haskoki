@@ -34,7 +34,8 @@ Deferred family members (not recipes, named gaps):
 @CKM_RIPEMD128_HMAC@\/@CKM_RIPEMD128_HMAC_GENERAL@ (no EVP in the
 pinned provider), @CKM_GOSTR3411_HMAC@ (needs an engine, no
 provider), @CKM_SHA512_T_HMAC@\/@CKM_SHA512_T_HMAC_GENERAL@
-(t-parameter codec pending), @CKM_PBA_SHA1_WITH_SHA1_HMAC@ (a PBA
+(no general-t provider digest, unsupported — see mechanisms.json
+honesty notes), @CKM_PBA_SHA1_WITH_SHA1_HMAC@ (a PBA
 constructor, not the HMAC shape), and the non-HMAC MACs (CBC-MAC
 and protocol-MAC sub-shapes, no engine entry yet).
 -}

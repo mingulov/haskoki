@@ -19,7 +19,8 @@ Consumers:
   KATs execute the widths pinned here (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps): @CKM_SHA512_T@
-(t-parameter codec pending, stays planned), @CKM_MD2@ and
+(no general-t provider digest, unsupported — see mechanisms.json
+honesty notes), @CKM_MD2@ and
 @CKM_RIPEMD128@ (no EVP in the pinned provider), @CKM_GOSTR3411@
 (needs an engine, no provider), @CKM_FASTHASH@ (vendor mechanism, no
 public algorithm). The @CKM_BLAKE2B_*@ widths are covered as native
