@@ -108,7 +108,7 @@ coherence or chain-validation claim. See the [certificate policy](certificate-ob
 
 ## Direct and proxy scope
 
-The demo pins `pkcs11-proxy-ng` v0.2.2. Its qualified subset supports the
+The demo pins `pkcs11-proxy-ng` v0.3.1. Its qualified subset supports the
 backend's 3.1 table and ordinary certificate lifecycle calls. The
 [parity driver](../scripts/test-proxy-parity.sh) keeps these direct-only
 boundaries:

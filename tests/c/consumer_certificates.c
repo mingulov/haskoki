@@ -564,7 +564,7 @@ static void stale_fault(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE o,
  * survive a SQLite restart with exact readback and fresh handles;
  * session certs never survive; memory stays volatile.
  * Two behaviors are proxy-owned divergences (HASKOKI_CONSUMER_TOPOLOGY=
- * proxy; docs/proxy-exclusions.md). pkcs11-proxy-ng v0.2.2 keeps the
+ * proxy; docs/proxy-exclusions.md). pkcs11-proxy-ng v0.3.1 keeps the
  * backend initialized across a client C_Finalize, so a memory-store
  * token object survives the client restart; and its object handles are
  * per client context and start again at 1, so the pre-restart handle

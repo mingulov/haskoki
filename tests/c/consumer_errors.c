@@ -655,7 +655,7 @@ static void refusal_code_legs(CK_FUNCTION_LIST_3_0_PTR T) {
   CHECKC(prv == CKR_OK && outLen == 16, "refusal: control AES-CMAC signs");
   prv = T->C_DigestInit(s, &sha);
   if (g_isProxy && prv == CKR_OPERATION_ACTIVE) {
-    /* pkcs11-proxy-ng v0.2.2 refuses C_DigestKey on an unknown handle
+    /* pkcs11-proxy-ng v0.3.1 refuses C_DigestKey on an unknown handle
      * itself (client-side handle translation), so the backend never sees
      * the error and its digest stays active. Direct topology follows
      * PKCS#11 v3.1 5.12 (an error terminates the operation). Recorded as

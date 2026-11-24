@@ -295,10 +295,10 @@ jobs:
         run: |
           set -euo pipefail
           {
-          PROXY_COMMIT=1ed7cc15c838de2e56ba03ac34f426847ffce049
-          PROXY_LOCK=5452b6bd6ab47d72e8172a04a8f8a72460dabc17f66ced110b930f6d5d75b7d3
-          PROXY_DAEMON=91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b
-          PROXY_SHIM=87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75
+          PROXY_COMMIT=ed803d463eb886cc42dff47afe5c03b162b37286
+          PROXY_LOCK=e55d03139d162c5a87bb508b063047122ca4a4f486bcfd195a5b97e8d486b633
+          PROXY_DAEMON=26b9a6f4b898fb4b9ffad0c967d00e3ee7ce5f411c6e51757c42e8a7506bbd50
+          PROXY_SHIM=645f896af88fdb4c342679ea739c49e30606ce0c334554af5b876cec95bb2b3c
           rm -rf proxy-src proxy-pair
           git clone --no-checkout https://github.com/mingulov/pkcs11-proxy-ng proxy-src
           (cd proxy-src && git checkout --quiet "$PROXY_COMMIT")
@@ -433,9 +433,9 @@ jobs:
             if [ -x proxy-in/proxy-pair/pkcs11-proxy-ng ] \
                 && [ -f proxy-in/proxy-pair/libpkcs11_proxy_ng_shim.so ] \
                 && (cd proxy-in/proxy-pair \
-                  && echo "91d9ccba8e579891fb5a8815f66518baef0a757bd9a2563097983ca9d056385b  pkcs11-proxy-ng" | sha256sum -c -) >/dev/null 2>&1 \
+                  && echo "26b9a6f4b898fb4b9ffad0c967d00e3ee7ce5f411c6e51757c42e8a7506bbd50  pkcs11-proxy-ng" | sha256sum -c -) >/dev/null 2>&1 \
                 && (cd proxy-in/proxy-pair \
-                  && echo "87eb3f651c82de637e30666f305fae540375680bc754cf76249e17b6e7cb1d75  libpkcs11_proxy_ng_shim.so" | sha256sum -c -) >/dev/null 2>&1; then
+                  && echo "645f896af88fdb4c342679ea739c49e30606ce0c334554af5b876cec95bb2b3c  libpkcs11_proxy_ng_shim.so" | sha256sum -c -) >/dev/null 2>&1; then
               PROXY_OK=yes
             fi
           fi

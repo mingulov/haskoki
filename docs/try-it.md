@@ -152,7 +152,7 @@ local socket. Neither recipe configures a remote production service.
 
 The image carries the Haskoki module and control tool, GHC runtime,
 OpenSSL libraries, OpenSC `pkcs11-tool`, Python with `pkcs11-check` 0.3.0,
-`pkcs11-proxy-ng` v0.2.2, p11-kit server/client, and the example scripts.
+`pkcs11-proxy-ng` v0.3.1, p11-kit server/client, and the example scripts.
 Compilers and build caches belong to the separate developer image.
 p11scope is an optional host-side observer, not an image dependency.
 

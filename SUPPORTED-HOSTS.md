@@ -72,7 +72,7 @@ unverified — a missing C pin alone never makes a row model-only.
 | Async (3.2) | `C_AsyncComplete`, `C_AsyncGetID`, `C_AsyncJoin` on 3.2 only | OpenSSL4 (digest jobs) | `tests/c/async_routed.c` (pending + complete bytes) | partial: digest-only, explicit async session; direct-only at proxy (issue 24) |
 | Notifications, callbacks | `C_WaitForSlotEvent` on all tables; surrender callback on one-shot digest | in-process slot service | `notifications_routed` (72 direct legs), `consumer_notifications_poll`, `control_events` | partial: rich legs direct-only at proxy (issue 25); callbacks dropped at proxy; no broadcast promise |
 | Stubs (refused by design) | `C_GetOperationState`, `C_SetOperationState`, `C_GetObjectSize`, parallel pair, plus 8 post-2.40 entries (`C_LoginUser`, the four `C_VerifySignature` entries, `C_GetSessionValidationFlags`, `C_WrapKeyAuthenticated`, `C_UnwrapKeyAuthenticated`) | n/a | `consumer_roundtrip` stub pins (legacy); `cbits/function_tables.c` + `cbits/abi_stubs.inc` | unsupported: `CKR_FUNCTION_NOT_SUPPORTED` (`CKR_FUNCTION_NOT_PARALLEL` for the pair) |
-| Proxy example | loopback gRPC/h2c (`auth = "none"`), daemon + shim v0.2.2 (`1ed7cc15`) | same module, other process | `scripts/test-proxy-parity.sh` (same CKR + outputs; seeded-mismatch control) | moves the process boundary only: loopback plaintext with no authentication in this example |
+| Proxy example | loopback gRPC/h2c (`auth = "none"`), daemon + shim v0.3.1 (`ed803d46`) | same module, other process | `scripts/test-proxy-parity.sh` (same CKR + outputs; seeded-mismatch control) | moves the process boundary only: loopback plaintext with no authentication in this example |
 
 ## Not supported
 

@@ -61,13 +61,13 @@ texts beside it. Contents:
 
 ## Proxy (`/opt/haskoki/proxy/`)
 
-`pkcs11-proxy-ng` v0.2.2 (commit `1ed7cc15…`; the `v0.2.2` tag is a
+`pkcs11-proxy-ng` v0.3.1 (commit `ed803d46…`; the `v0.3.1` tag is a
 human label only, never the checkout ref),
 built from the pinned source in the image.
 Dual MIT/Apache-2.0; full texts ship as `LICENSE-MIT` +
 `LICENSE-APACHE` beside the binaries (asserted present by the
 Dockerfile runtime self-test). Source:
-[pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng/tree/1ed7cc15c838de2e56ba03ac34f426847ffce049)
+[pkcs11-proxy-ng](https://github.com/mingulov/pkcs11-proxy-ng/tree/ed803d463eb886cc42dff47afe5c03b162b37286)
 (full-SHA checkout, fail closed on mismatch; Cargo.lock pinned by
 sha256, built `--locked`); daemon/shim hashes in
 the selected image's `/opt/haskoki/proxy/PROVENANCE`.
