@@ -1870,7 +1870,7 @@ eddsaSignEnv = testEnv
 -- mechanism (CKR_ARGUMENTS_BAD is the generic function-argument code).
 caseEddsaParams :: IO ()
 caseEddsaParams = do
-  -- NULL params admit as pure (OASIS Table 42; rc2 registry
+  -- NULL params admit as pure (v3.2 Table 73; rc2 registry
   -- param_required=False).
   let (_, i0) = initOperation eddsaSignEnv emptySessionOps testSession
         (InitArgs OpSign eddsaMech BS.empty (Just signKey) Nothing Nothing)

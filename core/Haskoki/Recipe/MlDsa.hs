@@ -12,7 +12,7 @@ hedged by probe — the provider exposes no force-hedge
 param; deterministic sets the provider @deterministic@ int
 param), and contexts of 0..255 bytes serve (the FIPS 204
 bound); hedge words past 2 and longer contexts refuse at the
-recipe (@CKR_ARGUMENTS_BAD@ at init).
+recipe (@CKR_MECHANISM_PARAM_INVALID@ at init).
 
 The parameter set is NOT in the mechanism parameters: it
 rides the key (@CKA_PARAMETER_SET@ on the object, the

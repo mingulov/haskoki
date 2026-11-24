@@ -2627,7 +2627,7 @@ int main(int argc, char **argv) {
       CHECKC(rv == CKR_TEMPLATE_INCOMPLETE, "DH keygen without base is INCOMPLETE");
     }
     /* EdDSA: Edwards keypair -> sign/verify. The struct is
-     * optional (OASIS Table 42: pure params Not Required; the
+     * optional (v3.2 Table 73: Ed25519 params Not Required; the
      * rc2 oracle registry marks param_required=False): NULL
      * serves pure. The shim maps CKM_EDDSA both
      * parameterless and as the eddsa shape, so both forms

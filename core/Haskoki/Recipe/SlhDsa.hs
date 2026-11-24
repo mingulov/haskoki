@@ -11,8 +11,8 @@ required ride the provider default, proven hedged by probe —
 the provider exposes no force-hedge param; deterministic sets
 the provider @deterministic@ int param), and contexts of
 0..255 bytes serve (the FIPS 205 bound); hedge words past 2
-and longer contexts refuse at the recipe (@CKR_ARGUMENTS_BAD@
-at init).
+and longer contexts refuse at the recipe
+(@CKR_MECHANISM_PARAM_INVALID@ at init).
 
 The parameter set is NOT in the mechanism parameters: it
 rides the key (@CKA_PARAMETER_SET@ on the object, the
@@ -43,7 +43,7 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_HASH_SLH_DSA@ plus the 11 hash-specific variants (haskoki
+@CKM_HASH_SLH_DSA@ plus the 10 hash-specific variants (haskoki
 does not implement the documented external-prehash plus
 unencoded-sign path; see mechanisms.json honesty notes).
 -}
