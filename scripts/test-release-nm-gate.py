@@ -5,7 +5,7 @@ empty ELF). Drives the real script through --check-hooks-only.
 
 STDLIB ONLY. Run: python3 scripts/test-release-nm-gate.py
 Direct host runs need cc, nm and strip. The real-shim leg compiles
-against the pinned OpenSSL 4 headers at /opt/openssl-4.0.2/include
+against the pinned OpenSSL 4 headers at /opt/openssl-4.1.0/include
 when present, else inside the selected builder image (HASKOKI_IMAGE,
 default haskoki-dev:ghc-9.10.3) via docker; it fails closed when
 neither is available.
@@ -19,7 +19,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "make-release.sh"
-OSSL_INC = Path("/opt/openssl-4.0.2/include")
+OSSL_INC = Path("/opt/openssl-4.1.0/include")
 BUILDER_IMAGE = "haskoki-dev:ghc-9.10.3"
 DOCKER_TIMEOUT = 600
 
@@ -308,7 +308,7 @@ class NmGateTests(unittest.TestCase):
         lines = probe_log.read_text().splitlines()
         self.assertEqual(len(lines), 2, lines)
         self.assertIn("test -r", lines[0])
-        self.assertIn("/opt/openssl-4.0.2/include/openssl/evp.h", lines[0])
+        self.assertIn("/opt/openssl-4.1.0/include/openssl/evp.h", lines[0])
         self.assertIn("cc -std=c11", lines[1])
         self.assertIn("custom-builder:test", lines[0])
         self.assertIn("custom-builder:test", lines[1])

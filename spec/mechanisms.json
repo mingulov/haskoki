@@ -9925,7 +9925,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
+      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000201",
       "routes": [],
       "source_refs": [
@@ -9953,7 +9953,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
+      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000202",
       "routes": [],
       "source_refs": [
@@ -17528,7 +17528,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "MD2 key derivation: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
+      "notes": "MD2 key derivation: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
       "numeric_id": "0x00000391",
       "routes": [],
       "source_refs": [
@@ -28989,7 +28989,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.10 derive: no GOST provider in the pinned OpenSSL 4.1.0 build (GOST needs an engine), so no route exists.\nReal unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.1.0 build (needs an engine), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
+      "notes": "GOST R 34.10 derive: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no route exists.\nReal unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
       "numeric_id": "0x00001204",
       "routes": [],
       "source_refs": [
@@ -29017,7 +29017,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.11 digest: no GOST provider in the pinned OpenSSL 4.1.0 build (needs an engine); no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.1.0 build (needs an engine); probed 2026-11-24); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "GOST R 34.11 digest: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets); no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets); probed 2026-11-24); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00001210",
       "routes": [],
       "source_refs": [
@@ -29045,7 +29045,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over GOST R 34.11-94: the pinned OpenSSL 4.1.0 provider has no GOST digest (GOST needs an engine), so no route exists.\nReal unsupported (no GOST provider in the pinned OpenSSL 4.1.0 build (needs an engine); same probe, 2026-11-24); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
+      "notes": "HMAC over GOST R 34.11-94: the pinned OpenSSL 4.1.0 provider has no GOST digest (absent from both provider sets), so no route exists.\nReal unsupported (no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets); same probe, 2026-11-24); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
       "numeric_id": "0x00001211",
       "routes": [],
       "source_refs": [
@@ -29234,7 +29234,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.1.0 build (GOST needs an engine), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance; supersedes the recipe-slice deferral for this row).",
+      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance; supersedes the recipe-slice deferral for this row).",
       "numeric_id": "0x00001223",
       "routes": [],
       "source_refs": [

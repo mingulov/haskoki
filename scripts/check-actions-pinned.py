@@ -2868,9 +2868,9 @@ def probe_mutations(ci: str, docker: str):
     # broken — the selector must not silently pick one).
     cdrv_at = ci.index("  c-drivers:\n")
     dup_anchor = (ci[:cdrv_at] + ci[cdrv_at:].replace(
-        "        run: tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /\n",
+        "        run: tar xzf ossl-cache/openssl-4.1.0.tar.gz -C /\n",
         "        run: echo for d in test-loader.sh test-c-abi.sh"
-        " test-c-output.sh && tar xzf ossl-cache/openssl-4.0.2.tar.gz -C /\n",
+        " test-c-output.sh && tar xzf ossl-cache/openssl-4.1.0.tar.gz -C /\n",
         1))
     # Checker-stage JSON exec-form RUN invoking pip unflagged
     # (codex's exact shape): --no-binary=cffi breaks wheel-only.

@@ -592,8 +592,8 @@ des3Iv = hex "0000000000000000"
 des3Ct = hex "08d7b4fb629d0885"
 
 -- ARIA/CAMELLIA rows (sequential key bytes, RFC-style
--- plaintext). Pinned 4.0.2 CLI, cross-checked byte-identical on the
--- system 3.5.5 CLI.
+-- plaintext). Generated with the OpenSSL 4.0.2 CLI, cross-checked
+-- byte-identical on the system 3.5.5 CLI.
 ariaPt, ariaIv :: ByteString
 ariaPt = hex "00112233445566778899aabbccddeeff"
 ariaIv = hex "000102030405060708090a0b0c0d0e0f"
@@ -1558,7 +1558,8 @@ caseAesRoundtrip = withBackend $ \env -> do
 
 -- Pinned-oracle legacy vectors (pkcs11-check
 -- mechanism_vectors/*.json): every one reproduced byte-identical
--- on the OpenSSL 4.0.2 provider before transcription. DES-CFB64,
+-- on the then-pinned OpenSSL 4.0.2 provider before transcription.
+-- DES-CFB64,
 -- DES-CFB8 and DES-OFB64 have no oracle vector file, so those
 -- pins are cross-checked between the pinned provider and the
 -- system 3.5.5 CLI instead (CFB64/OFB first blocks also equal

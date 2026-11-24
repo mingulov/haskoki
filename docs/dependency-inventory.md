@@ -289,7 +289,7 @@ a scanner list:
   0 `OPENSSL_*` dynamic symbols and NEEDED of only
   `libgcc_s/libc` — fully static).
   This is the wheel's own static build — do NOT confuse it
-  with Haskoki's pinned OpenSSL 4.1.0 (Bundle section) or
+  with Haskoki's pinned OpenSSL 4.0.2 (Bundle section) or
   the OS `libssl3t64` 3.5.5 (table above). Three distinct
   OpenSSL builds ship in this image; each is version-pinned
   where its owner pins it.

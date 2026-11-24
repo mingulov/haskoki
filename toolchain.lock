@@ -47,24 +47,24 @@ tasty-hunit = 0.10.2
 freeze-file = cabal.project.freeze
 
 [verified]
-cabal-test = PASS (client 16/16, logout-oracle 10/10, tests 2/2, core 376/376, prop 70/70, model 1719/1719, storage 504/504, engine 411/411 = 3108/8 suites; in-image /work during build, tree 2d624d3, 2026-11-19)
-cabal-test-image = PASS (same run as cabal-test above; image id sha256:67f9e48d30636cc3d2814404f7b1432c964f69f414e1430e8a18b69b3d221960)
+cabal-test = PASS (client 16/16, logout-oracle 10/10, tests 2/2, core 381/381, prop 74/74, model 1762/1762, storage 524/524, engine 467/467 = 3236/8 suites; in-image /work during build, tree 454f9a0, 2026-11-24)
+cabal-test-image = PASS (same run as cabal-test above; image id sha256:a0a317d9f1aaa0a2e8276ddbb5c07a1de17f69d7058f7950149ca5427693a055)
 cold-build = ~77 min wall (empty Docker cache, 8 vCPU / 30 GB RAM x86-64, 2026-11-19, tree 2d624d3; step-time sum 4623 s)
-warnings = EMPTY (forced native build, 0 warnings)
-make-release = PASS (bind-mount in rebuilt image, tree b4fa52a + bundle-apt fix, 2026-11-19; 95M artifact; 24 bundled libHS; static libcrypto link; closure + record gates passing)
+warnings = EMPTY (forced rebuild in the 4.1.0 image, 0 warnings, tree 454f9a0, 2026-11-24)
+make-release = PASS (bind-mount in rebuilt image, tree 454f9a0, 2026-11-24; 98M artifact; 25 bundled libHS; static libcrypto link; closure + record gates passing)
 
 [openssl-freeze]
 # Loader-proof facts for the toolchain (GHC 9.10.3). The
 # supported-loader policy below is the whole story.
 flib = foreign-library haskoki, type native-shared
 soname = libhaskoki.so
-so-path = dist-newstyle/build/x86_64-linux/ghc-9.10.3/haskoki-0.5.0.0/f/haskoki/build/haskoki/libhaskoki.so
+so-path = dist-newstyle/build/x86_64-linux/ghc-9.10.3/haskoki-0.6.0.0/f/haskoki/build/haskoki/libhaskoki.so
 ghc-options-flib = -Wall -threaded
 cc-options-flib = -Wall -Wextra -std=c11 -pthread
-ld-options-flib = -Wl,-z,nodelete -pthread
+ld-options-flib = -Wl,-z,nodelete -Wl,-z,origin -pthread -Wl,-rpath,$ORIGIN
 rts = threaded, dynamic (libHSrts-1.0.2_thr-ghc9.10.3.so)
-needed = libm.so.6, 24x libHS (base-4.20.2.0, ghc-prim-0.12.0, ghc-internal-9.1003.0, rts-1.0.2_thr, ...), libgmp.so.10, libffi.so.8, libnuma.so.1, libc.so.6
-pinning = DF_1_NODELETE (FLAGS_1: NODELETE)
+needed = libm.so.6, 25x libHS (base-4.20.2.0, ghc-prim-0.12.0, ghc-internal-9.1003.0, rts-1.0.2_thr, ...), libgmp.so.10, libffi.so.8, libnuma.so.1, libc.so.6
+pinning = DF_1_NODELETE (FLAGS_1: NODELETE|ORIGIN)
 hs-exit = absent: no call-site in cbits/ ffi/, no symbol in cbits objects, no dynamic ref in libhaskoki.so
 package-set = unchanged from [hackage-pins] above (flib adds base-only Haskell module; no new deps)
 # Supported-loader policy: Linux x86-64 only, one loaded
@@ -91,6 +91,6 @@ pgp-key = B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40 (verified Good sig o
 configure-flags = --prefix=/opt/openssl-4.1.0 --openssldir=/opt/openssl-4.1.0/ssl --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
 linkage = static libcrypto.a only (no shared libcrypto in NEEDED; no-pinshared for .so embedding)
 prefix-container = /opt/openssl-4.1.0 (OPENSSL4_PREFIX; staged at /tmp/ossl4-stage for pre-rebuild runs)
-fips = out of scope (default provider only)
+fips = out of scope (default + legacy providers loaded; no FIPS provider)
 proof-sha256-abc = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 proof-version-string = OpenSSL 4.1.0 23 Oct 2026
