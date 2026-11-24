@@ -3889,7 +3889,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "X9.42 DH hybrid derive: needs the MQV two-key agreement plus a second derive leg; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: the pinned provider offers no MQV key exchange (plain X9.42 DH derive is served); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 DH hybrid derive: needs a two-key hybrid agreement plus a second derive leg; haskoki has no hybrid-DH route (no CK_X9_42_DH2_DERIVE_PARAMS handling).\nReal unsupported-with-reason: no hybrid-DH route in haskoki (plain X9.42 DH derive is served). Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs CK_X9_42_DH2_DERIVE_PARAMS handling plus a second derive leg, which haskoki does not implement, so no route exists.",
       "numeric_id": "0x00000032",
       "routes": [],
       "source_refs": [
@@ -3917,7 +3917,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: the pinned provider offers no MQV key exchange (plain X9.42 DH derive is served); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: the pinned provider offers no MQV key exchange (plain X9.42 DH derive is served). Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000033",
       "routes": [],
       "source_refs": [
@@ -7394,7 +7394,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC2 block-cipher MAC: haskoki has no CBC-MAC route for RC2 (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC2 in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "RC2 block-cipher MAC: haskoki has no CBC-MAC route for RC2 (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC2 in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000103",
       "routes": [],
       "source_refs": [
@@ -7422,7 +7422,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC2 block-cipher MAC: haskoki has no CBC-MAC route for RC2 (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC2 in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "RC2 block-cipher MAC: haskoki has no CBC-MAC route for RC2 (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC2 in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000104",
       "routes": [],
       "source_refs": [
@@ -8084,7 +8084,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Single-DES block-cipher MAC: haskoki has no CBC-MAC route for Single-DES (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for Single-DES in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "Single-DES block-cipher MAC: haskoki has no CBC-MAC route for Single-DES (the Single-DES cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for Single-DES in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000123",
       "routes": [],
       "source_refs": [
@@ -8112,7 +8112,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Single-DES block-cipher MAC: haskoki has no CBC-MAC route for Single-DES (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for Single-DES in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "Single-DES block-cipher MAC: haskoki has no CBC-MAC route for Single-DES (the Single-DES cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for Single-DES in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000124",
       "routes": [],
       "source_refs": [
@@ -9387,7 +9387,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CDMF block-cipher MAC: haskoki has no CBC-MAC route for CDMF (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CDMF in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "CDMF block-cipher MAC: haskoki has no CBC-MAC route for CDMF (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CDMF in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000143",
       "routes": [],
       "source_refs": [
@@ -9415,7 +9415,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CDMF block-cipher MAC: haskoki has no CBC-MAC route for CDMF (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CDMF in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "CDMF block-cipher MAC: haskoki has no CBC-MAC route for CDMF (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CDMF in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000144",
       "routes": [],
       "source_refs": [
@@ -14174,7 +14174,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the CAST128 cipher ships as CAST5-* in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000303",
       "routes": [],
       "source_refs": [
@@ -14202,7 +14202,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the CAST128 cipher ships as CAST5-* in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000304",
       "routes": [],
       "source_refs": [
@@ -14669,7 +14669,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "CAST3 block-cipher MAC: haskoki has no CBC-MAC route for CAST3 (the CAST3 cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000313",
       "routes": [],
       "source_refs": [
@@ -14697,7 +14697,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "CAST3 block-cipher MAC: haskoki has no CBC-MAC route for CAST3 (the CAST3 cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000314",
       "routes": [],
       "source_refs": [
@@ -15172,7 +15172,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the CAST128 cipher ships as CAST5-* in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000323",
       "routes": [],
       "source_refs": [
@@ -15202,7 +15202,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: haskoki has no CBC-MAC route for CAST (the CAST128 cipher ships as CAST5-* in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for CAST in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000324",
       "routes": [],
       "source_refs": [
@@ -15515,7 +15515,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC5 block-cipher MAC: haskoki has no CBC-MAC route for RC5 (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC5 in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "RC5 block-cipher MAC: haskoki has no CBC-MAC route for RC5 (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC5 in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000333",
       "routes": [],
       "source_refs": [
@@ -15543,7 +15543,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC5 block-cipher MAC: haskoki has no CBC-MAC route for RC5 (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC5 in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "RC5 block-cipher MAC: haskoki has no CBC-MAC route for RC5 (the cipher is absent from the pinned build), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for RC5 in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000334",
       "routes": [],
       "source_refs": [
@@ -15932,7 +15932,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "IDEA block-cipher MAC: haskoki has no CBC-MAC route for IDEA (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for IDEA in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "IDEA block-cipher MAC: haskoki has no CBC-MAC route for IDEA (the IDEA cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for IDEA in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000343",
       "routes": [],
       "source_refs": [
@@ -15960,7 +15960,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "IDEA block-cipher MAC: haskoki has no CBC-MAC route for IDEA (the cipher ships in the pinned default provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for IDEA in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "IDEA block-cipher MAC: haskoki has no CBC-MAC route for IDEA (the IDEA cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for IDEA in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000344",
       "routes": [],
       "source_refs": [
@@ -22709,7 +22709,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SEED block-cipher MAC: haskoki has no CBC-MAC route for SEED (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for SEED in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "SEED block-cipher MAC: haskoki has no CBC-MAC route for SEED (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for SEED in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000653",
       "routes": [],
       "source_refs": [
@@ -22737,7 +22737,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SEED block-cipher MAC: haskoki has no CBC-MAC route for SEED (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for SEED in haskoki; behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
+      "notes": "SEED block-cipher MAC: haskoki has no CBC-MAC route for SEED (the cipher ships only in the pinned legacy provider), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: no CBC-MAC route for SEED in haskoki. Real/behavior/synthetic unsupported-with-reason: no CBC-MAC recipe for these mechanisms (cipher presence varies by family \u2014 see the row head; the module loads both providers), and the provider offers no plain CBC-MAC primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000654",
       "routes": [],
       "source_refs": [
@@ -23586,7 +23586,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: FORTEZZA timestamp (pkcs11-hist 2.2) produces single-part DSA signatures over (hash, current time) for FORTEZZA card tokens -- hardware-bound (FORTEZZA CIPG), needs DSA keys (an unserved family) and trusted wall-clock semantics no software backend reproduces honestly, and OpenSSL 4.1.0 offers no such primitive, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit probed 0x70 in 11n).",
+      "notes": "Catalog-only: FORTEZZA timestamp (pkcs11-hist 2.2) produces single-part DSA signatures over (hash, current time) for FORTEZZA card tokens -- hardware-bound (FORTEZZA CIPG), needs DSA keys and trusted wall-clock semantics no software backend reproduces honestly, and OpenSSL 4.1.0 offers no such primitive, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit probed 0x70 in 11n).",
       "numeric_id": "0x00001020",
       "routes": [],
       "source_refs": [
@@ -29916,7 +29916,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): FIPS 186-4 verifiable p/q generation needs a seed/counter/index path; haskoki serves only unseeded DSA paramgen (CKM_DSA_PARAMETER_GEN) and has no probable-prime generation route -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no seeded paramgen route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): FIPS 186-4 probable-prime p/q generation from a hash input with seed output; haskoki has no CKM_DSA_PROBABILISTIC_PARAMETER_GEN route (unseeded DSA paramgen is served as CKM_DSA_PARAMETER_GEN) -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no CKM_DSA_PROBABILISTIC_PARAMETER_GEN route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002003",
       "routes": [],
       "source_refs": [
@@ -29944,7 +29944,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): FIPS 186-4 Shawe-Taylor verifiable p/q generation needs a seed/counter/index path; haskoki has no Shawe-Taylor route (unseeded DSA paramgen is served as CKM_DSA_PARAMETER_GEN) -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no Shawe-Taylor route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): FIPS 186-4 Shawe-Taylor verifiable p/q generation from a hash input with seed output; haskoki has no CKM_DSA_SHAWE_TAYLOR_PARAMETER_GEN route -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no CKM_DSA_SHAWE_TAYLOR_PARAMETER_GEN route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002004",
       "routes": [],
       "source_refs": [
@@ -29972,7 +29972,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): verifiable g derivation from (p, q, seed, index) needs the FIPS 186-4 seed path; haskoki has no verifiable generator-derivation route -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no generator-derivation route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): verifiable g derivation from (p, q, seed, index); haskoki has no CKM_DSA_FIPS_G_GEN route -- see docs/openssl4-upstream-issues.md (DSA parameter generation). Real unsupported-with-reason: no CKM_DSA_FIPS_G_GEN route in haskoki; behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002005",
       "routes": [],
       "source_refs": [
