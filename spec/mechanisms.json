@@ -20551,7 +20551,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KIP derive: the token derive route over CK_KIP_PARAMS (mechanism selector, contributing key handle, seed; v3.2 sections 6.54.4-5) is unmapped; no OpenSSL primitive backs it.\nReal unsupported-with-reason: token KIP derive route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: token KIP derive route unmapped (v3.2 section 6.54.5; server communication per section 6.54.1 lives in the application, not the token); no OpenSSL primitive backs it (extends the CKM_KIP_MAC stance).",
+      "notes": "KIP derive: the token derive route over CK_KIP_PARAMS (mechanism selector, contributing key handle, seed; v3.2 sections 6.54.4-5) is unmapped.\nReal unsupported-with-reason: token KIP derive route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: token KIP derive route unmapped (v3.2 section 6.54.5; server communication per section 6.54.1 lives in the application, not the token; the underlying mechanism is selectable per section 6.54.4) (extends the CKM_KIP_MAC stance).",
       "numeric_id": "0x00000510",
       "routes": [],
       "source_refs": [
@@ -20607,7 +20607,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KIP per-message MAC: the token sign/verify route over CK_KIP_PARAMS (mechanism selector and MAC key handle; seed unused per v3.2 section 6.54.7) is not mapped in the Raw provider layer; no OpenSSL primitive backs it.\nReal unsupported-with-reason: token KIP sign/verify route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: token KIP sign/verify route unmapped (v3.2 section 6.54.7; server communication per section 6.54.1 lives in the application, not the token); no OpenSSL primitive backs it.",
+      "notes": "KIP per-message MAC: the token sign/verify route is not mapped in the Raw provider layer (CK_KIP_PARAMS per v3.2 section 6.54.4; seed unused per section 6.54.7).\nReal unsupported-with-reason: token KIP sign/verify route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: token KIP sign/verify route unmapped (v3.2 section 6.54.7; server communication per section 6.54.1 lives in the application, not the token; the underlying mechanism is selectable per section 6.54.4).",
       "numeric_id": "0x00000512",
       "routes": [],
       "source_refs": [

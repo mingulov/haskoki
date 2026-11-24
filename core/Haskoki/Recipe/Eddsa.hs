@@ -2,14 +2,14 @@
 
 One header mechanism, @CKM_EDDSA@, with the pure-EdDSA
 parameter shape — @eddsa-params\/1@: a prehash flag plus a
-context string. The struct is optional (OASIS Table 42:
-pure params Not Required; the rc2 oracle registry marks
+context string. The struct is optional (v3.2 Table 73:
+Ed25519 params Not Required; the rc2 oracle registry marks
 @param_required=False@): missing parameters decode to pure,
 and of the explicit combinations only pure (phFlag clear,
 empty context — the only combination haskoki
 serves) validates.
 Non-pure combinations translate to the canonical image and
-refuse at the recipe (@CKR_ARGUMENTS_BAD@ at init);
+refuse at the recipe (@CKR_MECHANISM_PARAM_INVALID@ at init);
 @CKM_XEDDSA@ is not a recipe (no provider equivalent — a
 named gap, see mechanisms.json honesty notes).
 
@@ -101,7 +101,7 @@ encodeEddsaParams ph ctx =
     <> encodeWord64 (BS.length ctx) <> ctx
 
 -- | Decode EdDSA parameters: empty decodes to pure (NULL
--- means pure per OASIS Table 42); truncation, overrun
+-- means pure per v3.2 Table 73); truncation, overrun
 -- lengths, non-0/1 flag words, and trailing bytes all fail
 -- (never a crash, never a partial read).
 decodeEddsaParams :: ByteString -> Maybe (Bool, ByteString)
@@ -122,7 +122,8 @@ decodeEddsaParams bs
 
 -- | EdDSA parameter validation: pure only (flag clear,
 -- empty context), explicit or NULL. Prehash and context are
--- honest refusals — the pinned provider serves neither.
+-- honest refusals — haskoki serves pure only (the provider
+-- documents context and prehash instances, unimplemented here).
 eddsaParamsValid :: EddsaRecipe -> ByteString -> Bool
 eddsaParamsValid _ params = case decodeEddsaParams params of
   Just (False, ctx) -> BS.null ctx
