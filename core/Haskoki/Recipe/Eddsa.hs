@@ -6,7 +6,7 @@ context string. The struct is optional (OASIS Table 42:
 pure params Not Required; the rc2 oracle registry marks
 @param_required=False@): missing parameters decode to pure,
 and of the explicit combinations only pure (phFlag clear,
-empty context — the only combination the pinned provider
+empty context — the only combination haskoki
 serves) validates.
 Non-pure combinations translate to the canonical image and
 refuse at the recipe (@CKR_ARGUMENTS_BAD@ at init);
@@ -36,8 +36,7 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_XEDDSA@ (no 4.1.0 provider signature entry),
-@CKM_ML_DSA@\/@CKM_HASH_ML_DSA@ (later slice) — see
+@CKM_XEDDSA@ (no 4.1.0 provider signature entry) — see
 mechanisms.json honesty notes.
 -}
 {-# LANGUAGE OverloadedStrings #-}

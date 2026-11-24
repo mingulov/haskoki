@@ -15,9 +15,9 @@ rides the key (@CKA_PARAMETER_SET@ on the object, the
 algorithm OID in the DER), and keygen
 (@CKM_SLH_DSA_KEY_PAIR_GEN@) takes no parameter — the set
 comes from the public-key template. @CKM_HASH_SLH_DSA@ and its
-11 hash-specific variants stay catalog-only (the pinned
-provider refuses an explicit digest — no DIY domain
-separation).
+11 hash-specific variants stay catalog-only (haskoki does not
+implement the documented external-prehash plus unencoded-sign
+path).
 'Haskoki.Recipe.SlhDsa' owns the group's canonical codec,
 parameter validation, and mechanism table; these tests pin the
 recipe and its consumers:

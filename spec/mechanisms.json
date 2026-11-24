@@ -3101,7 +3101,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000001f",
       "routes": [],
       "source_refs": [
@@ -3278,7 +3278,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000023",
       "routes": [],
       "source_refs": [
@@ -3306,7 +3306,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000024",
       "routes": [],
       "source_refs": [
@@ -3334,7 +3334,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000025",
       "routes": [],
       "source_refs": [
@@ -3362,7 +3362,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000026",
       "routes": [],
       "source_refs": [
@@ -3390,7 +3390,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000027",
       "routes": [],
       "source_refs": [
@@ -3418,7 +3418,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000028",
       "routes": [],
       "source_refs": [
@@ -3446,7 +3446,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000029",
       "routes": [],
       "source_refs": [
@@ -3474,7 +3474,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000002a",
       "routes": [],
       "source_refs": [
@@ -3502,7 +3502,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000002b",
       "routes": [],
       "source_refs": [
@@ -3530,7 +3530,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: ML-DSA prehash (HashML-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure ML-DSA (CKM_ML_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000002c",
       "routes": [],
       "source_refs": [
@@ -3945,7 +3945,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000034",
       "routes": [],
       "source_refs": [
@@ -3973,7 +3973,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000036",
       "routes": [],
       "source_refs": [
@@ -4001,7 +4001,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000037",
       "routes": [],
       "source_refs": [
@@ -4029,7 +4029,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000038",
       "routes": [],
       "source_refs": [
@@ -4057,7 +4057,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x00000039",
       "routes": [],
       "source_refs": [
@@ -4085,7 +4085,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000003a",
       "routes": [],
       "source_refs": [
@@ -4113,7 +4113,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000003b",
       "routes": [],
       "source_refs": [
@@ -4141,7 +4141,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000003c",
       "routes": [],
       "source_refs": [
@@ -4169,7 +4169,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000003d",
       "routes": [],
       "source_refs": [
@@ -4197,7 +4197,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000003e",
       "routes": [],
       "source_refs": [
@@ -4225,7 +4225,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; these rows stay planned.",
+      "notes": "Catalog-only: SLH-DSA prehash (HashSLH-DSA) has no haskoki route \u2014 OpenSSL 4.1 documents external prehash encoding followed by provider signing with internal encoding disabled (message-encoding 0), but haskoki does not implement that path, so no behavior, synthetic, or real route is offered. Pure SLH-DSA (CKM_SLH_DSA) is served; behavior/synthetic stay planned.",
       "numeric_id": "0x0000003f",
       "routes": [],
       "source_refs": [
@@ -19931,7 +19931,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "TLS Finished-message MAC (CK_TLS_MAC_PARAMS: PRF hash, length, client/server side; v3.2 section 6.40.2): generates Finished-message verify_data but the Finished sign/verify route is unmapped in Raw, so no route exists.\nReal unsupported-with-reason: Finished sign/verify route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: Finished sign/verify route unmapped in Raw, so the mechanism has no route.",
+      "notes": "TLS Finished-message MAC: the Finished sign/verify route is unmapped in Raw, so no route exists (generates Finished-message verify_data; CK_TLS_MAC_PARAMS per v3.2 section 6.40.2).\nReal unsupported-with-reason: Finished sign/verify route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: Finished sign/verify route unmapped in Raw, so the mechanism has no route.",
       "numeric_id": "0x000003d8",
       "routes": [],
       "source_refs": [
@@ -20359,7 +20359,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "TLS Finished-message MAC (CK_TLS_MAC_PARAMS: PRF hash, length, client/server side; v3.2 section 6.40.2): generates Finished-message verify_data but the Finished sign/verify route is unmapped in Raw, so no route exists.\nReal unsupported-with-reason: Finished sign/verify route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: Finished sign/verify route unmapped in Raw, so the mechanism has no route.",
+      "notes": "TLS Finished-message MAC: the Finished sign/verify route is unmapped in Raw, so no route exists (generates Finished-message verify_data; CK_TLS_MAC_PARAMS per v3.2 section 6.40.2).\nReal unsupported-with-reason: Finished sign/verify route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: Finished sign/verify route unmapped in Raw, so the mechanism has no route.",
       "numeric_id": "0x000003e4",
       "routes": [],
       "source_refs": [
@@ -20551,7 +20551,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KIP derive: needs a KIP server flow over CK_KIP_PARAMS (mechanism selector, key handle, seed; v3.2 section 6.54.4); no OpenSSL primitive backs it.\nReal unsupported-with-reason: KIP protocol surface unmapped in Raw (CK_KIP_PARAMS: mechanism selector, key handle, seed). Real/behavior/synthetic unsupported-with-reason: KIP derive operation over a selected underlying mechanism (CK_KIP_PARAMS: mechanism selector, key handle, seed; the CT-KIP server flow of v3.2 section 6.54.1 is unmapped); no OpenSSL primitive backs it (extends the CKM_KIP_MAC stance).",
+      "notes": "KIP derive: the token derive route over CK_KIP_PARAMS (mechanism selector, contributing key handle, seed; v3.2 sections 6.54.4-5) is unmapped; no OpenSSL primitive backs it.\nReal unsupported-with-reason: token KIP derive route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: token KIP derive route unmapped (v3.2 section 6.54.5; server communication per section 6.54.1 lives in the application, not the token); no OpenSSL primitive backs it (extends the CKM_KIP_MAC stance).",
       "numeric_id": "0x00000510",
       "routes": [],
       "source_refs": [
@@ -20579,7 +20579,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KIP wrap: KIP protocol surface is unmapped in Raw (CK_KIP_PARAMS: mechanism selector, key handle, seed); behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: KIP protocol surface unmapped in Raw (CK_KIP_PARAMS: mechanism selector, key handle, seed).",
+      "notes": "KIP wrap: the token wrap/unwrap route over CK_KIP_PARAMS (mechanism selector and seed; hKey unused per v3.2 section 6.54.6) is unmapped in Raw; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: token KIP wrap/unwrap route unmapped in Raw.",
       "numeric_id": "0x00000511",
       "routes": [],
       "source_refs": [
@@ -20607,7 +20607,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KIP per-message MAC: KIP protocol surface is not mapped in the Raw provider layer; no OpenSSL primitive backs it.\nReal unsupported-with-reason: KIP protocol surface unmapped in Raw (CK_KIP_PARAMS: mechanism selector, key handle, seed). Real/behavior/synthetic unsupported-with-reason: KIP sign/verify operation over a selected underlying mechanism (CK_KIP_PARAMS: mechanism selector, key handle, seed; the CT-KIP server flow of v3.2 section 6.54.1 is unmapped); no OpenSSL primitive backs it.",
+      "notes": "KIP per-message MAC: the token sign/verify route over CK_KIP_PARAMS (mechanism selector and MAC key handle; seed unused per v3.2 section 6.54.7) is not mapped in the Raw provider layer; no OpenSSL primitive backs it.\nReal unsupported-with-reason: token KIP sign/verify route unmapped in Raw. Real/behavior/synthetic unsupported-with-reason: token KIP sign/verify route unmapped (v3.2 section 6.54.7; server communication per section 6.54.1 lives in the application, not the token); no OpenSSL primitive backs it.",
       "numeric_id": "0x00000512",
       "routes": [],
       "source_refs": [

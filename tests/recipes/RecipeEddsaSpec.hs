@@ -3,8 +3,8 @@
 The EdDSA group: one header mechanism, @CKM_EDDSA@, with the
 pure-EdDSA parameter shape — @eddsa-params\/1@: a prehash flag
 plus a context string (our engine convention; empty defaults to
-pure: phFlag clear, empty context — the only combination the
-pinned provider serves). Non-pure combinations (prehash set or
+pure: phFlag clear, empty context — the only combination haskoki
+serves). Non-pure combinations (prehash set or
 non-empty context) translate to the canonical image and refuse
 at the recipe; @CKM_XEDDSA@ stays an honest named gap (no
 provider equivalent).

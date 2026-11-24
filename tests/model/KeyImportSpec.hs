@@ -1859,8 +1859,8 @@ caseBadMldsaValue = do
   -- An unknown set refuses inconsistent.
   expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st
     (setT priv AttrParameterSet (ValULong 7)))
-  -- A seed-only private template refuses inconsistent (the
-  -- provider cannot expand a lone seed); seed plus value
+  -- A seed-only private template refuses inconsistent (haskoki
+  -- requires the expanded AttrValue); seed plus value
   -- imports fine (the seed rides verbatim).
   let seedOnly = setT (filter ((/= AttrValue) . fst) priv) AttrSeed (ValBytes seed)
   expectReject CKR_TEMPLATE_INCONSISTENT (planCreateObject m0 st seedOnly)
