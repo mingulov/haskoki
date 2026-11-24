@@ -172,7 +172,7 @@ import Haskoki.Runtime.Storage
   , storeClosed
   , zeroStats
   )
-import Haskoki.Runtime.Trace (SpellingRefusal (..), effectiveStorePath, renderSpellingRefusal)
+import Haskoki.Runtime.Trace (SpellingRefusal (..), effectiveStorePath, recheckResolved, renderSpellingRefusal)
 import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), SlotId (..), TokenId (..))
 
 -- | The schema version this backend creates and serves. Version 3
@@ -2583,20 +2583,25 @@ resolveStorePath p = fst <$> resolveStorePathTracked p
 -- URIs decode once up front, so every guard and SQLite itself
 -- act on the same decoded POSIX path. Anything that would let
 -- the two diverge (query/fragment, undecodable, nested, or
--- empty) refuses instead. Relative @file:@ spellings decode
--- like any other; the rehearsal mandates absolute paths
--- regardless, so a relative spelling can never hide a URI
--- there.
+-- empty) refuses instead, and the RESOLVED spelling re-checks
+-- ('recheckResolved'): resolution can produce a @file:@ URI
+-- the decode never saw, or pass through @:memory:@, which
+-- SQLite treats specially while the guards stat it as a file.
 resolveStoreSpelling :: FilePath -> IO (Either SpellingRefusal FilePath)
 resolveStoreSpelling p = fmap fst <$> resolveStoreSpellingTracked p
 
 -- | Like 'resolveStoreSpelling', also reporting whether the
 -- store path's own final component was a symlink (same contract
--- as 'resolveStorePathTracked', on the effective spelling).
+-- as 'resolveStorePathTracked', on the effective spelling,
+-- re-checked after resolving).
 resolveStoreSpellingTracked :: FilePath -> IO (Either SpellingRefusal (FilePath, Bool))
 resolveStoreSpellingTracked p = case effectiveStorePath p of
   Left r -> pure (Left r)
-  Right eff -> Right <$> resolveStorePathTracked eff
+  Right eff -> do
+    (res, saw) <- resolveStorePathTracked eff
+    pure $ case recheckResolved res of
+      Left r -> Left r
+      Right ok -> Right (ok, saw)
 
 -- | Run a store operation on the normalized spelling: refusal
 -- short-circuits in 'StoreError' before anything touches the

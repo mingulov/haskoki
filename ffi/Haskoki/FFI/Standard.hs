@@ -518,7 +518,7 @@ import Haskoki.Runtime.Storage
   )
 import Haskoki.Runtime.Storage.Preflight (renderStoreRefusal)
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStoreWith, resolveStorePath)
-import Haskoki.Runtime.Trace (TraceEvent (..), Tracer, emitTrace, noteTraceDropped, spellingDrops, tracerAliasesStore, tracerFilePath, uriEffective)
+import Haskoki.Runtime.Trace (TraceEvent (..), Tracer, emitTrace, isFsEncodingUtf8, noteTraceDropped, tracerFilePath, tracerSkipsStoreWith)
 import Haskoki.Session
   ( AdmitDeny
   , EffectivePolicy (..)
@@ -907,36 +907,7 @@ openStdInstanceWithNotify sa cfg slots invoker = guardedSyncPtr $ mask $ \restor
                     -- on drain: skip the row and count the drop
                     -- instead of emitting (fail closed).
                     skip <- case (scPath (cfgStorage cfg), tracerFilePath tr) of
-                      (Just db, Just _) -> do
-                        -- Every opener resolves before SQLite sees
-                        -- the path, so the URI test applies to the
-                        -- RESOLVED spelling ("./file:x" resolves to
-                        -- a URI even though the raw string has no
-                        -- prefix). URI stores guard both spellings,
-                        -- each resolved the opener's way (a decoded
-                        -- escape can introduce dot-dot components);
-                        -- an undecodable file: URI drops, since
-                        -- SQLite keeps a bare % literally and the
-                        -- guard cannot place it. Encoding checks run
-                        -- on spellings BEFORE resolving (the raw db
-                        -- and the decoded eff): resolution can
-                        -- consume the very characters they look for
-                        -- (a decoded non-ASCII name resolving
-                        -- through a symlink to ASCII), while SQLite
-                        -- opens the decoded bytes.
-                        rawDrop <- spellingDrops db
-                        if rawDrop then pure True else do
-                          dbR <- resolveStorePath db
-                          firstHit <- tracerAliasesStore tr dbR
-                          if firstHit then pure True
-                          else if not ("file:" `isPrefixOf` dbR) then pure False
-                          else case uriEffective dbR of
-                            Just eff -> do
-                              effDrop <- spellingDrops eff
-                              if effDrop then pure True else do
-                                effR <- resolveStorePath eff
-                                tracerAliasesStore tr effR
-                            _ -> pure True
+                      (Just db, Just _) -> tracerSkipsStoreWith isFsEncodingUtf8 resolveStorePath tr db
                       _ -> pure False
                     if skip then noteTraceDropped tr else do
                       let (tag, remedy) = renderInitRefusal err

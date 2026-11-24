@@ -102,6 +102,7 @@ spec mkScope = testGroup "Store preflight"
       , testCase "configured but unstored tokens are seeds, not migration" casePlanSeeds
       , testCase "plan rendering carries ids, never PINs" casePlanRedacted
       , testCase "config must select the same sqlite file" caseConfigSelects
+      , testCase "config select compares decoded spellings" caseConfigSelectsUri
       , testCase "schema-3 rowless tokens plan a freeze with no version move" casePlanV3Rowless
       , testCase "a v0.4 async-created store plans a freeze and a move under the async home catalog" casePlanAsyncV04
       , testCase "a schema-3 async-created store is openable under the async home catalog" casePlanAsyncSeededV3
@@ -759,15 +760,58 @@ caseConfigSelects :: IO ()
 caseConfigSelects = withScratch "plan" $ \dir -> do
   (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
   cfg <- loadConfigOrFail cfgPath
-  configSelectsStore store cfg >>= assertEqual "same string" (Right ())
+  configSelectsStore store store cfg >>= assertEqual "same string" (Right ())
   createSymbolicLink store (dir </> "alias.sqlite")
-  configSelectsStore (dir </> "alias.sqlite") cfg >>= assertEqual "same inode" (Right ())
+  aliasCfgPath <- writeStoreConfig (dir </> "a.toml") (dir </> "alias.sqlite") fixtureLabels fixtureSo fixtureUser
+  cfgA <- loadConfigOrFail aliasCfgPath
+  -- The symlink spelling sits in the CONFIG here (the CLI side
+  -- arrives resolved), so only the inode fallback can accept:
+  -- identity legs cannot match distinct spellings.
+  configSelectsStore store store cfgA >>= assertEqual "same inode" (Right ())
   other <- writeStoreConfig (dir </> "o.toml") (dir </> "other.sqlite") fixtureLabels fixtureSo fixtureUser
   cfgO <- loadConfigOrFail other
-  r <- configSelectsStore store cfgO
+  r <- configSelectsStore store store cfgO
   assertEqual "different file" (Left (ConfigPathMismatch (dir </> "other.sqlite") store)) r
-  configSelectsStore store cfg { cfgStorage = (cfgStorage cfg) { scKind = StorageMemory } }
+  configSelectsStore store store cfg { cfgStorage = (cfgStorage cfg) { scKind = StorageMemory } }
     >>= assertEqual "memory" (Left ConfigNotSQLite)
+
+-- | The select compares EFFECTIVE (decoded) spellings on both
+-- sides, matching the opener: a URI twin of the configured store
+-- selects it (identity short-circuits before any stat, so a
+-- literal twin file beside the store cannot sway the verdict),
+-- while an undecodable side or a URI decoding elsewhere
+-- mismatches with the operator's spellings named.
+caseConfigSelectsUri :: IO ()
+caseConfigSelectsUri = withScratch "config-uri" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  uriCfgPath <- writeStoreConfig (dir </> "u.toml") ("file:" ++ store) fixtureLabels fixtureSo fixtureUser
+  cfgUri <- loadConfigOrFail uriCfgPath
+  configSelectsStore store store cfgUri >>= assertEqual "URI config, POSIX CLI" (Right ())
+  configSelectsStore store ("file:" ++ store) cfg >>= assertEqual "POSIX config, URI CLI" (Right ())
+  badCfgPath <- writeStoreConfig (dir </> "b.toml") "file:%zz" fixtureLabels fixtureSo fixtureUser
+  cfgBad <- loadConfigOrFail badCfgPath
+  rBad <- configSelectsStore store store cfgBad
+  assertEqual "undecodable config mismatches" (Left (ConfigPathMismatch "file:%zz" store)) rBad
+  rElse <- configSelectsStore (dir </> "elsewhere.sqlite") ("file:" ++ dir </> "elsewhere.sqlite") cfg
+  assertEqual "URI decoding elsewhere mismatches"
+    (Left (ConfigPathMismatch store ("file:" ++ dir </> "elsewhere.sqlite"))) rElse
+  -- A .. through a missing directory places no file (stat
+  -- cannot traverse it), so it mismatches conservatively even
+  -- when the collapsed spelling would name the store: the
+  -- select never invents a resolution the opener did not
+  -- perform.
+  missingCfgPath <- writeStoreConfig (dir </> "m.toml") (dir </> "missing" </> ".." </> "store.sqlite") fixtureLabels fixtureSo fixtureUser
+  cfgMissing <- loadConfigOrFail missingCfgPath
+  rMissing <- configSelectsStore store store cfgMissing
+  assertEqual "dot-dot through missing mismatches"
+    (Left (ConfigPathMismatch (dir </> "missing" </> ".." </> "store.sqlite") store)) rMissing
+  -- The CLI side arrives resolved (the opener's spelling), so a
+  -- CLI dot-dot through missing selects by identity with the
+  -- configured store.
+  rDotDot <- configSelectsStore store ("file:" ++ dir ++ "/missing/../store.sqlite") cfg
+  assertEqual "CLI dot-dot through missing selects" (Right ()) rDotDot
 
 -- A supported migrate input: the marker is already 3, so only the
 -- rows are frozen and no version move is planned.

@@ -80,3 +80,14 @@ Developer preview: entries land per task and finalize at release.
   §2.3.6): 21-byte scalars load on the 160-bit curves with
   161-bit orders (were refused); 52-byte scalars refuse on
   sect409k1 (51-byte order; were accepted).
+- Store-path spelling is one rule everywhere: bare `file:` URIs
+  decode once up front, so the guards, SQLite, the trace-alias
+  guard, the config select, and migrate's backup directory all
+  act on the same effective path. Query/fragment, undecodable,
+  nested, non-local-authority, and resolve-produced (`./file:x`)
+  URIs refuse with a precise reason, as do the empty path and
+  `:memory:` (SQLite would open a temporary or in-memory
+  database the file guards cannot see). `haskoki-ctl store
+  check`/`migrate` report a bad `--path` as `store-spelling:`
+  before the config select runs; a bad `--backup-dir` spelling
+  likewise precedes a config mismatch.
