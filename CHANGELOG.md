@@ -53,6 +53,13 @@ Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.0.0`.
   §2.3.6) and enforces 1 ≤ d < n: 21-byte scalars load on the
   160-bit curves with 161-bit orders (were refused); 52-byte
   scalars refuse on sect409k1 (51-byte order; were accepted).
+- Store-path spelling is one rule everywhere: bare `file:` URIs
+  decode once up front, so the guards, SQLite, the trace-alias
+  guard, the config select, and migrate's backup dir all act on
+  the same path. Query/fragment, undecodable, nested,
+  non-local-authority, and resolve-produced URIs refuse, as do
+  the empty path and `:memory:` (SQLite would open a temporary
+  or in-memory database the file guards cannot see).
 
 ## [0.5.0.0] - 2026-10-19
 

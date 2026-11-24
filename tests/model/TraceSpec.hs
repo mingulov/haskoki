@@ -7,15 +7,19 @@ module TraceSpec (spec) where
 
 import qualified Data.ByteString.Char8 as BC8
 import Control.Concurrent (myThreadId, throwTo)
-import Control.Exception (AsyncException (..), SomeException, fromException, try)
+import Control.Exception (AsyncException (..), IOException, SomeException, bracket, fromException, try)
 import Data.IORef (newIORef, readIORef, modifyIORef')
 import Data.List (isInfixOf)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory (createDirectory, getTemporaryDirectory, removeDirectoryRecursive)
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
 import Haskoki.Operation (CryptoCause (..), CryptoError (..), functionCName)
 import Haskoki.Outcome (Rejection (..), StateDelta (..))
 import Haskoki.Request (FunctionId (..))
+import Haskoki.Runtime.Config (TraceCfg (..))
 import Haskoki.Runtime.Trace
 import Haskoki.Types (JobId (..), ReturnCode (..))
 
@@ -32,6 +36,14 @@ spec = testGroup "Trace"
   , testCase "function identities name their C entries" caseCNames
   , testCase "sync-try never swallows cancellation" caseTrySyncAsync
   , testCase "store spellings decode once or refuse" caseSpellingTable
+  , testCase "resolved spellings re-check URI and :memory:" caseRecheckTable
+  , testCase "guard: a URI twin resolving away still guards the decoded target" caseGuardTwinSymlink
+  , testCase "guard: a URI spelling aliasing the target drops" caseGuardUriAlias
+  , testCase "guard: a distinct trace file proceeds" caseGuardDistinct
+  , testCase "guard: an undecodable URI drops" caseGuardUndecodable
+  , testCase "guard: a URI spelling with a distinct trace file proceeds" caseGuardUriDistinct
+  , testCase "guard: a trace aimed at the twin's target proceeds" caseGuardTwinTraceProceeds
+  , testCase "guard: a resolved URI strips its authority" caseGuardResolvedUriAuthority
   ]
 
 ids :: TraceIds
@@ -230,7 +242,134 @@ caseSpellingTable = mapM_ check
   , ("file:/tmp/a%.db", Left UriUndecodable)
   , ("file:", Left SpellingEmpty)
   , ("file:file%3Ax", Left UriNested)
+  -- :memory: is NOT special at decode (no file: prefix): the
+  -- resolve stage refuses it, where SQLite would act on it.
+  , (":memory:", Right ":memory:")
+  -- Authority: SQLite opens the path after an empty or
+  -- localhost authority (matched exactly, before decoding)
+  -- and refuses anything else, so decoding agrees.
+  , ("file:///tmp/x.db", Right "/tmp/x.db")
+  , ("file://localhost/tmp/x.db", Right "/tmp/x.db")
+  , ("file://other/tmp/x.db", Left UriAuthority)
+  , ("file://LOCALHOST/tmp/x.db", Left UriAuthority)
+  , ("file://%6cocalhost/tmp/x.db", Left UriAuthority)
+  , ("file://", Left SpellingEmpty)
+  , ("file://localhost/file:x", Right "/file:x")
   ]
   where
     check (input, want) =
       assertEqual ("spelling " ++ show input) want (effectiveStorePath input)
+
+caseRecheckTable :: IO ()
+caseRecheckTable = mapM_ check
+  [ ("", Left SpellingEmpty)
+  , (":memory:", Left SpellingIsMemory)
+  , ("file:x.db", Left UriAfterResolve)
+  , ("file:/abs/x.db", Left UriAfterResolve)
+  , ("/abs/x.db", Right "/abs/x.db")
+  , ("rel/x.db", Right "rel/x.db")
+  , ("xfile:y.db", Right "xfile:y.db")
+  ]
+  where
+    check (input, want) =
+      assertEqual ("recheck " ++ show input) want (recheckResolved input)
+
+-- | Two real files under a scratch dir: the guard's alias legs
+-- stat for real while the resolver is injected (a literal
+-- twin needs a relative URI, which would couple the test to
+-- the process working directory under parallel suites).
+withTokenDecoy :: (FilePath -> FilePath -> IO a) -> IO a
+withTokenDecoy act =
+  bracket create tryRemove $ \dir -> do
+    let token = dir </> "token.db"
+        decoy = dir </> "decoy.db"
+    writeFile token "store-bytes"
+    writeFile decoy "decoy-bytes"
+    act token decoy
+  where
+    create = do
+      base <- getTemporaryDirectory
+      let go :: Int -> IO FilePath
+          go n = do
+            t <- getMonotonicTimeNSec
+            let d = base </> ("haskoki-trace-guard-" ++ show t ++ "-" ++ show n)
+            r <- try (createDirectory d)
+            case r of
+              Right () -> pure d
+              Left (e :: IOException)
+                | n < 100 -> go (n + 1)
+                | otherwise -> ioError e
+      go 0
+    tryRemove d = do
+      _ <- (try (removeDirectoryRecursive d) :: IO (Either IOException ()))
+      pure ()
+
+-- | A literal "file:..." symlink beside the store resolves the
+-- RAW spelling away while the opener decodes to the target the
+-- trace file names: the row must drop (proceeding would emit
+-- into the store).
+caseGuardTwinSymlink :: IO ()
+caseGuardTwinSymlink = withTokenDecoy $ \token decoy -> do
+  tr <- newFileTracer (TraceCfg True token True 64)
+  let twinResolve p
+        | p == "file:" ++ token = pure decoy
+        | otherwise = pure p
+  skip <- tracerSkipsStoreWith (pure True) twinResolve tr ("file:" ++ token)
+  assertEqual "twin resolving away still guards the decoded target" True skip
+
+-- | Control: without a twin, a URI spelling aliasing the trace
+-- target drops.
+caseGuardUriAlias :: IO ()
+caseGuardUriAlias = withTokenDecoy $ \token _decoy -> do
+  tr <- newFileTracer (TraceCfg True token True 64)
+  skip <- tracerSkipsStoreWith (pure True) pure tr ("file:" ++ token)
+  assertEqual "URI alias drops" True skip
+
+-- | Control: a distinct trace file proceeds (the guard must not
+-- mute everything).
+caseGuardDistinct :: IO ()
+caseGuardDistinct = withTokenDecoy $ \token decoy -> do
+  tr <- newFileTracer (TraceCfg True decoy True 64)
+  skip <- tracerSkipsStoreWith (pure True) pure tr token
+  assertEqual "distinct trace proceeds" False skip
+
+-- | An undecodable URI drops: the guard cannot place the store.
+caseGuardUndecodable :: IO ()
+caseGuardUndecodable = withTokenDecoy $ \token _decoy -> do
+  tr <- newFileTracer (TraceCfg True token True 64)
+  skip <- tracerSkipsStoreWith (pure True) pure tr "file:%zz"
+  assertEqual "undecodable URI drops" True skip
+
+-- | A URI spelling per se does not drop: with a distinct trace
+-- file the row proceeds.
+caseGuardUriDistinct :: IO ()
+caseGuardUriDistinct = withTokenDecoy $ \token decoy -> do
+  tr <- newFileTracer (TraceCfg True decoy True 64)
+  skip <- tracerSkipsStoreWith (pure True) pure tr ("file:" ++ token)
+  assertEqual "URI with distinct trace proceeds" False skip
+
+-- | The twin correction's other direction: the trace file aimed
+-- at the twin's resolution target (the decoy stands in for
+-- where the literal twin points) must PROCEED, since the store
+-- opens the decoded target, not the twin. Resolving the raw
+-- spelling would drop here (false conservative).
+caseGuardTwinTraceProceeds :: IO ()
+caseGuardTwinTraceProceeds = withTokenDecoy $ \token decoy -> do
+  tr <- newFileTracer (TraceCfg True decoy True 64)
+  let twinResolve p
+        | p == "file:" ++ token = pure decoy
+        | otherwise = pure p
+  skip <- tracerSkipsStoreWith (pure True) twinResolve tr ("file:" ++ token)
+  assertEqual "trace at the twin target proceeds" False skip
+
+-- | The resolved-URI leg strips authorities like the opener: a
+-- POSIX spelling resolving (via a symlink hop) to a localhost
+-- URI guards the stripped target.
+caseGuardResolvedUriAuthority :: IO ()
+caseGuardResolvedUriAuthority = withTokenDecoy $ \token _decoy -> do
+  tr <- newFileTracer (TraceCfg True token True 64)
+  let hopResolve p
+        | p == "mystore" = pure ("file://localhost" ++ token)
+        | otherwise = pure p
+  skip <- tracerSkipsStoreWith (pure True) hopResolve tr "mystore"
+  assertEqual "resolved URI authority strips to the target" True skip

@@ -22,6 +22,8 @@ module Haskoki.Runtime.Trace
   , newFileTracer
   , tracerAliasesStore
   , tracerAliasesStoreWith
+  , tracerSkipsStoreWith
+  , isFsEncodingUtf8
   , isUtf8EncodingName
   , shouldDropForEncoding
   , spellingDrops
@@ -30,6 +32,7 @@ module Haskoki.Runtime.Trace
   , uriEffective
   , SpellingRefusal (..)
   , effectiveStorePath
+  , recheckResolved
   , renderSpellingRefusal
   , noteTraceDropped
   , emitTrace
@@ -471,8 +474,69 @@ resolveFinalLink p = go p (41 :: Int) []
 -- closed (the literal spelling stays guarded).
 uriEffective :: FilePath -> Maybe FilePath
 uriEffective p
-  | "file:" `isPrefixOf` p = decodeUriPath (takeWhile (\c -> c /= '?' && c /= '#') (drop 5 p))
+  | "file:" `isPrefixOf` p = stripFileAuthority clean >>= decodeUriPath
   | otherwise = Nothing
+  where clean = takeWhile (\c -> c /= '?' && c /= '#') (drop 5 p)
+
+-- | Whether the trace row for a refused store open must be
+-- skipped: a file tracer aimed at the store (or its journal,
+-- sidecars, or lock) would corrupt it on drain, so the row
+-- drops and the drop is counted instead of emitting (fail
+-- closed). The store opens the EFFECTIVE spelling (decoding
+-- once), so the guard decodes first: a spelling the opener
+-- would refuse cannot place the store (drop), and resolution
+-- runs on the decoded spelling (a literal @file:@ twin beside
+-- the store no longer sways the verdict). Every opener
+-- resolves before SQLite sees the path, so the URI test
+-- applies to the RESOLVED spelling too (@./file:x@ resolves
+-- to a URI even though the raw string has no prefix; a
+-- symlink hop can do the same): a resolved URI guards the
+-- decoded spelling as well (a decoded escape can introduce
+-- dot-dot components); an undecodable @file:@ URI drops,
+-- since SQLite keeps a bare % literally and the guard cannot
+-- place it. Encoding checks run on spellings BEFORE resolving
+-- (the raw db and the decoded eff): resolution can consume
+-- the very characters they look for (a decoded non-ASCII name
+-- resolving through a symlink to ASCII), while SQLite opens
+-- the decoded bytes. The resolver is injected (it lives in
+-- the storage layer, above this module), as is the UTF-8
+-- probe (process-global state, like
+-- 'tracerAliasesStoreWith').
+tracerSkipsStoreWith :: IO Bool -> (FilePath -> IO FilePath) -> Tracer -> FilePath -> IO Bool
+tracerSkipsStoreWith isUtf8 resolve tr db = do
+  rawDrop <- spellingDropsWith isUtf8 db
+  if rawDrop then pure True else case effectiveStorePath db of
+    Left _ -> pure True
+    Right eff -> do
+      effDrop <- spellingDropsWith isUtf8 eff
+      if effDrop then pure True else do
+        dbR <- resolve eff
+        firstHit <- tracerAliasesStoreWith isUtf8 tr dbR
+        if firstHit then pure True
+        else if not ("file:" `isPrefixOf` dbR) then pure False
+        else case uriEffective dbR of
+          Just eff2 -> do
+            eff2Drop <- spellingDropsWith isUtf8 eff2
+            if eff2Drop then pure True else do
+              eff2R <- resolve eff2
+              tracerAliasesStoreWith isUtf8 tr eff2R
+          _ -> pure True
+
+-- | Strip a @file:@ URI authority section: after the scheme, a
+-- leading @//@ opens an authority, and SQLite opens the path
+-- after an empty or @localhost@ authority while refusing
+-- anything else (matched exactly and BEFORE percent-decoding,
+-- so an encoded @localhost@ never smuggles through; SQLite
+-- itself refuses @LOCALHOST@). No leading @//@ means no
+-- authority section. 'Nothing' refuses the spelling.
+stripFileAuthority :: String -> Maybe String
+stripFileAuthority s
+  | "//" `isPrefixOf` s =
+      let after = drop 2 s
+          auth = takeWhile (/= '/') after
+          rest = dropWhile (/= '/') after
+      in if auth == "" || auth == "localhost" then Just rest else Nothing
+  | otherwise = Just s
 
 -- | Why a store spelling cannot become an effective path.
 data SpellingRefusal
@@ -489,28 +553,62 @@ data SpellingRefusal
   | UriNested
     -- ^ The decoded path is itself a @file:@ URI: passing it on
     -- would re-enter URI interpretation.
+  | UriAuthority
+    -- ^ The @file:@ URI carries a non-local authority: SQLite
+    -- opens the path after a @localhost@ (or empty) authority
+    -- and refuses anything else, so decoding the authority
+    -- into a path component would diverge from the opener.
+  | UriAfterResolve
+    -- ^ Resolution produced a @file:@-prefixed spelling (a
+    -- relative path whose dot components resolved away, or a
+    -- symlink hop onto a URI-shaped target): SQLite would
+    -- re-enter URI interpretation while the guards stat the
+    -- spelling literally.
+  | SpellingIsMemory
+    -- ^ @:memory:@ names SQLite's in-memory database, which the
+    -- file guards (journal, sidecars, locks) cannot see: it
+    -- would open unguarded.
   deriving (Eq, Show)
 
 -- | Normalize a store spelling to the single POSIX path every
 -- guard and SQLite itself must use: POSIX spellings pass
--- through, bare @file:@ URIs decode exactly once, and anything
--- that would let the guards and the opener diverge refuses.
+-- through, bare @file:@ URIs decode exactly once (an empty or
+-- @localhost@ authority strips, like SQLite; anything else
+-- refuses), and anything that would let the guards and the
+-- opener diverge refuses.
 effectiveStorePath :: FilePath -> Either SpellingRefusal FilePath
 effectiveStorePath p
   | null p = Left SpellingEmpty
   | not ("file:" `isPrefixOf` p) = Right p
   | any (`elem` rest) "?#" = Left UriQueryOrFragment
-  | otherwise = case decodeUriPath rest of
-      Nothing -> Left UriUndecodable
-      Just "" -> Left SpellingEmpty
-      Just eff
-        | "file:" `isPrefixOf` eff -> Left UriNested
-        | otherwise -> Right eff
+  | otherwise = case stripFileAuthority rest of
+      Nothing -> Left UriAuthority
+      Just noAuth -> case decodeUriPath noAuth of
+        Nothing -> Left UriUndecodable
+        Just "" -> Left SpellingEmpty
+        Just eff
+          | "file:" `isPrefixOf` eff -> Left UriNested
+          | otherwise -> Right eff
   where
     rest = drop 5 p
 
 -- | Render a spelling refusal against the offending input. Single
 -- source: every layer wraps it in its own taxonomy.
+-- | Re-check a RESOLVED store spelling: resolution can produce
+-- spellings the decode stage never sees (a relative @./file:x@
+-- resolving to @file:x@, a symlink hop onto a @file:@-prefixed
+-- target) or pass through spellings SQLite treats specially
+-- while the guards stat them as files (@:memory:@ opens the
+-- in-memory database, unguarded). The empty leg echoes decode's
+-- rule: resolve passes @\"\"@ through, so a future decode
+-- relaxation cannot silently re-admit it.
+recheckResolved :: FilePath -> Either SpellingRefusal FilePath
+recheckResolved p
+  | null p = Left SpellingEmpty
+  | p == ":memory:" = Left SpellingIsMemory
+  | "file:" `isPrefixOf` p = Left UriAfterResolve
+  | otherwise = Right p
+
 renderSpellingRefusal :: SpellingRefusal -> FilePath -> String
 renderSpellingRefusal r p = case r of
   SpellingEmpty -> "store path is empty, refusing"
@@ -518,6 +616,10 @@ renderSpellingRefusal r p = case r of
     "file: URI with query/fragment refused (bare paths only): " ++ p
   UriUndecodable -> "file: URI does not decode: " ++ p
   UriNested -> "nested file: URI refused: " ++ p
+  UriAuthority -> "file: URI has a non-local authority, refusing: " ++ p
+  UriAfterResolve -> "store path resolves to a file: URI, refusing: " ++ p
+  SpellingIsMemory ->
+    "store path names the :memory: database, refusing (file stores only): " ++ p
 
 -- | Whether a path carries surrogate escapes (undecodable
 -- filename bytes): the guard drops such rows, since POSIX

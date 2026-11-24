@@ -182,7 +182,8 @@ import Haskoki.Runtime.Config
   )
 import Haskoki.Runtime.Lifecycle (newEnv, rulesFromConfig)
 import Haskoki.Runtime.Storage.Memory (newMemoryWorld, openMemoryStore)
-import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), SQLiteTestHooks (..), livenessFromProbes, noSQLiteTestHooks, openSQLiteStore, openSQLiteStoreWith, openSQLiteStoreWithHooks, pauseForFreshCreate, waitForGoFile, waitForPoll)
+import Haskoki.Runtime.Storage.SQLite (PidLiveness (..), ProcProbe (..), SQLiteTestHooks (..), livenessFromProbes, noSQLiteTestHooks, openSQLiteStore, openSQLiteStoreWith, openSQLiteStoreWithHooks, pauseForFreshCreate, resolveStoreSpelling, waitForGoFile, waitForPoll)
+import Haskoki.Runtime.Trace (SpellingRefusal (..))
 import Haskoki.Session (ActiveLogin (..), TokenAuth (..), tokenAuthNew)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
@@ -365,6 +366,10 @@ spec mkScope = testGroup "store contract"
       , testCase "undecodable URI refuses cleanly" caseUriUndecodable
       , testCase "URI with query refuses" caseUriQuery
       , testCase "nested file: URI refuses" caseUriNested
+      , testCase "a spelling resolving to a URI refuses" caseUriAfterResolve
+      , testCase ":memory: refuses at resolve and at open" caseMemoryRefuses
+      , testCase "a localhost-authority twin sees the same sidecars" caseUriAuthorityTwin
+      , testCase "a non-local authority refuses" caseUriAuthorityRefuses
       , testCase "async store open refuses a version-1 store without writing" testV1AsyncRefusalWritesNothing
       , testCase "async store open seeds the home credential and reopens" testAsyncOpenSeedsHomeCredential
       , testCase "corrupt records diagnosed" testCorruptDiagnosed
@@ -1433,6 +1438,108 @@ caseUriNested =
     -- appear under the working directory.
     litter <- filterM doesFileExist ["file:x", "file:x.lock"]
     assertEqual "no refusal litter" [] litter
+
+-- | Resolution can CREATE a URI the decode stage never sees
+-- (@./file:x@ resolves to @file:x@): SQLite would re-enter URI
+-- interpretation while the guards stat the spelling literally,
+-- so the resolved spelling re-checks and refuses. (The relative
+-- spelling needs no fixture: refusal precedes all I/O. The probe
+-- name is distinctive so no checkout file can shadow it. The
+-- litter check snapshots the working directory BEFORE the open
+-- and compares after: scrubbing first would let a regression
+-- that writes-then-refuses pass, and the teardown removes only
+-- files the open created, never pre-existing ones.)
+caseUriAfterResolve :: IO ()
+caseUriAfterResolve = do
+  eSp <- resolveStoreSpelling rel
+  assertEqual "resolve refuses the produced URI" (Left UriAfterResolve) eSp
+  before <- sort <$> filterM doesFileExist litterNames
+  (do
+    eU <- openSQLiteStore rel
+    case eU of
+      Left (StoreIO msg) -> do
+        assertEqual "exact refusal"
+          ("store path resolves to a file: URI, refusing: " ++ rel) msg
+        litter <- sort <$> filterM doesFileExist litterNames
+        assertEqual "refusal writes nothing new" before litter
+      Left other -> assertFailure ("resolved-URI spelling must refuse by spelling, got: " ++ show other)
+      Right st -> do
+        storeClose st
+        assertFailure "resolved-URI spelling opened"
+    ) `finally` do
+      after <- filterM doesFileExist litterNames
+      mapM_ scrub (filter (`notElem` before) after)
+  where
+    rel = "./file:spelling-recheck-060probe.sqlite"
+    decoded = "spelling-recheck-060probe.sqlite"
+    literal = "file:spelling-recheck-060probe.sqlite"
+    sidecars b = [b, b ++ ".lock", b ++ "-journal", b ++ "-wal", b ++ "-shm"]
+    litterNames = sidecars decoded ++ sidecars literal
+    scrub f = catchIOError (removeFile f) (\_ -> pure ())
+
+-- | @:memory:@ names SQLite's in-memory database, which the file
+-- guards cannot see: it refuses at resolve and at open, writing
+-- nothing (not even a lock beside it). Same before/after litter
+-- discipline as 'caseUriAfterResolve'.
+caseMemoryRefuses :: IO ()
+caseMemoryRefuses = do
+  eSp <- resolveStoreSpelling ":memory:"
+  assertEqual "resolve refuses :memory:" (Left SpellingIsMemory) eSp
+  before <- sort <$> filterM doesFileExist litterNames
+  (do
+    eM <- openSQLiteStore ":memory:"
+    case eM of
+      Left (StoreIO msg) -> do
+        assertEqual "exact refusal"
+          "store path names the :memory: database, refusing (file stores only): :memory:" msg
+        litter <- sort <$> filterM doesFileExist litterNames
+        assertEqual "refusal writes nothing new" before litter
+      Left other -> assertFailure (":memory: must refuse by spelling, got: " ++ show other)
+      Right st -> do
+        storeClose st
+        assertFailure ":memory: opened"
+    ) `finally` do
+      after <- filterM doesFileExist litterNames
+      mapM_ scrub (filter (`notElem` before) after)
+  where
+    litterNames =
+      [ ":memory:"
+      , ":memory:.lock"
+      , ":memory:-journal"
+      , ":memory:-wal"
+      , ":memory:-shm"
+      ]
+    scrub f = catchIOError (removeFile f) (\_ -> pure ())
+
+-- | A localhost-authority URI twin sees the same sidecars:
+-- SQLite strips the authority, so decoding agrees and the twin
+-- refuses exactly like the POSIX spelling.
+caseUriAuthorityTwin :: IO ()
+caseUriAuthorityTwin =
+  bracket (makeTempDir "haskoki-storage-uri-authtwin") removeDirectoryRecursive $ \dir -> do
+    let db = dir </> "a.db"
+    bracket (either (assertFailure . show) pure =<< openSQLiteStore db) storeClose $ \_ -> pure ()
+    BS.writeFile (db ++ "-wal") "foreign frames"
+    let twin = "file://localhost" ++ dir ++ "/x/%2e%2e/a.db"
+    eTwin <- openSQLiteStore twin
+    case eTwin of
+      Left (StoreForeignSidecar p) -> assertEqual "twin sidecar path" (db ++ "-wal") p
+      Left other -> assertFailure ("authority twin must refuse by sidecar, got: " ++ show other)
+      Right s -> storeClose s >> assertFailure "authority twin spelling missed the sidecar"
+
+-- | A non-local authority refuses with its own reason (SQLite
+-- refuses it too, so decoding the authority into a path
+-- component would diverge from the opener).
+caseUriAuthorityRefuses :: IO ()
+caseUriAuthorityRefuses =
+  bracket (makeTempDir "haskoki-storage-uri-authbad") removeDirectoryRecursive $ \dir -> do
+    let bad = "file://other" ++ dir ++ "/a.db"
+    eB <- openSQLiteStore bad
+    case eB of
+      Left (StoreIO msg) -> assertEqual "exact refusal"
+        ("file: URI has a non-local authority, refusing: " ++ bad) msg
+      Left other -> assertFailure ("authority URI must refuse by spelling, got: " ++ show other)
+      Right st -> storeClose st >> assertFailure "authority URI opened"
 
 -- | The v2 half of the migratable set: a version-2 database
 -- refuses as migration-required and the refused open writes

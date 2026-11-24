@@ -17,7 +17,7 @@ module Haskoki.Ctl.Store
 
 import Control.Exception (AsyncException (..), IOException, SomeException, asyncExceptionFromException, catch, fromException, throwIO, try)
 import Data.IORef (newIORef, readIORef, writeIORef)
-import Data.List (isPrefixOf, stripPrefix)
+import Data.List (intercalate, isPrefixOf, stripPrefix)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import qualified Database.SQLite3 as S
@@ -27,7 +27,8 @@ import Haskoki.Runtime.Catalog (asyncHomeConfig)
 import Haskoki.Runtime.Config (Config, ConfigError (..), loadConfigFile)
 import Haskoki.Runtime.Storage (StoreError (..), renderIdentityRefusal)
 import Haskoki.Runtime.Storage.Preflight
-import Haskoki.Runtime.Storage.SQLite (sqliteSchemaVersion)
+import Haskoki.Runtime.Storage.SQLite (resolveStoreSpelling, sqliteSchemaVersion)
+import Haskoki.Runtime.Trace (renderSpellingRefusal)
 
 -- | Exactly the named flags, each once, each with a value, plus at
 -- most one standalone switch. The switch is only recognised where a
@@ -57,6 +58,52 @@ checkUsage = unlines
 
 line :: (String, String) -> String
 line (tag, detail) = tag ++ ": " ++ detail ++ "\n"
+
+-- | POSIX-shell-quote a path for the copy-paste migration hint:
+-- single-quote it, escaping embedded quotes, so names with
+-- spaces or comment characters replay intact.
+shQuote :: FilePath -> String
+shQuote s = "'" ++ concatMap esc s ++ "'"
+  where
+    esc '\'' = "'\\''"
+    esc c = [c]
+
+-- | The copy-paste migration command: plain single quotes
+-- normally, but a path containing a newline cannot stay on
+-- one physical line inside quotes, so it gets a @printf@
+-- assignment ahead of the command (@printf '%b'@ over an
+-- octal-escaped spelling: newline, backslash, and quote
+-- escaped — the octal escapes carry three digits after the
+-- leading zero, so a following octal digit cannot join the
+-- escape — a @_@ sentinel appended) and the argument
+-- references @"${var%_}"@. The sentinel must survive command
+-- substitution inside a variable (which strips only
+-- newlines, so a trailing @_@ protects trailing newlines of
+-- the value) and die by parameter expansion: stripping it
+-- inside the substitution would re-expose trailing newlines
+-- to the strip. NUL bytes need no handling: both hinted
+-- paths arrive through argv, which cannot carry them.
+hintCommand :: FilePath -> FilePath -> Bool -> String
+hintCommand raw cfgPath asyncHome =
+  let (preP, p) = shArg "__haskoki_path" raw
+      (preC, c) = shArg "__haskoki_config" cfgPath
+      pre = intercalate "; " (filter (not . null) [preP, preC])
+      cmd = "haskoki-ctl store migrate --path " ++ p ++ " --config " ++ c
+            ++ " --backup-dir DIR" ++ (if asyncHome then " --async-home" else "")
+  in if null pre then cmd else pre ++ "; " ++ cmd
+
+-- | Shell-quote one hint argument: plain single quotes, or a
+-- @(setup, reference)@ pair when the value contains a
+-- newline (see 'hintCommand').
+shArg :: String -> FilePath -> (String, String)
+shArg _ s | '\n' `notElem` s = ("", shQuote s)
+shArg var s = (var ++ "=$(printf '%b' '" ++ octal ++ "')", "\"${" ++ var ++ "%_}\"")
+  where
+    octal = concatMap oct s ++ "_"
+    oct '\n' = "\\0012"
+    oct '\\' = "\\\\"
+    oct '\'' = "\\0047"
+    oct c = [c]
 
 -- | A config error as its kind plus line or key; the message body can
 -- quote PINs and is never shown.
@@ -124,15 +171,31 @@ storeCheckCommand args0 =
           Left err -> pure (1, "", line (renderConfigError err))
           Right cfg0 -> do
             let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
-            sel <- configSelectsStore path cfg
-            case sel of
-              Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
-              Right () -> checkSelected path cfgPath asyncHome cfg
+            -- The spelling check precedes the config select: a
+            -- --path the opener would refuse reports the precise
+            -- spelling refusal, never a config-mismatch masking
+            -- it. The select then runs on the operator's
+            -- spelling (decoded inside), so mismatches name
+            -- what was passed.
+            eSpelling <- resolveStoreSpelling path
+            case eSpelling of
+              Left r -> pure (1, "", line ("store-spelling", renderSpellingRefusal r path))
+              Right eff -> do
+                sel <- configSelectsStore eff path cfg
+                case sel of
+                  Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
+                  -- The select accepted the resolved spelling,
+                  -- so the probe runs on it (inspect already
+                  -- reports the resolved target); the hint
+                  -- replays the operator's spelling, so the
+                  -- printed command selects exactly as this
+                  -- one did.
+                  Right () -> checkSelected eff path cfgPath asyncHome cfg
       _ -> pure (2, "", checkUsage)) `catch` onCheckInterrupt
 
-checkSelected :: FilePath -> FilePath -> Bool -> Config -> IO (Int, String, String)
-checkSelected path cfgPath asyncHome cfg = do
-  r <- trySync (checkStoreOpen path cfg) :: IO (Either SomeException (Either StoreError StoreOpenPlan))
+checkSelected :: FilePath -> FilePath -> FilePath -> Bool -> Config -> IO (Int, String, String)
+checkSelected resolved raw cfgPath asyncHome cfg = do
+  r <- trySync (checkStoreOpen resolved cfg) :: IO (Either SomeException (Either StoreError StoreOpenPlan))
   case r of
     Left ex -> pure (1, "", line (renderCheckUnexpectedFailure ex))
     Right (Left (StoreIO m))
@@ -142,9 +205,7 @@ checkSelected path cfgPath asyncHome cfg = do
     Right (Right plan) -> pure $ case planVerdict plan of
       VerdictOpenable -> (0, renderPlan plan, "")
       VerdictMigrationRequired -> (1, renderPlan plan, line ("store-migration-required",
-        "stop the store owner, then run haskoki-ctl store migrate --path " ++ path
-          ++ " --config " ++ cfgPath ++ " --backup-dir DIR"
-          ++ (if asyncHome then " --async-home" else "")))
+        "stop the store owner, then run " ++ hintCommand raw cfgPath asyncHome))
       VerdictIdentityRefused ir ->
         (1, renderPlan plan, line ("store-identity-refused", renderIdentityRefusal ir))
   where
@@ -162,7 +223,7 @@ checkSelected path cfgPath asyncHome cfg = do
     -- precedence over the cold-journal message (migrate reports
     -- it too). Any other retry outcome keeps the cold refusal.
     coldOkOrRefusal cold = do
-      r2 <- trySync (checkStoreOpenAllowCold path cfg)
+      r2 <- trySync (checkStoreOpenAllowCold resolved cfg)
         :: IO (Either SomeException (Either StoreError StoreOpenPlan))
       pure $ case r2 of
         Right (Right plan) | planVerdict plan == VerdictOpenable ->
@@ -195,10 +256,15 @@ storeMigrateCommandWith hooks0 args0 =
           Left err -> pure (1, "", line (renderConfigError err))
           Right cfg0 -> do
             let cfg = if asyncHome then asyncHomeConfig cfg0 else cfg0
-            sel <- configSelectsStore path cfg
-            case sel of
-              Left r -> pure (1, "", line ("config-mismatch", renderPreflightRefusal r))
-              Right () -> migrateSelectedWith hooks0 path cfg dir
+            eSpelling <- resolveStoreSpelling path
+            case eSpelling of
+              Left r -> pure (1, "", line ("store-spelling", renderSpellingRefusal r path))
+              -- No config pre-select: migrateStoreWith selects
+              -- after both spellings check, so a bad
+              -- --backup-dir spelling beats a config mismatch
+              -- (input validity precedes identity); the
+              -- mismatch renders identically inside.
+              Right _ -> migrateSelectedWith hooks0 path cfg dir
       _ -> pure (2, "", migrateUsage)) `catch` onMigrateInterrupt ""
 
 -- | The exception's type name only, never its message: PINs are not

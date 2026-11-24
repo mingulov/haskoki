@@ -67,7 +67,7 @@ import Haskoki.Runtime.Storage.SQLite
   , clearColdJournalOwned, guardFlags, migrateOwned, noMigrationHooks, pidIsDead, probeOwner, readFileCloexec
   , readStoreSnapshot, readStoreSnapshotAllowCold, requireRegularStore, resolveStoreSpelling, sqliteSchemaVersion
   , withOwnedStoreFile, withStoreSpelling )
-import Haskoki.Runtime.Trace (renderSpellingRefusal)
+import Haskoki.Runtime.Trace (effectiveStorePath, renderSpellingRefusal)
 import Haskoki.Types (TokenId)
 
 -- | One-shot digest from the pinned libcrypto (see @openssl/evp.h@):
@@ -119,19 +119,36 @@ data PreflightRefusal
   deriving (Eq, Show)
 
 -- | The config must select the same sqlite file (by name or inode).
-configSelectsStore :: FilePath -> Config -> IO (Either PreflightRefusal ())
-configSelectsStore path cfg = case (scKind (cfgStorage cfg), scPath (cfgStorage cfg)) of
+-- | Whether the config selects the store the operator named.
+-- The CLI side arrives RESOLVED (exactly what the opener will
+-- open: callers pass the 'resolveStoreSpelling' output, which
+-- pops @..@ lexically, so a twin through a missing directory
+-- still selects); the config side decodes to its EFFECTIVE
+-- path (never resolved: it is descriptive-only here, and an
+-- unresolvable-but-inode-equal config spelling must not block
+-- operating on the good CLI store). The two compare by
+-- identity or file identity, after a raw same-name
+-- short-circuit (missing and dangling flows compare before
+-- any resolution could re-spell them). A side that cannot
+-- decode mismatches (fail closed); the mismatch names the
+-- operator's spellings, not the decoded ones.
+configSelectsStore :: FilePath -> FilePath -> Config -> IO (Either PreflightRefusal ())
+configSelectsStore resolved raw cfg = case (scKind (cfgStorage cfg), scPath (cfgStorage cfg)) of
   (StorageMemory, _) -> pure (Left ConfigNotSQLite)
   (StorageSQLite, Nothing) -> pure (Left ConfigNoPath)
   (StorageSQLite, Just p)
-    | p == path -> pure (Right ())
-    | otherwise -> do
-        a <- tryIOError (getFileStatus p)
-        b <- tryIOError (getFileStatus path)
-        pure $ case (a, b) of
-          (Right sa, Right sb)
-            | deviceID sa == deviceID sb && fileID sa == fileID sb -> Right ()
-          _ -> Left (ConfigPathMismatch p path)
+    | p == raw -> pure (Right ())
+    | otherwise -> case effectiveStorePath p of
+        Left _ -> pure (Left (ConfigPathMismatch p raw))
+        Right pe
+          | pe == resolved -> pure (Right ())
+          | otherwise -> do
+              a <- tryIOError (getFileStatus pe)
+              b <- tryIOError (getFileStatus resolved)
+              pure $ case (a, b) of
+                (Right sa, Right sb)
+                  | deviceID sa == deviceID sb && fileID sa == fileID sb -> Right ()
+                _ -> Left (ConfigPathMismatch p raw)
 
 renderPreflightRefusal :: PreflightRefusal -> String
 renderPreflightRefusal r = case r of
@@ -447,17 +464,21 @@ infixl 1 >>?
 -- (the default hook is a no-op; the error value itself carries
 -- no clear status).
 migrateStoreWith :: MigrateHooks -> FilePath -> Config -> FilePath -> IO (Either MigrateError MigrateOutcome)
-migrateStoreWith hooks path0 cfg backupDir = do
-  -- Spelling refusal first (precise diagnosis); the config check
-  -- then runs on the operator's spelling as before (a URI twin
-  -- of the configured path mismatches conservatively).
+migrateStoreWith hooks path0 cfg backupDir0 = do
+  -- Spelling refusals first (precise diagnosis): the store
+  -- path, then the backup dir (backup candidates enter SQLite
+  -- on verify, where a file: prefix would re-enter URI
+  -- interpretation). The config check then runs on the
+  -- operator's spelling, decoded inside the select.
   ePath <- resolveStoreSpelling path0
   case ePath of
     Left r -> pure (Left (MigrateStore (StoreIO (renderSpellingRefusal r path0))))
-    Right path ->
-      (first MigrateConfig <$> configSelectsStore path0 cfg) >>? \() ->
-        checkBackupDir path backupDir >>? \() ->
-          migrateResolved hooks path cfg backupDir
+    Right path -> case effectiveStorePath backupDir0 of
+      Left r -> pure (Left (MigrateUnsafeBackupDir backupDir0 (renderSpellingRefusal r backupDir0)))
+      Right effDir ->
+        (first MigrateConfig <$> configSelectsStore path path0 cfg) >>? \() ->
+          checkBackupDir path effDir >>? \backupDir ->
+            migrateResolved hooks path cfg backupDir
 
 -- | 'migrateStoreWith' on an already-resolved path: the config check
 -- ran on the operator's spelling, the backup-directory guard ran on
@@ -574,10 +595,30 @@ backupCandidates store dir from epoch =
   [ dir ++ "/" ++ stem ++ suffix ++ ".bak" | suffix <- "" : ["-" ++ show k | k <- [1 .. 99 :: Int]] ]
   where stem = baseName store ++ ".pre-migrate.schema" ++ show from ++ "." ++ show epoch
 
+-- | Strip trailing slashes and terminal @.@ components
+-- (repeatedly: @link/./@ names @link@), preserving the root
+-- and the bare current-directory spelling: lstat follows
+-- through either, so the symlink refusal must see the final
+-- component itself. A terminal @..@ stays: it genuinely
+-- navigates (like any intermediate component), while @/.@
+-- names the directory itself.
+stripTrailingSlashesAndDots :: FilePath -> FilePath
+stripTrailingSlashesAndDots "" = ""
+stripTrailingSlashesAndDots "." = "."
+stripTrailingSlashesAndDots p =
+  let s = reverse (dropWhile (== '/') (reverse p))
+  in if null s then "/"
+     else if "/." `isSuffixOf` s
+          then let q = take (length s - 2) s
+               in if null q then "/" else stripTrailingSlashesAndDots q
+          else s
+
 -- | The backup directory must exist, be a real directory (not a
 -- symlink), be writable, and not be the store's own directory.
-checkBackupDir :: FilePath -> FilePath -> IO (Either MigrateError ())
-checkBackupDir store dir = do
+-- Returns the stripped directory every later step must use, so
+-- backup candidates never carry a trailing slash or dot.
+checkBackupDir :: FilePath -> FilePath -> IO (Either MigrateError FilePath)
+checkBackupDir store dir0 = do
   eL <- tryIOError (getSymbolicLinkStatus dir)
   case eL of
     Left _ -> unsafe "does not exist"
@@ -591,8 +632,9 @@ checkBackupDir store dir = do
             case eS of
               Right sd | deviceID sd == deviceID st && fileID sd == fileID st ->
                 unsafe "is the store's own directory; keep backups apart from the store"
-              _ -> pure (Right ())
+              _ -> pure (Right dir)
   where unsafe why = pure (Left (MigrateUnsafeBackupDir dir why))
+        dir = stripTrailingSlashesAndDots dir0
 
 data ExclusiveWrite = Written | NameTaken | WriteFailed !String
 

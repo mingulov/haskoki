@@ -8,12 +8,12 @@ confirm flag. Never mutates a live store.
 module StoreCtlSpec (spec, relChildMain) where
 
 import Control.Concurrent (forkIO, isEmptyMVar, myThreadId, newEmptyMVar, putMVar, takeMVar, threadDelay, throwTo)
-import Control.Exception (AsyncException (..), bracket, catch, throwIO, toException, try)
+import Control.Exception (AsyncException (..), IOException, bracket, catch, throwIO, toException, try)
 import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import Data.IORef (newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
+import Data.List (find, isInfixOf, isPrefixOf, isSuffixOf)
 import qualified Data.Text as T
 import qualified Database.SQLite3 as S
 import GHC.IO.Handle (hDuplicate, hDuplicateTo)
@@ -32,7 +32,7 @@ import System.Posix.Files (createNamedPipe, createSymbolicLink, removeLink)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
 import System.Posix.IO.ByteString (fdRead)
 import System.Posix.User (getEffectiveUserID)
-import System.Process (CreateProcess (..), createProcess, proc, terminateProcess, waitForProcess)
+import System.Process (CreateProcess (..), createProcess, proc, readProcess, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
@@ -64,10 +64,23 @@ spec mkScope = testGroup "Store commands"
   , testCase "reset clears an offline store with the flag" caseResetOffline
   , testCase "check: a current store is ok (exit 0)" caseCheckOk
   , testCase "check: a v0.4 store needs migration (exit 1), unchanged" caseCheckMigrationRequired
+  , testCase "check: the migration hint replays through the select" caseCheckHintReplays
+  , testCase "sh argv capture ignores quoted command words" caseShArgvQuotedWord
   , testCase "check: a drifted catalog is refused (exit 1), unchanged" caseCheckIdentityRefused
   , testCase "check: a live owner is refused and keeps serving" caseCheckLive
   , testCase "check: a missing store is refused, nothing created" caseCheckMissing
   , testCase "check: another store's config is refused" caseCheckConfigMismatch
+  , testCase "check: an undecodable --path reports the spelling, not a mismatch" caseCheckSpellingFirst
+  , testCase "migrate: an undecodable --path reports the spelling, not a mismatch" caseMigrateSpellingFirst
+  , testCase "migrate: an undecodable --backup-dir reports the spelling" caseMigrateBackupDirSpelling
+  , testCase "migrate: a URI --backup-dir decodes and is used" caseMigrateBackupDirUri
+  , testCase "migrate: a symlinked --backup-dir with a trailing slash refuses" caseMigrateBackupDirSymlinkSlash
+  , testCase "migrate: a URI --backup-dir with a decoded trailing slash refuses" caseMigrateBackupDirUriSlash
+  , testCase "migrate: a bad --backup-dir spelling beats a config mismatch" caseMigrateBackupSpellingFirst
+  , testCase "check: a URI spelling with dot-dot through missing selects the store" caseCheckUriDotDot
+  , testCase "migrate: a URI spelling with dot-dot through missing selects the store" caseMigrateUriDotDot
+  , testCase "migrate: a symlinked --backup-dir with a terminal dot refuses" caseMigrateBackupDirSymlinkDot
+  , testCase "migrate: a URI --backup-dir with a decoded terminal dot refuses" caseMigrateBackupDirUriDot
   , testCase "check: a hot journal is refused" caseCheckJournal
   , testCase "check: a cold journal names store migrate" caseCheckJournalCold
   , testCase "check: a newer schema is refused" caseCheckUnsupported
@@ -301,6 +314,113 @@ caseCheckMigrationRequired = withScratch "ctl-check" $ \dir -> do
   assertBool "tag" ("store-migration-required:" `isPrefixOf` ceErr r)
   assertUnchanged "check" before store
 
+-- | The hint's one-liner (setup assignments, if any, plus the
+-- @haskoki-ctl@ command), if the diagnostic carries the hint.
+hintLine :: String -> Maybe String
+hintLine err = do
+  l <- find ("haskoki-ctl " `isInfixOf`) (lines err)
+  stripMarker "run " l
+  where
+    stripMarker _ [] = Nothing
+    stripMarker m s@(_ : cs)
+      | m `isPrefixOf` s = Just (drop (length m) s)
+      | otherwise = stripMarker m cs
+
+-- | Run the hint's one-liner through a real POSIX sh with an
+-- argv-printing alias for the program on a preceding line, and
+-- deliver the arguments the shell would pass: the shell (not
+-- a hand splitter) identifies the command token, so quoted
+-- occurrences of the program word cannot divert the capture,
+-- and every expansion is verified end to end.
+shArgv :: String -> IO [String]
+shArgv oneLiner = do
+  eOut <- try (readProcess "/bin/sh" ["-c", "alias haskoki-ctl=\"printf '%s\\0'\"\n" ++ oneLiner] "") :: IO (Either IOException String)
+  case eOut of
+    Left e -> assertFailure ("sh argv capture failed: " ++ show e) >> pure []
+    Right out -> pure (splitNul out)
+  where
+    splitNul s = case break (== '\0') s of
+      (w, '\0' : rest) -> w : splitNul rest
+      (w, _) -> [w | not (null w)]
+
+-- | The argv capture lets the SHELL identify the command
+-- token: a @haskoki-ctl@ occurrence inside a quoted setup
+-- value must not divert the capture.
+caseShArgvQuotedWord :: IO ()
+caseShArgvQuotedWord = do
+  argv <- shArgv "__haskoki_x='a haskoki-ctl b'; haskoki-ctl store --path \"$__haskoki_x\""
+  assertEqual "quoted command word untouched" ["store", "--path", "a haskoki-ctl b"] argv
+
+-- | The migration hint replays: check prints the OPERATOR's
+-- --path (not the resolved one), shell-quoted on one physical
+-- line, so the printed command passes the select exactly as
+-- the checked one did — including dot-dot spellings that only
+-- match raw and names with newlines, spaces, comment
+-- characters, and quotes.
+caseCheckHintReplays :: IO ()
+caseCheckHintReplays = withScratch "ctl-check" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  let dotdot = dir </> "missing\n1# '2x" </> ".." </> "store.sqlite"
+  cfgPath <- writeStoreConfig (dir </> "c'2\nfg.toml") dotdot fixtureLabels fixtureSo fixtureUser
+  let backups = dir </> "backups"
+  createDirectory backups
+  before <- captureState store
+  r <- check dotdot cfgPath
+  assertEqual "check exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-migration-required:" `isPrefixOf` ceErr r)
+  assertEqual "hint is one line" 1 (length (lines (ceErr r)))
+  assertUnchanged "check" before store
+  case hintLine (ceErr r) of
+    Nothing -> assertFailure ("no hint command: " ++ ceErr r)
+    Just oneLiner -> do
+      argv <- shArgv oneLiner
+      case argv of
+        ["store", "migrate", "--path", hinted, "--config", hcfg, "--backup-dir", "DIR"] -> do
+          assertEqual "hint delivers the operator spelling" dotdot hinted
+          assertEqual "hint delivers the config" cfgPath hcfg
+          m <- migrateCli hinted hcfg backups
+          assertEqual "migrate exit 0" 0 (ceCode m)
+          assertBool "done" ("migrate-done" `elem` lines (ceOut m))
+        other -> assertFailure ("hint argv: " ++ show other)
+  -- The async suffix rides the same hint: an async schema-2
+  -- store checked with --async-home gets a migration hint
+  -- whose argv ends with the flag.
+  let astore = dir </> "async'2.sqlite"
+      (label, _, _) = asyncHomeEntry
+  makeSchemaStore 2 astore [fixtureToken 1 0 label] []
+  acfgPath <- writeStoreConfig (dir </> "a'cfg.toml") astore ["haskoki-demo"] ["58213946"] ["12873465"]
+  r2 <- runCtl ["store", "check", "--async-home", "--path", astore, "--config", acfgPath]
+  assertEqual "async check exit 1" 1 (ceCode r2)
+  assertBool "async tag" ("store-migration-required:" `isPrefixOf` ceErr r2)
+  assertEqual "async hint is one line" 1 (length (lines (ceErr r2)))
+  case hintLine (ceErr r2) of
+    Nothing -> assertFailure ("no async hint command: " ++ ceErr r2)
+    Just oneLiner2 -> do
+      argv2 <- shArgv oneLiner2
+      assertEqual "async hint carries the suffix"
+        ["store", "migrate", "--path", astore, "--config", acfgPath, "--backup-dir", "DIR", "--async-home"] argv2
+  -- A trailing newline is the sentinel's whole purpose:
+  -- command substitution eats it, so the hint must carry it
+  -- inside a variable. A store file ending in a newline gets
+  -- a one-line hint whose argv preserves it exactly.
+  (store3, _) <- copyReleasedFixture "v0.4.0.0" dir
+  let nlStore = store3 ++ "\n"
+  renameFile store3 nlStore
+  nlCfgPath <- writeStoreConfig (dir </> "n.toml") nlStore fixtureLabels fixtureSo fixtureUser
+  r3 <- check nlStore nlCfgPath
+  assertEqual "newline check exit 1" 1 (ceCode r3)
+  assertBool "newline tag" ("store-migration-required:" `isPrefixOf` ceErr r3)
+  assertEqual "newline hint is one line" 1 (length (lines (ceErr r3)))
+  case hintLine (ceErr r3) of
+    Nothing -> assertFailure ("no newline hint command: " ++ ceErr r3)
+    Just oneLiner3 -> do
+      argv3 <- shArgv oneLiner3
+      case argv3 of
+        ["store", "migrate", "--path", hinted3, "--config", hcfg3, "--backup-dir", "DIR"] -> do
+          assertEqual "hint preserves the trailing newline" nlStore hinted3
+          assertEqual "hint delivers the config" nlCfgPath hcfg3
+        other3 -> assertFailure ("newline hint argv: " ++ show other3)
+
 caseCheckIdentityRefused :: IO ()
 caseCheckIdentityRefused = withScratch "ctl-check" $ \dir -> do
   (store, _) <- copyReleasedFixture "v0.4.0.0" dir
@@ -347,6 +467,178 @@ caseCheckConfigMismatch = withScratch "ctl-check" $ \dir -> do
   assertEqual "exit 1" 1 (ceCode r)
   assertBool "tag" ("config-mismatch:" `isPrefixOf` ceErr r)
   assertUnchanged "check" before store
+
+-- | The spelling check precedes the config select: an undecodable
+-- --path reports the precise spelling refusal, never a
+-- config-mismatch masking it.
+caseCheckSpellingFirst :: IO ()
+caseCheckSpellingFirst = withScratch "ctl-check" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  before <- captureState store
+  r <- check "file:%zz" cfgPath
+  assertEqual "exit 1" 1 (ceCode r)
+  assertBool "tag" ("store-spelling:" `isPrefixOf` ceErr r)
+  assertBool "reason" ("file: URI does not decode: file:%zz" `isInfixOf` ceErr r)
+  assertUnchanged "check" before store
+
+-- | Same order for migrate: with a mismatching config AND a bad
+-- --path, the spelling refusal wins (the config check cannot
+-- place a path the opener would refuse).
+caseMigrateSpellingFirst :: IO ()
+caseMigrateSpellingFirst = withScratch "ctl-migrate" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  other <- writeStoreConfig (dir </> "o.toml") (dir </> "original.sqlite") fixtureLabels fixtureSo fixtureUser
+  before <- captureState store
+  m <- migrateCli "file:%zz" other backups
+  assertEqual "exit 1" 1 (ceCode m)
+  assertBool "tag" ("store-spelling:" `isPrefixOf` ceErr m)
+  assertBool "reason" ("file: URI does not decode: file:%zz" `isInfixOf` ceErr m)
+  assertUnchanged "refused migrate" before store
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- | The backup directory decodes with the same rule: an
+-- undecodable --backup-dir fails the run with the precise
+-- spelling reason (backup candidates enter SQLite on verify,
+-- where a file: prefix would re-enter URI interpretation).
+caseMigrateBackupDirSpelling :: IO ()
+caseMigrateBackupDirSpelling = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  before <- captureState store
+  m <- migrateCli store cfgPath "file:%zz"
+  assertEqual "exit 1" 1 (ceCode m)
+  assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr m)
+  assertBool "reason" ("file: URI does not decode: file:%zz" `isInfixOf` ceErr m)
+  assertUnchanged "refused migrate" before store
+
+-- | A URI --backup-dir decodes and is USED: the backup lands in
+-- the decoded directory, not beside a literal file: twin.
+caseMigrateBackupDirUri :: IO ()
+caseMigrateBackupDirUri = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let backups = dir </> "backups"
+  createDirectory backups
+  r <- migrateCli store cfgPath ("file:" ++ backups)
+  assertEqual "exit 0" 0 (ceCode r)
+  assertBool "done" ("migrate-done" `elem` lines (ceOut r))
+  files <- listDirectory backups
+  assertBool "backup written to the decoded dir" (any (".bak" `isSuffixOf`) files)
+
+-- | A trailing slash must not smuggle a symlinked backup dir
+-- past the symlink refusal: lstat follows through the slash,
+-- so the check strips it and sees the link itself.
+caseMigrateBackupDirSymlinkSlash :: IO ()
+caseMigrateBackupDirSymlinkSlash = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let real = dir </> "real"
+      link = dir </> "link"
+  createDirectory real
+  createSymbolicLink real link
+  before <- captureState store
+  m <- migrateCli store cfgPath (link ++ "/")
+  assertEqual "exit 1" 1 (ceCode m)
+  assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr m)
+  assertBool "reason" ("is a symbolic link" `isInfixOf` ceErr m)
+  assertUnchanged "refused migrate" before store
+  listDirectory real >>= assertEqual "no backup through the link" []
+
+-- | Same refusal through a URI spelling: the decoded trailing
+-- slash (%2F) strips before the lstat too.
+caseMigrateBackupDirUriSlash :: IO ()
+caseMigrateBackupDirUriSlash = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let real = dir </> "real"
+      link = dir </> "link"
+  createDirectory real
+  createSymbolicLink real link
+  before <- captureState store
+  m <- migrateCli store cfgPath ("file:" ++ link ++ "%2F")
+  assertEqual "exit 1" 1 (ceCode m)
+  assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr m)
+  assertBool "reason" ("is a symbolic link" `isInfixOf` ceErr m)
+  assertUnchanged "refused migrate" before store
+  listDirectory real >>= assertEqual "no backup through the link" []
+
+-- | Input validity precedes identity: with a mismatching config
+-- AND a bad --backup-dir spelling, the spelling refusal wins
+-- (the CLI no longer pre-selects the config for migrate; the
+-- select runs inside, after both spellings check).
+caseMigrateBackupSpellingFirst :: IO ()
+caseMigrateBackupSpellingFirst = withScratch "ctl-migrate" $ \dir -> do
+  (store, _) <- copyReleasedFixture "v0.4.0.0" dir
+  other <- writeStoreConfig (dir </> "o.toml") (dir </> "original.sqlite") fixtureLabels fixtureSo fixtureUser
+  before <- captureState store
+  m <- migrateCli store other "file:%zz"
+  assertEqual "exit 1" 1 (ceCode m)
+  assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr m)
+  assertBool "reason" ("file: URI does not decode: file:%zz" `isInfixOf` ceErr m)
+  assertUnchanged "refused migrate" before store
+
+-- | The select compares what the opener will open: a URI twin
+-- whose dot-dot crosses a missing directory resolves to the
+-- configured store, so check accepts it (inspect already opens
+-- the same spelling).
+caseCheckUriDotDot :: IO ()
+caseCheckUriDotDot = withScratch "ctl-check" $ \dir -> do
+  let store = dir </> "store.sqlite"
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  openReconciled store cfg >>= either (assertFailure . show) closeAcquired
+  r <- check ("file:" ++ dir ++ "/missing/../store.sqlite") cfgPath
+  assertEqual "exit 0" 0 (ceCode r)
+  assertBool "verdict ok" ("verdict: ok" `isInfixOf` ceOut r)
+  assertEqual "quiet stderr" "" (ceErr r)
+
+-- | Same acceptance for migrate: the resolved CLI spelling
+-- selects the store, so a current store reports not-needed.
+caseMigrateUriDotDot :: IO ()
+caseMigrateUriDotDot = withScratch "ctl-migrate" $ \dir -> do
+  let store = dir </> "store.sqlite"; backups = dir </> "backups"
+  createDirectory backups
+  cfgPath <- writeStoreConfig (dir </> "c.toml") store fixtureLabels fixtureSo fixtureUser
+  cfg <- loadConfigOrFail cfgPath
+  openReconciled store cfg >>= either (assertFailure . show) closeAcquired
+  r <- migrateCli ("file:" ++ dir ++ "/missing/../store.sqlite") cfgPath backups
+  assertEqual "exit 0" 0 (ceCode r)
+  assertBool "not needed" ("migrate-not-needed:" `isPrefixOf` ceOut r)
+  listDirectory backups >>= assertEqual "no backup" []
+
+-- | A terminal dot is the directory itself, not a child: lstat
+-- follows through @link/.@, so the check strips it and sees
+-- the link (same refusal as the bare link).
+caseMigrateBackupDirSymlinkDot :: IO ()
+caseMigrateBackupDirSymlinkDot = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let real = dir </> "real"
+      link = dir </> "link"
+  createDirectory real
+  createSymbolicLink real link
+  before <- captureState store
+  m <- migrateCli store cfgPath (link ++ "/.")
+  assertEqual "exit 1" 1 (ceCode m)
+  assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr m)
+  assertBool "reason" ("is a symbolic link" `isInfixOf` ceErr m)
+  assertUnchanged "refused migrate" before store
+  listDirectory real >>= assertEqual "no backup through the link" []
+
+-- | Same refusal through a URI spelling: the decoded terminal
+-- dot (%2e) strips before the lstat too.
+caseMigrateBackupDirUriDot :: IO ()
+caseMigrateBackupDirUriDot = withScratch "ctl-migrate" $ \dir -> do
+  (store, cfgPath) <- copyReleasedFixture "v0.4.0.0" dir
+  let real = dir </> "real"
+      link = dir </> "link"
+  createDirectory real
+  createSymbolicLink real link
+  before <- captureState store
+  m <- migrateCli store cfgPath ("file:" ++ link ++ "/%2e")
+  assertEqual "exit 1" 1 (ceCode m)
+  assertBool "tag" ("migrate-unsafe-backup-dir:" `isPrefixOf` ceErr m)
+  assertBool "reason" ("is a symbolic link" `isInfixOf` ceErr m)
+  assertUnchanged "refused migrate" before store
+  listDirectory real >>= assertEqual "no backup through the link" []
 
 caseCheckJournal :: IO ()
 caseCheckJournal = withScratch "ctl-check" $ \dir -> do

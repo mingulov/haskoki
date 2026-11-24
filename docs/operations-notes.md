@@ -555,7 +555,11 @@ delete `$REH` afterwards (`rm -rf "$REH"`).
 another file is refused as `config-mismatch`. That is why the rehearsal
 writes its own config for the copy (see `caseConfigSelects` in
 `tests/storage/PreflightSpec.hs` and `caseCheckConfigMismatch` in
-`tests/storage/StoreCtlSpec.hs`).
+`tests/storage/StoreCtlSpec.hs`). Spelling checks run before the select:
+a `--path` (or, for migrate, a `--backup-dir`) the opener cannot place
+is refused as `store-spelling` (or `migrate-unsafe-backup-dir` with the
+spelling reason) even when the config would mismatch too; `store inspect`
+and `store reset` report the same refusal as `store-invalid`.
 
 ### What check and migrate report
 
@@ -571,6 +575,7 @@ Tags: `store-migration-required`, `store-identity-refused`, `store-live`,
 `store-journal-present`, `store-journal-cold`, `store-foreign-sidecar`,
 `store-unsupported-version`,
 `store-corrupt`, `store-full`, `store-missing`, `store-unreadable`,
+`store-spelling`, `store-invalid`,
 `check-interrupted`,
 `config-invalid`, `config-mismatch`, `migrate-unsafe-backup-dir`,
 `migrate-store-changed`, `migrate-backup-exists`, `migrate-backup-failed`,
