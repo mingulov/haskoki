@@ -518,7 +518,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "MD2 with RSA PKCS#1: no MD2 in the pinned OpenSSL 4.1.0 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider, same digest probe 2026-11-24).",
+      "notes": "MD2 with RSA PKCS#1: no MD2 in either pinned OpenSSL 4.1.0 provider (default or legacy), so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in either pinned OpenSSL 4.1.0 provider, same digest probe 2026-11-24).",
       "numeric_id": "0x00000004",
       "routes": [],
       "source_refs": [
@@ -9897,7 +9897,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "MD2 digest: absent from the pinned OpenSSL 4.1.0 provider digest list; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (probed 2026-11-24: absent from the digest list)).",
+      "notes": "MD2 digest: absent from either pinned OpenSSL 4.1.0 provider digest list (default or legacy); no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in either pinned OpenSSL 4.1.0 provider (probed 2026-11-24: absent from the digest list)).",
       "numeric_id": "0x00000200",
       "routes": [],
       "source_refs": [
@@ -28905,7 +28905,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.10 signature: no GOST signatures in the pinned OpenSSL 4.1.0 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.1.0 provider).",
+      "notes": "GOST R 34.10 signature: no GOST signatures in either pinned OpenSSL 4.1.0 provider (default or legacy); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in either pinned OpenSSL 4.1.0 provider).",
       "numeric_id": "0x00001201",
       "routes": [],
       "source_refs": [
@@ -28933,7 +28933,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.10 with GOST R 34.11: no GOST signatures in the pinned OpenSSL 4.1.0 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.1.0 provider).",
+      "notes": "GOST R 34.10 with GOST R 34.11: no GOST signatures in either pinned OpenSSL 4.1.0 provider (default or legacy); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in either pinned OpenSSL 4.1.0 provider).",
       "numeric_id": "0x00001202",
       "routes": [],
       "source_refs": [
@@ -29790,7 +29790,7 @@
         "min_key_size": 1024,
         "max_key_size": 3072
       },
-      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42; CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (haskoki does not wire the provider DHX FIPS 186-4 path, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
+      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42; CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA entry point (FIPS 186-2 at 1024/160, 186-4 above; provider DHX unwired, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002001",
       "routes": [
         {
@@ -29853,7 +29853,7 @@
         "min_key_size": 1024,
         "max_key_size": 3072
       },
-      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA; CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA FIPS 186-4 entry point (haskoki does not wire the provider DHX FIPS 186-4 path). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
+      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA; CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA entry point (FIPS 186-2 at 1024/160, 186-4 above; provider DHX unwired). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002002",
       "routes": [
         {

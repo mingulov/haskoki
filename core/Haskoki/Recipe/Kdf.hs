@@ -34,8 +34,8 @@ Consumers:
   RoutingE2ESpec vectors and SyntheticSpec constructions.
 
 Deferred family members (not recipes, named gaps): the WTLS
-protocol KDFs (a later protocol-specials slice) -- see
-mechanisms.json honesty notes. @CKM_HKDF_KEY_GEN@ is served by
+protocol KDFs (obsolete; will not implement, per catalog policy)
+-- see mechanisms.json honesty notes. @CKM_HKDF_KEY_GEN@ is served by
 the keygen sweep ('Haskoki.Operation.KeyManagement').
 @CKM_HKDF_DATA@ is served by the
 HKDF-DATA arm of 'Haskoki.Operation.Derive.planDerive' (same KDF

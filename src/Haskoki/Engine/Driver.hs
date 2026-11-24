@@ -2252,15 +2252,15 @@ runEffect env resolve fx = case fx of
             toKeyPair <$> generateKey env (GenRSA bits e)
           (m, GenDsaParams p q) | m == dsaParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
-          -- X9.42 DH parameter generation runs the DSA FIPS
-          -- 186-4 entry point (haskoki does not wire the provider
-          -- DHX FIPS 186-4 path, which also yields Q); the (P, Q, G)
+          -- X9.42 DH parameter generation runs the DSA entry
+          -- point (FIPS 186-2 at 1024/160, 186-4 above; provider
+          -- DHX unwired, though it also yields Q); the (P, Q, G)
           -- triple publishes as X9.42 DH domain parameters
           -- through the shared DSS-Parms finisher.
           (m, GenDsaParams p q) | m == x9_42DhParameterGenMech ->
             toKeyPair <$> generateKey env (GenDSAParams p q)
-          -- DH PKCS parameter generation runs the same DSA FIPS
-          -- 186-4 entry point (provider DHX unwired, as
+          -- DH PKCS parameter generation runs the same DSA entry
+          -- point (186-2 at 1024/160, 186-4 above; DHX unwired, as
           -- for X9.42); the pending attrs stamped by the planner
           -- publish it as PKCS#3 DH domain parameters.
           (m, GenDsaParams p q) | m == dhPkcsParameterGenMech ->
