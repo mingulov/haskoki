@@ -839,9 +839,10 @@ montgomeryPublicDer oid point =
 
 -- | PKCS#8 for an ML-DSA private key from the DER algorithm OID
 -- and the raw expanded key (NOT the Edwards nested-seed shape:
--- the pinned provider refuses seed-only PKCS#8 and has no
--- seed fromdata; it decodes the flat expanded key — proven by
--- probe against a wycheproof vector, sign+verify roundtrip).
+-- haskoki's import path requires the flat expanded key — the
+-- provider documents seed expansion, but haskoki never supplies
+-- seed-only PKCS#8; expanded-key import proven by probe against
+-- a wycheproof vector, sign+verify roundtrip).
 mldsaPrivateDer :: ByteString -> ByteString -> ByteString
 mldsaPrivateDer oid raw =
   derSeq [derSmallInt 0, derSeq [oid], derOctet raw]
