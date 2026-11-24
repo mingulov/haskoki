@@ -1,8 +1,9 @@
 {- | OpenSSL 4 crypto backend: the first REAL engine.
 
 Owns one private @OSSL_LIB_CTX@ per 'BackendEnv' (explicit
-@"default"@ provider + property query, never a PKCS#11-backed
-provider, never process-global cleanup) behind a single 'ForeignPtr'
+@"default"@ + @"legacy"@ providers + property query, never a
+PKCS#11-backed provider, never process-global cleanup) behind a
+single 'ForeignPtr'
 whose finalizer tears providers down before the context. Multipart
 digest handles live in an explicit registry keyed by
 'EngineResourceId'; key references resolve through a small material

@@ -28,10 +28,9 @@ Consumers:
 
 Deferred family members (not recipes, named gaps):
 @CKM_X9_42_DH_HYBRID_DERIVE@ and @CKM_X9_42_MQV_DERIVE@
-(multi-key agreements, no planner shape), the two
-@*_PARAMETER_GEN@ rows (safe-prime policy, a later slice), and
-every non-null DH KDF selector — see mechanisms.json honesty
-notes.
+(multi-key agreements, no planner shape), and every non-null
+DH KDF selector -- see mechanisms.json honesty notes.
+(Both DH parameter-generation rows are served.)
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.Dh

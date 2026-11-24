@@ -3409,10 +3409,10 @@ planGenerateKey rules model st mech params tmpl =
               , FxGenerateKey mech BS.empty (encodeGenArgs (GenDsaParams l n))
               )
       -- X9.42 DH parameter generation frames the same FIPS
-      -- 186-4 (L, N) pair as DSA (the provider's DH paramgen
-      -- emits P+G only, no Q in any mode, so the driver runs
+      -- 186-4 (L, N) pair as DSA (haskoki does not wire the
+      -- provider DHX FIPS 186-4 path, so the driver runs
       -- the DSA paramgen entry point and the (P, Q, G) triple
-      -- publishes as X9.42 DH domain parameters — the same
+      -- publishes as X9.42 DH domain parameters -- the same
       -- FIPS 186 math, the same DER DSS-Parms framing the
       -- finisher stamps).
       | mech == x9_42DhParameterGenMech =

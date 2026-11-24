@@ -22,14 +22,14 @@ Consumers:
   libcrypto KATs execute the bindings pinned here (SyntheticSpec,
   OpenSSLSpec).
 
-Deferred family members (not recipes, named gaps): @CKM_RSA_PKCS_PSS@
-and @CKM_*_RSA_PKCS_PSS@ (the PSS shape: salt-length parameters,
-next slice), @CKM_RSA_PKCS_OAEP@ (the OAEP shape), @CKM_RSA_X_509@
-(raw modular exponentiation, no padding), @CKM_RSA_9796@ and the
-X9.31 rows (signature paddings without a provider surface in this
-slice), the TPM 1.1 rows (TPM encodings, no provider equivalent),
+Deferred family members (not recipes, named gaps): @CKM_RSA_9796@
+(signature padding without a provider surface in this slice),
+the TPM 1.1 rows (TPM encodings, no provider equivalent),
 @CKM_MD2_RSA_PKCS@\/@CKM_RIPEMD128_RSA_PKCS@ (digests absent from
-the pinned provider) — see mechanisms.json honesty notes.
+the pinned provider) -- see mechanisms.json honesty notes.
+(PSS, OAEP, raw X.509 and X9.31 are served: 'Haskoki.Recipe.RsaPss',
+'Haskoki.Recipe.RsaOaep', 'Haskoki.Recipe.RsaX509',
+'Haskoki.Recipe.RsaX931'.)
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.RsaPkcs1
