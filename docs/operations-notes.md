@@ -773,12 +773,10 @@ away from both the link and its target (`caseOpenDanglingLink`).
    open would not create sidecars at all, but the snapshot does
    not use one; the reported sidecars may be the check's own,
    so moving them aside and retrying loops). Through a @file:@
-   URI spelling the snapshot opens the decoded file instead:
-   sidecars appear beside it unreported when the literal passes
-   the initial stat, escaping the three-case reporting
-   guarantee below (the guard derives from the literal in
-   `journalBlocked` while SQLite opens the decoded file;
-   URI/spelling consistency is a separate work item). A cold
+   URI spelling the snapshot opens the decoded file, exactly
+   like the guards: spellings normalize up front, so sidecars
+   beside the decoded file are reported under the same
+   three-case guarantee below. A cold
    journal is cleared only after this plan says the migration
    proceeds.
 2. Takes the store's ownership lock for the rest of the run. A store
@@ -965,8 +963,8 @@ fails, since the snapshot error takes precedence even when the
 post-read guard detects it; and a post-read stat failure masks a
 detected sidecar, reporting `vanished while read` instead. A rerun
 then reports the sidecar, provided it is still present and the
-rerun reaches the guard — for POSIX spellings; a `file:` URI
-rerun misses the same siblings (see above). Post-commit read-back
+rerun reaches the guard — under any spelling, since guards
+and the opener share the decoded path. Post-commit read-back
 is separate: a
 sidecar detected during `verifyMigrated` produces
 `migrate-verify-failed` with no receipt, after the migration has

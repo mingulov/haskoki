@@ -42,7 +42,7 @@ import Haskoki.Runtime.Storage
   (CommitResult (..), CredentialRecord (..), IdentityRefusal (..), StoreDelta (..), StoreError (..), TokenRecord (..), Store (..), emptyDelta, renderIdentityRefusal)
 import Haskoki.Types (SlotId (..), TokenId (..))
 import Haskoki.Runtime.Catalog (asyncHomeConfig, asyncHomeEntry, homeCatalogEntry, identityCatalog)
-import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..), loadConfigFile)
+import Haskoki.Runtime.Config (Config (..), StorageCfg (..), StorageKind (..), defaultConfig, loadConfigFile)
 
 import Haskoki.Runtime.Storage.Preflight
   ( MigrateError (..), MigrateHooks (..), MigrateOutcome (..), MigrationOp (..), MigrationReceipt (..)
@@ -58,7 +58,8 @@ import StoreFixtures
 spec :: IO EnvScope -> TestTree
 spec mkScope = testGroup "Store preflight"
   [ testGroup "released fixtures"
-      [ testCase "sha-256 is the standard digest" caseSha256Vector
+      [ testCase "query URI refuses before the check" caseSpellingRefused
+      , testCase "sha-256 is the standard digest" caseSha256Vector
       , testCase "sha-256 of the empty string" caseSha256Empty
       , testCase "sha-256 of the 448-bit FIPS message" caseSha256Long
       , testCase "v0.3.1.0 fixture matches its manifest" (caseFixtureManifest "v0.3.1.0")
@@ -186,6 +187,18 @@ spec mkScope = testGroup "Store preflight"
       , testCase "check reports from a read-only directory; migrate cannot own it" caseCheckNeverOwns
       ]
   ]
+
+-- | The check entry normalizes spellings like the open: a query
+-- URI refuses before any filesystem touch (no fixture needed).
+caseSpellingRefused :: IO ()
+caseSpellingRefused = do
+  let q = "file:/definitely/missing.db?mode=memory"
+  r <- checkStoreOpen q defaultConfig
+  case r of
+    Left (StoreIO msg) -> assertEqual "exact refusal"
+      ("file: URI with query/fragment refused (bare paths only): " ++ q) msg
+    Left other -> assertFailure ("query URI must refuse by spelling, got: " ++ show other)
+    Right _ -> assertFailure "query URI passed the check"
 
 caseSha256Vector :: IO ()
 caseSha256Vector = do

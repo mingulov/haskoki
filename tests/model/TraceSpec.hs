@@ -31,6 +31,7 @@ spec = testGroup "Trace"
   , testCase "causeless rejection emits nothing" caseNoCauseNoRow
   , testCase "function identities name their C entries" caseCNames
   , testCase "sync-try never swallows cancellation" caseTrySyncAsync
+  , testCase "store spellings decode once or refuse" caseSpellingTable
   ]
 
 ids :: TraceIds
@@ -209,3 +210,27 @@ caseTrySyncAsync = do
       Just _ -> pure ()
       Nothing -> fail ("expected async, got sync: " ++ show ex)
     Right _ -> fail "cancellation was swallowed"
+
+-- | Store-spelling rule table: POSIX spellings pass through
+-- for the existing resolution to handle; bare file: URIs decode
+-- once; query/fragment, undecodable, nested, and empty
+-- spellings refuse so guards and SQLite can never diverge.
+caseSpellingTable :: IO ()
+caseSpellingTable = mapM_ check
+  [ ("/tmp/x.db", Right "/tmp/x.db")
+  , ("rel/path.db", Right "rel/path.db")
+  , ("", Left SpellingEmpty)
+  , ("file:/tmp/a%2edb", Right "/tmp/a.db")
+  , ("file:/tmp/x/%2e%2e/a.db", Right "/tmp/x/../a.db")
+  , ("file:/tmp/a%3F.db", Right "/tmp/a?.db")
+  , ("file:/tmp/a.db?mode=memory", Left UriQueryOrFragment)
+  , ("file:/tmp/a.db#frag", Left UriQueryOrFragment)
+  , ("file:/tmp/a%00.db", Left UriUndecodable)
+  , ("file:/tmp/a%FF.db", Left UriUndecodable)
+  , ("file:/tmp/a%.db", Left UriUndecodable)
+  , ("file:", Left SpellingEmpty)
+  , ("file:file%3Ax", Left UriNested)
+  ]
+  where
+    check (input, want) =
+      assertEqual ("spelling " ++ show input) want (effectiveStorePath input)
