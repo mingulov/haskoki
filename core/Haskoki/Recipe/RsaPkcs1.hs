@@ -26,7 +26,7 @@ Deferred family members (not recipes, named gaps): @CKM_RSA_9796@
 (signature padding without a provider surface in this slice),
 the TPM 1.1 rows (TPM encodings, no provider equivalent),
 @CKM_MD2_RSA_PKCS@\/@CKM_RIPEMD128_RSA_PKCS@ (digests absent from
-the pinned provider) -- see mechanisms.json honesty notes.
+both pinned providers) -- see mechanisms.json honesty notes.
 (PSS, OAEP, raw X.509 and X9.31 are served: 'Haskoki.Recipe.RsaPss',
 'Haskoki.Recipe.RsaOaep', 'Haskoki.Recipe.RsaX509',
 'Haskoki.Recipe.RsaX931'.)

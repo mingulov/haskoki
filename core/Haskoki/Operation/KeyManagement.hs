@@ -3425,11 +3425,12 @@ planGenerateKey rules model st mech params tmpl =
               ( PwGenerateKey (pendingFromAttrs st attrs)
               , FxGenerateKey mech BS.empty (encodeGenArgs (GenDsaParams l n))
               )
-      -- DH PKCS parameter generation frames the same FIPS 186-4
-      -- (L, N) pair as X9.42 (same driver entry point, same DER
-      -- DSS-Parms framing), published as PKCS#3 DH domain
-      -- parameters — but the subprime size defaults from L (the
-      -- oracle sends CKA_PRIME_BITS only and expects CKR_OK).
+      -- DH PKCS parameter generation frames the same (L, N)
+      -- pair as X9.42 (186-2 at 1024/160, 186-4 above; same
+      -- driver entry point, same DER DSS-Parms framing),
+      -- published as PKCS#3 DH domain parameters -- but the
+      -- subprime size defaults from L (the oracle sends
+      -- CKA_PRIME_BITS only and expects CKR_OK).
       | mech == dhPkcsParameterGenMech =
           case checkKeyTemplate ckoDomainParameters ckkDh tmpl of
           Left deny -> Left deny
@@ -3540,9 +3541,10 @@ planGenerateKey rules model st mech params tmpl =
 
 -- | The DSA @(L, N)@ size pair for parameter generation:
 -- @AttrPrimeBits@ is required, @AttrSubprimeBits@ defaults per L
--- (@{1024: 160, 2048: 256, 3072: 256}@). Served pairs are the FIPS
--- 186-4 (L, N) set the backends approve — (1024, 160), (2048,
--- 224), (2048, 256), (3072, 256) — anything else is inconsistent,
+-- (@{1024: 160, 2048: 256, 3072: 256}@). Served pairs are the
+-- (L, N) set the backends approve -- (1024, 160) runs 186-2,
+-- (2048, 224), (2048, 256), (3072, 256) run 186-4 -- anything
+-- else is inconsistent,
 -- mirroring 'rsaBitsOf' (unserved keygen sizes refuse as
 -- inconsistent, never silently substituted). Shared by DSA and
 -- X9.42 DH parameter generation (the same FIPS 186 math); the

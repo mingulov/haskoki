@@ -788,8 +788,8 @@ data KeyGenSpec
   = GenRSA { genBits :: !Int, genExponent :: !Integer }
   | GenEC { genEc :: !EcSpec }
   | GenDSAParams { genDsaPBits :: !Int, genDsaQBits :: !Int }
-    -- ^ DSA domain parameters (FIPS 186-4 (L, N) pair); answers
-    -- lone DER params.
+    -- ^ DSA domain parameters ((L, N) pair; 186-2 at 1024/160,
+    -- 186-4 above); answers lone DER params.
   | GenDSAKeypair { genDsaParams :: !ByteString }
     -- ^ DSA keypair from DER domain parameters; answers the
     -- PKCS#8/SPKI DER halves.

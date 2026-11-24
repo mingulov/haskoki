@@ -1827,7 +1827,8 @@ genSupported (OSSL4Backend env) spec
   , Set.member (ecCurve ec) (scCurves (bcSigs (osslCaps env))) = Nothing
   -- DSA generation gates on the DSA pkey probe ('DSA-RAW' in the
   -- signature set); paramgen additionally enforces the approved
-  -- FIPS 186-4 (L, N) pairs (the shim checks again).
+  -- (L, N) pairs (186-2 at 1024/160, 186-4 above; the shim
+  -- checks again).
   | GenDSAParams p q <- spec
   , Set.member "DSA-RAW" (scSpecs (bcSigs (osslCaps env)))
   , (p, q) `elem` [(1024, 160), (2048, 224), (2048, 256), (3072, 256)] = Nothing

@@ -772,7 +772,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RIPEMD-128 with RSA PKCS#1: no RIPEMD-128 in the pinned OpenSSL 4.1.0 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.1.0 provider, same digest probe 2026-11-24).",
+      "notes": "RIPEMD-128 with RSA PKCS#1: no RIPEMD-128 in either pinned OpenSSL 4.1.0 provider (default or legacy), so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD128 in either pinned OpenSSL 4.1.0 provider, same digest probe 2026-11-24).",
       "numeric_id": "0x00000007",
       "routes": [],
       "source_refs": [
@@ -3917,7 +3917,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: the pinned provider offers no MQV key exchange (plain X9.42 DH derive is served). Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; neither pinned OpenSSL 4.1.0 provider offers MQV key exchange.\nReal unsupported-with-reason: neither pinned provider offers MQV key exchange (plain X9.42 DH derive is served). Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); neither pinned provider offers MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000033",
       "routes": [],
       "source_refs": [
@@ -5929,7 +5929,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over SHA-512/t: t arrives via CK_MAC_GENERAL_PARAMS (t in bits, v3.2 section 6.27.4) but the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nThe t parameter is specified (CK_MAC_GENERAL_PARAMS, t in bits); the missing piece is the general-t backend, not the parameter shape; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
+      "notes": "HMAC over SHA-512/t: t arrives via CK_MAC_GENERAL_PARAMS (t in bits, v3.2 section 6.27.4) but neither pinned OpenSSL 4.1.0 provider has a general-t SHA-512 digest; see GAP-SPECIALS.\nThe t parameter is specified (CK_MAC_GENERAL_PARAMS, t in bits); the missing piece is the general-t backend, not the parameter shape; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000051",
       "routes": [],
       "source_refs": [
@@ -5957,7 +5957,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over SHA-512/t (general length): the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest, so no backend exists; see GAP-SPECIALS.\nGeneral-length sibling of CKM_SHA512_T_HMAC (output length via CK_MAC_GENERAL_PARAMS, v3.2 section 6.27.3). General-t backend missing; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
+      "notes": "HMAC over SHA-512/t (general length): neither pinned OpenSSL 4.1.0 provider has a general-t SHA-512 digest, so no backend exists; see GAP-SPECIALS.\nGeneral-length sibling of CKM_SHA512_T_HMAC (output length via CK_MAC_GENERAL_PARAMS, v3.2 section 6.27.3). General-t backend missing; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000052",
       "routes": [],
       "source_refs": [
@@ -5985,7 +5985,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SHA-512/t key derivation: the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest, so no backend exists for the width-parameterized derivation (v3.2 section 6.27.5 specifies a ceil(t/8) width without a t parameter); see GAP-SPECIALS.\nTruncation-width sibling of the SHA-KD rows. General-t backend missing; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance).",
+      "notes": "SHA-512/t key derivation: neither pinned OpenSSL 4.1.0 provider has a general-t SHA-512 digest, so no backend exists for the width-parameterized derivation (v3.2 section 6.27.5 specifies a ceil(t/8) width without a t parameter); see GAP-SPECIALS.\nTruncation-width sibling of the SHA-KD rows. General-t backend missing; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512 and SHA-384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance).",
       "numeric_id": "0x00000053",
       "routes": [],
       "source_refs": [
@@ -9925,7 +9925,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no HMAC-MD2 route exists.",
+      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported (no MD2 in either pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000201",
       "routes": [],
       "source_refs": [
@@ -9953,7 +9953,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no HMAC-MD2 route exists.",
+      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (absent from the legacy set too), so no route exists.\nReal unsupported (no MD2 in either pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (absent from the legacy set too; the module loads both providers), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000202",
       "routes": [],
       "source_refs": [
@@ -10559,7 +10559,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RIPEMD-128 digest: the pinned OpenSSL 4.1.0 provider has only RIPEMD-160; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD-128 in the pinned OpenSSL 4.1.0 provider (only RIPEMD-160; probed 2026-11-24)).",
+      "notes": "RIPEMD-128 digest: the pinned OpenSSL 4.1.0 providers have only RIPEMD-160; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD-128 in either pinned OpenSSL 4.1.0 provider (only RIPEMD-160; probed 2026-11-24)).",
       "numeric_id": "0x00000230",
       "routes": [],
       "source_refs": [
@@ -10587,7 +10587,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over RIPEMD-128: the pinned OpenSSL 4.1.0 provider has no RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
+      "notes": "HMAC over RIPEMD-128: neither pinned OpenSSL 4.1.0 provider (default or legacy) has a RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in either pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)). Real/behavior/synthetic unsupported-with-reason: neither pinned 4.1.0 provider has a RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
       "numeric_id": "0x00000231",
       "routes": [],
       "source_refs": [
@@ -10615,7 +10615,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over RIPEMD-128: the pinned OpenSSL 4.1.0 provider has no RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
+      "notes": "HMAC over RIPEMD-128: neither pinned OpenSSL 4.1.0 provider (default or legacy) has a RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in either pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)). Real/behavior/synthetic unsupported-with-reason: neither pinned 4.1.0 provider has a RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
       "numeric_id": "0x00000232",
       "routes": [],
       "source_refs": [
@@ -25275,7 +25275,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "EC MQV derive: needs the MQV two-key agreement on EC keys; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported (no MQV key agreement in the pinned OpenSSL 4.1.0 provider API). Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "EC MQV derive: needs the MQV two-key agreement on EC keys; neither pinned OpenSSL 4.1.0 provider offers MQV key exchange.\nReal unsupported (no MQV key agreement in either pinned OpenSSL 4.1.0 provider). Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; neither pinned provider offers MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00001052",
       "routes": [],
       "source_refs": [
@@ -29045,7 +29045,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over GOST R 34.11-94: the pinned OpenSSL 4.1.0 provider has no GOST digest (absent from both provider sets), so no route exists.\nReal unsupported (no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets); same probe, 2026-11-24). Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
+      "notes": "HMAC over GOST R 34.11-94: neither pinned OpenSSL 4.1.0 provider (default or legacy) has a GOST digest, so no route exists.\nReal unsupported (no GOST provider in the pinned OpenSSL 4.1.0 build (absent from both provider sets); same probe, 2026-11-24). Real/behavior/synthetic unsupported-with-reason: neither pinned 4.1.0 provider has a GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
       "numeric_id": "0x00001211",
       "routes": [],
       "source_refs": [
@@ -29790,7 +29790,7 @@
         "min_key_size": 1024,
         "max_key_size": 3072
       },
-      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42; CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA entry point (FIPS 186-2 at 1024/160, 186-4 above; provider DHX unwired, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
+      "notes": "paramgen (CKA_PRIME_BITS via dhPkcsParamSizes sharing the (L, N) pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA/X9.42 (186-2 at 1024/160, 186-4 above); CKA_SUBPRIME_BITS defaults from L (the oracle sends CKA_PRIME_BITS only and expects CKR_OK), unlike X9.42; GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA entry point (FIPS 186-2 at 1024/160, 186-4 above; provider DHX unwired, as for X9.42). Real execution pinned by KeyManagementSpec caseRealDhPkcsParamgen (no KAT possible for randomized generation); planner pins caseDhPkcsParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002001",
       "routes": [
         {
@@ -29853,7 +29853,7 @@
         "min_key_size": 1024,
         "max_key_size": 3072
       },
-      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the FIPS 186-4 pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA; CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA entry point (FIPS 186-2 at 1024/160, 186-4 above; provider DHX unwired). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
+      "notes": "paramgen (CKA_PRIME_BITS required via dhParamSizes sharing the (L, N) pairs (1024,160), (2048,224), (2048,256), (3072,256) with DSA (186-2 at 1024/160, 186-4 above); CKA_SUBPRIME_BITS required (TEMPLATE_INCOMPLETE when absent: the oracle requires it, unlike the DSA per-L default); GenDsaParams frame; CKO_DOMAIN_PARAMETERS/CKK_X9_42_DH object with p/q/g and true bit widths stamped by stampParamsObject). The driver runs the DSA entry point (FIPS 186-2 at 1024/160, 186-4 above; provider DHX unwired). Real execution pinned by KeyManagementSpec caseRealX942Paramgen (no KAT possible for randomized generation); planner pins caseX942ParamSizesPlanner (including the oracle minimal template). Bounds 1024/3072 bits (served L window).",
       "numeric_id": "0x00002002",
       "routes": [
         {
@@ -30122,7 +30122,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "AES-CFB64: the pinned OpenSSL 4.1.0 provider has no CFB64 mode (only CFB/CFB8/CFB1/OFB), and CFB128 output cannot be sliced into CFB64 feedback.\nReal unsupported-with-reason: provider 4.1.0 has no AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB). Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
+      "notes": "AES-CFB64: neither pinned OpenSSL 4.1.0 provider has a CFB64 mode (only CFB/CFB8/CFB1/OFB), and CFB128 output cannot be sliced into CFB64 feedback.\nReal unsupported-with-reason: neither pinned 4.1.0 provider has an AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB). Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
       "numeric_id": "0x00002105",
       "routes": [],
       "source_refs": [
@@ -33876,7 +33876,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "XEdDSA: not in the pinned OpenSSL 4.1.0 provider signature list; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no XEdDSA in the pinned OpenSSL 4.1.0 provider signature list).",
+      "notes": "XEdDSA: not in either pinned OpenSSL 4.1.0 provider signature list (default or legacy); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no XEdDSA in either pinned OpenSSL 4.1.0 provider signature list).",
       "numeric_id": "0x00004029",
       "routes": [],
       "source_refs": [
