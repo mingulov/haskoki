@@ -5657,7 +5657,7 @@ int main(int argc, char **argv) {
     }
     /* ---- key import: RSA/EC component templates create keys ---- */
     {
-      /* Pinned OpenSSL 4.0.2 vectors (shared with KeyImportSpec). */
+      /* OpenSSL 4.0.2 vectors (shared with KeyImportSpec). */
       static const char hn[] =
       "bf249542389ea0de381c11c04c7777e6c56106165ec581cc378e6f9022cd2b4f"
       "efd66e575e7043004afef1e4916177cea097cef02d4f09de587d869840cd75ec"

@@ -1,7 +1,7 @@
 # FIPS status
 
 Haskoki has **no implemented or validated FIPS mode**. The demo uses its
-pinned OpenSSL 4.0.2 build with the default and legacy providers, loaded by
+pinned OpenSSL 4.1.0 build with the default and legacy providers, loaded by
 `openBackend` in [OpenSSL4.hs](../src/Haskoki/Engine/OpenSSL4.hs).
 Known-answer vectors check output bytes; they do not establish validation.
 

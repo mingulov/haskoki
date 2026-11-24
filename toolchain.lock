@@ -80,17 +80,17 @@ package-set = unchanged from [hackage-pins] above (flib adds base-only Haskell m
 [openssl]
 # Pinned libcrypto for the OpenSSL4 backend (Dockerfile
 # openssl-build stage; REPORT.md §5.1 format).
-version = 4.0.2
-release-date = 25 Aug 2026
-eol = 14 May 2027
+version = 4.1.0
+release-date = 23 Oct 2026
+eol = 23 Nov 2027
 shlib-version = 4
-tarball-url = https://github.com/openssl/openssl/releases/download/openssl-4.0.2/openssl-4.0.2.tar.gz
-tarball-sha256 = 736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
-tarball-sha256-verified = yes (spike recompute + engine staged-build check, MATCH)
-pgp-key = B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40 (spike verified Good sig)
-configure-flags = --prefix=/opt/openssl-4.0.2 --openssldir=/opt/openssl-4.0.2/ssl --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
+tarball-url = https://github.com/openssl/openssl/releases/download/openssl-4.1.0/openssl-4.1.0.tar.gz
+tarball-sha256 = 50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
+tarball-sha256-verified = yes (local recompute + GitHub asset digest, MATCH)
+pgp-key = B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40 (verified Good sig on the 4.1.0 tarball; signing subkey C46E D3F2 CBEF DA1F DADA A442 64ED 7B1D CCE7 1CB2)
+configure-flags = --prefix=/opt/openssl-4.1.0 --openssldir=/opt/openssl-4.1.0/ssl --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
 linkage = static libcrypto.a only (no shared libcrypto in NEEDED; no-pinshared for .so embedding)
-prefix-container = /opt/openssl-4.0.2 (OPENSSL4_PREFIX; staged at /tmp/ossl4-stage for pre-rebuild runs)
+prefix-container = /opt/openssl-4.1.0 (OPENSSL4_PREFIX; staged at /tmp/ossl4-stage for pre-rebuild runs)
 fips = out of scope (default provider only)
 proof-sha256-abc = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-proof-version-string = OpenSSL 4.0.2 25 Aug 2026
+proof-version-string = OpenSSL 4.1.0 23 Oct 2026

@@ -85,7 +85,7 @@ import Haskoki.Types
   )
 
 -- ---------------------------------------------------------------------------
--- Fixtures (pinned OpenSSL 4.0.2 output, ffdhe2048)
+-- Fixtures (OpenSSL 4.0.2 output, ffdhe2048)
 -- ---------------------------------------------------------------------------
 
 hex :: String -> BS.ByteString

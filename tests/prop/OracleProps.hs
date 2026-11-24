@@ -67,9 +67,9 @@ import Haskoki.Types (ObjectId (..))
 -- ---------------------------------------------------------------------------
 
 -- | The pinned external oracle (brief anchor: OpenSSL 4.x at
--- /opt/openssl-4.0.2); used when @OPENSSL4_BIN@ is unset.
+-- /opt/openssl-4.1.0); used when @OPENSSL4_BIN@ is unset.
 defaultCliPath :: FilePath
-defaultCliPath = "/opt/openssl-4.0.2/bin/openssl"
+defaultCliPath = "/opt/openssl-4.1.0/bin/openssl"
 
 -- | Environment override for the oracle CLI path.
 oracleBinEnv :: String
@@ -77,7 +77,7 @@ oracleBinEnv = "OPENSSL4_BIN"
 
 -- | Expected @openssl version@ prefix of the pinned oracle.
 expectedOracleVersion :: String
-expectedOracleVersion = "OpenSSL 4.0.2"
+expectedOracleVersion = "OpenSSL 4.1.0"
 
 -- | Resolve the oracle CLI explicitly and check it loudly:
 -- @OPENSSL4_BIN@ with pinned default (empty counts as unset), then
@@ -219,7 +219,7 @@ expectBytes label res = case res of
 -- Oracle identity
 -- ---------------------------------------------------------------------------
 
--- | The external oracle is the pinned OpenSSL 4.0.2 binary (or the
+-- | The external oracle is the pinned OpenSSL 4.1.0 binary (or the
 -- @OPENSSL4_BIN@ override); drift fails loudly, never skips.
 caseIdentity :: IO ()
 caseIdentity = resolveOracleCli >> pure ()

@@ -9,7 +9,7 @@ its public point — scalar-only imports refuse, since y-recovery
 is Fp math), EC Montgomery (agreement against the base point),
 EC Edwards. DSA\/DH refuse (no provider path); ML-DSA\/SLH-DSA\/
 ML-KEM refuse (the provider keymgmt has no priv-import path at
-all — fromdata rc=-2 in 4.0.2).
+all — fromdata rc=-2 in 4.1.0).
 
 This module owns the row table, the codec, the base type gate,
 and the attribute map. The map covers modeled attributes only:

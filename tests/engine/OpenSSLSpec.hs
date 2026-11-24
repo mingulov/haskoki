@@ -537,7 +537,7 @@ aes256Ct :: ByteString
 aes256Ct = hex "f58c4c04d6e5f1ba779eabfb5f7bfbd6"
 
 -- NIST SP 800-38A F.1/F.2 AES rows (128/192 CBC+ECB, 256
--- ECB; 256 CBC is caseAesKat). Generated on the pinned 4.0.2 CLI,
+-- ECB; 256 CBC is caseAesKat). Generated on the OpenSSL 4.0.2 CLI,
 -- cross-checked byte-identical on the system 3.5.5 CLI.
 aes128Key :: ByteString
 aes128Key = hex "2b7e151628aed2a6abf7158809cf4f3c"
@@ -621,7 +621,7 @@ cam256EcbCt = hex "2edf1f3418d53b88841fc8985fb1ecf2"
 
 -- CAMELLIA-CTR rows: RFC 5528 TV#1/#4/#7 (single block each;
 -- counter block drives the 16-byte IV directly), verified under
--- the pinned 4.0.2 CLI before embedding; independent of this
+-- the OpenSSL 4.0.2 CLI before embedding; independent of this
 -- backend's fetch path.
 camCtrPt :: ByteString
 camCtrPt = hex "53696e676c6520626c6f636b206d7367"
@@ -658,7 +658,7 @@ ecSigDer = hex "3045022100debdbb00072c928d38bf43791d32f0eefe8a562d8444869adabdf7
 ecSigRaw :: ByteString
 ecSigRaw = hex "debdbb00072c928d38bf43791d32f0eefe8a562d8444869adabdf77820cbed4963cc0a678a74c3e006c7387907210825f12920ff5f15b96709291e48b84ddc21"
 
--- RSA-2048 fixed vector (pinned 4.0.2 CLI genpkey; PKCS#8 +
+-- RSA-2048 fixed vector (OpenSSL 4.0.2 CLI genpkey; PKCS#8 +
 -- SPKI DER). The SHA-256 signature is `dgst -sha256 -sign` output and
 -- the raw signature is `pkeyutl -sign` (PKCS#1 block type 1) output,
 -- both Verified OK on the CLI before embedding; independent of this
@@ -749,7 +749,7 @@ rsaRawSig = hex $ concat
   , "6159d1f203f89db9f9e790b16837254f81f87bf59c4e55bdea4ac6de3b8a5ffc"
   ]
 
--- PSS/OAEP interop vectors (pinned 4.0.2 CLI, same RSA-2048
+-- PSS/OAEP interop vectors (OpenSSL 4.0.2 CLI, same RSA-2048
 -- key as the v1.5 vectors). PSS is randomized, so the suite verifies
 -- the CLI's bytes (proving interop) and roundtrips its own; OAEP
 -- likewise. All three vectors were CLI-verified before embedding.
@@ -795,7 +795,7 @@ oaepCtLabel = hex $ concat
   , "20a2a3e03dfb241ff23d76351f9bbdd6e7e292e02fdd6c19d967b4f904187e73"
   ]
 
--- PKCS#1 v1.5 interop vector (pinned 4.0.2 CLI, same RSA-2048 key
+-- PKCS#1 v1.5 interop vector (OpenSSL 4.0.2 CLI, same RSA-2048 key
 -- as the OAEP vectors): @pkeyutl -encrypt -pkeyopt
 -- rsa_padding_mode:pkcs1@ over 'pkcs1Msg'. The CLI decrypted the
 -- same bytes back before embedding.
@@ -847,7 +847,7 @@ x509Sig = hex $ concat
   , "8627519be535674cb4a09d02eede177143a5e7fde37b1ecdb2a9efd1ac20048a"
   ]
 
--- X9.31 interop vectors (pinned 4.0.2 CLI, same RSA-2048 key as the
+-- X9.31 interop vectors (OpenSSL 4.0.2 CLI, same RSA-2048 key as the
 -- v1.5 vectors; X9.31 is deterministic, so the backend replays the
 -- CLI's bytes). The digest is SHA-256 over "T16 S7 X9.31 KAT
 -- digest input"; the signature is `pkeyutl -sign -pkeyopt
@@ -868,7 +868,7 @@ x931Sig = hex $ concat
   , "0b1cb683efa07322a713d1e7a0371ae78450c1390df6f95760c9e50fd225e400"
   ]
 
--- Poly1305 KAT (pinned 4.0.2 CLI `openssl mac POLY1305` and
+-- Poly1305 KAT (OpenSSL 4.0.2 CLI `openssl mac POLY1305` and
 -- python-cryptography agreeing byte for byte, independent of this
 -- backend).
 polyKey :: ByteString
@@ -881,7 +881,7 @@ polyTag :: ByteString
 polyTag = hex "f70a350ed794a7e0660bba7638f5a6d2"
 
 -- P-384/SHA-384, P-521/SHA-512, and raw-P-256 interop
--- vectors (pinned 4.0.2 CLI; the raw vector reuses the P-256 key from
+-- vectors (OpenSSL 4.0.2 CLI; the raw vector reuses the P-256 key from
 -- the fixtures above), plus one vector per new curve family
 -- (Koblitz secp256k1, brainpoolP256r1, binary sect283r1).
 -- ECDSA is randomized, so the suite verifies the CLI's bytes
@@ -1392,7 +1392,7 @@ caseSha256Kat = withBackend $ \env -> do
   assertBool "non-empty digest" (BS.length d1 == 32)
 
 -- | Digest "abc" vectors, each independently verified against
--- the pinned @/opt/openssl-4.0.2/bin/openssl dgst@ CLI on 2026-09-21
+-- the @/opt/openssl-4.0.2/bin/openssl dgst@ CLI on 2026-09-21
 -- and citing its standard: FIPS 180-4 (SHA-1/SHA-2), FIPS 202
 -- (SHA-3), RFC 1321 A.5 (MD5), the RIPEMD-160 test suite.
 digestKats :: [(DigestAlg, String, ByteString)]
@@ -1470,7 +1470,7 @@ caseHmacKat = withBackend $ \env -> do
 -- are pinned against the CPython hashlib reference (computed
 -- 2026-09-21) and independently cross-checked against the container
 -- openssl CLI (3.5.5 mac); the suite itself executes them against
--- the pinned 4.0.2 libcrypto.
+-- the pinned 4.1.0 libcrypto.
 hmacKats :: [(DigestAlg, String, ByteString)]
 hmacKats =
   [ (D_MD5, "hashlib", hex "5ccec34ea9656392457fa1ac27f08fbc")
@@ -1558,7 +1558,7 @@ caseAesRoundtrip = withBackend $ \env -> do
 
 -- Pinned-oracle legacy vectors (pkcs11-check
 -- mechanism_vectors/*.json): every one reproduced byte-identical
--- on the pinned 4.0.2 provider before transcription. DES-CFB64,
+-- on the OpenSSL 4.0.2 provider before transcription. DES-CFB64,
 -- DES-CFB8 and DES-OFB64 have no oracle vector file, so those
 -- pins are cross-checked between the pinned provider and the
 -- system 3.5.5 CLI instead (CFB64/OFB first blocks also equal
@@ -5427,8 +5427,8 @@ caseCaps :: IO ()
 caseCaps = withBackend $ \env -> do
   caps <- queryCapabilities env
   assertEqual "backend name" "openssl4" (bcName caps)
-  assertBool ("version pins 4.0.2, got " ++ bcVersion caps)
-    ("4.0.2" `isInfixOf` bcVersion caps)
+  assertBool ("version pins 4.1.0, got " ++ bcVersion caps)
+    ("4.1.0" `isInfixOf` bcVersion caps)
   assertEqual "digest set" (Set.fromList
     [ D_MD5, D_SHA1, D_SHA224, D_SHA256, D_SHA384, D_SHA512
     , D_SHA512_224, D_SHA512_256

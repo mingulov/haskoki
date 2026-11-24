@@ -34,7 +34,7 @@ PLACEHOLDER = "Catalog-only (generator note)"
 # check_consistency). Never hardcode the count here.
 BOUNDARY_TEMPLATE = """\
 > Scope: the row evidence names in-process Haskell tests using
-> pinned OpenSSL 4.0.2 and/or the synthetic engine. The C surface
+> pinned OpenSSL 4.1.0 and/or the synthetic engine. The C surface
 > serves the {n}-row real-tested catalog; listing a mechanism does
 > not establish coverage of every parameter or operation through C.
 > Native checks: [consumer tests](../scripts/test-consumers.sh),

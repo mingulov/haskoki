@@ -5330,7 +5330,7 @@ long hsk_ossl4_rsa_pkcs1_decrypt(OSSL_LIB_CTX *ctx, const char *propq,
     /* Deprecated since 3.0 in favor of EVP, but the EVP padded
      * path answers failures with implicit rejection (no verdict),
      * so the vetted constant-time unpad stays. The toolchain pins
-     * OpenSSL 4.0.2, where the symbol ships. */
+     * OpenSSL 4.1.0, where the symbol ships. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     padlen = RSA_padding_check_PKCS1_type_2(msg, ksize, em, ksize, ksize);

@@ -2357,7 +2357,7 @@ caseDriverPoly1305 = withBackend $ \env -> do
 -- | TLS-PRF through the driver over real HMAC-MD5\/SHA-1 —
 -- 48-byte (even) and 47-byte (odd, shared middle byte) secrets,
 -- truncation, label\/seed separation, and typed refusals. The
--- expected outputs come from the pinned OpenSSL 4.0.2 CLI ('openssl
+-- expected outputs come from the OpenSSL 4.0.2 CLI ('openssl
 -- mac' per P_hash block; only concat\/XOR in the harness — the
 -- provider's TLS1-PRF takes a digest and serves TLS 1.2 only, so it
 -- cannot oracle the MD5\/SHA-1 split directly).

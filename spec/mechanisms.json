@@ -252,7 +252,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed 11s-1): ISO/IEC 9796-1 signatures with message recovery (SIG+SIGR, input <= floor(k/2)). ANSI X9.31 is a DISTINCT mechanism (CKM_RSA_X9_31, served via core/Haskoki/Recipe/RsaX931.hs over the provider RSA_X931_PADDING path, digest-first ordering) \u2014 not a 9796-1 substitute. No 9796-1 provider path exists in pinned OpenSSL 4.0.2 (provider signature list carries no 9796 entry; X9.31 sign/verify confirmed working 2026-09-29 for the X9.31 rows only), and DIY 9796-1 padding plus recovery framing outside the provider would not be provider-backed execution. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned.",
+      "notes": "Catalog-only (reviewed 11s-1): ISO/IEC 9796-1 signatures with message recovery (SIG+SIGR, input <= floor(k/2)). ANSI X9.31 is a DISTINCT mechanism (CKM_RSA_X9_31, served via core/Haskoki/Recipe/RsaX931.hs over the provider RSA_X931_PADDING path, digest-first ordering) \u2014 not a 9796-1 substitute. No 9796-1 provider path exists in pinned OpenSSL 4.1.0 (provider signature list carries no 9796 entry; X9.31 sign/verify confirmed working 2026-11-24 for the X9.31 rows only), and DIY 9796-1 padding plus recovery framing outside the provider would not be provider-backed execution. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned.",
       "numeric_id": "0x00000002",
       "routes": [],
       "source_refs": [
@@ -518,7 +518,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "MD2 with RSA PKCS#1: no MD2 in the pinned OpenSSL 4.0.2 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
+      "notes": "MD2 with RSA PKCS#1: no MD2 in the pinned OpenSSL 4.1.0 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider, same digest probe 2026-11-24); behavior stays planned.",
       "numeric_id": "0x00000004",
       "routes": [],
       "source_refs": [
@@ -772,7 +772,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RIPEMD-128 with RSA PKCS#1: no RIPEMD-128 in the pinned OpenSSL 4.0.2 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider, same digest probe 2026-09-21); behavior stays planned.",
+      "notes": "RIPEMD-128 with RSA PKCS#1: no RIPEMD-128 in the pinned OpenSSL 4.1.0 provider, so no real route; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD128 in the pinned OpenSSL 4.1.0 provider, same digest probe 2026-11-24); behavior stays planned.",
       "numeric_id": "0x00000007",
       "routes": [],
       "source_refs": [
@@ -3889,7 +3889,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "X9.42 DH hybrid derive: needs the MQV two-key agreement plus a second derive leg; the pinned OpenSSL 4.0.2 provider offers no MQV key exchange.\nReal unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 DH hybrid derive: needs the MQV two-key agreement plus a second derive leg; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: DH/X9.42 agreement present in 4.1.0 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the hybrid derive needs the MQV two-key agreement plus a second derive leg; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000032",
       "routes": [],
       "source_refs": [
@@ -3917,7 +3917,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; the pinned OpenSSL 4.0.2 provider offers no MQV key exchange.\nReal unsupported-with-reason: DH/X9.42 agreement present in 4.0.2 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "X9.42 MQV derive: needs the MQV two-key agreement; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported-with-reason: DH/X9.42 agreement present in 4.1.0 but unmapped in the Raw/provider surface (needs a new entry point); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: the MQV derive needs the MQV two-key agreement (static + ephemeral halves under CK_X9_42_MQV_DERIVE_PARAMS); the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00000033",
       "routes": [],
       "source_refs": [
@@ -5929,7 +5929,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over SHA-512/t: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.0.2 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nStays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
+      "notes": "HMAC over SHA-512/t: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nStays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000051",
       "routes": [],
       "source_refs": [
@@ -5957,7 +5957,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over SHA-512/t: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.0.2 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nStays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
+      "notes": "HMAC over SHA-512/t: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nStays planned: t-parameter (truncation length) codec pending, same as CKM_SHA512_T; not a fixed-width HMAC. Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own HMAC rows).",
       "numeric_id": "0x00000052",
       "routes": [],
       "source_refs": [
@@ -5985,7 +5985,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SHA-512/t key derivation: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.0.2 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nParameterized-truncation sibling of the SHA-KD rows (t parameter selects the width); deferred with its digest/HMAC T siblings (later truncation-params slice). Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.0.2 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance; supersedes the truncation-params deferral for this row).",
+      "notes": "SHA-512/t key derivation: the t-parameter (truncation length) is not decoded and the pinned OpenSSL 4.1.0 provider has no general-t SHA-512 digest; see GAP-SPECIALS.\nParameterized-truncation sibling of the SHA-KD rows (t parameter selects the width); deferred with its digest/HMAC T siblings (later truncation-params slice). Stays planned: truncation parameterization needs the base-spec prose; see source-issues.json GAP-SPECIALS. Real/behavior/synthetic unsupported-with-reason: no backend digest for general-t SHA-512 (provider 4.1.0 offers full SHA-512/384 plus the dedicated SHA-512/224 and SHA-512/256 rows, which already have their own KD rows) (extends the CKM_SHA512_T_HMAC stance; supersedes the truncation-params deferral for this row).",
       "numeric_id": "0x00000053",
       "routes": [],
       "source_refs": [
@@ -7394,7 +7394,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC2 block-cipher MAC: RC2 is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC2 block-cipher MAC: RC2 is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000103",
       "routes": [],
       "source_refs": [
@@ -7422,7 +7422,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC2 block-cipher MAC: RC2 is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC2 block-cipher MAC: RC2 is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC2 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000104",
       "routes": [],
       "source_refs": [
@@ -8084,7 +8084,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Single-DES block-cipher MAC: Single-DES is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "Single-DES block-cipher MAC: Single-DES is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000123",
       "routes": [],
       "source_refs": [
@@ -8112,7 +8112,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Single-DES block-cipher MAC: Single-DES is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "Single-DES block-cipher MAC: Single-DES is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: single-DES absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000124",
       "routes": [],
       "source_refs": [
@@ -9299,7 +9299,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.0.2 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.1.0 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00000141",
       "routes": [],
       "source_refs": [
@@ -9343,7 +9343,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.0.2 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.1.0 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00000142",
       "routes": [],
       "source_refs": [
@@ -9387,7 +9387,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CDMF block-cipher MAC: CDMF is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CDMF block-cipher MAC: CDMF is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000143",
       "routes": [],
       "source_refs": [
@@ -9415,7 +9415,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CDMF block-cipher MAC: CDMF is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CDMF block-cipher MAC: CDMF is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CDMF absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000144",
       "routes": [],
       "source_refs": [
@@ -9443,7 +9443,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.0.2 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no CDMF primitive in the pinned OpenSSL 4.1.0 build (CDMF-ECB/CDMF-CBC fetch-absent in the default+legacy providers); IBM proprietary cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00000145",
       "routes": [],
       "source_refs": [
@@ -9609,7 +9609,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no 8-bit DES OFB in the pinned OpenSSL 4.0.2 build (DES-OFB8 fetch-absent in the default+legacy providers; DES-OFB serves 64-bit feedback as CKM_DES_OFB64 and DES-CFB8 covers 8-bit CFB).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no 8-bit DES OFB in the pinned OpenSSL 4.1.0 build (DES-OFB8 fetch-absent in the default+legacy providers; DES-OFB serves 64-bit feedback as CKM_DES_OFB64 and DES-CFB8 covers 8-bit CFB).",
       "numeric_id": "0x00000151",
       "routes": [],
       "source_refs": [
@@ -9897,7 +9897,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "MD2 digest: absent from the pinned OpenSSL 4.0.2 provider digest list; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (probed 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "MD2 digest: absent from the pinned OpenSSL 4.1.0 provider digest list; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (probed 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00000200",
       "routes": [],
       "source_refs": [
@@ -9925,7 +9925,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over MD2: the pinned OpenSSL 4.0.2 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
+      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000201",
       "routes": [],
       "source_refs": [
@@ -9953,7 +9953,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over MD2: the pinned OpenSSL 4.0.2 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
+      "notes": "HMAC over MD2: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported (no MD2 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no HMAC-MD2 route exists.",
       "numeric_id": "0x00000202",
       "routes": [],
       "source_refs": [
@@ -10559,7 +10559,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RIPEMD-128 digest: the pinned OpenSSL 4.0.2 provider has only RIPEMD-160; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD-128 in the pinned OpenSSL 4.0.2 provider (only RIPEMD-160; probed 2026-09-21)); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "RIPEMD-128 digest: the pinned OpenSSL 4.1.0 provider has only RIPEMD-160; no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no RIPEMD-128 in the pinned OpenSSL 4.1.0 provider (only RIPEMD-160; probed 2026-11-24)); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00000230",
       "routes": [],
       "source_refs": [
@@ -10587,7 +10587,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over RIPEMD-128: the pinned OpenSSL 4.0.2 provider has no RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
+      "notes": "HMAC over RIPEMD-128: the pinned OpenSSL 4.1.0 provider has no RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
       "numeric_id": "0x00000231",
       "routes": [],
       "source_refs": [
@@ -10615,7 +10615,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over RIPEMD-128: the pinned OpenSSL 4.0.2 provider has no RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in the pinned OpenSSL 4.0.2 provider (same digest probe, 2026-09-21: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
+      "notes": "HMAC over RIPEMD-128: the pinned OpenSSL 4.1.0 provider has no RIPEMD-128 digest (only RIPEMD-160), so no route exists.\nReal unsupported (no RIPEMD128 in the pinned OpenSSL 4.1.0 provider (same digest probe, 2026-11-24: absent from the digest list)); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no RIPEMD-128 digest (only RIPEMD-160), so no HMAC-RIPEMD128 route exists.",
       "numeric_id": "0x00000232",
       "routes": [],
       "source_refs": [
@@ -12093,7 +12093,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: RSA SecurID key generation (pkcs11-curr 2.53.8.2) mints keys for the proprietary RSA SecurID time-based OTP algorithm (CKO_OTP_KEY/CKK_SECURID objects, CKA_OTP_* attributes) -- no public construction, no OpenSSL 4.0.2 primitive, and the provider implements no OTP object framework, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42 pins the classic funnel; native GenerateKey probed 0x70 in 11n).",
+      "notes": "Catalog-only: RSA SecurID key generation (pkcs11-curr 2.53.8.2) mints keys for the proprietary RSA SecurID time-based OTP algorithm (CKO_OTP_KEY/CKK_SECURID objects, CKA_OTP_* attributes) -- no public construction, no OpenSSL 4.1.0 primitive, and the provider implements no OTP object framework, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42 pins the classic funnel; native GenerateKey probed 0x70 in 11n).",
       "numeric_id": "0x00000280",
       "routes": [],
       "source_refs": [
@@ -12132,7 +12132,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: RSA SecurID OTP retrieval/verification (pkcs11-curr 2.53.8.3) runs the proprietary RSA SecurID algorithm over token clock state via C_Sign/C_Verify with CK_OTP_PARAMS (pData NULL) -- no public construction, no OpenSSL 4.0.2 primitive, no OTP object support, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit probed 0x70 in 11n).",
+      "notes": "Catalog-only: RSA SecurID OTP retrieval/verification (pkcs11-curr 2.53.8.3) runs the proprietary RSA SecurID algorithm over token clock state via C_Sign/C_Verify with CK_OTP_PARAMS (pData NULL) -- no public construction, no OpenSSL 4.1.0 primitive, no OTP object support, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit probed 0x70 in 11n).",
       "numeric_id": "0x00000282",
       "routes": [],
       "source_refs": [
@@ -12331,7 +12331,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ActivIdentity ACTI OTP retrieval/verification (pkcs11-curr 2.53.10.3) runs the proprietary ACTI algorithm via C_Sign/C_Verify with CK_OTP_PARAMS -- same position as SecurID: no public construction, no OpenSSL 4.0.2 primitive, no OTP object support, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit and VerifyInit probed 0x70 in 11n).",
+      "notes": "Catalog-only: ActivIdentity ACTI OTP retrieval/verification (pkcs11-curr 2.53.10.3) runs the proprietary ACTI algorithm via C_Sign/C_Verify with CK_OTP_PARAMS -- same position as SecurID: no public construction, no OpenSSL 4.1.0 primitive, no OTP object support, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit and VerifyInit probed 0x70 in 11n).",
       "numeric_id": "0x000002a0",
       "routes": [],
       "source_refs": [
@@ -12370,7 +12370,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: ActivIdentity ACTI key generation (pkcs11-curr 2.53.10.2) mints keys for the proprietary ACTI OTP algorithm (CKO_OTP_KEY/CKK_ACTI objects) -- no public construction, no OpenSSL 4.0.2 primitive, and the provider implements no OTP object framework, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42 pins the classic funnel; native GenerateKey probed 0x70 in 11n).",
+      "notes": "Catalog-only: ActivIdentity ACTI key generation (pkcs11-curr 2.53.10.2) mints keys for the proprietary ACTI OTP algorithm (CKO_OTP_KEY/CKK_ACTI objects) -- no public construction, no OpenSSL 4.1.0 primitive, and the provider implements no OTP object framework, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42 pins the classic funnel; native GenerateKey probed 0x70 in 11n).",
       "numeric_id": "0x000002a1",
       "routes": [],
       "source_refs": [
@@ -14174,7 +14174,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000303",
       "routes": [],
       "source_refs": [
@@ -14202,7 +14202,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000304",
       "routes": [],
       "source_refs": [
@@ -14669,7 +14669,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000313",
       "routes": [],
       "source_refs": [
@@ -14697,7 +14697,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000314",
       "routes": [],
       "source_refs": [
@@ -15172,7 +15172,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000323",
       "routes": [],
       "source_refs": [
@@ -15202,7 +15202,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "CAST block-cipher MAC: CAST is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: CAST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000324",
       "routes": [],
       "source_refs": [
@@ -15427,7 +15427,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.0.2 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.1.0 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
       "numeric_id": "0x00000331",
       "routes": [],
       "source_refs": [
@@ -15471,7 +15471,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.0.2 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.1.0 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
       "numeric_id": "0x00000332",
       "routes": [],
       "source_refs": [
@@ -15515,7 +15515,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC5 block-cipher MAC: RC5 is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC5 block-cipher MAC: RC5 is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000333",
       "routes": [],
       "source_refs": [
@@ -15543,7 +15543,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "RC5 block-cipher MAC: RC5 is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "RC5 block-cipher MAC: RC5 is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: RC5 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000334",
       "routes": [],
       "source_refs": [
@@ -15571,7 +15571,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.0.2 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no RC5 primitive in the pinned OpenSSL 4.1.0 build (RC5-ECB/RC5-CBC fetch-absent in the default+legacy providers); the parameterized (rounds/word-size/effective-bits) rows would need a struct codec on top of a primitive that does not exist.",
       "numeric_id": "0x00000335",
       "routes": [],
       "source_refs": [
@@ -15932,7 +15932,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "IDEA block-cipher MAC: IDEA is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "IDEA block-cipher MAC: IDEA is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000343",
       "routes": [],
       "source_refs": [
@@ -15960,7 +15960,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "IDEA block-cipher MAC: IDEA is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "IDEA block-cipher MAC: IDEA is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: IDEA absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000344",
       "routes": [],
       "source_refs": [
@@ -17206,7 +17206,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "TLS-PRF recipe (core/Haskoki/Recipe/TlsPrf.hs): TLS 1.0/1.1 PRF(secret, label, seed) = P_MD5(first-half, label ++ seed) XOR P_SHA1(second-half, label ++ seed) (RFC 2246 section 5; the halves share the middle byte on odd lengths). Parameters are the label + seed frame (tls-prf-params/1); the output length arrives via the derived template CKA_VALUE_LEN, capped by the 255-block ceiling. The driver executes P_hash over the HMAC-MD5/SHA-1 routes (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsPrf: pinned OpenSSL 4.0.2 CLI per-block HMAC oracle, even + odd secrets); planner ceilings pinned (RecipeTlsPrfSpec).",
+      "notes": "TLS-PRF recipe (core/Haskoki/Recipe/TlsPrf.hs): TLS 1.0/1.1 PRF(secret, label, seed) = P_MD5(first-half, label ++ seed) XOR P_SHA1(second-half, label ++ seed) (RFC 2246 section 5; the halves share the middle byte on odd lengths). Parameters are the label + seed frame (tls-prf-params/1); the output length arrives via the derived template CKA_VALUE_LEN, capped by the 255-block ceiling. The driver executes P_hash over the HMAC-MD5/SHA-1 routes (real HMAC on the real backend, test constructions on synthetic). Vectors pinned (RoutingE2ESpec caseDriverTlsPrf: pinned OpenSSL 4.1.0 CLI per-block HMAC oracle, even + odd secrets); planner ceilings pinned (RecipeTlsPrfSpec).",
       "numeric_id": "0x00000378",
       "routes": [
         {
@@ -17528,7 +17528,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "MD2 key derivation: the pinned OpenSSL 4.0.2 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
+      "notes": "MD2 key derivation: the pinned OpenSSL 4.1.0 default provider has no MD2 digest (legacy-only), so no route exists.\nReal unsupported-with-reason: MD2 absent from the default provider (extends the CKM_MD2 precedent); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 default set has no MD2 digest (legacy-only; the module loads the default provider only), so no MD2-KD route exists (extends the CKM_MD2_HMAC stance).",
       "numeric_id": "0x00000391",
       "routes": [],
       "source_refs": [
@@ -18393,7 +18393,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "PBE with MD2 and DES-CBC: no MD2 digest in the pinned OpenSSL 4.0.2 default+legacy providers, so the KDF root cannot run provider-backed; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: no MD2 digest primitive in the pinned OpenSSL 4.0.2 default+legacy providers (digest-list probe), so the KDF root cannot run provider-backed (the DES cipher itself is served via legacy since slice 11p); behavior/synthetic stay planned, mirroring CKM_MD2.",
+      "notes": "PBE with MD2 and DES-CBC: no MD2 digest in the pinned OpenSSL 4.1.0 default+legacy providers, so the KDF root cannot run provider-backed; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: no MD2 digest primitive in the pinned OpenSSL 4.1.0 default+legacy providers (digest-list probe), so the KDF root cannot run provider-backed (the DES cipher itself is served via legacy since slice 11p); behavior/synthetic stay planned, mirroring CKM_MD2.",
       "numeric_id": "0x000003a0",
       "routes": [],
       "source_refs": [
@@ -20713,7 +20713,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: CAMELLIA rows at 128/192/256 (pinned 4.0.2 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: CAMELLIA rows at 128/192/256 (pinned 4.1.0 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000551",
       "routes": [
         {
@@ -20835,7 +20835,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: CAMELLIA rows at 128/192/256 (pinned 4.0.2 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: CAMELLIA rows at 128/192/256 (pinned 4.1.0 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000552",
       "routes": [
         {
@@ -21302,7 +21302,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_CAMELLIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_CAMELLIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00000556",
       "routes": [
         {
@@ -21377,7 +21377,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_CAMELLIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_CAMELLIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_CAMELLIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00000557",
       "routes": [
         {
@@ -21655,7 +21655,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA rows at 128/192/256 (pinned 4.0.2 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): empty mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA rows at 128/192/256 (pinned 4.1.0 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000561",
       "routes": [
         {
@@ -21777,7 +21777,7 @@
         "max_key_size": 32,
         "min_key_size": 16
       },
-      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA rows at 128/192/256 (pinned 4.0.2 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
+      "notes": "Block-cipher-shape recipe (core/Haskoki/Recipe/Cipher.hs): 16-byte IV mechanism parameters, keys 16/24/32 bytes. Real execution pinned (OpenSSLSpec caseCipherKats against the pinned libcrypto: ARIA rows at 128/192/256 (pinned 4.1.0 CLI, cross-checked on 3.5.5)); synthetic per-spec geometry pinned (SyntheticSpec caseCipherSpecs); init enforces mechanism parameters (RecipeCipherSpec).",
       "numeric_id": "0x00000562",
       "routes": [
         {
@@ -22244,7 +22244,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_ARIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_ARIA key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00000566",
       "routes": [
         {
@@ -22319,7 +22319,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_ARIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_ARIA key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_ARIA (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00000567",
       "routes": [
         {
@@ -22709,7 +22709,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SEED block-cipher MAC: SEED is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "SEED block-cipher MAC: SEED is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000653",
       "routes": [],
       "source_refs": [
@@ -22737,7 +22737,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SEED block-cipher MAC: SEED is absent from the default provider of the pinned OpenSSL 4.0.2 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.0.2; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
+      "notes": "SEED block-cipher MAC: SEED is absent from the default provider of the pinned OpenSSL 4.1.0 (legacy/obsolete cipher), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: SEED absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no backend cipher (CAST/CAST3/CAST128/CDMF/single-DES/IDEA/RC2/RC5/SEED are legacy-provider-only in 4.1.0; the module loads the default provider only) and no CBC-MAC provider primitive, so no CBC-MAC route exists.",
       "numeric_id": "0x00000654",
       "routes": [],
       "source_refs": [
@@ -23110,7 +23110,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.1.0 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001001",
       "routes": [],
       "source_refs": [
@@ -23154,7 +23154,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.1.0 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001002",
       "routes": [],
       "source_refs": [
@@ -23198,7 +23198,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.1.0 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001003",
       "routes": [],
       "source_refs": [
@@ -23242,7 +23242,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.1.0 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001004",
       "routes": [],
       "source_refs": [
@@ -23286,7 +23286,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.1.0 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001005",
       "routes": [],
       "source_refs": [
@@ -23330,7 +23330,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.1.0 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001006",
       "routes": [],
       "source_refs": [
@@ -23374,7 +23374,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.0.2 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no SKIPJACK primitive in the pinned OpenSSL 4.1.0 build (all mode fetches absent in the default+legacy providers); engine-backed rule forbids in-house implementation (11o SHA512_T precedent).",
       "numeric_id": "0x00001007",
       "routes": [],
       "source_refs": [
@@ -23418,7 +23418,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001008",
       "routes": [],
       "source_refs": [
@@ -23446,7 +23446,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001009",
       "routes": [],
       "source_refs": [
@@ -23474,7 +23474,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "SKIPJACK: absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: SKIPJACK absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x0000100a",
       "routes": [],
       "source_refs": [
@@ -23502,7 +23502,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.0.2.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
+      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.1.0.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
       "numeric_id": "0x00001010",
       "routes": [],
       "source_refs": [
@@ -23530,7 +23530,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.0.2.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
+      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.1.0.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
       "numeric_id": "0x00001011",
       "routes": [],
       "source_refs": [
@@ -23558,7 +23558,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.0.2.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
+      "notes": "KEA (FORTEZZA-era) mechanism: obsolete, with no provider surface in the pinned OpenSSL 4.1.0.\nUnsupported-with-reason (all columns): obsolete FORTEZZA-era KEA; no provider surface.",
       "numeric_id": "0x00001012",
       "routes": [],
       "source_refs": [
@@ -23586,7 +23586,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: FORTEZZA timestamp (pkcs11-hist 2.2) produces single-part DSA signatures over (hash, current time) for FORTEZZA card tokens -- hardware-bound (FORTEZZA CIPG), needs DSA keys (an unserved family) and trusted wall-clock semantics no software backend reproduces honestly, and OpenSSL 4.0.2 offers no such primitive, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit probed 0x70 in 11n).",
+      "notes": "Catalog-only: FORTEZZA timestamp (pkcs11-hist 2.2) produces single-part DSA signatures over (hash, current time) for FORTEZZA card tokens -- hardware-bound (FORTEZZA CIPG), needs DSA keys (an unserved family) and trusted wall-clock semantics no software backend reproduces honestly, and OpenSSL 4.1.0 offers no such primitive, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native SignInit probed 0x70 in 11n).",
       "numeric_id": "0x00001020",
       "routes": [],
       "source_refs": [
@@ -23698,7 +23698,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.0.2 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.1.0 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001031",
       "routes": [],
       "source_refs": [
@@ -23742,7 +23742,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.0.2 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.1.0 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001032",
       "routes": [],
       "source_refs": [
@@ -23786,7 +23786,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.0.2 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no BATON primitive in the pinned OpenSSL 4.1.0 build (BATON-ECB/BATON-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001033",
       "routes": [],
       "source_refs": [
@@ -23830,7 +23830,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001034",
       "routes": [],
       "source_refs": [
@@ -23858,7 +23858,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001035",
       "routes": [],
       "source_refs": [
@@ -23886,7 +23886,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001036",
       "routes": [],
       "source_refs": [
@@ -25275,7 +25275,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "EC MQV derive: needs the MQV two-key agreement on EC keys; the pinned OpenSSL 4.0.2 provider offers no MQV key exchange.\nReal unsupported (no MQV key agreement in the pinned OpenSSL 4.0.2 provider API); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
+      "notes": "EC MQV derive: needs the MQV two-key agreement on EC keys; the pinned OpenSSL 4.1.0 provider offers no MQV key exchange.\nReal unsupported (no MQV key agreement in the pinned OpenSSL 4.1.0 provider API); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: the EC MQV derive needs the MQV two-key agreement on EC keys; the pinned provider offers no MQV key-exchange (DH, X25519, X448, ECDH, TLS1-PRF, HKDF, SCRYPT only \u2014 `openssl list -key-exchange-algorithms` on the pinned libcrypto), so no route exists.",
       "numeric_id": "0x00001052",
       "routes": [],
       "source_refs": [
@@ -25815,7 +25815,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no JUNIPER primitive in the pinned OpenSSL 4.0.2 build (JUNIPER-ECB/JUNIPER-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no JUNIPER primitive in the pinned OpenSSL 4.1.0 build (JUNIPER-ECB/JUNIPER-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001061",
       "routes": [],
       "source_refs": [
@@ -25859,7 +25859,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no JUNIPER primitive in the pinned OpenSSL 4.0.2 build (JUNIPER-ECB/JUNIPER-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no JUNIPER primitive in the pinned OpenSSL 4.1.0 build (JUNIPER-ECB/JUNIPER-CBC fetch-absent in the default+legacy providers); classified cipher, engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00001062",
       "routes": [],
       "source_refs": [
@@ -25903,7 +25903,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001063",
       "routes": [],
       "source_refs": [
@@ -25931,7 +25931,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001064",
       "routes": [],
       "source_refs": [
@@ -25959,7 +25959,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "BATON/JUNIPER (historical classified cipher): absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: BATON/JUNIPER (historical classified) absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001065",
       "routes": [],
       "source_refs": [
@@ -25987,7 +25987,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only: FASTHASH digest (pkcs11-hist 2.13) follows MISSI's unpublished U.S. government message-digest algorithm (40-byte output, no parameter) -- no public construction, no OpenSSL 4.0.2 primitive, no test vectors, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native DigestInit probed 0x70 in 11n).",
+      "notes": "Catalog-only: FASTHASH digest (pkcs11-hist 2.13) follows MISSI's unpublished U.S. government message-digest algorithm (40-byte output, no parameter) -- no public construction, no OpenSSL 4.1.0 primitive, no test vectors, so no behavior, synthetic, or real route is offered. Unadvertised; refused CKR_MECHANISM_INVALID (A42; native DigestInit probed 0x70 in 11n).",
       "numeric_id": "0x00001070",
       "routes": [],
       "source_refs": [
@@ -28579,7 +28579,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_DES3 key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_DES3 key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00001102",
       "routes": [
         {
@@ -28654,7 +28654,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_DES3 key (CBC with the 8-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_DES3 key (CBC with the 8-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_DES3 (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00001103",
       "routes": [
         {
@@ -28729,7 +28729,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_AES key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the chased data bytes (CK_KEY_DERIVATION_STRING_DATA) with the base CKK_AES key (ECB, no padding), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared ECB construction.",
       "numeric_id": "0x00001104",
       "routes": [
         {
@@ -28804,7 +28804,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_AES key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.0.2 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
+      "notes": "Encrypt-data recipe (core/Haskoki/Recipe/EncryptData.hs): encrypt the framed data with the base CKK_AES key (CBC with the 16-byte IV head of the canonical iv||data frame), output length equals input length, truncated to the planned length. Base key must be CKK_AES (planner key-type gate, contradiction outranks shape). Vectors pinned (RoutingE2ESpec caseDriverEncryptData: python-cryptography goldens, decrypt-verified under the pinned 4.1.0 CLI); planner ceilings/gates pinned (RecipeEncryptDataSpec); synthetic executes the shared CBC construction.",
       "numeric_id": "0x00001105",
       "routes": [
         {
@@ -28905,7 +28905,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.10 signature: no GOST signatures in the pinned OpenSSL 4.0.2 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
+      "notes": "GOST R 34.10 signature: no GOST signatures in the pinned OpenSSL 4.1.0 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.1.0 provider); behavior stays planned.",
       "numeric_id": "0x00001201",
       "routes": [],
       "source_refs": [
@@ -28933,7 +28933,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.10 with GOST R 34.11: no GOST signatures in the pinned OpenSSL 4.0.2 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.0.2 provider); behavior stays planned.",
+      "notes": "GOST R 34.10 with GOST R 34.11: no GOST signatures in the pinned OpenSSL 4.1.0 provider; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST signatures in the pinned OpenSSL 4.1.0 provider); behavior stays planned.",
       "numeric_id": "0x00001202",
       "routes": [],
       "source_refs": [
@@ -28961,7 +28961,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001203",
       "routes": [],
       "source_refs": [
@@ -28989,7 +28989,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.10 derive: no GOST provider in the pinned OpenSSL 4.0.2 build (GOST needs an engine), so no route exists.\nReal unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
+      "notes": "GOST R 34.10 derive: no GOST provider in the pinned OpenSSL 4.1.0 build (GOST needs an engine), so no route exists.\nReal unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: no GOST provider in the pinned OpenSSL 4.1.0 build (needs an engine), so no GOSTR3410-DERIVE route exists (extends the GOST family stance).",
       "numeric_id": "0x00001204",
       "routes": [],
       "source_refs": [
@@ -29017,7 +29017,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST R 34.11 digest: no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); probed 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned.",
+      "notes": "GOST R 34.11 digest: no GOST provider in the pinned OpenSSL 4.1.0 build (needs an engine); no synthetic route (historical, no demand); behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no GOST provider in the pinned OpenSSL 4.1.0 build (needs an engine); probed 2026-11-24); synthetic unbuilt (historical, no demand); behavior stays planned.",
       "numeric_id": "0x00001210",
       "routes": [],
       "source_refs": [
@@ -29045,7 +29045,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "HMAC over GOST R 34.11-94: the pinned OpenSSL 4.0.2 provider has no GOST digest (GOST needs an engine), so no route exists.\nReal unsupported (no GOST provider in the pinned OpenSSL 4.0.2 build (needs an engine); same probe, 2026-09-21); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
+      "notes": "HMAC over GOST R 34.11-94: the pinned OpenSSL 4.1.0 provider has no GOST digest (GOST needs an engine), so no route exists.\nReal unsupported (no GOST provider in the pinned OpenSSL 4.1.0 build (needs an engine); same probe, 2026-11-24); synthetic unbuilt (historical, no demand); behavior stays planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST R 34.11-94 digest, so no HMAC-GOST route exists.",
       "numeric_id": "0x00001211",
       "routes": [],
       "source_refs": [
@@ -29146,7 +29146,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.0.2 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers; only an out-of-tree engine provides it, which is not pinned).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.1.0 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers; only an out-of-tree engine provides it, which is not pinned).",
       "numeric_id": "0x00001221",
       "routes": [],
       "source_refs": [
@@ -29190,7 +29190,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.0.2 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers; only an out-of-tree engine provides it, which is not pinned).",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no GOST 28147-89 primitive in the pinned OpenSSL 4.1.0 build (GOST28147/GOST28147-ECB/GOST28147-CBC fetch-absent in the default+legacy providers; only an out-of-tree engine provides it, which is not pinned).",
       "numeric_id": "0x00001222",
       "routes": [],
       "source_refs": [
@@ -29234,7 +29234,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.0.2 build (GOST needs an engine), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.0.2 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance; supersedes the recipe-slice deferral for this row).",
+      "notes": "GOST 28147-89 MAC: no GOST provider in the pinned OpenSSL 4.1.0 build (GOST needs an engine), so no route exists.\nStays planned: block-cipher MAC sub-shape (CBC-MAC/CMAC/GMAC/XCBC family); no engine MAC entry yet, synthetic unbuilt; needs its own recipe slice. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned. Real/behavior/synthetic unsupported-with-reason: provider 4.1.0 has no GOST 28147 cipher, so no GOST-MAC route exists (extends the GOST family stance; supersedes the recipe-slice deferral for this row).",
       "numeric_id": "0x00001223",
       "routes": [],
       "source_refs": [
@@ -29262,7 +29262,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "GOST key wrap: GOST is absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: GOST absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00001224",
       "routes": [],
       "source_refs": [
@@ -29916,7 +29916,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): FIPS 186-4 verifiable p/q generation needs a seed/counter/index path; OpenSSL 4.0.2 exposes none (legacy DSA_generate_parameters_ex fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): FIPS 186-4 verifiable p/q generation needs a seed/counter/index path; OpenSSL 4.1.0 exposes none (legacy DSA_generate_parameters_ex fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002003",
       "routes": [],
       "source_refs": [
@@ -29944,7 +29944,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): FIPS 186-4 Shawe-Taylor verifiable p/q generation needs a seed/counter/index path; OpenSSL 4.0.2 exposes none (legacy DSA_generate_parameters_ex fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): FIPS 186-4 Shawe-Taylor verifiable p/q generation needs a seed/counter/index path; OpenSSL 4.1.0 exposes none (legacy DSA_generate_parameters_ex fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002004",
       "routes": [],
       "source_refs": [
@@ -29972,7 +29972,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Catalog-only (reviewed): verifiable g derivation from (p, q, seed, index) needs the FIPS 186-4 seed path; OpenSSL 4.0.2 exposes none (legacy entry fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
+      "notes": "Catalog-only (reviewed): verifiable g derivation from (p, q, seed, index) needs the FIPS 186-4 seed path; OpenSSL 4.1.0 exposes none (legacy entry fails, provider gen takes no seed) -- see docs/openssl4-upstream-issues.md OSSL4-002. Real unsupported-with-reason (provider-absent); behavior/synthetic stay planned. Oracle leg skips via has_mechanism.",
       "numeric_id": "0x00002005",
       "routes": [],
       "source_refs": [
@@ -30122,7 +30122,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "AES-CFB64: the pinned OpenSSL 4.0.2 provider has no CFB64 mode (only CFB/CFB8/CFB1/OFB), and CFB128 output cannot be sliced into CFB64 feedback.\nReal unsupported-with-reason: provider 4.0.2 has no AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB); behavior/synthetic stay planned. Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
+      "notes": "AES-CFB64: the pinned OpenSSL 4.1.0 provider has no CFB64 mode (only CFB/CFB8/CFB1/OFB), and CFB128 output cannot be sliced into CFB64 feedback.\nReal unsupported-with-reason: provider 4.1.0 has no AES CFB64 mode (fetch probe: only CFB/CFB8/CFB1/OFB); behavior/synthetic stay planned. Behavior/synthetic unsupported-with-reason (named gap): no fallback construction (slicing CFB128 output is not CFB64 feedback); the Cipher recipe docstring declares the gap.",
       "numeric_id": "0x00002105",
       "routes": [],
       "source_refs": [
@@ -33547,7 +33547,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Stance (slice 11p): unsupported-with-reason. no Salsa20 primitive in the pinned OpenSSL 4.0.2 build (SALSA20 fetch-absent in the default+legacy providers, which ship only ChaCha20); engine-backed rule forbids in-house implementation.",
+      "notes": "Stance (slice 11p): unsupported-with-reason. no Salsa20 primitive in the pinned OpenSSL 4.1.0 build (SALSA20 fetch-absent in the default+legacy providers, which ship only ChaCha20); engine-backed rule forbids in-house implementation.",
       "numeric_id": "0x00004020",
       "routes": [],
       "source_refs": [
@@ -33680,7 +33680,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "Salsa20-Poly1305: Salsa20 is absent from the default provider in pinned OpenSSL 4.0.2; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from the default provider in pinned OpenSSL 4.0.2 (pinned-CLI survey); behavior/synthetic stay planned.",
+      "notes": "Salsa20-Poly1305: Salsa20 is absent from the default provider in pinned OpenSSL 4.1.0; behavior/synthetic stay planned.\nSee spec/source-issues.json. Real unsupported-with-reason: Salsa20 absent from the default provider in pinned OpenSSL 4.1.0 (pinned-CLI survey); behavior/synthetic stay planned.",
       "numeric_id": "0x00004022",
       "routes": [],
       "source_refs": [
@@ -33876,7 +33876,7 @@
         "min_key_size": 0,
         "max_key_size": 0
       },
-      "notes": "XEdDSA: not in the pinned OpenSSL 4.0.2 provider signature list; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no XEdDSA in the pinned OpenSSL 4.0.2 provider signature list); behavior stays planned.",
+      "notes": "XEdDSA: not in the pinned OpenSSL 4.1.0 provider signature list; behavior stays planned.\nSee spec/source-issues.json. Real unsupported (no XEdDSA in the pinned OpenSSL 4.1.0 provider signature list); behavior stays planned.",
       "numeric_id": "0x00004029",
       "routes": [],
       "source_refs": [

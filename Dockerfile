@@ -2,7 +2,7 @@
 #
 # Reproducible build/test environment, transferable to any Docker host:
 # Ubuntu 26.04, GHC 9.10.3 + cabal-install from apt, pinned OpenSSL
-# 4.0.2 libcrypto, project deps prebuilt.
+# 4.1.0 libcrypto, project deps prebuilt.
 #
 #   Build (from this directory):  docker build -t haskoki-dev:ghc-9.10.3 .
 #   Shell with repo mounted:      docker run --rm -it -v "$PWD:/work" -w /work haskoki-dev:ghc-9.10.3
@@ -20,11 +20,11 @@ ARG GID=1000
 # Pinned libcrypto for the OpenSSL4 backend (see toolchain.lock
 # [openssl]; haskoki.cabal hardcodes OPENSSL_PREFIX below because the
 # .cabal format has no env substitution).
-ARG OPENSSL_VERSION=4.0.2
-ARG OPENSSL_SHA256=736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
-ARG OPENSSL_PREFIX=/opt/openssl-4.0.2
+ARG OPENSSL_VERSION=4.1.0
+ARG OPENSSL_SHA256=50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
+ARG OPENSSL_PREFIX=/opt/openssl-4.1.0
 
-# Pinned OpenSSL 4.0.2 (libcrypto for the OpenSSL4 backend).
+# Pinned OpenSSL 4.1.0 (libcrypto for the OpenSSL4 backend).
 FROM ubuntu:26.04 AS openssl-build
 ARG OPENSSL_VERSION OPENSSL_SHA256 OPENSSL_PREFIX
 ENV DEBIAN_FRONTEND=noninteractive
@@ -75,8 +75,8 @@ ENV HOME=/home/$USERNAME
 WORKDIR /home/$USERNAME
 
 # Pinned libcrypto prefix for the OpenSSL4 backend build.
-COPY --from=openssl-build /opt/openssl-4.0.2 /opt/openssl-4.0.2
-ENV OPENSSL4_PREFIX=/opt/openssl-4.0.2
+COPY --from=openssl-build /opt/openssl-4.1.0 /opt/openssl-4.1.0
+ENV OPENSSL4_PREFIX=/opt/openssl-4.1.0
 
 # Project layer: copy the package, fetch Hackage index, build + test so the
 # image carries compiled deps and works offline on the next machine.
