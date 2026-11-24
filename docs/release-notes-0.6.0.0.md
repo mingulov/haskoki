@@ -66,13 +66,9 @@ Developer preview: entries land per task and finalize at release.
   runner's knobs; native async never reads them). Files using only
   the legacy header keep loading with values migrated; files with
   keys under both headers refuse with a remedy.
-
-## Removed
-
-- No public Haskell library: the package exposes only the C ABI.
-  The stub facade (`Haskoki.PKCS11`, already deprecated) and its
-  top-level re-export are deleted; out-of-tree `import Haskoki.*`
-  now fails at dependency resolution (checked in CI).
+- Firefox client-authentication example (`examples/firefox`): a
+  disposable scripted-browser desktop doing client-auth through
+  the PKCS#11 module, with a Marionette acceptance client.
 
 ## Fixed
 
