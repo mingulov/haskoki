@@ -227,8 +227,8 @@ mech|0x00001050|CKM_ECDH1_DERIVE||derive|ecdh-params/1|mechanism-specific:0-0|de
 mech|0x00001051|CKM_ECDH1_COFACTOR_DERIVE||derive|ecdh-params/1|mechanism-specific:0-0|derive:A20,A37,A39
 mech|0x00001053|CKM_ECDH_AES_KEY_WRAP||wrap|wrapcomp-ecdh-params/1|bits:192-571|unwrap:A20,A37,A39;wrap:A20,A37,A39
 mech|0x00001054|CKM_RSA_AES_KEY_WRAP||wrap|wrapcomp-rsa-params/1|bits:512-4096|unwrap:A20,A37,A39;wrap:A20,A37,A39
-mech|0x00001055|CKM_EC_EDWARDS_KEY_PAIR_GEN||keypair|no-params/1|bits:256-456|generate-key-pair:A20,A37
-mech|0x00001056|CKM_EC_MONTGOMERY_KEY_PAIR_GEN||keypair|no-params/1|bits:256-448|generate-key-pair:A20,A37
+mech|0x00001055|CKM_EC_EDWARDS_KEY_PAIR_GEN||keypair|no-params/1|bits:255-448|generate-key-pair:A20,A37
+mech|0x00001056|CKM_EC_MONTGOMERY_KEY_PAIR_GEN||keypair|no-params/1|bits:255-448|generate-key-pair:A20,A37
 mech|0x00001057|CKM_EDDSA||ec|eddsa-params/1|bits:255-448|message-sign:A37,A39;message-verify:A37,A39;sign:A37,A39;verify:A37,A39
 mech|0x00001060|CKM_JUNIPER_KEY_GEN||keygen|no-params/1|bits:320-320|generate-key:A37
 mech|0x00001071|CKM_AES_XTS||cipher|iv-bytes/1|bytes:32-64|decrypt:A16,A37,A39;encrypt:A16,A37,A39;message-decrypt:A16,A37,A39;message-encrypt:A16,A37,A39

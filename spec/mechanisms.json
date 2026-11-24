@@ -25490,10 +25490,10 @@
           "CKF_GENERATE_KEY_PAIR"
         ],
         "key_size_unit": "bits",
-        "min_key_size": 256,
-        "max_key_size": 456
+        "min_key_size": 255,
+        "max_key_size": 448
       },
-      "notes": "pairgen from the named Edwards curve (public EC_PARAMS required via edwardsCurveOf, private inherits; Weierstrass/foreign curves refuse CKR_MECHANISM_INVALID (mirroring ecCurveOf); GenEdwardsKeypair name frame). Components stamped by stampPairComponents (raw EC_POINT on the public half, agreed curve name as EC_PARAMS on the private half; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealEddsaKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 256/456 bits (served seed window).",
+      "notes": "pairgen from the named Edwards curve (public EC_PARAMS required via edwardsCurveOf, private inherits; Weierstrass/foreign curves refuse CKR_MECHANISM_INVALID (mirroring ecCurveOf); GenEdwardsKeypair name frame). Components stamped by stampPairComponents (raw EC_POINT on the public half, agreed curve name as EC_PARAMS on the private half; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealEddsaKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 255/448 bits (v3.2 section 6.3.10 field sizes).",
       "numeric_id": "0x00001055",
       "routes": [
         {
@@ -25559,10 +25559,10 @@
           "CKF_GENERATE_KEY_PAIR"
         ],
         "key_size_unit": "bits",
-        "min_key_size": 256,
+        "min_key_size": 255,
         "max_key_size": 448
       },
-      "notes": "pairgen from the named Montgomery curve (public EC_PARAMS required via montgomeryCurveOf, private inherits; Weierstrass/Edwards/foreign curves refuse CKR_MECHANISM_INVALID (mirroring ecCurveOf); GenMontgomeryKeypair name frame). Components stamped by stampPairComponents (raw EC_POINT on the public half, agreed curve name as EC_PARAMS on the private half; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealMontgomeryKeygen (fresh pairs agree both directions at the curve width; no KAT possible for randomized generation). Bounds 256/448 bits (served coordinate window).",
+      "notes": "pairgen from the named Montgomery curve (public EC_PARAMS required via montgomeryCurveOf, private inherits; Weierstrass/Edwards/foreign curves refuse CKR_MECHANISM_INVALID (mirroring ecCurveOf); GenMontgomeryKeypair name frame). Components stamped by stampPairComponents (raw EC_POINT on the public half, agreed curve name as EC_PARAMS on the private half; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealMontgomeryKeygen (fresh pairs agree both directions at the curve width; no KAT possible for randomized generation). Bounds 255/448 bits (v3.2 section 6.3.11 field sizes).",
       "numeric_id": "0x00001056",
       "routes": [
         {
