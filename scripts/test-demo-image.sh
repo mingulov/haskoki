@@ -485,6 +485,9 @@ if [ "$PHASE" = all ] || [ "$PHASE" = compare ]; then
 # 3 X9.42 checker-side fixes verified by re-run; 49 new ids in
 # DES-parity, attribute-encoding, sensitivity, EC-width, and BLAKE2
 # families, ledgered per family with 0.6.0 triage pointers).
+# R10 proxy requal (v0.3.1): the 65-line core and 49-shared set hold
+# unchanged (no flips; max_contexts=8 harness adaptation for the
+# v0.3.x single-client default).
 # Parity-eligible = every other collected id (default-eligible;
 # the freeze is this exclusion list, not an 11k allowlist). Flaky
 # ids assert their measured v0.2.2 verdicts with NO variance

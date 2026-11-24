@@ -21,7 +21,7 @@
 #
 # Stages: proxy (pinned Rust recipe from
 # scripts/test-proxy-parity.sh, PROXY_COMMIT default = the qualified
-# v0.2.2 commit SHA); checker
+# v0.3.1 commit SHA); checker
 # (pkcs11-check v0.3.0 + pkcs11-tool); runtime (slim: staged bundle
 # tree + proxy binaries + checker + entrypoint ONLY, no toolchains).
 #
@@ -75,7 +75,8 @@ ARG PROXY_COMMIT=ed803d463eb886cc42dff47afe5c03b162b37286
 # R10: pin is pkcs11-proxy-ng v0.3.1 (commit ed803d46…; the v0.3.1 tag
 # is a human label only, never the checkout ref; parity 111 holds;
 # checker-lane re-qualification + known deltas recorded in the R10
-# report before this pin commits).
+# report before this pin commits; v0.3.x single-client default
+# max_contexts=1, harness admits 8).
 # R9 pin was v0.2.2 (commit 1ed7cc15…); v0.2.1 was attempted and
 # REJECTED (upstream #35 visibility loss, #36 cert-find hole, #37
 # daemon death on message params — the last blocks all full proxy

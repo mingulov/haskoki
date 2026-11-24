@@ -52,7 +52,7 @@ Reusing this transport avoided creating a custom client/daemon gRPC
 system unrelated to the original token work.
 
 Direct and proxied tests then helped find differences across that
-boundary. The demo pins the tested v0.2.2 proxy and records exclusions
+boundary. The demo pins the tested v0.3.1 proxy and records exclusions
 for calls it cannot forward. v0.3.1.0 also offers a basic p11-kit route
 over a local socket; [Try Haskoki](try-it.md#try-another-process) explains both.
 

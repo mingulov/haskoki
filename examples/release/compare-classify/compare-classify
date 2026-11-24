@@ -12,8 +12,9 @@
 #   DIRECT-ONLY           one-sided collection (`absent` on either side);
 #                         zero on the frozen pin
 #   FLAKY                 an R5 section-4 stable-eligible id appearing as
-#                         a diff at all — ZERO allowed on v0.2.2, so any
-#                         hit fails and re-opens section 4
+#                         a diff at all — ZERO allowed (re-confirmed
+#                         R10 on v0.3.1), so any hit fails and
+#                         re-opens section 4
 #   UNEXPECTED-DIFFERENCE anything else — fails
 # The shared set must equal frozen-shared.txt (45) exactly; missing
 # frozen lines (a diff silently fixed) fail as drift too.
@@ -105,7 +106,8 @@ REASONS = {
 }
 
 # R5 section 4 stable-eligible ids: any appearance in diff.txt is a
-# variance event (zero allowed on v0.2.2; none in the R9 re-freeze).
+# variance event (zero allowed; none in the R9 re-freeze,
+# re-confirmed R10 on v0.3.1).
 STABLE5 = {
     "test_object.py::TestSessionObjects::test_multiple_keys_same_type",
     "test_search.py::TestObjectSearch::test_find_many_objects",

@@ -12,7 +12,7 @@ sources `profiles.conf` and copies `backend-memory.toml` into each run.
 | full | All offline cases | 10973 collected cases; 21 documented findings in each mode (v0.5 re-freeze plus the derive-default delta); exit 1 |
 
 Collected cases include skips and expected failures. They are not counts
-of passing tests. The checker is pinned to 0.3.0 and the proxy to v0.2.2.
+of passing tests. The checker is pinned to 0.3.0 and the proxy to v0.3.1.
 `scripts/test-demo-image.sh` checks the exact finding sets; current counters
 and measured counters are in [demo results](../../../docs/release-results.md).
 

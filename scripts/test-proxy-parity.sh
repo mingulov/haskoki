@@ -20,7 +20,8 @@
 #             upstream close-state completion (Q01 rounds),
 #             InitToken label bytes (Q03), and mechanism ABI
 #             discovery (Q04); no new haskoki-side divergences,
-#             parity 111 holds.
+#             parity 111 holds. v0.3.x single-client default
+#             max_contexts=1; harness admits 8 (dual-context legs).
 #             Behavior notes (v0.2.1-origin, kept in v0.3.1): the
 #             live shim catalog merges the backend-published 3.1
 #             (4 entries, functional); init params forward to the

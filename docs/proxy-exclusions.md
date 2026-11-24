@@ -19,11 +19,11 @@ Pinned pair (`/opt/pkcs11-proxy-ng`, proxy commit `ed803d46`, v0.3.1):
 
 v0.3.x admission model (R10): the daemon defaults
 `[proxy] max_contexts = 1` (single logical client per daemon, per
-upstream v0.3.1 release notes). Haskoki dev/test configs
-(`test-proxy-parity.sh`, demo `check` lanes, proxy-example) set
-`max_contexts = 8`: the harness runs parent+child contexts
-concurrently, and the dual-init smoke case fails closed at the
-default. Production guidance is unchanged (one logical client
+upstream v0.3.1 release notes). Haskoki harness configs that run
+parent+child contexts concurrently (`test-proxy-parity.sh`, demo
+`check` lanes) set `max_contexts = 8`: the dual-init smoke case
+fails closed at the default. The sequential proxy-example keeps
+the default. Production guidance is unchanged (one logical client
 per daemon).
 
 ## Re-probe mode
