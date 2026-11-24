@@ -43,9 +43,9 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_HASH_SLH_DSA@ plus the 11 hash-specific variants (the
-pinned provider refuses an explicit digest for SLH-DSA — no
-DIY domain separation; see mechanisms.json honesty notes).
+@CKM_HASH_SLH_DSA@ plus the 11 hash-specific variants (haskoki
+does not implement the documented external-prehash plus
+unencoded-sign path; see mechanisms.json honesty notes).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.SlhDsa

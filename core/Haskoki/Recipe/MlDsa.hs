@@ -43,9 +43,9 @@ Consumers:
   (SyntheticSpec, OpenSSLSpec).
 
 Deferred family members (not recipes, named gaps):
-@CKM_HASH_ML_DSA@ plus the 10 hash-specific variants (the
-pinned provider refuses an explicit digest for ML-DSA — no
-DIY domain separation; see mechanisms.json honesty notes),
+@CKM_HASH_ML_DSA@ plus the 10 hash-specific variants (haskoki
+does not implement the documented external-prehash plus
+unencoded-sign path; see mechanisms.json honesty notes),
 @CKM_ML_DSA_EXTERNAL_MU@\/@CKM_ML_DSA_EXTERNAL_MU_GEN@
 (absent from the OASIS 3.2 header — out of scope).
 -}

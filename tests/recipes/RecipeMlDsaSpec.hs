@@ -12,9 +12,9 @@ hedged; deterministic sets the provider @deterministic@ param),
 context 0..255 serves (the FIPS 204 bound); hedge words past 2
 and longer contexts refuse at the recipe. The level label
 comes from the key's SPKI OID. @CKM_HASH_ML_DSA@ and its
-10 hash-specific variants stay catalog-only (the pinned
-provider refuses an explicit digest — no DIY domain
-separation), and @CKM_ML_DSA_EXTERNAL_MU[_GEN]@ are out of
+10 hash-specific variants stay catalog-only (haskoki does not
+implement the documented external-prehash plus unencoded-sign
+path), and @CKM_ML_DSA_EXTERNAL_MU[_GEN]@ are out of
 scope (absent from the OASIS 3.2 header).
 'Haskoki.Recipe.MlDsa' owns the group's canonical codec,
 parameter validation, and mechanism table; these tests pin the

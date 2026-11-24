@@ -7,7 +7,7 @@ CKA_DERIVE (the only derive row allowed to). Served base
 types: RSA, EC Weierstrass (only when the private half embeds
 its public point — scalar-only imports refuse, since y-recovery
 is Fp math), EC Montgomery (agreement against the base point),
-EC Edwards. DSA\/DH refuse (no provider path); ML-DSA\/SLH-DSA\/
+EC Edwards. DSA\/DH\/ML-DSA\/SLH-DSA\/
 ML-KEM refuse in the planner's base-type gate
 (`pubPrivBaseKeyOk` admits only RSA\/EC\/Montgomery\/Edwards),
 so the refusal never reaches the provider.
