@@ -779,9 +779,11 @@ away from both the link and its target (`caseOpenDanglingLink`).
    not use one; the reported sidecars may be the check's own,
    so moving them aside and retrying loops). Through a @file:@
    URI spelling the snapshot opens the decoded file, exactly
-   like the guards: spellings normalize up front, so sidecars
-   beside the decoded file are reported under the same
-   three-case guarantee below. A cold
+   like the guards: spellings normalize up front in
+   `resolveStoreSpelling`, so sidecars beside the decoded file
+   are reported under the same three-case guarantee below
+   (pinned by `caseUriTwinSidecar` in
+   `tests/storage/StoreSpec.hs`). A cold
    journal is cleared only after this plan says the migration
    proceeds.
 2. Takes the store's ownership lock for the rest of the run. A store
