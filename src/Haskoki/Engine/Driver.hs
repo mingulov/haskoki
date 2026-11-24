@@ -1659,8 +1659,8 @@ isDsaMech mech = isJust (dsaRecipeFor mech)
 -- ('eddsaCurveOfKey'), defaulting to Ed25519 when the key is
 -- unscannable (the backends execute against the key's actual
 -- material and refuse bad keys themselves — the driver never
--- refuses a key). 'Nothing' means uncovered (non-EdDSA mechanism),
--- missing parameters, or non-pure parameters.
+-- refuses a key). 'Nothing' means uncovered (non-EdDSA mechanism)
+-- or non-pure parameters (missing parameters decode to pure).
 eddsaSpecFor :: MechanismId -> ByteString -> KeyMaterial -> Maybe SigSpec
 eddsaSpecFor mech params key = do
   r <- eddsaRecipeFor mech
@@ -3845,7 +3845,7 @@ dsaRefusal = GotCryptoError (CryptoFailed "DSA: params must be RAW, DER, or empt
 -- non-pure parameters, so the refusal is unconditionally a
 -- 'CryptoFailed' parameter refusal.
 eddsaRefusal :: CryptoResult
-eddsaRefusal = GotCryptoError (CryptoFailed "EdDSA: params must be an explicit pure struct (phFlag clear, empty context)")
+eddsaRefusal = GotCryptoError (CryptoFailed "EdDSA: params must be pure (phFlag clear, empty context) or empty")
 
 -- | ML-DSA dispatch refusal: 'mldsaSpecFor' only fails on
 -- refused parameters, so the refusal is unconditionally a
