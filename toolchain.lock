@@ -63,7 +63,7 @@ ghc-options-flib = -Wall -threaded
 cc-options-flib = -Wall -Wextra -std=c11 -pthread
 ld-options-flib = -Wl,-z,nodelete -Wl,-z,origin -pthread -Wl,-rpath,$ORIGIN
 rts = threaded, dynamic (libHSrts-1.0.2_thr-ghc9.10.3.so)
-needed = libm.so.6, 25x libHS (base-4.20.2.0, ghc-prim-0.12.0, ghc-internal-9.1003.0, rts-1.0.2_thr, ...), libgmp.so.10, libffi.so.8, libnuma.so.1, libc.so.6
+needed = libm.so.6, 25x libHS (base-4.20.2.0, ghc-prim-0.12.0, ghc-internal-9.1003.0, rts-1.0.2_thr, ...), libgmp.so.10, libffi.so.8, libnuma.so.1, libc.so.6, ld-linux-x86-64.so.2
 pinning = DF_1_NODELETE (FLAGS_1: NODELETE|ORIGIN)
 hs-exit = absent: no call-site in cbits/ ffi/, no symbol in cbits objects, no dynamic ref in libhaskoki.so
 package-set = unchanged from [hackage-pins] above (flib adds base-only Haskell module; no new deps)
