@@ -145,6 +145,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 2026-11-24: the shared cabal-store cache can carry a
+          # .cabal/config whose repository URL points at the dead
+          # DreamObjects Hackage mirror (403s); re-pin the canonical
+          # host before updating. No-op on a fresh config.
+          if [ -f "$CABAL_DIR/config" ]; then
+            sed -i 's|https\?://objects-us-east-1\.dream\.io/hackage-mirror|https://hackage.haskell.org|g' "$CABAL_DIR/config"
+          fi
           cabal update
           # Forced build first (Cabal-9341, run-gates.sh precedent);
           # coverage flags match the test run so artifacts are reused.
