@@ -69,7 +69,7 @@ void hsk_ossl4_env_free(hsk_ossl4_env_t *env);
 
 /* --- misc ------------------------------------------------------------ */
 
-/* Static libcrypto version string ("OpenSSL 4.0.2 ..."); do not free. */
+/* Static libcrypto version string ("OpenSSL 4.1.0 ..."); do not free. */
 const char *hsk_ossl4_version(void);
 
 /* Release a buffer returned by a fetch+run helper (clears it first). */

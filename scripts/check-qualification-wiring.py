@@ -854,11 +854,11 @@ def check_lane(root, failures):
             hst = hsteps[0]
             code = "\n".join(_code_lines(hst))
             if "docker run" not in code or "-fsyntax-only" not in code \
-                    or "-I/opt/openssl-4.0.2/include" not in code:
+                    or "-I/opt/openssl-4.1.0/include" not in code:
                 _add(failures, "QW-LANE-HARNESS",
                      "harness syntax check must run through docker run with "
                      "-fsyntax-only and the pinned OpenSSL 4 headers")
-            if "test -d /opt/openssl-4.0.2/include" not in code:
+            if "test -d /opt/openssl-4.1.0/include" not in code:
                 _add(failures, "QW-LANE-HARNESS",
                      "harness syntax check must assert the pinned include "
                      "directory first (fail closed)")
