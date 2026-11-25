@@ -266,7 +266,13 @@ library haskoki-internal
   -- Test configuration of the native shim (live-sets, fault gates,
   -- error seams). Defined here only: the foreign library (the shipped
   -- libhaskoki.so) never defines it.
-  cc-options:       -Wall -Wextra -std=c11 -pthread -DHSK_OSSL4_TEST_HOOKS
+  -- HSK_OSSL4_RETAIN_LIBCTX: closed envs keep their OSSL_LIB_CTX
+  -- (providers still unload). This stops cross-thread stale DRBG
+  -- state from outliving a freed, address-reused context (see
+  -- hsk_ossl4_free_ctx). It lives here because this stanza compiles
+  -- the shim for every test suite. A test-suite cc-options entry
+  -- would not reach cbits/ossl4_ctx.c.
+  cc-options:       -Wall -Wextra -std=c11 -pthread -DHSK_OSSL4_TEST_HOOKS -DHSK_OSSL4_RETAIN_LIBCTX
   cpp-options:      -DHSK_OSSL4_TEST_HOOKS
   default-language: GHC2024
 
