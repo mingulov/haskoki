@@ -5,13 +5,13 @@
  "backend": "openssl-memory",
  "mode": "direct",
  "summary": {
-  "total": 12213,
-  "passed": 6509,
+  "total": 11466,
+  "passed": 5756,
   "failed": 24,
   "crashed": 0,
   "timeout": 0,
-  "xfailed": 645,
-  "skipped": 5035
+  "xfailed": 643,
+  "skipped": 5043
  },
  "failed_ids": [
   "testcases/test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_160_HMAC]",
@@ -682,9 +682,7 @@
   "testcases/test_tls12.py::TestTLS10PreMasterKeyGen::test_pre_master_key_gen",
   "testcases/test_verify_signature.py::TestVerifySignatureRoundtrip::test_verify_signature_wrong_key",
   "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_asn1_other_info",
-  "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_concatenate_other_info",
-  "testcases/x509/test_attribute_parity.py::test_limbo_attribute_parity",
-  "testcases/x509/test_identity.py::test_limbo_identity_closeness"
+  "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_concatenate_other_info"
  ],
  "crashed_ids": [],
  "timeout_ids": [],
@@ -3386,9 +3384,11 @@
   "advertised RSA min=0: no valid size strictly below it": 1,
   "fault-proxy not available (set P11TEST_FAULT_PROXY_SO or install to /usr/lib/pkcs11/": 5,
   "fault-proxy not built": 1,
+  "got empty parameter set for (tc": 5,
   "inapplicable: franken object correctly refused; row not exercised": 23,
   "inapplicable: malformed object correctly refused; downstream row not exercised": 3,
-  "no object available to query": 1
+  "no object available to query": 1,
+  "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo": 3
  },
  "skipped_by_target": {
   "testcases/ckr/test_ckr_codes.py": 1,
@@ -3482,7 +3482,11 @@
   "testcases/test_wtls.py": 22,
   "testcases/test_x3dh.py": 9,
   "testcases/test_x942_dh.py": 18,
-  "testcases/x509/test_attributes.py": 1
+  "testcases/x509/test_attribute_parity.py": 1,
+  "testcases/x509/test_attributes.py": 3,
+  "testcases/x509/test_identity.py": 1,
+  "testcases/x509/test_limbo_import.py": 3,
+  "testcases/x509/test_search.py": 1
  },
  "collected_by_target": {
   "testcases/acvp/test_keygen_key_size_conformance.py": 2,
@@ -3708,13 +3712,13 @@
   "testcases/test_x3dh.py": 9,
   "testcases/test_x942_dh.py": 39,
   "testcases/x509/test_attribute_parity.py": 1,
-  "testcases/x509/test_attributes.py": 13,
+  "testcases/x509/test_attributes.py": 3,
   "testcases/x509/test_cert_storage.py": 9,
   "testcases/x509/test_core_ops.py": 12,
   "testcases/x509/test_identity.py": 1,
   "testcases/x509/test_lifecycle.py": 3,
-  "testcases/x509/test_limbo_import.py": 737,
-  "testcases/x509/test_search.py": 4
+  "testcases/x509/test_limbo_import.py": 3,
+  "testcases/x509/test_search.py": 1
  },
  "skip_joint": {
   "testcases/ckr/test_ckr_codes.py": {
@@ -6746,8 +6750,22 @@
    "CKM_X9_42_DH_HYBRID_DERIVE not supported": 9,
    "CKM_X9_42_MQV_DERIVE not supported": 9
   },
+  "testcases/x509/test_attribute_parity.py": {
+   "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo": 1
+  },
   "testcases/x509/test_attributes.py": {
-   "Destructive test (use --p11-destructive to enable": 1
+   "Destructive test (use --p11-destructive to enable": 1,
+   "got empty parameter set for (tc": 1,
+   "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo": 1
+  },
+  "testcases/x509/test_identity.py": {
+   "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo": 1
+  },
+  "testcases/x509/test_limbo_import.py": {
+   "got empty parameter set for (tc": 3
+  },
+  "testcases/x509/test_search.py": {
+   "got empty parameter set for (tc": 1
   }
  }
 }

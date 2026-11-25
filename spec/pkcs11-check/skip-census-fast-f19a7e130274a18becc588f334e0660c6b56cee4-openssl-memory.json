@@ -3,10 +3,10 @@
  "checker_pin": "f19a7e130274a18becc588f334e0660c6b56cee4",
  "lane": "fast",
  "totals": {
-  "skipped": 5035,
-  "n_reasons": 2700,
-  "n_clusters": 99,
-  "n_xfailed": 645
+  "skipped": 5043,
+  "n_reasons": 2702,
+  "n_clusters": 101,
+  "n_xfailed": 643
  },
  "clusters": {
   "<MECH>: registered mechanism -- tested elsewhere": {
@@ -10745,6 +10745,16 @@
    ],
    "n_reasons": 1
   },
+  "got empty parameter set for (tc": {
+   "skips": 5,
+   "members": [
+    {
+     "reason": "got empty parameter set for (tc",
+     "count": 5
+    }
+   ],
+   "n_reasons": 1
+  },
   "<MECH> not advertised": {
    "skips": 4,
    "members": [
@@ -10850,6 +10860,16 @@
    "members": [
     {
      "reason": "inapplicable: malformed object correctly refused; downstream row not exercised",
+     "count": 3
+    }
+   ],
+   "n_reasons": 1
+  },
+  "x<N>-limbo data not found. Run scripts/fetch-optional-data.sh x<N>-limbo": {
+   "skips": 3,
+   "members": [
+    {
+     "reason": "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo",
      "count": 3
     }
    ],
@@ -12047,8 +12067,6 @@
   "testcases/test_tls12.py::TestTLS10PreMasterKeyGen::test_pre_master_key_gen": "testcases/test_tls12.py",
   "testcases/test_verify_signature.py::TestVerifySignatureRoundtrip::test_verify_signature_wrong_key": "testcases/test_verify_signature.py",
   "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_asn1_other_info": "testcases/test_x942_dh.py",
-  "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_concatenate_other_info": "testcases/test_x942_dh.py",
-  "testcases/x509/test_attribute_parity.py::test_limbo_attribute_parity": "testcases/x509/test_attribute_parity.py",
-  "testcases/x509/test_identity.py::test_limbo_identity_closeness": "testcases/x509/test_identity.py"
+  "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_concatenate_other_info": "testcases/test_x942_dh.py"
  }
 }
