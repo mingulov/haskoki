@@ -1,8 +1,92 @@
-# Haskoki 0.6.0.0 release notes (accumulating draft)
+# Haskoki 0.6.0.0 — testable RnD release
 
-Developer preview: entries land per task and finalize at release.
+Haskoki is a PKCS#11 software token written in Haskell, with OpenSSL doing
+the cryptography. This RnD release is for testing and development: exact
+per-function error codes, a compatibility matrix, correctness fixes, and a
+refreshed supply chain. Use it with disposable keys rather than real
+secrets.
 
-## Removed — public Haskell API
+## Start here
+
+```sh
+docker run --rm --network none ghcr.io/mingulov/haskoki-demo:v0.6.0.0
+```
+
+Expect `demo-ok: 8/8 verifications hold`. No checkout, build or hardware is
+needed. The [hands-on guide](https://github.com/mingulov/haskoki/blob/v0.6.0.0/docs/try-it.md)
+shows how to keep the output, generate a key with `pkcs11-tool` and sign a
+message.
+
+## What's new
+
+- **Exact error codes.** Rejected key material, over-length input, lost
+  backend state and ceilings now report the spec-listed code for the
+  calling function instead of `CKR_GENERAL_ERROR`, with three newly
+  served return codes (63 total). Deliberately unclassified failures
+  keep `CKR_GENERAL_ERROR` and emit one JSONL trace row each with the
+  typed cause.
+- **Compatibility matrix.** The generated
+  [matrix](https://github.com/mingulov/haskoki/blob/v0.6.0.0/docs/compatibility.md)
+  resolves every binary × store × config × interface combination to
+  `works`, `migrate` or `refuse`, and CI gates it.
+- **Supply chain refresh.** OpenSSL 4.1.0 (statically linked
+  `libcrypto`, shipped legacy provider), `pkcs11-check` 0.3.1 and
+  `pkcs11-proxy-ng` v0.3.1 in the demo image and CI lanes.
+- **Correctness fixes.** ECDSA raw signatures are order-width on
+  wider-order curves, EC private import bounds scalars by the group
+  order, store-path spelling is one rule everywhere, and derived
+  DES-family keys take odd-parity adjustment on every derive
+  mechanism.
+- **Firefox client-authentication example** (`examples/firefox`): a
+  disposable scripted-browser desktop doing client-auth through the
+  PKCS#11 module, with a Marionette acceptance client.
+- **Config-gated test seams** (`storage.allow_env_seams`, default
+  `false`) for owner liveness and fresh-init pause probing.
+- **Tested with real clients.** OpenSC `pkcs11-tool`, GnuTLS, Java
+  (SunPKCS11) and OpenSSL pass 61 of 61 journeys with the installed
+  bundle and 28 of 28 in the demo image.
+
+## Upgrading from 0.5
+
+- Run `haskoki-ctl store migrate` for schema 1 and 2 stores;
+  `haskoki-ctl store check` tells you what a store needs. Schema 3
+  stores open unchanged. Older binaries cannot open a migrated store,
+  so keep the backup if you may go back.
+- The `[async]` config header becomes `[scenario.async]`. Files using
+  only the legacy header keep loading with values migrated; files
+  with keys under both headers refuse with a remedy.
+- The package has no installable Haskell library anymore; the product
+  interface is the C ABI, unchanged.
+- Error codes are more precise in many paths (see the change detail
+  below). The [changelog](https://github.com/mingulov/haskoki/blob/v0.6.0.0/CHANGELOG.md)
+  lists every change.
+
+## Known limitations
+
+- Key values read back as DER (SPKI or PKCS#8) rather than the raw
+  PKCS#11 encoding in the documented value-encoding family; DSA and
+  DH public keys read back as raw `y`.
+- When Haskoki starts the GHC runtime itself, it uses one capability
+  and ignores `GHCRTS`.
+- 91 of 104 PKCS#11 3.2 functions and 316 of 464 catalogued mechanisms
+  are served; the rest refuse with explicit error codes. See
+  [coverage](https://github.com/mingulov/haskoki/blob/v0.6.0.0/docs/coverage.md).
+- Token storage is not encrypted.
+- Linux amd64 only. The full checker profile reports 24 documented
+  findings ([results](https://github.com/mingulov/haskoki/blob/v0.6.0.0/docs/release-results.md));
+  no conformance or certification is claimed.
+
+## Downloads
+
+The release has the Linux bundle, the source archive, test logs,
+`release-manifest.json` and `SHA256SUMS`. Check downloads with
+`sha256sum -c SHA256SUMS`. This release is not signed. Published on
+November 25, 2026; the exact source commit is recorded in
+`release-manifest.json`.
+
+## Change detail
+
+### Removed — public Haskell API
 
 - The package has no installable Haskell library anymore: the
   main `library` stanza is gone, `haskoki-core` and
@@ -13,7 +97,7 @@ Developer preview: entries land per task and finalize at release.
   resolution. The product interface is the C ABI, unchanged.
   (No external Haskell consumers are known to exist.)
 
-## Changed — exact per-function errors
+### Changed — exact per-function errors
 
 - Rejected backend key material now reports `CKR_FUNCTION_FAILED`
   on sign, verify, cipher and message legs (was
@@ -45,7 +129,7 @@ Developer preview: entries land per task and finalize at release.
   misaligned ECB ciphertexts and truncated OAEP ciphertexts report
   `CKR_ENCRYPTED_DATA_LEN_RANGE`.
 
-## Added
+### Added
 
 - Three newly served return codes (63 total): `CKR_DEVICE_ERROR`,
   `CKR_DOMAIN_PARAMS_INVALID`, `CKR_WRAPPED_KEY_LEN_RANGE`.
@@ -70,7 +154,7 @@ Developer preview: entries land per task and finalize at release.
   disposable scripted-browser desktop doing client-auth through
   the PKCS#11 module, with a Marionette acceptance client.
 
-## Fixed
+### Fixed
 
 - ECDSA raw signatures on wider-order curves are order-width now
   (PKCS#11 §6.3.1 nLen): secp160r1/r2/k1 sign 42 bytes (was 40),
