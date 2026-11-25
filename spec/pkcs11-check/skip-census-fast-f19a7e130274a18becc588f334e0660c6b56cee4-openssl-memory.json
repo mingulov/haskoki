@@ -1,12 +1,12 @@
 {
  "schema_version": 1,
- "checker_pin": "289cc4ef6c3a498994c18c7d6a37543c6bc597be",
+ "checker_pin": "f19a7e130274a18becc588f334e0660c6b56cee4",
  "lane": "fast",
  "totals": {
-  "skipped": 5014,
-  "n_reasons": 2699,
-  "n_clusters": 98,
-  "n_xfailed": 628
+  "skipped": 5035,
+  "n_reasons": 2700,
+  "n_clusters": 99,
+  "n_xfailed": 623
  },
  "clusters": {
   "<MECH>: registered mechanism -- tested elsewhere": {
@@ -5713,1048 +5713,6 @@
    ],
    "n_reasons": 58
   },
-  "<MECH>: CKF_ENCRYPT not advertised": {
-   "skips": 259,
-   "members": [
-    {
-     "reason": "AES_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_CMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_CMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_GMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_MAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_MAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_XCBC_MAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_XCBC_MAC_96: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "AES_XTS_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ARIA_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ARIA_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ARIA_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ARIA_MAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ARIA_MAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BATON_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_160: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_160_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_160_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_160_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_160_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_256: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_256_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_256_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_256_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_256_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_384: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_384_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_384_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_384_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_384_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_512: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_512_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_512_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_512_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLAKE2B_512_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "BLOWFISH_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CAMELLIA_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CAMELLIA_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CAMELLIA_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CAMELLIA_MAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CAMELLIA_MAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CAST3_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CAST5_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CAST_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CDMF_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CHACHA20_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CONCATENATE_BASE_AND_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CONCATENATE_BASE_AND_KEY: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "CONCATENATE_DATA_AND_BASE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES2_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES3_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES3_CMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES3_CMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES3_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES3_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES3_MAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES3_MAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DES_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DH_PKCS_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DH_PKCS_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DH_PKCS_PARAMETER_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_PARAMETER_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA1: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA224: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA256: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA384: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA3_224: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA3_256: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA3_384: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA3_512: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "DSA_SHA512: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDH1_COFACTOR_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDH1_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDH_AES_KEY_WRAP: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDH_COF_AES_KEY_WRAP: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDH_X_AES_KEY_WRAP: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA1: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA224: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA256: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA384: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA3_224: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA3_256: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA3_384: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA3_512: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ECDSA_SHA512: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "EC_EDWARDS_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "EC_KEY_PAIR_GEN_W_EXTRA_BITS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "EC_MONTGOMERY_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "EDDSA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "EXTRACT_KEY_FROM_KEY: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "GENERIC_SECRET_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "GOST28147_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "HKDF_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "HKDF_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "HKDF_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "HOTP: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "HOTP_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "IDEA_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "IKE1_EXTENDED_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "IKE1_PRF_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "IKE2_PRF_PLUS_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "IKE_PRF_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "JUNIPER_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "MD5: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "MD5_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "MD5_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "MD5_KEY_DERIVATION: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "MD5_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ML_DSA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ML_DSA_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ML_KEM: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "ML_KEM_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_MD5_CAST3_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_MD5_CAST5_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_MD5_CAST_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_MD5_DES_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_CAST5_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_DES2_EDE_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_DES3_EDE_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_RC2_128_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_RC2_40_CBC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_RC4_128: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_RC4_40: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PKCS5_PBKD2: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "POLY1305: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "POLY1305_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "PUB_KEY_FROM_PRIV_KEY: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RC2_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RC4_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RC5_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RIPEMD160: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RIPEMD160_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RIPEMD160_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RIPEMD160_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RSA_AES_KEY_WRAP: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RSA_PKCS_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "RSA_X9_31: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SALSA20_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SEED_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SEED_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SEED_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA1_KEY_DERIVATION: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA1_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA1_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA1_RSA_X9_31: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA224: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA224_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA224_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA224_KEY_DERIVATION: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA224_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA224_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA224_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA256: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA256_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA256_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA256_KEY_DERIVATION: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA256_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA256_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA256_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA384: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA384_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA384_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA384_KEY_DERIVATION: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA384_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA384_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA384_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_224: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_224_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_224_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_224_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_224_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_224_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_224_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_256: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_256_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_256_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_256_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_256_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_256_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_256_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_384: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_384_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_384_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_384_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_384_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_384_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_384_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_512: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_512_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_512_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_512_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_512_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_512_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA3_512_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_224: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_224_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_224_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_224_KEY_DERIVATION: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_224_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_256: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_256_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_256_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_256_KEY_DERIVATION: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_256_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_KEY_DERIVATION: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_RSA_PKCS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA512_T_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHAKE_128_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHAKE_256_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA_1: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA_1_HMAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA_1_HMAC_GENERAL: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SHA_1_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SKIPJACK_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SLH_DSA: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SLH_DSA_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SP800_108_COUNTER_KDF: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SP800_108_DOUBLE_PIPELINE_KDF: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SP800_108_FEEDBACK_KDF: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SSL3_KEY_AND_MAC_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SSL3_MASTER_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SSL3_MASTER_KEY_DERIVE_DH: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SSL3_MD5_MAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SSL3_PRE_MASTER_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "SSL3_SHA1_MAC: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS12_EXTENDED_MASTER_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS12_EXTENDED_MASTER_KEY_DERIVE_DH: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS12_KDF: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS12_KEY_AND_MAC_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS12_KEY_SAFE_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS12_MASTER_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS12_MASTER_KEY_DERIVE_DH: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS_KDF: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS_KEY_AND_MAC_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS_MASTER_KEY_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS_MASTER_KEY_DERIVE_DH: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS_PRE_MASTER_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TLS_PRF: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "TWOFISH_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "WTLS_PRE_MASTER_KEY_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "X9_42_DH_DERIVE: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "X9_42_DH_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "X9_42_DH_PARAMETER_GEN: CKF_ENCRYPT not advertised",
-     "count": 1
-    },
-    {
-     "reason": "XOR_BASE_AND_DATA: CKF_ENCRYPT not advertised",
-     "count": 1
-    }
-   ],
-   "n_reasons": 259
-  },
   "<MECH>: CKF_DECRYPT not advertised": {
    "skips": 259,
    "members": [
@@ -7792,6 +6750,1048 @@
     },
     {
      "reason": "XOR_BASE_AND_DATA: CKF_DECRYPT not advertised",
+     "count": 1
+    }
+   ],
+   "n_reasons": 259
+  },
+  "<MECH>: CKF_ENCRYPT not advertised": {
+   "skips": 259,
+   "members": [
+    {
+     "reason": "AES_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_CMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_CMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_GMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_MAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_MAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_XCBC_MAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_XCBC_MAC_96: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "AES_XTS_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ARIA_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ARIA_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ARIA_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ARIA_MAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ARIA_MAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BATON_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_160: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_160_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_160_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_160_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_160_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_256: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_256_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_256_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_256_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_256_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_384: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_384_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_384_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_384_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_384_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_512: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_512_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_512_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_512_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLAKE2B_512_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "BLOWFISH_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CAMELLIA_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CAMELLIA_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CAMELLIA_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CAMELLIA_MAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CAMELLIA_MAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CAST3_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CAST5_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CAST_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CDMF_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CHACHA20_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CONCATENATE_BASE_AND_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CONCATENATE_BASE_AND_KEY: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "CONCATENATE_DATA_AND_BASE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES2_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES3_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES3_CMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES3_CMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES3_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES3_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES3_MAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES3_MAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DES_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DH_PKCS_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DH_PKCS_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DH_PKCS_PARAMETER_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_PARAMETER_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA1: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA224: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA256: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA384: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA3_224: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA3_256: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA3_384: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA3_512: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "DSA_SHA512: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDH1_COFACTOR_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDH1_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDH_AES_KEY_WRAP: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDH_COF_AES_KEY_WRAP: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDH_X_AES_KEY_WRAP: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA1: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA224: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA256: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA384: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA3_224: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA3_256: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA3_384: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA3_512: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ECDSA_SHA512: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "EC_EDWARDS_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "EC_KEY_PAIR_GEN_W_EXTRA_BITS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "EC_MONTGOMERY_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "EDDSA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "EXTRACT_KEY_FROM_KEY: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "GENERIC_SECRET_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "GOST28147_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "HKDF_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "HKDF_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "HKDF_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "HOTP: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "HOTP_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "IDEA_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "IKE1_EXTENDED_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "IKE1_PRF_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "IKE2_PRF_PLUS_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "IKE_PRF_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "JUNIPER_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "MD5: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "MD5_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "MD5_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "MD5_KEY_DERIVATION: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "MD5_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ML_DSA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ML_DSA_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ML_KEM: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "ML_KEM_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_MD5_CAST3_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_MD5_CAST5_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_MD5_CAST_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_MD5_DES_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_CAST5_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_DES2_EDE_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_DES3_EDE_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_RC2_128_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_RC2_40_CBC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_RC4_128: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_RC4_40: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PKCS5_PBKD2: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "POLY1305: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "POLY1305_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "PUB_KEY_FROM_PRIV_KEY: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RC2_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RC4_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RC5_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RIPEMD160: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RIPEMD160_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RIPEMD160_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RIPEMD160_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RSA_AES_KEY_WRAP: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RSA_PKCS_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "RSA_X9_31: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SALSA20_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SEED_CBC_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SEED_ECB_ENCRYPT_DATA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SEED_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA1_KEY_DERIVATION: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA1_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA1_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA1_RSA_X9_31: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA224: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA224_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA224_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA224_KEY_DERIVATION: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA224_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA224_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA224_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA256: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA256_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA256_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA256_KEY_DERIVATION: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA256_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA256_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA256_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA384: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA384_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA384_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA384_KEY_DERIVATION: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA384_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA384_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA384_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_224: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_224_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_224_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_224_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_224_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_224_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_224_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_256: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_256_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_256_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_256_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_256_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_256_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_256_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_384: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_384_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_384_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_384_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_384_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_384_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_384_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_512: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_512_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_512_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_512_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_512_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_512_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA3_512_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_224: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_224_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_224_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_224_KEY_DERIVATION: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_224_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_256: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_256_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_256_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_256_KEY_DERIVATION: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_256_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_KEY_DERIVATION: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_RSA_PKCS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_RSA_PKCS_PSS: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA512_T_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHAKE_128_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHAKE_256_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA_1: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA_1_HMAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA_1_HMAC_GENERAL: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SHA_1_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SKIPJACK_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SLH_DSA: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SLH_DSA_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SP800_108_COUNTER_KDF: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SP800_108_DOUBLE_PIPELINE_KDF: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SP800_108_FEEDBACK_KDF: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SSL3_KEY_AND_MAC_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SSL3_MASTER_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SSL3_MASTER_KEY_DERIVE_DH: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SSL3_MD5_MAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SSL3_PRE_MASTER_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "SSL3_SHA1_MAC: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS12_EXTENDED_MASTER_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS12_EXTENDED_MASTER_KEY_DERIVE_DH: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS12_KDF: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS12_KEY_AND_MAC_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS12_KEY_SAFE_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS12_MASTER_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS12_MASTER_KEY_DERIVE_DH: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS_KDF: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS_KEY_AND_MAC_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS_MASTER_KEY_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS_MASTER_KEY_DERIVE_DH: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS_PRE_MASTER_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TLS_PRF: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "TWOFISH_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "WTLS_PRE_MASTER_KEY_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "X9_42_DH_DERIVE: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "X9_42_DH_KEY_PAIR_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "X9_42_DH_PARAMETER_GEN: CKF_ENCRYPT not advertised",
+     "count": 1
+    },
+    {
+     "reason": "XOR_BASE_AND_DATA: CKF_ENCRYPT not advertised",
      "count": 1
     }
    ],
@@ -10326,11 +10326,11 @@
    "n_reasons": 22
   },
   "Destructive test (use --p<N>-destructive to enable": {
-   "skips": 74,
+   "skips": 78,
    "members": [
     {
      "reason": "Destructive test (use --p11-destructive to enable",
-     "count": 74
+     "count": 78
     }
    ],
    "n_reasons": 1
@@ -10380,6 +10380,16 @@
     }
    ],
    "n_reasons": 10
+  },
+  "inapplicable: franken object correctly refused; row not exercised": {
+   "skips": 23,
+   "members": [
+    {
+     "reason": "inapplicable: franken object correctly refused; row not exercised",
+     "count": 23
+    }
+   ],
+   "n_reasons": 1
   },
   "<MECH>: protocol KDF (...) -- complex params, skipped here": {
    "skips": 19,
@@ -10495,56 +10505,6 @@
    ],
    "n_reasons": 3
   },
-  "<MECH>: no key_type defined in registry config": {
-   "skips": 11,
-   "members": [
-    {
-     "reason": "PBE_MD5_CAST3_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_MD5_CAST5_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_MD5_CAST_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_MD5_DES_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_CAST5_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_DES2_EDE_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_DES3_EDE_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_RC2_128_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_RC2_40_CBC: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_RC4_128: no key_type defined in registry config",
-     "count": 1
-    },
-    {
-     "reason": "PBE_SHA1_RC4_40: no key_type defined in registry config",
-     "count": 1
-    }
-   ],
-   "n_reasons": 11
-  },
   "<MECH>: derive param construction not yet implemented in this generic test": {
    "skips": 11,
    "members": [
@@ -10590,6 +10550,56 @@
     },
     {
      "reason": "X9_42_DH_DERIVE: derive param construction not yet implemented in this generic test",
+     "count": 1
+    }
+   ],
+   "n_reasons": 11
+  },
+  "<MECH>: no key_type defined in registry config": {
+   "skips": 11,
+   "members": [
+    {
+     "reason": "PBE_MD5_CAST3_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_MD5_CAST5_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_MD5_CAST_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_MD5_DES_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_CAST5_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_DES2_EDE_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_DES3_EDE_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_RC2_128_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_RC2_40_CBC: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_RC4_128: no key_type defined in registry config",
+     "count": 1
+    },
+    {
+     "reason": "PBE_SHA1_RC4_40: no key_type defined in registry config",
      "count": 1
     }
    ],
@@ -10705,16 +10715,6 @@
    ],
    "n_reasons": 1
   },
-  "fault-proxy not available (set P<N>TEST_FAULT_PROXY_SO or install to /usr/lib/pkcs<N>/": {
-   "skips": 5,
-   "members": [
-    {
-     "reason": "fault-proxy not available (set P11TEST_FAULT_PROXY_SO or install to /usr/lib/pkcs11/",
-     "count": 5
-    }
-   ],
-   "n_reasons": 1
-  },
   "C_WrapKeyAuthenticated not implemented: CKR_FUNCTION_NOT_SUPPORTED": {
    "skips": 5,
    "members": [
@@ -10735,11 +10735,11 @@
    ],
    "n_reasons": 1
   },
-  "got empty parameter set for (tc": {
+  "fault-proxy not available (set P<N>TEST_FAULT_PROXY_SO or install to /usr/lib/pkcs<N>/": {
    "skips": 5,
    "members": [
     {
-     "reason": "got empty parameter set for (tc",
+     "reason": "fault-proxy not available (set P11TEST_FAULT_PROXY_SO or install to /usr/lib/pkcs11/",
      "count": 5
     }
    ],
@@ -10789,26 +10789,6 @@
    ],
    "n_reasons": 1
   },
-  "inapplicable: malformed object correctly refused; downstream row not exercised": {
-   "skips": 3,
-   "members": [
-    {
-     "reason": "inapplicable: malformed object correctly refused; downstream row not exercised",
-     "count": 3
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Mechanism <MECH> lacks required capability CKF_ENCRYPT": {
-   "skips": 3,
-   "members": [
-    {
-     "reason": "Mechanism RSA_PKCS lacks required capability CKF_ENCRYPT",
-     "count": 3
-    }
-   ],
-   "n_reasons": 1
-  },
   "<MECH>: domain parameter generation -- no key type check": {
    "skips": 3,
    "members": [
@@ -10845,6 +10825,16 @@
    ],
    "n_reasons": 3
   },
+  "Mechanism <MECH> lacks required capability CKF_ENCRYPT": {
+   "skips": 3,
+   "members": [
+    {
+     "reason": "Mechanism RSA_PKCS lacks required capability CKF_ENCRYPT",
+     "count": 3
+    }
+   ],
+   "n_reasons": 1
+  },
   "No CKO_MECHANISM objects present": {
    "skips": 3,
    "members": [
@@ -10855,22 +10845,12 @@
    ],
    "n_reasons": 1
   },
-  "x<N>-limbo data not found. Run scripts/fetch-optional-data.sh x<N>-limbo": {
+  "inapplicable: malformed object correctly refused; downstream row not exercised": {
    "skips": 3,
    "members": [
     {
-     "reason": "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo",
+     "reason": "inapplicable: malformed object correctly refused; downstream row not exercised",
      "count": 3
-    }
-   ],
-   "n_reasons": 1
-  },
-  "CKA_WRAP_WITH_TRUSTED not supported: Unexpected CK_RV CKR_ATTRIBUTE_TYPE_INVALID; expected one of: CKR_OK": {
-   "skips": 2,
-   "members": [
-    {
-     "reason": "CKA_WRAP_WITH_TRUSTED not supported: Unexpected CK_RV CKR_ATTRIBUTE_TYPE_INVALID; expected one of: CKR_OK",
-     "count": 2
     }
    ],
    "n_reasons": 1
@@ -10884,80 +10864,6 @@
     },
     {
      "reason": "CKM_AES_GCM does not advertise CKF_WRAP and CKF_UNWRAP",
-     "count": 1
-    }
-   ],
-   "n_reasons": 2
-  },
-  "Only relevant for v<N>.<N> modules": {
-   "skips": 2,
-   "members": [
-    {
-     "reason": "Only relevant for v2.40 modules",
-     "count": 2
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Function C_DigestXof not present in module": {
-   "skips": 2,
-   "members": [
-    {
-     "reason": "Function C_DigestXof not present in module",
-     "count": 2
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Function C_DigestXofFinal not present in module": {
-   "skips": 2,
-   "members": [
-    {
-     "reason": "Function C_DigestXofFinal not present in module",
-     "count": 2
-    }
-   ],
-   "n_reasons": 1
-  },
-  "No CKO_HW_FEATURE objects present": {
-   "skips": 2,
-   "members": [
-    {
-     "reason": "No CKO_HW_FEATURE objects present",
-     "count": 2
-    }
-   ],
-   "n_reasons": 1
-  },
-  "No CKH_MONOTONIC_COUNTER objects present": {
-   "skips": 2,
-   "members": [
-    {
-     "reason": "No CKH_MONOTONIC_COUNTER objects present",
-     "count": 2
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Module uses different ML-KEM parameter set (ct_len=<N>": {
-   "skips": 2,
-   "members": [
-    {
-     "reason": "Module uses different ML-KEM parameter set (ct_len=1088",
-     "count": 2
-    }
-   ],
-   "n_reasons": 1
-  },
-  "RSA-<N> modulus bits: key size <N> outside advertised range for <MECH>": {
-   "skips": 2,
-   "members": [
-    {
-     "reason": "RSA-2048 modulus bits: key size 2048 outside advertised range for RSA_PKCS_KEY_PAIR_GEN",
-     "count": 1
-    },
-    {
-     "reason": "RSA-3072 modulus bits: key size 3072 outside advertised range for RSA_PKCS_KEY_PAIR_GEN",
      "count": 1
     }
    ],
@@ -10983,11 +10889,11 @@
    ],
    "n_reasons": 1
   },
-  "No vendor mechanisms advertised": {
+  "CKA_WRAP_WITH_TRUSTED not supported: Unexpected CK_RV CKR_ATTRIBUTE_TYPE_INVALID; expected one of: CKR_OK": {
    "skips": 2,
    "members": [
     {
-     "reason": "No vendor mechanisms advertised",
+     "reason": "CKA_WRAP_WITH_TRUSTED not supported: Unexpected CK_RV CKR_ATTRIBUTE_TYPE_INVALID; expected one of: CKR_OK",
      "count": 2
     }
    ],
@@ -11003,121 +10909,115 @@
    ],
    "n_reasons": 1
   },
-  "Token-level login prevents testing wrong PIN": {
+  "Function C_DigestXof not present in module": {
+   "skips": 2,
+   "members": [
+    {
+     "reason": "Function C_DigestXof not present in module",
+     "count": 2
+    }
+   ],
+   "n_reasons": 1
+  },
+  "Function C_DigestXofFinal not present in module": {
+   "skips": 2,
+   "members": [
+    {
+     "reason": "Function C_DigestXofFinal not present in module",
+     "count": 2
+    }
+   ],
+   "n_reasons": 1
+  },
+  "Module uses different ML-KEM parameter set (ct_len=<N>": {
+   "skips": 2,
+   "members": [
+    {
+     "reason": "Module uses different ML-KEM parameter set (ct_len=1088",
+     "count": 2
+    }
+   ],
+   "n_reasons": 1
+  },
+  "No CKH_MONOTONIC_COUNTER objects present": {
+   "skips": 2,
+   "members": [
+    {
+     "reason": "No CKH_MONOTONIC_COUNTER objects present",
+     "count": 2
+    }
+   ],
+   "n_reasons": 1
+  },
+  "No CKO_HW_FEATURE objects present": {
+   "skips": 2,
+   "members": [
+    {
+     "reason": "No CKO_HW_FEATURE objects present",
+     "count": 2
+    }
+   ],
+   "n_reasons": 1
+  },
+  "No vendor mechanisms advertised": {
+   "skips": 2,
+   "members": [
+    {
+     "reason": "No vendor mechanisms advertised",
+     "count": 2
+    }
+   ],
+   "n_reasons": 1
+  },
+  "Only relevant for v<N>.<N> modules": {
+   "skips": 2,
+   "members": [
+    {
+     "reason": "Only relevant for v2.40 modules",
+     "count": 2
+    }
+   ],
+   "n_reasons": 1
+  },
+  "RSA-<N> modulus bits: key size <N> outside advertised range for <MECH>": {
+   "skips": 2,
+   "members": [
+    {
+     "reason": "RSA-2048 modulus bits: key size 2048 outside advertised range for RSA_PKCS_KEY_PAIR_GEN",
+     "count": 1
+    },
+    {
+     "reason": "RSA-3072 modulus bits: key size 3072 outside advertised range for RSA_PKCS_KEY_PAIR_GEN",
+     "count": 1
+    }
+   ],
+   "n_reasons": 2
+  },
+  "<MECH> does not advertise CKF_MESSAGE_SIGN": {
    "skips": 1,
    "members": [
     {
-     "reason": "Token-level login prevents testing wrong PIN",
+     "reason": "CKM_AES_GMAC does not advertise CKF_MESSAGE_SIGN",
      "count": 1
     }
    ],
    "n_reasons": 1
   },
-  "C_DecryptInit failed: CKR_MECHANISM_INVALID": {
+  "<MECH> does not advertise CKF_MULTI_MESSAGE for multipart message decrypt": {
    "skips": 1,
    "members": [
     {
-     "reason": "C_DecryptInit failed: CKR_MECHANISM_INVALID",
+     "reason": "AES_CBC does not advertise CKF_MULTI_MESSAGE for multipart message decrypt",
      "count": 1
     }
    ],
    "n_reasons": 1
   },
-  "C_EncryptInit failed: CKR_MECHANISM_INVALID": {
+  "<MECH> does not advertise CKF_MULTI_MESSAGE for multipart message encrypt": {
    "skips": 1,
    "members": [
     {
-     "reason": "C_EncryptInit failed: CKR_MECHANISM_INVALID",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "No standard absent mechanism available for C_GetMechanismInfo probe": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "No standard absent mechanism available for C_GetMechanismInfo probe",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "fault-proxy not built": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "fault-proxy not built",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "C_VerifySignatureInit: C_VerifySignatureInit not implemented (CKR_FUNCTION_NOT_SUPPORTED": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "C_VerifySignatureInit: C_VerifySignatureInit not implemented (CKR_FUNCTION_NOT_SUPPORTED",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "C_VerifySignature: C_VerifySignature not implemented (CKR_FUNCTION_NOT_SUPPORTED": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "C_VerifySignature: C_VerifySignature not implemented (CKR_FUNCTION_NOT_SUPPORTED",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "C_WrapKeyAuthenticated: C_WrapKeyAuthenticated not implemented (CKR_FUNCTION_NOT_SUPPORTED": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "C_WrapKeyAuthenticated: C_WrapKeyAuthenticated not implemented (CKR_FUNCTION_NOT_SUPPORTED",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Module rejected import of undersized AES wrap key (itself a valid size-range enforcement": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "Module rejected import of undersized AES wrap key (itself a valid size-range enforcement",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "TLS<N> over-length probe not implemented: RFC <N> \u00a7<N>.<N> cap applies only to HKDF-Expand; no sound analogous": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "TLS12 over-length probe not implemented: RFC 5869 \u00a72.3 cap applies only to HKDF-Expand; no sound analogous probe exists for CKM_TLS12_KEY_AND_MAC_DERIVE without a calibration module. See module docstring.",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "no object available to query": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "no object available to query",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Module rejected CKA_UNWRAP_TEMPLATE on wrapping-key creation (...); CKA_UNWRAP_TEMPLATE is not supported \u2014 Too": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "Module rejected CKA_UNWRAP_TEMPLATE on wrapping-key creation (rv=<CKR_ATTRIBUTE_TYPE_INVALID: 0x00000012>); CKA_UNWRAP_TEMPLATE is not supported \u2014 Tookan/Cryptosense binding test skipped (capability absent",
+     "reason": "AES_CBC does not advertise CKF_MULTI_MESSAGE for multipart message encrypt",
      "count": 1
     }
    ],
@@ -11143,61 +11043,11 @@
    ],
    "n_reasons": 1
   },
-  "advertised RSA min=<N>: no valid size strictly below it": {
+  "<MECH>: <MECH> hybrid wrap needs CK_RSA_AES_KEY_WRAP_PARAMS": {
    "skips": 1,
    "members": [
     {
-     "reason": "advertised RSA min=0: no valid size strictly below it",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "advertised RSA max=<N>: no valid probe size above it within ceiling <N>": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "advertised RSA max=0: no valid probe size above it within ceiling 16384",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "advertised EC min=<N> bits: no known curve with field size strictly below it": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "advertised EC min=0 bits: no known curve with field size strictly below it",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "No CKO_DOMAIN_PARAMETERS objects present": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "No CKO_DOMAIN_PARAMETERS objects present",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "No CKH_CLOCK hardware feature objects present": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "No CKH_CLOCK hardware feature objects present",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Not a v<N>.<N> module": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "Not a v2.40 module",
+     "reason": "RSA_AES_KEY_WRAP: RSA_AES hybrid wrap needs CK_RSA_AES_KEY_WRAP_PARAMS",
      "count": 1
     }
    ],
@@ -11213,41 +11063,231 @@
    ],
    "n_reasons": 1
   },
-  "<MECH> does not advertise CKF_MESSAGE_SIGN": {
+  "CKA_DERIVE_TEMPLATE not supported at EC keygen: CKR_ATTRIBUTE_TYPE_INVALID": {
    "skips": 1,
    "members": [
     {
-     "reason": "CKM_AES_GMAC does not advertise CKF_MESSAGE_SIGN",
+     "reason": "CKA_DERIVE_TEMPLATE not supported at EC keygen: CKR_ATTRIBUTE_TYPE_INVALID",
      "count": 1
     }
    ],
    "n_reasons": 1
   },
-  "<MECH>: <MECH> hybrid wrap needs CK_RSA_AES_KEY_WRAP_PARAMS": {
+  "CKA_UNWRAP_TEMPLATE not supported at RSA keygen: CKR_ATTRIBUTE_TYPE_INVALID": {
    "skips": 1,
    "members": [
     {
-     "reason": "RSA_AES_KEY_WRAP: RSA_AES hybrid wrap needs CK_RSA_AES_KEY_WRAP_PARAMS",
+     "reason": "CKA_UNWRAP_TEMPLATE not supported at RSA keygen: CKR_ATTRIBUTE_TYPE_INVALID",
      "count": 1
     }
    ],
    "n_reasons": 1
   },
-  "<MECH> does not advertise CKF_MULTI_MESSAGE for multipart message encrypt": {
+  "CKA_UNWRAP_TEMPLATE not supported at key generation: CKR_ATTRIBUTE_TYPE_INVALID": {
    "skips": 1,
    "members": [
     {
-     "reason": "AES_CBC does not advertise CKF_MULTI_MESSAGE for multipart message encrypt",
+     "reason": "CKA_UNWRAP_TEMPLATE not supported at key generation: CKR_ATTRIBUTE_TYPE_INVALID",
      "count": 1
     }
    ],
    "n_reasons": 1
   },
-  "<MECH> does not advertise CKF_MULTI_MESSAGE for multipart message decrypt": {
+  "CKA_WRAP_TEMPLATE not supported at key generation: CKR_ATTRIBUTE_TYPE_INVALID": {
    "skips": 1,
    "members": [
     {
-     "reason": "AES_CBC does not advertise CKF_MULTI_MESSAGE for multipart message decrypt",
+     "reason": "CKA_WRAP_TEMPLATE not supported at key generation: CKR_ATTRIBUTE_TYPE_INVALID",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "C_DecryptInit failed: CKR_MECHANISM_INVALID": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "C_DecryptInit failed: CKR_MECHANISM_INVALID",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "C_EncryptInit failed: CKR_MECHANISM_INVALID": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "C_EncryptInit failed: CKR_MECHANISM_INVALID",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "C_GetSessionValidationFlags returns CKR_FUNCTION_NOT_SUPPORTED": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "C_GetSessionValidationFlags returns CKR_FUNCTION_NOT_SUPPORTED",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "C_VerifySignature: C_VerifySignature not implemented (CKR_FUNCTION_NOT_SUPPORTED": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "C_VerifySignature: C_VerifySignature not implemented (CKR_FUNCTION_NOT_SUPPORTED",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "C_VerifySignatureInit: C_VerifySignatureInit not implemented (CKR_FUNCTION_NOT_SUPPORTED": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "C_VerifySignatureInit: C_VerifySignatureInit not implemented (CKR_FUNCTION_NOT_SUPPORTED",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "C_WrapKeyAuthenticated: C_WrapKeyAuthenticated not implemented (CKR_FUNCTION_NOT_SUPPORTED": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "C_WrapKeyAuthenticated: C_WrapKeyAuthenticated not implemented (CKR_FUNCTION_NOT_SUPPORTED",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "Module does not support C_SetOperationState": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "Module does not support C_SetOperationState",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "Module exposes no findable provisioned signing keys": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "Module exposes no findable provisioned signing keys",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "Module rejected CKA_UNWRAP_TEMPLATE on wrapping-key creation (...); CKA_UNWRAP_TEMPLATE is not supported \u2014 Too": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "Module rejected CKA_UNWRAP_TEMPLATE on wrapping-key creation (rv=<CKR_ATTRIBUTE_TYPE_INVALID: 0x00000012>); CKA_UNWRAP_TEMPLATE is not supported \u2014 Tookan/Cryptosense binding test skipped (capability absent",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "Module rejected import of undersized AES wrap key (itself a valid size-range enforcement": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "Module rejected import of undersized AES wrap key (itself a valid size-range enforcement",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "No CKH_CLOCK hardware feature objects present": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "No CKH_CLOCK hardware feature objects present",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "No CKO_DOMAIN_PARAMETERS objects present": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "No CKO_DOMAIN_PARAMETERS objects present",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "No TLS MAC mechanism": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "No TLS MAC mechanism",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "No minimum key length reported": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "No minimum key length reported",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "No standard absent mechanism available for C_GetMechanismInfo probe": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "No standard absent mechanism available for C_GetMechanismInfo probe",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "Not a v<N>.<N> module": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "Not a v2.40 module",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "QC<N>b session limits: opened <N> sessions with no refusal (...); boundary-untested, never a pass": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "QC11b session limits: opened 100 sessions with no refusal (advertised max total=1024, rw=1024); boundary-untested, never a pass",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "QC<N>b: ML-<MECH> seed import refused (...); capability absent": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "QC1b: ML-DSA seed import refused (CKR_TEMPLATE_INCONSISTENT); capability absent",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "QC<N>b: provider admitted the full safety cap (...) without refusal; saturation untestable, reopen leg vacuous": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "QC11b: provider admitted the full safety cap (100 opens) without refusal; saturation untestable, reopen leg vacuous",
      "count": 1
     }
    ],
@@ -11283,101 +11323,11 @@
    ],
    "n_reasons": 1
   },
-  "CKA_UNWRAP_TEMPLATE not supported at RSA keygen: CKR_ATTRIBUTE_TYPE_INVALID": {
+  "TLS<N> over-length probe not implemented: RFC <N> \u00a7<N>.<N> cap applies only to HKDF-Expand; no sound analogous": {
    "skips": 1,
    "members": [
     {
-     "reason": "CKA_UNWRAP_TEMPLATE not supported at RSA keygen: CKR_ATTRIBUTE_TYPE_INVALID",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "CKA_DERIVE_TEMPLATE not supported at EC keygen: CKR_ATTRIBUTE_TYPE_INVALID": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "CKA_DERIVE_TEMPLATE not supported at EC keygen: CKR_ATTRIBUTE_TYPE_INVALID",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Module does not support C_SetOperationState": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "Module does not support C_SetOperationState",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "Module exposes no findable provisioned signing keys": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "Module exposes no findable provisioned signing keys",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "CKA_WRAP_TEMPLATE not supported at key generation: CKR_ATTRIBUTE_TYPE_INVALID": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "CKA_WRAP_TEMPLATE not supported at key generation: CKR_ATTRIBUTE_TYPE_INVALID",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "CKA_UNWRAP_TEMPLATE not supported at key generation: CKR_ATTRIBUTE_TYPE_INVALID": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "CKA_UNWRAP_TEMPLATE not supported at key generation: CKR_ATTRIBUTE_TYPE_INVALID",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "QC<N>b session limits: opened <N> sessions with no refusal (...); boundary-untested, never a pass": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "QC11b session limits: opened 100 sessions with no refusal (advertised max total=1024, rw=1024); boundary-untested, never a pass",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "C_GetSessionValidationFlags returns CKR_FUNCTION_NOT_SUPPORTED": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "C_GetSessionValidationFlags returns CKR_FUNCTION_NOT_SUPPORTED",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "No minimum key length reported": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "No minimum key length reported",
-     "count": 1
-    }
-   ],
-   "n_reasons": 1
-  },
-  "No TLS MAC mechanism": {
-   "skips": 1,
-   "members": [
-    {
-     "reason": "No TLS MAC mechanism",
+     "reason": "TLS12 over-length probe not implemented: RFC 5869 \u00a72.3 cap applies only to HKDF-Expand; no sound analogous probe exists for CKM_TLS12_KEY_AND_MAC_DERIVE without a calibration module. See module docstring.",
      "count": 1
     }
    ],
@@ -11392,16 +11342,71 @@
     }
    ],
    "n_reasons": 1
+  },
+  "Token-level login prevents testing wrong PIN": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "Token-level login prevents testing wrong PIN",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "advertised EC min=<N> bits: no known curve with field size strictly below it": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "advertised EC min=0 bits: no known curve with field size strictly below it",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "advertised RSA max=<N>: no valid probe size above it within ceiling <N>": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "advertised RSA max=0: no valid probe size above it within ceiling 16384",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "advertised RSA min=<N>: no valid size strictly below it": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "advertised RSA min=0: no valid size strictly below it",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "fault-proxy not built": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "fault-proxy not built",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
+  },
+  "no object available to query": {
+   "skips": 1,
+   "members": [
+    {
+     "reason": "no object available to query",
+     "count": 1
+    }
+   ],
+   "n_reasons": 1
   }
  },
  "xfailed_by_file": {
   "testcases/acvp/test_keygen_key_size_conformance.py::TestKeygenKeySizeConformance::test_ec_keygen_enforces_advertised_max": "testcases/acvp/test_keygen_key_size_conformance.py",
   "testcases/acvp/test_keygen_key_size_conformance.py::TestKeygenKeySizeConformance::test_rsa_keygen_enforces_advertised_max": "testcases/acvp/test_keygen_key_size_conformance.py",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[15]": "testcases/ckr/test_ckr_decrypt.py",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[17]": "testcases/ckr/test_ckr_decrypt.py",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[1]": "testcases/ckr/test_ckr_decrypt.py",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[31]": "testcases/ckr/test_ckr_decrypt.py",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[7]": "testcases/ckr/test_ckr_decrypt.py",
   "testcases/ckr/test_ckr_decrypt.py::TestDecryptInitErrors::test_key_type_inconsistent": "testcases/ckr/test_ckr_decrypt.py",
   "testcases/ckr/test_ckr_derive.py::TestDeriveKeyErrors::test_mechanism_invalid": "testcases/ckr/test_ckr_derive.py",
   "testcases/ckr/test_ckr_kem.py::TestAllowedMechanismsDecapsulate::test_decapsulate_policy_leg[excluded]": "testcases/ckr/test_ckr_kem.py",
@@ -11440,7 +11445,6 @@
   "testcases/ckr/test_ckr_object.py::TestMalformedObjectUnwrap::test_unwrap_malformed_template[pqc-swap_secret_class_asym_type]": "testcases/ckr/test_ckr_object.py",
   "testcases/ckr/test_ckr_object.py::TestMalformedObjectUnwrap::test_unwrap_malformed_template[rsa-swap_asym_class_secret_type]": "testcases/ckr/test_ckr_object.py",
   "testcases/ckr/test_ckr_object.py::TestMalformedObjectUnwrap::test_unwrap_malformed_template[rsa-swap_secret_class_asym_type]": "testcases/ckr/test_ckr_object.py",
-  "testcases/ckr/test_ckr_raw_attrs.py::TestKeyFunctionNotPermitted::test_sign_not_permitted": "testcases/ckr/test_ckr_raw_attrs.py",
   "testcases/ckr/test_ckr_raw_buffer.py::TestByteOutputBufferTooSmallGuards::test_ecdh_aes_wrap_compressed_public_key_buffer_too_small_preserves_guard": "testcases/ckr/test_ckr_raw_buffer.py",
   "testcases/ckr/test_ckr_raw_buffer.py::TestByteOutputBufferTooSmallGuards::test_get_operation_state_buffer_too_small_preserves_guard": "testcases/ckr/test_ckr_raw_buffer.py",
   "testcases/ckr/test_ckr_raw_buffer.py::TestListBufferTooSmallGuards::test_get_slot_list_buffer_too_small_preserves_guard": "testcases/ckr/test_ckr_raw_buffer.py",
@@ -11491,7 +11495,6 @@
   "testcases/security/test_error_path_kwp.py::TestCorruptedUnwrap::test_corrupted_unwrap[unwrap-kwp-padding]": "testcases/security/test_error_path_kwp.py",
   "testcases/security/test_error_path_kwp.py::TestCorruptedUnwrap::test_corrupted_unwrap[unwrap-kwp-random]": "testcases/security/test_error_path_kwp.py",
   "testcases/security/test_error_path_kwp.py::TestCorruptedUnwrap::test_corrupted_unwrap[unwrap-kwp-truncate]": "testcases/security/test_error_path_kwp.py",
-  "testcases/security/test_error_path_rsa.py::TestRsaOaepDecryptErrorPaths::test_rsa_oaep_decrypt_truncated": "testcases/security/test_error_path_rsa.py",
   "testcases/security/test_error_path_rsa.py::TestRsaPkcsDecryptErrorPaths::test_rsa_pkcs_decrypt_all_ff": "testcases/security/test_error_path_rsa.py",
   "testcases/security/test_error_path_rsa.py::TestRsaPkcsDecryptErrorPaths::test_rsa_pkcs_decrypt_all_zeros": "testcases/security/test_error_path_rsa.py",
   "testcases/security/test_error_path_rsa.py::TestRsaPkcsDecryptErrorPaths::test_rsa_pkcs_decrypt_extended": "testcases/security/test_error_path_rsa.py",
@@ -12022,6 +12025,8 @@
   "testcases/test_tls12.py::TestTLS10PreMasterKeyGen::test_pre_master_key_gen": "testcases/test_tls12.py",
   "testcases/test_verify_signature.py::TestVerifySignatureRoundtrip::test_verify_signature_wrong_key": "testcases/test_verify_signature.py",
   "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_asn1_other_info": "testcases/test_x942_dh.py",
-  "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_concatenate_other_info": "testcases/test_x942_dh.py"
+  "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_concatenate_other_info": "testcases/test_x942_dh.py",
+  "testcases/x509/test_attribute_parity.py::test_limbo_attribute_parity": "testcases/x509/test_attribute_parity.py",
+  "testcases/x509/test_identity.py::test_limbo_identity_closeness": "testcases/x509/test_identity.py"
  }
 }

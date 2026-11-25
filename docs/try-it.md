@@ -117,7 +117,7 @@ docker run --rm --network none "$HASKOKI_IMAGE" check --mode direct --profile sm
 ```
 
 Expect `check-ok: zero findings`; allow a few minutes. The pinned
-`pkcs11-check` 0.3.0 smoke profile collects 743 cases, including skipped and
+`pkcs11-check` 0.3.1 smoke profile collects 743 cases, including skipped and
 expected-failure cases. It is not 743 passing tests or a certification.
 Add the output mount from the first command to retain its detailed reports.
 
@@ -151,7 +151,7 @@ local socket. Neither recipe configures a remote production service.
 ## Image contents and size
 
 The image carries the Haskoki module and control tool, GHC runtime,
-OpenSSL libraries, OpenSC `pkcs11-tool`, Python with `pkcs11-check` 0.3.0,
+OpenSSL libraries, OpenSC `pkcs11-tool`, Python with `pkcs11-check` 0.3.1,
 `pkcs11-proxy-ng` v0.3.1, p11-kit server/client, and the example scripts.
 Compilers and build caches belong to the separate developer image.
 p11scope is an optional host-side observer, not an image dependency.

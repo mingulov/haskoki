@@ -3,7 +3,7 @@
 External tests sometimes reveal a token defect, and sometimes reveal a
 malformed test input or a capability assumption. This register records the
 checker-side cases found during Haskoki development. Current demo counts
-are in [release results](release-results.md); the demo pins checker 0.3.0.
+are in [release results](release-results.md); the demo pins checker 0.3.1.
 
 ## Corrections verified during development
 

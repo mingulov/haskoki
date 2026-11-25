@@ -846,7 +846,7 @@ crates no longer float here: the checker venv installs
 pinned and re-verified per build: the bundle recipe gates (static
 libcrypto, provider origin, system-only host deps, GLIBC_2.43 floor),
 the proxy canonical pair for the default ref (byte-identical assertion
-in the proxy stage), pkcs11-check == 0.3.0 (venv + version assertion),
+in the proxy stage), pkcs11-check == 0.3.1 (venv + version assertion),
 and every entrypoint verdict asserted byte-exact on its stable core by
 this driver. Four proxy-lane timing-flaky test ids carry historical
 bounds (R5 report section 4; a fifth id is transcript-stable) but

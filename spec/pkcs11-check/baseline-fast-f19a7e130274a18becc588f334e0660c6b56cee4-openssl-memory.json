@@ -1,23 +1,19 @@
 {
  "schema_version": 1,
- "checker_pin": "289cc4ef6c3a498994c18c7d6a37543c6bc597be",
+ "checker_pin": "f19a7e130274a18becc588f334e0660c6b56cee4",
  "lane": "fast",
  "backend": "openssl-memory",
  "mode": "direct",
  "summary": {
-  "total": 11366,
-  "passed": 5675,
-  "failed": 49,
+  "total": 12213,
+  "passed": 6460,
+  "failed": 95,
   "crashed": 0,
   "timeout": 0,
-  "xfailed": 628,
-  "skipped": 5014
+  "xfailed": 623,
+  "skipped": 5035
  },
  "failed_ids": [
-  "testcases/test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp160r1]",
-  "testcases/test_ec_curves.py::TestECDSASubgroupOrder::test_sign_width_is_two_order_len[secp224k1]",
-  "testcases/test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp160r1]",
-  "testcases/test_ec_curves.py::TestECDSASubgroupOrder::test_token_signature_verifies_independently[secp224k1]",
   "testcases/test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_160_HMAC]",
   "testcases/test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_256_HMAC]",
   "testcases/test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_384_HMAC]",
@@ -42,7 +38,57 @@
   "testcases/test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES2]",
   "testcases/test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES3]",
   "testcases/test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES]",
-  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_sha1_derive_des_parity",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_160_KEY_DERIVE-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_160_KEY_DERIVE-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_160_KEY_DERIVE-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_256_KEY_DERIVE-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_256_KEY_DERIVE-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_256_KEY_DERIVE-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_384_KEY_DERIVE-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_384_KEY_DERIVE-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_384_KEY_DERIVE-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_512_KEY_DERIVE-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_512_KEY_DERIVE-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_BLAKE2B_512_KEY_DERIVE-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA224_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA224_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA224_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA256_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA256_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA256_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA384_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA384_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA384_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_224_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_224_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_224_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_256_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_256_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_256_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_384_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_384_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_384_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_512_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_512_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA3_512_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_224_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_224_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_224_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_256_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_256_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_256_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHA512_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHAKE_128_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHAKE_128_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHAKE_128_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHAKE_256_KEY_DERIVATION-CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHAKE_256_KEY_DERIVATION-DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_digest_derive_des_parity[CKM_SHAKE_256_KEY_DERIVATION-DES]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_sha1_derive_des_parity[CDMF]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_sha1_derive_des_parity[DES2]",
+  "testcases/test_misc_kdf.py::TestDerivedDesParity::test_sha1_derive_des_parity[DES]",
   "testcases/test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_dsa_44]",
   "testcases/test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_kem_512]",
   "testcases/test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[slh_dsa_sha2_128s]",
@@ -67,11 +113,6 @@
  "xfailed_ids": [
   "testcases/acvp/test_keygen_key_size_conformance.py::TestKeygenKeySizeConformance::test_ec_keygen_enforces_advertised_max",
   "testcases/acvp/test_keygen_key_size_conformance.py::TestKeygenKeySizeConformance::test_rsa_keygen_enforces_advertised_max",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[15]",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[17]",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[1]",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[31]",
-  "testcases/ckr/test_ckr_decrypt.py::TestDecryptDataErrors::test_ecb_ciphertext_not_aligned[7]",
   "testcases/ckr/test_ckr_decrypt.py::TestDecryptInitErrors::test_key_type_inconsistent",
   "testcases/ckr/test_ckr_derive.py::TestDeriveKeyErrors::test_mechanism_invalid",
   "testcases/ckr/test_ckr_kem.py::TestAllowedMechanismsDecapsulate::test_decapsulate_policy_leg[excluded]",
@@ -110,7 +151,6 @@
   "testcases/ckr/test_ckr_object.py::TestMalformedObjectUnwrap::test_unwrap_malformed_template[pqc-swap_secret_class_asym_type]",
   "testcases/ckr/test_ckr_object.py::TestMalformedObjectUnwrap::test_unwrap_malformed_template[rsa-swap_asym_class_secret_type]",
   "testcases/ckr/test_ckr_object.py::TestMalformedObjectUnwrap::test_unwrap_malformed_template[rsa-swap_secret_class_asym_type]",
-  "testcases/ckr/test_ckr_raw_attrs.py::TestKeyFunctionNotPermitted::test_sign_not_permitted",
   "testcases/ckr/test_ckr_raw_buffer.py::TestByteOutputBufferTooSmallGuards::test_ecdh_aes_wrap_compressed_public_key_buffer_too_small_preserves_guard",
   "testcases/ckr/test_ckr_raw_buffer.py::TestByteOutputBufferTooSmallGuards::test_get_operation_state_buffer_too_small_preserves_guard",
   "testcases/ckr/test_ckr_raw_buffer.py::TestListBufferTooSmallGuards::test_get_slot_list_buffer_too_small_preserves_guard",
@@ -161,7 +201,6 @@
   "testcases/security/test_error_path_kwp.py::TestCorruptedUnwrap::test_corrupted_unwrap[unwrap-kwp-padding]",
   "testcases/security/test_error_path_kwp.py::TestCorruptedUnwrap::test_corrupted_unwrap[unwrap-kwp-random]",
   "testcases/security/test_error_path_kwp.py::TestCorruptedUnwrap::test_corrupted_unwrap[unwrap-kwp-truncate]",
-  "testcases/security/test_error_path_rsa.py::TestRsaOaepDecryptErrorPaths::test_rsa_oaep_decrypt_truncated",
   "testcases/security/test_error_path_rsa.py::TestRsaPkcsDecryptErrorPaths::test_rsa_pkcs_decrypt_all_ff",
   "testcases/security/test_error_path_rsa.py::TestRsaPkcsDecryptErrorPaths::test_rsa_pkcs_decrypt_all_zeros",
   "testcases/security/test_error_path_rsa.py::TestRsaPkcsDecryptErrorPaths::test_rsa_pkcs_decrypt_extended",
@@ -692,7 +731,9 @@
   "testcases/test_tls12.py::TestTLS10PreMasterKeyGen::test_pre_master_key_gen",
   "testcases/test_verify_signature.py::TestVerifySignatureRoundtrip::test_verify_signature_wrong_key",
   "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_asn1_other_info",
-  "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_concatenate_other_info"
+  "testcases/test_x942_dh.py::TestX942DHDerive::test_x942_dh_derive_concatenate_other_info",
+  "testcases/x509/test_attribute_parity.py::test_limbo_attribute_parity",
+  "testcases/x509/test_identity.py::test_limbo_identity_closeness"
  ],
  "crashed_ids": [],
  "timeout_ids": [],
@@ -1728,7 +1769,7 @@
   "DSA_SHA512: registered mechanism -- tested elsewhere": 3,
   "DSA_SHA512: registry message permission test needs secret-key keygen": 4,
   "DSA_SHA512: registry negative permission test needs secret-key keygen": 4,
-  "Destructive test (use --p11-destructive to enable": 74,
+  "Destructive test (use --p11-destructive to enable": 78,
   "Domain parameter generation not covered by this test": 6,
   "ECDH1_COFACTOR_DERIVE: CKF_DECRYPT not advertised": 1,
   "ECDH1_COFACTOR_DERIVE: CKF_DIGEST not advertised": 1,
@@ -2282,6 +2323,8 @@
   "PUB_KEY_FROM_PRIV_KEY: registered mechanism -- tested elsewhere": 3,
   "PUB_KEY_FROM_PRIV_KEY: registry negative permission test needs secret-key keygen": 2,
   "QC11b session limits: opened 100 sessions with no refusal (advertised max total=1024, rw=1024); boundary-untested, never a pass": 1,
+  "QC11b: provider admitted the full safety cap (100 opens) without refusal; saturation untestable, reopen leg vacuous": 1,
+  "QC1b: ML-DSA seed import refused (CKR_TEMPLATE_INCONSISTENT); capability absent": 1,
   "RC2_CBC: CKF_DIGEST not advertised": 1,
   "RC2_CBC: CKF_SIGN not advertised": 1,
   "RC2_CBC: CKF_SIGN_RECOVER not advertised": 1,
@@ -3392,10 +3435,9 @@
   "advertised RSA min=0: no valid size strictly below it": 1,
   "fault-proxy not available (set P11TEST_FAULT_PROXY_SO or install to /usr/lib/pkcs11/": 5,
   "fault-proxy not built": 1,
-  "got empty parameter set for (tc": 5,
+  "inapplicable: franken object correctly refused; row not exercised": 23,
   "inapplicable: malformed object correctly refused; downstream row not exercised": 3,
-  "no object available to query": 1,
-  "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo": 3
+  "no object available to query": 1
  },
  "skipped_by_target": {
   "testcases/ckr/test_ckr_codes.py": 1,
@@ -3407,7 +3449,7 @@
   "testcases/ckr/test_ckr_universal.py": 1,
   "testcases/ckr/test_ckr_v32_raw.py": 3,
   "testcases/ckr/test_ckr_wrap.py": 1,
-  "testcases/ckr/test_ckr_wrong_key_type_hardening.py": 3,
+  "testcases/ckr/test_ckr_wrong_key_type_hardening.py": 26,
   "testcases/security/test_crypto_weakness.py": 1,
   "testcases/security/test_cve_regression.py": 1,
   "testcases/security/test_ffi_length_boundary.py": 30,
@@ -3462,7 +3504,7 @@
   "testcases/test_operation_termination.py": 1,
   "testcases/test_otp.py": 7,
   "testcases/test_pbe.py": 5,
-  "testcases/test_pin.py": 17,
+  "testcases/test_pin.py": 19,
   "testcases/test_profiles.py": 6,
   "testcases/test_protocol_edge_cases.py": 1,
   "testcases/test_provisioned_sign_coherence.py": 1,
@@ -3471,10 +3513,11 @@
   "testcases/test_rsa_extended.py": 6,
   "testcases/test_salsa20.py": 2,
   "testcases/test_seed.py": 3,
-  "testcases/test_session_exhaustion.py": 3,
-  "testcases/test_session_state_machine.py": 2,
+  "testcases/test_sensitivity.py": 1,
+  "testcases/test_session_exhaustion.py": 4,
+  "testcases/test_session_state_machine.py": 3,
   "testcases/test_session_validation_flags.py": 1,
-  "testcases/test_so_pin.py": 5,
+  "testcases/test_so_pin.py": 6,
   "testcases/test_stateful_sigs.py": 24,
   "testcases/test_surface_audit.py": 1,
   "testcases/test_tls12.py": 5,
@@ -3488,11 +3531,7 @@
   "testcases/test_wtls.py": 22,
   "testcases/test_x3dh.py": 9,
   "testcases/test_x942_dh.py": 18,
-  "testcases/x509/test_attribute_parity.py": 1,
-  "testcases/x509/test_attributes.py": 3,
-  "testcases/x509/test_identity.py": 1,
-  "testcases/x509/test_limbo_import.py": 3,
-  "testcases/x509/test_search.py": 1
+  "testcases/x509/test_attributes.py": 1
  },
  "collected_by_target": {
   "testcases/acvp/test_keygen_key_size_conformance.py": 2,
@@ -3508,7 +3547,7 @@
   "testcases/ckr/test_ckr_kem.py": 14,
   "testcases/ckr/test_ckr_keygen.py": 26,
   "testcases/ckr/test_ckr_null_params.py": 4,
-  "testcases/ckr/test_ckr_object.py": 60,
+  "testcases/ckr/test_ckr_object.py": 65,
   "testcases/ckr/test_ckr_priority.py": 3,
   "testcases/ckr/test_ckr_random.py": 2,
   "testcases/ckr/test_ckr_raw_args_bad.py": 8,
@@ -3526,11 +3565,11 @@
   "testcases/ckr/test_ckr_v32_raw.py": 9,
   "testcases/ckr/test_ckr_verify.py": 13,
   "testcases/ckr/test_ckr_wrap.py": 15,
-  "testcases/ckr/test_ckr_wrong_key_type_hardening.py": 6,
+  "testcases/ckr/test_ckr_wrong_key_type_hardening.py": 29,
   "testcases/security/test_aead_short_ciphertext.py": 4,
   "testcases/security/test_aes_keywrap_pad_overflow.py": 1,
   "testcases/security/test_api_boundary.py": 37,
-  "testcases/security/test_api_security.py": 28,
+  "testcases/security/test_api_security.py": 30,
   "testcases/security/test_arithmetic_overflow.py": 58,
   "testcases/security/test_crypto_weakness.py": 27,
   "testcases/security/test_curve_oid_confusion.py": 2,
@@ -3586,11 +3625,11 @@
   "testcases/test_data_objects.py": 13,
   "testcases/test_des.py": 33,
   "testcases/test_des_kdf.py": 2,
-  "testcases/test_dh_key_agreement.py": 16,
+  "testcases/test_dh_key_agreement.py": 17,
   "testcases/test_digest.py": 21,
   "testcases/test_domain_params.py": 9,
   "testcases/test_double_ratchet.py": 18,
-  "testcases/test_dsa_complete.py": 6,
+  "testcases/test_dsa_complete.py": 7,
   "testcases/test_dual_function.py": 2,
   "testcases/test_duplicate_labels.py": 4,
   "testcases/test_ec_curves.py": 24,
@@ -3626,12 +3665,12 @@
   "testcases/test_key_lifecycle.py": 6,
   "testcases/test_key_sizes.py": 15,
   "testcases/test_key_usage_policy.py": 10,
-  "testcases/test_keymgmt.py": 15,
+  "testcases/test_keymgmt.py": 19,
   "testcases/test_keypair_consistency.py": 12,
   "testcases/test_large_objects.py": 6,
   "testcases/test_mech_attribute.py": 292,
   "testcases/test_mech_coverage.py": 1,
-  "testcases/test_mech_derive.py": 66,
+  "testcases/test_mech_derive.py": 67,
   "testcases/test_mech_digest.py": 68,
   "testcases/test_mech_encrypt.py": 106,
   "testcases/test_mech_flags.py": 2844,
@@ -3651,7 +3690,7 @@
   "testcases/test_mechanism_objects.py": 4,
   "testcases/test_message_crypto.py": 13,
   "testcases/test_metamorphic.py": 15,
-  "testcases/test_misc_kdf.py": 101,
+  "testcases/test_misc_kdf.py": 157,
   "testcases/test_multipart.py": 9,
   "testcases/test_multipart_streaming.py": 20,
   "testcases/test_mutex_callback_safety.py": 3,
@@ -3666,7 +3705,7 @@
   "testcases/test_operation_termination.py": 61,
   "testcases/test_otp.py": 10,
   "testcases/test_pbe.py": 33,
-  "testcases/test_pin.py": 17,
+  "testcases/test_pin.py": 19,
   "testcases/test_pqc_sign.py": 21,
   "testcases/test_private_key_import_policy.py": 1,
   "testcases/test_profiles.py": 7,
@@ -3686,11 +3725,11 @@
   "testcases/test_salsa20.py": 11,
   "testcases/test_search.py": 9,
   "testcases/test_seed.py": 12,
-  "testcases/test_sensitivity.py": 90,
+  "testcases/test_sensitivity.py": 92,
   "testcases/test_session_edge_cases.py": 13,
-  "testcases/test_session_exhaustion.py": 5,
+  "testcases/test_session_exhaustion.py": 6,
   "testcases/test_session_info.py": 4,
-  "testcases/test_session_state_machine.py": 33,
+  "testcases/test_session_state_machine.py": 34,
   "testcases/test_session_validation_flags.py": 1,
   "testcases/test_set_attribute.py": 8,
   "testcases/test_setattr_restricted.py": 4,
@@ -3698,7 +3737,7 @@
   "testcases/test_sign.py": 17,
   "testcases/test_sign_recover.py": 6,
   "testcases/test_slot.py": 6,
-  "testcases/test_so_pin.py": 5,
+  "testcases/test_so_pin.py": 6,
   "testcases/test_sp800_108_kdf.py": 15,
   "testcases/test_ssl3.py": 23,
   "testcases/test_stateful_sigs.py": 24,
@@ -3718,13 +3757,13 @@
   "testcases/test_x3dh.py": 9,
   "testcases/test_x942_dh.py": 39,
   "testcases/x509/test_attribute_parity.py": 1,
-  "testcases/x509/test_attributes.py": 3,
+  "testcases/x509/test_attributes.py": 13,
   "testcases/x509/test_cert_storage.py": 9,
   "testcases/x509/test_core_ops.py": 12,
   "testcases/x509/test_identity.py": 1,
   "testcases/x509/test_lifecycle.py": 3,
-  "testcases/x509/test_limbo_import.py": 3,
-  "testcases/x509/test_search.py": 1
+  "testcases/x509/test_limbo_import.py": 737,
+  "testcases/x509/test_search.py": 4
  },
  "skip_joint": {
   "testcases/ckr/test_ckr_codes.py": {
@@ -3757,6 +3796,7 @@
    "Module rejected import of undersized AES wrap key (itself a valid size-range enforcement": 1
   },
   "testcases/ckr/test_ckr_wrong_key_type_hardening.py": {
+   "inapplicable: franken object correctly refused; row not exercised": 23,
    "inapplicable: malformed object correctly refused; downstream row not exercised": 3
   },
   "testcases/security/test_crypto_weakness.py": {
@@ -6645,7 +6685,7 @@
    "CKM_PBE_MD2_DES_CBC not supported": 1
   },
   "testcases/test_pin.py": {
-   "Destructive test (use --p11-destructive to enable": 17
+   "Destructive test (use --p11-destructive to enable": 19
   },
   "testcases/test_profiles.py": {
    "No CKO_PROFILE objects present": 6
@@ -6684,18 +6724,22 @@
    "CKM_SEED_MAC not supported": 2,
    "CKM_SEED_MAC_GENERAL not supported": 1
   },
+  "testcases/test_sensitivity.py": {
+   "QC1b: ML-DSA seed import refused (CKR_TEMPLATE_INCONSISTENT); capability absent": 1
+  },
   "testcases/test_session_exhaustion.py": {
    "Destructive test (use --p11-destructive to enable": 2,
-   "QC11b session limits: opened 100 sessions with no refusal (advertised max total=1024, rw=1024); boundary-untested, never a pass": 1
+   "QC11b session limits: opened 100 sessions with no refusal (advertised max total=1024, rw=1024); boundary-untested, never a pass": 1,
+   "QC11b: provider admitted the full safety cap (100 opens) without refusal; saturation untestable, reopen leg vacuous": 1
   },
   "testcases/test_session_state_machine.py": {
-   "Destructive test (use --p11-destructive to enable": 2
+   "Destructive test (use --p11-destructive to enable": 3
   },
   "testcases/test_session_validation_flags.py": {
    "C_GetSessionValidationFlags returns CKR_FUNCTION_NOT_SUPPORTED": 1
   },
   "testcases/test_so_pin.py": {
-   "Destructive test (use --p11-destructive to enable": 5
+   "Destructive test (use --p11-destructive to enable": 6
   },
   "testcases/test_stateful_sigs.py": {
    "CKM_HSS not supported by module": 3,
@@ -6751,22 +6795,8 @@
    "CKM_X9_42_DH_HYBRID_DERIVE not supported": 9,
    "CKM_X9_42_MQV_DERIVE not supported": 9
   },
-  "testcases/x509/test_attribute_parity.py": {
-   "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo": 1
-  },
   "testcases/x509/test_attributes.py": {
-   "Destructive test (use --p11-destructive to enable": 1,
-   "got empty parameter set for (tc": 1,
-   "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo": 1
-  },
-  "testcases/x509/test_identity.py": {
-   "x509-limbo data not found. Run scripts/fetch-optional-data.sh x509-limbo": 1
-  },
-  "testcases/x509/test_limbo_import.py": {
-   "got empty parameter set for (tc": 3
-  },
-  "testcases/x509/test_search.py": {
-   "got empty parameter set for (tc": 1
+   "Destructive test (use --p11-destructive to enable": 1
   }
  }
 }
