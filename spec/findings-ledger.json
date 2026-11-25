@@ -5345,7 +5345,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5364,7 +5364,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5383,7 +5383,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5402,7 +5402,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5421,7 +5421,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5440,7 +5440,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5459,7 +5459,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5478,7 +5478,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5497,7 +5497,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5516,7 +5516,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5535,7 +5535,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5554,7 +5554,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5573,7 +5573,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5592,7 +5592,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5611,7 +5611,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5630,7 +5630,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5649,7 +5649,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5668,7 +5668,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5687,7 +5687,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5706,7 +5706,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker)"
   },
@@ -5725,7 +5725,7 @@
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
-    "f60ece2"
+    "dcfee896"
    ],
    "refreeze_evidence": "fast lane + demo full/compare (checker f19a7e1): 12213 collected, 24 failed, 645 xfailed; 20 byte-concat parity ids absent from failed and shared sets (71 parity ids fixed: 49 pass + 22 DES2 xfail on the unserved-ECB KAT marker). This id was renamed at 0.3.1; its successors [CDMF] and [DES] pass, [DES2] xfails."
   }
