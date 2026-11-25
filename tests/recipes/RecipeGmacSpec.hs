@@ -3,7 +3,7 @@
 The GMAC group: the single CKM_AES_GMAC mechanism takes the
 canonical @gcm-params\/1@ image (tag length, IV, AAD remainder —
 the GCM convention, reused verbatim) with the tag width from the
-SP 800-38D approved set (OASIS v3.2 §6.13.6: @ulTagBits@
+SP 800-38D approved set (PKCS #11 v3.2 §6.13.6: @ulTagBits@
 determines the length) and a caller-supplied
 1..64-byte IV. The signed message travels as the GCM AAD with
 empty plaintext; keys are 128\/192\/256-bit AES.

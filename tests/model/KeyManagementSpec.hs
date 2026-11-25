@@ -7679,7 +7679,7 @@ denialDelta m plan = case plan of
     Execute _ _ -> StateDelta [DeltaCreateObject (ObjectId (mNextObject m))]
   KeyEffect _ _ -> StateDelta [DeltaCreateObject (ObjectId (mNextObject m))]
 
--- | Byte-operation protection inheritance (OASIS 3.2 §6.43.3–§6.43.7,
+-- | Byte-operation protection inheritance (PKCS #11 3.2 §6.43.3–§6.43.7,
 -- finding TS4): a template that explicitly downgrades inherited
 -- protection refuses 'CKR_TEMPLATE_INCONSISTENT'; matching and
 -- omitted attributes resolve to the sealed flags and retain through

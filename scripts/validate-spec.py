@@ -5,9 +5,9 @@ Checks (all must pass):
   LOCK-FIELDS  every sources.lock.json entry has the required fields and its file
       exists with a matching SHA-256 (no fabricated hashes)
   LOCK-SELECTION  the lock selects exactly one header and the vendor
-      tree holds exactly that file (OASIS/TC reintroduction tripwire)
+      tree holds exactly that file (publication/TC reintroduction tripwire)
   PD-LOCK  the locked file carries the public-domain marker and no
-      OASIS text
+      upstream-licensed text
   INVENTORY-FRESH  committed abi-inventory.json / abi-reconciliation.json match a fresh
       in-memory parse of the locked header (staleness check)
   SPOT-CHECKS  prototype-parse-independent spot checks (raw grep counts,
@@ -104,7 +104,7 @@ def main():
             err("LOCK-SELECTION",
                 f"non-selected role {entry.get('role')!r} on "
                 f"{entry.get('relative_path')} (single-header lock)")
-    # OASIS/TC reintroduction tripwire: the vendor tree holds exactly
+    # publication/TC reintroduction tripwire: the vendor tree holds exactly
     # the one verbatim header, nothing else.
     vend_root = PKG / "spec" / "vendor"
     if vend_root.is_dir():
@@ -115,7 +115,7 @@ def main():
         for p in sorted(vend_root.rglob("*")):
             if p.is_file() and p.name in ("pkcs11f.h", "pkcs11t.h"):
                 err("LOCK-SELECTION",
-                    f"OASIS-layout header reintroduced: "
+                    f"upstream-layout header reintroduced: "
                     f"{p.relative_to(PKG)}")
     hdr_rel = sels[0].get("relative_path", "") if sels else ""
     if hdr_rel != "spec/vendor/pkcs11.h":
@@ -134,7 +134,7 @@ def main():
                 f"missing (not a verbatim latchset PD header?)")
         if "OASIS" in text or "oasis-open" in text:
             err("PD-LOCK",
-                f"{entry.get('relative_path')}: OASIS text inside a "
+                f"{entry.get('relative_path')}: upstream-licensed text inside a "
                 f"locked PD header")
 
     # ---- INVENTORY-FRESH: staleness — fresh parse must equal committed inventory ----

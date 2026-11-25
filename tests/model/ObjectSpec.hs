@@ -2451,7 +2451,7 @@ caseSlotIsolation = do
   (codeC, _) <- runReject m7 (copyReq b ha [label "smuggled"])
   assertEqual "cross-slot copy faults" CKR_OBJECT_HANDLE_INVALID codeC
 
--- | Logout destroys private session objects (OASIS PKCS#11 3.2
+-- | Logout destroys private session objects (PKCS #11 3.2
 -- §5.6.10): the delta carries the destruction, the old handle dies,
 -- and re-login finds nothing — the object is gone, not hidden. The
 -- public session object is untouched throughout.
@@ -2570,7 +2570,7 @@ caseLogoutDestructionMatrix = do
   where
     resolvesIn h m = resolveHandle m h /= Nothing
 
--- | SO creation admission (OASIS PKCS#11 3.2 §5.7.1-5.7.2): the SO
+-- | SO creation admission (PKCS #11 3.2 §5.7.1-5.7.2): the SO
 -- administers public objects (TRUSTED=true included) but cannot
 -- mint private ones — create and copy both refuse with
 -- CKR_USER_NOT_LOGGED_IN and allocate nothing. Template errors
@@ -3314,7 +3314,7 @@ caseStorageDefaultsPrecedence = do
 --     check precedes the mode check, so public-RO private shapes
 --     answer CKR_USER_NOT_LOGGED_IN. Public read/write sessions
 --     mutating ordinary public token objects is the retained
---     baseline (OASIS PKCS#11 3.2 sections 5.7.1-5.7.3, usage
+--     baseline (PKCS #11 3.2 sections 5.7.1-5.7.3, usage
 --     guide 2.6.3-2.6.4): no universal login check exists, and
 --     the positive control below pins create/copy/set/destroy
 --     all committing there.

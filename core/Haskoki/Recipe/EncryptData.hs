@@ -2,7 +2,7 @@
 
 Eight header mechanisms over four algorithm families derive key
 material by encrypting caller-supplied data with the base cipher
-key (OASIS PKCS#11 v3.2 §2.8-2.9 family): the CBC rows take the
+key (PKCS #11 v3.2 §2.8-2.9 family): the CBC rows take the
 @CK_*_CBC_ENCRYPT_DATA_PARAMS@ struct (inline IV plus a data
 pointer the FFI layer chases into the canonical @iv||data@
 frame), the ECB rows take @CK_KEY_DERIVATION_STRING_DATA@

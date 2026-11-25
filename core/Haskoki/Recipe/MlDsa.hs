@@ -3,7 +3,7 @@
 One header mechanism, @CKM_ML_DSA@, with the optional
 @CK_SIGN_ADDITIONAL_CONTEXT@ parameter shape —
 @mldsa-params\/1@: a hedge word plus a context string. The
-struct is OPTIONAL (OASIS v3.2 §ML-DSA Signature: no
+struct is OPTIONAL (PKCS #11 v3.2 §ML-DSA Signature: no
 parameter means @CKH_HEDGE_PREFERRED@ with an empty context —
 the opposite of EdDSA): missing parameters decode to the
 default and validate. All three hedge variants serve
@@ -18,7 +18,7 @@ The parameter set is NOT in the mechanism parameters: it
 rides the key (@CKA_PARAMETER_SET@ on the object, the
 algorithm OID in the DER), and keygen
 (@CKM_ML_DSA_KEY_PAIR_GEN@) takes no parameter — the set
-comes from the public-key template (OASIS v3.2
+comes from the public-key template (PKCS #11 v3.2
 §ML-DSA key pair generation).
 
 This module owns the group's canonical codec, parameter
@@ -47,7 +47,7 @@ Deferred family members (not recipes, named gaps):
 does not implement the documented external-prehash plus
 unencoded-sign path; see mechanisms.json honesty notes),
 @CKM_ML_DSA_EXTERNAL_MU@\/@CKM_ML_DSA_EXTERNAL_MU_GEN@
-(absent from the OASIS 3.2 header — out of scope).
+(absent from the 3.2 header — out of scope).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Recipe.MlDsa

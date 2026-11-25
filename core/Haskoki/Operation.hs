@@ -388,7 +388,7 @@ isRc4Mech m = case cipherRecipeFor m of
 -- via 'dsaRecipeFor'; CMAC inits enforce the plain/GENERAL
 -- shape via 'cmacRecipeFor'; AEAD inits enforce the caller IV and
 -- approved tag width via 'gcmRecipeFor'; CCM inits refuse
--- out-of-range nonces and tag widths (OASIS §2.20.2 pins
+-- out-of-range nonces and tag widths (§2.20.2 pins
 -- 'CKR_MECHANISM_PARAM_INVALID' for bad CCM parameters at init);
 -- later slices extend this to KDF recipes.
 -- Every refusal here judges only the mechanism parameter

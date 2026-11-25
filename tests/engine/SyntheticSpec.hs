@@ -1158,7 +1158,7 @@ caseVerifyCategory = withSynth "11" $ \env -> do
 
 -- | Guard: the preserved category routes to the per-function
 -- cell — a bad verify key interprets to 'CKR_FUNCTION_FAILED'
--- (OASIS 5.15 lists it; mismatch verdicts stay verdicts; see
+-- (§5.15 lists it; mismatch verdicts stay verdicts; see
 -- the bridge roundtrip).
 caseVerifyBadKeyCell :: IO ()
 caseVerifyBadKeyCell = withSynth "11" $ \env -> do

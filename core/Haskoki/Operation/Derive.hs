@@ -418,7 +418,7 @@ planDerive rules model st mech baseH blob
         Right (ost, mat)
           | Map.lookup AttrClass (osAttrs ost) /= Just (ValULong ckoPrivateKey) ->
               -- Unified with the agreement arms (ECDH/DH refuse a
-              -- non-private base the same way): OASIS 5.18.5.
+              -- non-private base the same way): §5.18.5.
               KeyDenied (KeyDeny CKR_KEY_TYPE_INCONSISTENT
                 "pub-from-priv base is not a private key")
           | otherwise -> case Map.lookup AttrKeyType (osAttrs ost) of

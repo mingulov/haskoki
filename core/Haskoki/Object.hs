@@ -1078,7 +1078,7 @@ importMaterial attrs = case (classOf, keyTypeOf) of
       orderBytes <- curveOrderOfOid oid
       pure (oid, coordLen, orderBytes)
     -- | Private scalars must satisfy 1 ≤ d < n (SEC1 §2.3.6,
-    -- PKCS#11 §6.3.4): measures the integer (OASIS Big integer
+    -- PKCS#11 §6.3.4): measures the integer (spec big-integer
     -- has no minimal-encoding rule, so zero-padded values load),
     -- all-zero (d=0) refuses, over-wide refuses, and full-width
     -- values compare lexicographically against the order (equal

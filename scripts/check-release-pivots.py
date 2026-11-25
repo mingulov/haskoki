@@ -5,7 +5,7 @@ artifacts plus the behavior pins each ruling cites, so a removed
 ruling or a weakened pin fails loudly.
 
 * Cryptoki-version ruling ({2,40} on 3.x tables): the on_GetInfo
-  ruling comment carries the OASIS v3.0 prose verdict plus the
+  ruling comment carries the PKCS #11 v3.0 prose verdict plus the
   revisit criterion; the 2.40-via-3.2 pin, the cross-table CK_INFO
   identity pin, and the exact-3.x-table-versions pin stay present
   in tests/c/consumer_discovery.c.

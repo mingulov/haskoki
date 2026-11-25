@@ -3,7 +3,7 @@
 Six header mechanisms share the MAC parameter shape across
 three 16-byte-block ciphers (AES, ARIA, Camellia) — plain
 rows take empty parameters (@no-params\/1@) and emit the
-first 8 bytes of the final CBC-MAC block (the OASIS
+first 8 bytes of the final CBC-MAC block (the spec
 half-block rule, as for 3DES-MAC), GENERAL rows take the
 8-byte tag length (@mac-general\/1@, the HMAC convention,
 reused verbatim) and emit its first 1..16 bytes. Keys are
@@ -97,7 +97,7 @@ cbcmacKeyLens _ = [16, 24, 32]
 cbcmacBlockLen :: CbcMacRecipe -> Int
 cbcmacBlockLen _ = 16
 
--- | Plain-row output width in bytes (the OASIS half-block rule:
+-- | Plain-row output width in bytes (the spec half-block rule:
 -- the first 8 of the final 16-byte CBC-MAC block).
 cbcmacPlainOutLen :: CbcMacRecipe -> Int
 cbcmacPlainOutLen _ = 8

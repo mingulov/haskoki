@@ -3246,5 +3246,5 @@
   ],
   "schema_version": 1,
   "status": "generated-source-of-truth",
-  "provenance": "Identity (numeric_id, aliases, source_refs) generated from the byte-locked header; template_rules is the generator-owned reviewed subset (each rule cites its in-repo source), enforced by Haskoki.Object.checkRules. Full base-spec tables need the OASIS prose (not vendored): see source-issues.json GAP-TEMPLATES."
+  "provenance": "Identity (numeric_id, aliases, source_refs) generated from the byte-locked header; template_rules is the generator-owned reviewed subset (each rule cites its in-repo source), enforced by Haskoki.Object.checkRules. Full base-spec tables need the spec prose (not vendored): see source-issues.json GAP-TEMPLATES."
 }

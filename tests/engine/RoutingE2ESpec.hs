@@ -1500,7 +1500,7 @@ caseDriverDes3Mac = withBackend $ \env -> do
 -- MAC vectors), CLI+pinned-python chaining vectors (two-block and
 -- ragged zero-padded), GENERAL truncation, verify verdicts, and
 -- typed refusals. Plain rows emit the first 8 of the final
--- 16-byte CBC-MAC block (the OASIS half-block rule).
+-- 16-byte CBC-MAC block (the spec half-block rule).
 caseDriverCbcMac :: IO ()
 caseDriverCbcMac = withBackend $ \env -> do
   let kAes = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")
@@ -1639,7 +1639,7 @@ caseDriverXcbc = withBackend $ \env -> do
 -- from Python cryptography AESGCM, the AEAD oracle root, plus
 -- the ACVP tc16 32-bit tag), verify verdicts, and typed refusals
 -- (GMAC takes gcm-params with an approved tag width and a caller
--- IV; OASIS v3.2 §6.13.6 determines the length by @ulTagBits@).
+-- IV; PKCS #11 v3.2 §6.13.6 determines the length by @ulTagBits@).
 caseDriverGmac :: IO ()
 caseDriverGmac = withBackend $ \env -> do
   let k128 = KeyBytes (hex "000102030405060708090a0b0c0d0e0f")

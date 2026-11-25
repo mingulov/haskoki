@@ -2,7 +2,7 @@
 {- | Independent logout/object-lifetime policy oracle plus one
 mechanism-variant known-answer check.
 
-The oracle re-derives the logout rule from the OASIS contract text
+The oracle re-derives the logout rule from the spec contract text
 (PKCS#11 3.2 @5.6.10@: logout destroys the private session objects
 on the slot; token objects and public session objects survive; the
 cached operations bound to a private key on the slot retire while
@@ -29,7 +29,7 @@ by hand from the standard.
 The mechanism-variant known-answer group pins one variant,
 CKM_AES_GCM (@0x1087@), end to end: the exact init-frame bytes,
 the decoded triple, and the cipher shape. Every expected value
-below is hand-derived from the OASIS mechanism number and the
+below is hand-derived from the spec mechanism number and the
 documented frame layout (@mech:u64 permits:u16 flags:u8
 params:bytes@, the parameter tail an opaque 13-byte fixture);
 none was printed from the implementation. A CKM_AES_CBC control
@@ -615,7 +615,7 @@ caseRediscovery = do
 -- Mechanism-variant known-answer checks
 -- ---------------------------------------------------------------------------
 
--- | The pinned variant: CKM_AES_GCM (@0x1087@, OASIS PKCS#11 3.2
+-- | The pinned variant: CKM_AES_GCM (@0x1087@, PKCS #11 3.2
 -- @2.14@), an authenticated stream mode. Permits encrypt+decrypt
 -- (bits 2,3), the always-authenticate mark set, and an opaque
 -- 13-byte parameter tail: the frame pins the outer init layout,

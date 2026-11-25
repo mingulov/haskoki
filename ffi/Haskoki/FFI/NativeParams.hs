@@ -63,7 +63,7 @@ Covered structs (caller-native layout, offsets derived from
 * ChaCha20 (@CK_CHACHA20_PARAMS@: counter pointer, counter bits,
   nonce pointer, nonce bits): the counter chases
   counter-bits/8 bytes (whole bytes only) and decodes
-  little-endian — the OASIS text pins no byte order, so the
+  little-endian — the spec text pins no byte order, so the
   IETF/RFC 8439 state-word order is the documented
   interpretation — and the nonce chases nonce-bits/8 bytes;
   the pair re-encodes with 'encodeChachaStreamParams'
@@ -808,7 +808,7 @@ ccmStructToCanonical nonce aad dataLen nonceLen macLen = do
 -- | Pure ChaCha20 translation: the chased counter and nonce plus
 -- the native bit widths onto the canonical @chacha20-params/1@
 -- image. Both widths must agree with the chased bytes; the
--- counter decodes little-endian (the documented OASIS-gap
+-- counter decodes little-endian (the documented spec-gap
 -- interpretation — RFC 8439 state-word order) and must fit an
 -- 'Int'. Any width translates (even non-IETF ones: the recipe
 -- refuses downstream with the parameter CKR, never a malformed

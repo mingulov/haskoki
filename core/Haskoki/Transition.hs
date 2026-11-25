@@ -741,7 +741,7 @@ planLogin rules model req st =
       | before /= after = [DeltaSetTokenAuth slot after]
       | otherwise = []
     -- A context-PIN lockout while the user is logged in performs
-    -- the full logout transition (OASIS PKCS#11 3.2 §4.10): the
+    -- the full logout transition (PKCS #11 3.2 §4.10): the
     -- locked role must not leave ordinary login in place.
     contextLockout :: LoginKind -> TokenAuth -> Bool
     contextLockout kind auth' =
@@ -752,7 +752,7 @@ planLogin rules model req st =
 -- | Plan Logout: clear the token login, return every session on
 -- the slot to public, stale-mark every handle bound to a live
 -- private object on the slot, destroy every private session object
--- on the slot (OASIS PKCS#11 3.2 §5.6.10 — token objects and
+-- on the slot (PKCS #11 3.2 §5.6.10 — token objects and
 -- public session objects survive), and retire every cached
 -- operation bound to a private key on the slot
 -- ('retirePrivateKeyOps'). Invalidated handles never resurrect: a

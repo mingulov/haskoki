@@ -3,7 +3,7 @@
 One header mechanism, @CKM_SLH_DSA@, with the optional
 @CK_SIGN_ADDITIONAL_CONTEXT@ parameter shape —
 @slhdsa-params\/1@: a hedge word plus a context string. The
-struct is OPTIONAL (OASIS v3.2 §SLH-DSA Signature: no
+struct is OPTIONAL (PKCS #11 v3.2 §SLH-DSA Signature: no
 parameter means an empty context; haskoki's decoder supplies
 @CKH_HEDGE_PREFERRED@ -- the ML-DSA mirror): missing parameters
 decode to the default
@@ -19,7 +19,7 @@ The parameter set is NOT in the mechanism parameters: it
 rides the key (@CKA_PARAMETER_SET@ on the object, the
 algorithm OID in the DER), and keygen
 (@CKM_SLH_DSA_KEY_PAIR_GEN@) takes no parameter — the set
-comes from the public-key template (OASIS v3.2
+comes from the public-key template (PKCS #11 v3.2
 §SLH-DSA key pair generation).
 
 This module owns the group's canonical codec, parameter

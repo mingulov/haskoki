@@ -880,7 +880,7 @@ mldsaBaselines _ = [Pkcs11_3_2]
 -- sign and verify routes citing synthetic A37 and real-KAT A39 (no
 -- A16: the backends offer one-shot sign only). Key bounds are the
 -- served public-key range 1312..2592 bytes (FIPS 204 widths for
--- ML-DSA-44..87, the OASIS mechanism-info unit).
+-- ML-DSA-44..87, the spec mechanism-info unit).
 mldsaDescs :: [Descriptor]
 mldsaDescs =
   [ promotedDesc (rmlName r) (mldsaBaselines (rmlName r)) FamilyPqc
@@ -904,7 +904,7 @@ slhdsaBaselines _ = [Pkcs11_3_2]
 -- sign and verify routes citing synthetic A37 and real-KAT A39 (no
 -- A16: the backends offer one-shot sign only). Key bounds are the
 -- served public-key range 32..64 bytes (FIPS 205 widths for
--- SLH-DSA-SHA2/SHAKE-128..256, the OASIS mechanism-info unit).
+-- SLH-DSA-SHA2/SHAKE-128..256, the spec mechanism-info unit).
 slhdsaDescs :: [Descriptor]
 slhdsaDescs =
   [ promotedDesc (rslName r) (slhdsaBaselines (rslName r)) FamilyPqc

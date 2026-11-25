@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/generate-abi.py (stdlib-only, deterministic)",
-  "sources_lock_sha256": "ec5d02a83c1523a79f8da9c65e6f258b8927410febe20501b5327815c87422ad",
+  "sources_lock_sha256": "99df0ffc591b7d5f227f0147e3421d5a9059ae7f83c9b4f6a2bb947f9c02c383",
   "interfaces": {
     "2.40": {
       "layout": "CK_FUNCTION_LIST",

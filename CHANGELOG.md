@@ -27,7 +27,7 @@ Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.0.0`.
 ### Changed
 
 - Exact per-function errors: rejected key material, over-length
-  input, lost backend state, and ceilings report the OASIS-listed
+  input, lost backend state, and ceilings report the spec-listed
   code for the calling function instead of `CKR_GENERAL_ERROR`;
   deliberately unclassified failures keep it and emit one JSONL
   trace row each with the typed cause.

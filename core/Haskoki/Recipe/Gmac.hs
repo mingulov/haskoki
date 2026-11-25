@@ -3,7 +3,7 @@
 The single header mechanism takes the canonical
 @gcm-params\/1@ image (tag length, IV, AAD remainder — the
 GCM convention, reused verbatim) with the tag width from
-the NIST SP 800-38D approved set (OASIS v3.2 §6.13.6: the
+the NIST SP 800-38D approved set (PKCS #11 v3.2 §6.13.6: the
 tag's length is determined by @ulTagBits@) and a
 caller-supplied 1..64-byte IV. The signed message travels
 as the GCM AAD with empty plaintext; the tag is the GCM
@@ -61,7 +61,7 @@ gmacCodecFor :: GmacRecipe -> ParameterCodec
 gmacCodecFor _ = gmacCodec
 
 -- | GMAC tag widths in bytes (the SP 800-38D approved set,
--- shared with the GCM route: OASIS v3.2 §6.13.6 determines the
+-- shared with the GCM route: PKCS #11 v3.2 §6.13.6 determines the
 -- tag length by @ulTagBits@).
 gmacTagLens :: [Int]
 gmacTagLens = gcmTagLens
