@@ -106,6 +106,22 @@ static CK_ULONG count_label(CK_SESSION_HANDLE s, const char *label) {
   return n;
 }
 
+/* FIPS 46-3 odd parity: set the low bit when the upper seven bits
+ * hold an even number of ones, else clear it. Mirrors the token's
+ * derive finish for DES-family targets. */
+static CK_BYTE des_parity(CK_BYTE b) {
+  unsigned v = (unsigned)(b & 0xFE);
+  unsigned ones = 0;
+  while (v != 0) {
+    ones += v & 1u;
+    v >>= 1;
+  }
+  if ((ones % 2u) == 0u) {
+    return (CK_BYTE)(b | 1u);
+  }
+  return (CK_BYTE)(b & 0xFEu);
+}
+
 /* Expect the exact readable bytes. */
 static void expect_bytes(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE h,
                          CK_BYTE *want, CK_ULONG wantLen, const char *what) {
@@ -714,7 +730,8 @@ int main(int argc, char **argv) {
   }
 
   /* Unsealed control: the same DES3 derive on the open base
-   * succeeds with the data-then-base bytes. */
+   * succeeds with the data-then-base bytes, FIPS 46-3 odd-parity
+   * adjusted (derived DES-family keys take parity at finish). */
   {
     CK_KEY_DERIVATION_STRING_DATA sd;
     CK_MECHANISM dm;
@@ -739,10 +756,10 @@ int main(int argc, char **argv) {
           (unsigned long)rv);
     if (rv == CKR_OK && h != 0) {
       for (j = 0; j < 8; j++) {
-        want[j] = 0;
+        want[j] = 1;
       }
       for (j = 0; j < 16; j++) {
-        want[8 + j] = oval[j];
+        want[8 + j] = des_parity(oval[j]);
       }
       expect_bytes(sess, h, want, 24, "open des3 child");
       rv = f->C_DestroyObject(sess, h);
