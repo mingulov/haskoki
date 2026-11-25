@@ -39,7 +39,7 @@ Rules (P-01 baseline: six rules + input contracts):
      files or a reason swapped between targets cannot hide.
   6. Smoke and doctor are enforced elsewhere and documented here, not
      re-verified: smoke stays 0 findings via the demo-image contracts
-     shard (hash-locked v0.3.0 wheel, same version as the fast lane);
+     shard (hash-locked v0.3.1 wheel, same version as the fast lane);
      doctor exit 0 is lane-enforced (the lane exits before results
      exist when doctor fails).
 
@@ -407,7 +407,7 @@ def _fixture_pair():
                     "timeout": 0, "xfailed": 1, "skipped": 2, "error": 0,
                     "xpassed": 0, "incomplete": False, "child_crash": 0,
                     "child_timeout": 0, "crash_limited": 0},
-        "provenance": {"framework": {"version": "v0.3.0", "dirty": False,
+        "provenance": {"framework": {"version": "v0.3.1", "dirty": False,
                                      "source": "git-describe",
                                      "commit": SHA_A}},
         "units": [

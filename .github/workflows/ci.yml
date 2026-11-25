@@ -7,7 +7,7 @@ name: CI and Release
 # pkcs11-check findings are REPORTED, not gating (exit 1 passes the
 # lane): the module is a demonstrator whose honest refusals the
 # oracle records as findings. Exit >= 2 (setup error) fails loudly.
-# The framework pins to v0.3.0; build-mode dispatch can override it.
+# The framework pins to v0.3.1; build-mode dispatch can override it.
 #
 # CD: Actions -> Run workflow -> main, mode=release, version=X.Y.Z.W.
 # Publishing also accepts owner-pushed v* tags. Both routes use the
@@ -57,7 +57,7 @@ on:
         type: string
       framework_ref:
         description: "mingulov/pkcs11-check ref (tag/branch/sha)"
-        default: "v0.3.0"
+        default: "v0.3.1"
         type: string
 
 permissions:
@@ -73,7 +73,7 @@ env:
   # and the kat lane (cache restore).
   PKCS11_CHECK_DATA_DIR: ${{ github.workspace }}/data
   # Releases retain the qualified fast-lane pin; overrides are build-only.
-  FRAMEWORK_REF: ${{ inputs.mode == 'release' && 'v0.3.0' || github.event.inputs.framework_ref || 'v0.3.0' }}
+  FRAMEWORK_REF: ${{ inputs.mode == 'release' && 'v0.3.1' || github.event.inputs.framework_ref || 'v0.3.1' }}
   RELEASE_MODE: ${{ inputs.mode || 'build' }}
   RELEASE_VERSION: ${{ inputs.version || '' }}
   # Structural tests read UTF-8 sources with locale-dependent
@@ -1130,7 +1130,7 @@ jobs:
       - name: Diff against frozen baseline
         run: |
           python3 scripts/check-pkcs11-baseline.py pkcs11-fast-results.json \
-            spec/pkcs11-check/baseline-fast-289cc4ef6c3a498994c18c7d6a37543c6bc597be-openssl-memory.json
+            spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json
       - name: Summarize results
         if: always()
         run: |

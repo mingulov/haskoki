@@ -304,7 +304,7 @@ RESULTS_JSON=$(printf '%s\n' "$RESULTS_LIST" | python3 -c 'import sys,json; prin
   echo "    \"sha256sums\": {\"file\": \"$(basename "$SUMS")\", \"note\": \"written after finalization, excluding itself\"}"
   echo "  },"
   echo "  \"tool_pins\": {"
-  echo "    \"checker\": {\"repo\": \"mingulov/pkcs11-check\", \"release\": \"v0.3.0\", \"tag_sha\": \"1306ab40b63f2523c4f117006dd8fa56e95e2b1d\", \"pypi\": \"pkcs11-check==0.3.0\", \"qualified\": true, \"note\": \"0.3.0 re-pin; re-proven by the driver lanes\"},"
+  echo "    \"checker\": {\"repo\": \"mingulov/pkcs11-check\", \"release\": \"v0.3.1\", \"tag_sha\": \"cad33f3bc8a975aa7665485470d63af775cafb88\", \"pypi\": \"pkcs11-check==0.3.1\", \"qualified\": true, \"note\": \"0.3.1 re-pin; re-proven by the driver lanes\"},"
   echo "    \"proxy_regression\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"commit\": \"a48b60ba54b0163f4999c1e4fc0514bf7dc01681\", \"qualified\": false, \"note\": \"superseded by v0.2.0 in R5; kept as the R4 historical record\"},"
   echo "    \"proxy_demo\": {\"repo\": \"mingulov/pkcs11-proxy-ng\", \"release\": \"v0.3.1\", \"tag_sha\": \"5e830396f115b515f2548c3874ba2f9e505fb752\", \"commit\": \"ed803d463eb886cc42dff47afe5c03b162b37286\", \"lock_sha256\": \"e55d03139d162c5a87bb508b063047122ca4a4f486bcfd195a5b97e8d486b633\", \"qualified\": true, \"note\": \"R10 qualified (parity 111 holds + full checker lanes); supersedes R9 v0.2.2 pin; checked out by full commit SHA with fail-closed commit+lock+pair asserts (Dockerfile)\"}"
   echo "  },"

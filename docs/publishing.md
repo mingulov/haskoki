@@ -62,9 +62,9 @@ use the tested artifact for a demo. No local compiler build is needed.
    If the anonymous pull step stops the first run, change visibility and
    choose **Re-run failed jobs** in that same run.
 
-Release mode retains the qualified fast-checker ref `v0.3.0`.
+Release mode retains the qualified fast-checker ref `v0.3.1`.
 `framework_ref` overrides apply to build mode only. The image includes its
-separately pinned checker `0.3.0` and proxy `v0.3.1`.
+separately pinned checker `0.3.1` and proxy `v0.3.1`.
 
 ## What the release does
 
