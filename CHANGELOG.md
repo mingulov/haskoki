@@ -60,6 +60,10 @@ Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.0.0`.
   non-local-authority, and resolve-produced URIs refuse, as do
   the empty path and `:memory:` (SQLite would open a temporary
   or in-memory database the file guards cannot see).
+- Derived DES-family keys take FIPS 46-3 odd-parity adjustment
+  (DES/DES2/DES3/CDMF, on every derive mechanism — byte ops,
+  digest KDFs, SHA1-KD — not just PBE), so `C_DeriveKey` output
+  carries valid parity bits instead of raw construction bytes.
 
 ## [0.5.0.0] - 2026-10-19
 

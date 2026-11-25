@@ -46,6 +46,8 @@ module Haskoki.Operation.KeyManagement
   , PendingWork (..)
   , publishPending
   , finishWork
+  , storeDerivedMaterial
+  , derivedNeedsParity
   , workFunction
   , stampPairComponents
   , stampParamsObject
@@ -297,7 +299,7 @@ import Haskoki.Outcome
   )
 import Haskoki.Recipe.Ecdh (ecdhSecretWidth)
 import Haskoki.Recipe.Kdf (decodePbkd2Params, maxPbkd2Iters)
-import Haskoki.Recipe.Pbe (PbeKind (..), PbeRecipe (pbeKind), pbeIvLen, pbeKeyLen, pbeParamsValid, pbeRecipeFor)
+import Haskoki.Recipe.Pbe (PbeKind (..), PbeRecipe (pbeKind), pbeDesParity, pbeIvLen, pbeKeyLen, pbeParamsValid, pbeRecipeFor)
 import Haskoki.Recipe.Otp (hotpKeygenMaxBytes, hotpKeygenMinBytes)
 import Haskoki.Recipe.RsaOaep
   ( decodeOaepParams
@@ -1374,7 +1376,7 @@ finishWork model st pw res
     | Left deny <- mapM_ (\(po, mat) -> checkDerivedTarget (poAttrs po) (BS.length mat))
         (zip pos (splitLens lens bs)) -> rejectOf deny
     | otherwise -> case publishPending model st
-        [storeMaterial mat po | (po, mat) <- zip pos (splitLens lens bs)] of
+        [storeDerivedMaterial mat po | (po, mat) <- zip pos (splitLens lens bs)] of
         Left deny -> rejectOf deny
         Right (delta, hs) -> Immediate PreparedCommit
           { pcCode = CKR_OK
@@ -1402,7 +1404,7 @@ finishWork model st pw res
     | Left deny <- mapM_ (\(po, mat) -> checkDerivedTarget (poAttrs po) (BS.length mat))
         (zip pos (splitLens lens keyBs)) -> rejectOf deny
     | otherwise -> case publishPending model st
-        [storeMaterial mat po | (po, mat) <- zip pos (splitLens lens keyBs)] of
+        [storeDerivedMaterial mat po | (po, mat) <- zip pos (splitLens lens keyBs)] of
         Left deny -> rejectOf deny
         Right (delta, hs) -> Immediate PreparedCommit
           { pcCode = CKR_OK
@@ -1529,6 +1531,23 @@ finishWork model st pw res
 -- | Store driver-supplied key material on a pending object.
 storeMaterial :: ByteString -> PendingObject -> PendingObject
 storeMaterial mat po = po { poAttrs = Map.insert AttrValue (ValBytes mat) (poAttrs po) }
+
+-- | DES-family targets take FIPS 46-3 odd-parity adjustment on
+-- derived material: PKCS#11 makes the token responsible for the
+-- parity bits of generated DES/DES2/DES3/CDMF key bytes, on every
+-- derive mechanism, not just PBE. Every other type passes through.
+derivedNeedsParity :: Map.Map AttributeType AttributeValue -> Bool
+derivedNeedsParity attrs = case Map.lookup AttrKeyType attrs of
+  Just (ValULong k) ->
+    k == ckkDes || k == ckkDes2 || k == ckkDes3 || k == ckkCdmf
+  _ -> False
+
+-- | Store derived key material, parity-adjusting DES-family
+-- targets (shared helper with the PBE finish).
+storeDerivedMaterial :: ByteString -> PendingObject -> PendingObject
+storeDerivedMaterial mat po
+  | derivedNeedsParity (poAttrs po) = storeMaterial (pbeDesParity mat) po
+  | otherwise = storeMaterial mat po
 
 -- | Stamp keygen components back onto a pending pair. Reads serve
 -- stored attributes only (no decode-on-read path), so an RSA pair

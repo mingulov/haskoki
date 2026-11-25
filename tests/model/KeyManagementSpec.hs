@@ -199,6 +199,7 @@ import Haskoki.Operation.KeyManagement
   , encodeKeyPair
   , mldsaKeyPairGenMech
   , finishWork
+  , derivedNeedsParity
   , genericSecretKeyGenMech
   , genericSecretKeygenMaxBytes
   , genericSecretKeygenMinBytes
@@ -374,6 +375,9 @@ spec = testGroup "Key management, KEM and wrapping"
   , testCase "AES keygen refuses PQC wrap flags" caseAesKeygenEncapsulate
   , testCase "Init enforces the allowed-mechanism list" caseInitAllowedMechanisms
   , testCase "Derive inputs enforce the allowed-mechanism list" caseDeriveAllowedMechanisms
+  , testCase "Derived DES-family bytes take odd-parity adjustment" caseDeriveDesParity
+  , testCase "Derived generic bytes pass through unadjusted" caseDeriveGenericPassthrough
+  , testCase "Derived keymat adjusts keys, never IVs" caseDeriveKeymatParity
   , testCase "Wrap inputs enforce the allowed-mechanism list" caseWrapAllowedMechanisms
   , testCase "KEM inputs enforce the allowed-mechanism list" caseKemAllowedMechanisms
   , testCase "Generic-secret keygen mints typed material in bounds" caseGenericSecretKeygen
@@ -1831,6 +1835,104 @@ caseDeriveAllowedMechanisms = do
   _ <- plans "listed aux IKEv1-PRF" ike1Mech ikeBaseH
     (encodeIkeParams 4 0 7 ikeAuxListedN ikeNi ikeNr) (kid 32)
   pure ()
+
+-- | Derived DES-family material takes FIPS 46-3 odd-parity
+-- adjustment at finish, on every derive mechanism (the planner
+-- is type-driven, not mechanism-driven): 0x00 (even zero-count)
+-- sets the low bit, 0xFF (odd one-count) clears it.
+caseDeriveDesParity :: IO ()
+caseDeriveDesParity = do
+  m0 <- seedModel
+  st <- getSession m0
+  assertBool "DES needs parity" (derivedNeedsParity desAttrs)
+  assertBool "generic skips parity" (not (derivedNeedsParity genericAttrs))
+  mapM_ (\(tag, kty, n) ->
+    mapM_ (\(vtag, inp, want) -> do
+      let po = pendingFromAttrs st (Map.fromList
+            [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong kty)
+            , (AttrToken, ValBool False)])
+      case finishWork m0 st (PwDerive [po] [n]) (GotBytes inp) of
+        Immediate c -> case [a | DeltaCreateObjectFull _ a _ _ <- opsOf c] of
+          [stored] -> assertEqual ("stored " ++ tag ++ " " ++ vtag)
+            (Just (ValBytes want)) (Map.lookup AttrValue stored)
+          _ -> assertFailure ("arity " ++ tag ++ " " ++ vtag)
+        other -> assertFailure ("finish " ++ tag ++ " " ++ vtag ++ ": " ++ show other))
+      [ ("zeros", BS.replicate n 0x00, BS.replicate n 0x01)
+      , ("ones", BS.replicate n 0xFF, BS.replicate n 0xFE)
+      ])
+    [ ("DES", ckkDes, 8), ("DES2", ckkDes2, 16)
+    , ("DES3", ckkDes3, 24), ("CDMF", ckkCdmf, 8)
+    ]
+  -- A mixed vector distinguishes real parity adjustment from a
+  -- blanket xor (0x02/0x73/0xFE already hold odd parity and stay).
+  let mixedIn = BS.pack [0x00, 0x01, 0x02, 0x03, 0x72, 0x73, 0xFE, 0xFF]
+      mixedWant = BS.pack [0x01, 0x01, 0x02, 0x02, 0x73, 0x73, 0xFE, 0xFE]
+      poDes = pendingFromAttrs st (Map.fromList
+        [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkDes)
+        , (AttrToken, ValBool False)])
+  case finishWork m0 st (PwDerive [poDes] [8]) (GotBytes mixedIn) of
+    Immediate c -> case [a | DeltaCreateObjectFull _ a _ _ <- opsOf c] of
+      [stored] -> assertEqual "stored DES mixed"
+        (Just (ValBytes mixedWant)) (Map.lookup AttrValue stored)
+      _ -> assertFailure "mixed arity"
+    other -> assertFailure ("mixed finish: " ++ show other)
+  where
+    desAttrs = Map.fromList [(AttrKeyType, ValULong ckkDes)]
+    genericAttrs = Map.fromList [(AttrKeyType, ValULong ckkGenericSecret)]
+    opsOf c = case pcDelta c of StateDelta ops -> ops
+
+-- | A multi-object derive adjusts only the DES-family slice;
+-- the generic slice passes through byte-equal.
+caseDeriveGenericPassthrough :: IO ()
+caseDeriveGenericPassthrough = do
+  m0 <- seedModel
+  st <- getSession m0
+  let mkPo kty = pendingFromAttrs st (Map.fromList
+        [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong kty)
+        , (AttrToken, ValBool False)])
+      desIn = BS.replicate 8 0x00
+      genIn = BS.pack [0 .. 31]
+  case finishWork m0 st (PwDerive [mkPo ckkDes, mkPo ckkGenericSecret] [8, 32])
+       (GotBytes (desIn <> genIn)) of
+    Immediate c -> case [a | DeltaCreateObjectFull _ a _ _ <- opsOf c] of
+      [dStored, gStored] -> do
+        assertEqual "DES slice adjusted"
+          (Just (ValBytes (BS.replicate 8 0x01))) (Map.lookup AttrValue dStored)
+        assertEqual "generic slice untouched"
+          (Just (ValBytes genIn)) (Map.lookup AttrValue gStored)
+      _ -> assertFailure "passthrough arity"
+    other -> assertFailure ("passthrough finish: " ++ show other)
+  where
+    opsOf c = case pcDelta c of StateDelta ops -> ops
+
+-- | Key-material derives adjust DES-family key slices; the IV
+-- byte outputs pass through untouched (IVs are bytes, never keys).
+caseDeriveKeymatParity :: IO ()
+caseDeriveKeymatParity = do
+  m0 <- seedModel
+  st <- getSession m0
+  let po = pendingFromAttrs st (Map.fromList
+        [(AttrClass, ValULong ckoSecretKey), (AttrKeyType, ValULong ckkDes)
+        , (AttrToken, ValBool False)])
+      keyIn = BS.replicate 8 0x00
+      ivC = BS.pack [0x10, 0x20, 0x30, 0x40]
+      ivS = BS.pack [0x50, 0x60, 0x70, 0x80]
+  case finishWork m0 st (PwDeriveIv [po] [8] (4, 4))
+       (GotBytes (keyIn <> ivC <> ivS)) of
+    Immediate c -> do
+      case [a | DeltaCreateObjectFull _ a _ _ <- opsOf c] of
+        [stored] -> assertEqual "keymat DES slice adjusted"
+          (Just (ValBytes (BS.replicate 8 0x01))) (Map.lookup AttrValue stored)
+        _ -> assertFailure "keymat arity"
+      case pcOutputs c of
+        [NativeOutput (RegionHandle "key") _, NativeOutput (RegionBytes "iv-client" _) c',
+         NativeOutput (RegionBytes "iv-server" _) s'] -> do
+          assertEqual "client IV untouched" ivC c'
+          assertEqual "server IV untouched" ivS s'
+        o -> assertFailure ("keymat outputs: " ++ show o)
+    other -> assertFailure ("keymat finish: " ++ show other)
+  where
+    opsOf c = case pcDelta c of StateDelta ops -> ops
 
 -- | The wrapping key (secret, RSA and EC-composition rows) and the
 -- unwrapping key refuse a mechanism outside their allowed list; a
