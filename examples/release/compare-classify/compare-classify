@@ -16,7 +16,7 @@
 #                         R10 on v0.3.1), so any hit fails and
 #                         re-opens section 4
 #   UNEXPECTED-DIFFERENCE anything else — fails
-# The shared set must equal frozen-shared.txt (45) exactly; missing
+# The shared set must equal frozen-shared.txt (24) exactly; missing
 # frozen lines (a diff silently fixed) fail as drift too.
 #
 # Writes <run-dir>/classification.txt + <run-dir>/classification.json.
@@ -48,7 +48,7 @@ Usage:
 compare`. Raw files are never modified; classification.txt and
 classification.json are written beside them.
 
-Exit: 0 frozen set reproduced exactly (65 known + shared 45/45, plus
+Exit: 0 frozen set reproduced exactly (65 known + shared 24/24, plus
 any byte-exact frozen-flaky.txt lines),
 zero unexpected/direct-only/flaky/missing) / 1 drift / 2 usage
 or infrastructure failure.
@@ -153,8 +153,8 @@ if len(frozen) != 65:
 
 want_shared = [l for l in read_lines(shared_path)
                if l and not l.startswith("#")]
-if len(want_shared) != 45:
-    print("compare-classify: want 45 frozen shared lines, have %d"
+if len(want_shared) != 24:
+    print("compare-classify: want 24 frozen shared lines, have %d"
           % len(want_shared))
     sys.exit(2)
 

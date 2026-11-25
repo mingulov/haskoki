@@ -4,7 +4,7 @@ Status: Accepted
 
 **Decision:** the toolchain is pinned and changes only through the
 R-11 watch: GHC 9.10.3, `haskoki-dev:ghc-9.10.3`, OpenSSL 4.1.0,
-checker 0.3.0 at `289cc4e`, proxy pair at the qualified commits
+checker 0.3.1 at `f19a7e1`, proxy pair at the qualified commits
 (`toolchain.lock`, `spec/sources.lock.json`). The verified image is
 `haskoki-dev:ghc-9.10.3` as rebuilt for 0.6.0 Phase 1 (4.09GB with
 GHC 9.10.3, cabal 3.12.1.0 and OpenSSL 4.0.2 on 2026-11-19;

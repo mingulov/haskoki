@@ -46,11 +46,11 @@ pin differs from the image's checker pin; keep their results separate.
 
 ## Current demo findings
 
-The frozen full profile has 45 findings shared by direct and proxy modes (0.3.0 re-freeze, CI run 44530783308, minus the 4 ECDSA subgroup-width ids fixed in 0.6.0.0 — provider fix verified by re-run, rows retired; the 21 v0.5 ids all pass at 0.3.0 — 16 BLAKE2B + 2 async + 3 X9.42 checker-side fixes verified by re-run, rows retired):
+The frozen full profile has 24 findings shared by direct and proxy modes (0.3.1 re-freeze with the DES-parity provider fix: 44 carried from the 0.3.0 set plus 51 new parity ids, minus all 71 parity ids fixed — provider fix verified by re-run; the 0.3.0 history — 4 ECDSA subgroup-width ids fixed in 0.6.0.0, rows retired; the 21 v0.5 ids all passing at 0.3.0 — stays retired):
 
 | Family | Count | Interpretation |
 | --- | ---: | --- |
-| DES parity on derive | 21 | Provider gap (was unscheduled for 0.5): derived DES/DES2/DES3/CDMF key bytes lack odd-parity adjustment. Targeted for 0.6.0 |
+| DES parity on derive | 0 (was 20 byte-concat + 48 digest-KD + 3 sha1-param, fixed) | Provider fixed in 0.6.0.0: derived DES/DES2/DES3/CDMF key bytes take FIPS 46-3 odd-parity adjustment at finish on every derive mechanism. 22 DES2 ids now xfail on the checker's own marker (downstream ECB KAT init refuses: DES2 cipher rows unserved, separate gap) |
 | Attribute value encodings | 8 | Provider limitation: reads return DER/textual forms instead of raw bytes (R-08 DER row) |
 | Public CKA_VALUE exposure | 4 | Provider over-exposure: EC/Edwards public keys expose CKA_VALUE though their tables define none; removal needs a consumer-impact review |
 | Sealed-component reads | 8 | Provider gap, probably DER-family: unsealed import reads report impossible lengths (size/bytes mismatch) |
