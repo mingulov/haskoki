@@ -275,10 +275,50 @@ void hsk_ossl4_unload_provider(OSSL_PROVIDER *prov)
         OSSL_PROVIDER_unload(prov);
 }
 
+/* Test configuration: retain (never free) the libctx.
+ *
+ * OpenSSL keeps per-thread state for a libctx (the public/private
+ * child DRBGs plus a thread-stop handler whose arg is the libctx)
+ * keyed by the libctx ADDRESS on every thread that used it.
+ * OSSL_LIB_CTX_free clears that state on the calling thread only.
+ * A test binary opens and closes many contexts from safe FFI calls
+ * spread across pooled RTS worker threads. So a closed context
+ * leaves stale entries on other workers. Once glibc hands the
+ * freed block to the next OSSL_LIB_CTX_new, the stale entries
+ * match the new context's key. Those threads then use the dead
+ * context's child DRBGs. Later they free them, either in the
+ * thread-exit destructor or when the new context is itself freed
+ * on that thread. In 4.1.0 store-owned methods are no longer
+ * refcounted by their users (cached fetch). The method store frees
+ * the child's EVP_RAND inside OSSL_LIB_CTX_free, so either path
+ * calls meth->freectx through freed memory (SIGSEGV/SIGABRT). This
+ * is consistent with all observations (valgrind flags the
+ * freed-context read on 4.0.2 as well, so the hazard is latent on
+ * every version and 4.1.0 only makes it fatal).
+ * Keeping the libctx alive keeps its method store and RAND state
+ * valid, and its address is never reused. Provider unload above is
+ * unchanged, so the provider/gate accounting is unaffected.
+ *
+ * The cost is one retained libctx per closed env, for the life of
+ * the process. The shipped module never defines this (it requires
+ * the test-hook configuration), and the operator tool links no
+ * shim code (release hook-symbol check; verified by nm). The
+ * sanitizer and bounds harnesses do not define it, so they still
+ * free and count the context. NOTE: cabal does not recompile C
+ * sources when only cc-options change — a stale dist-newstyle
+ * keeps crashing until haskoki-internal is rebuilt clean. */
+#if defined(HSK_OSSL4_RETAIN_LIBCTX) && !defined(HSK_OSSL4_TEST_HOOKS)
+#error "HSK_OSSL4_RETAIN_LIBCTX is test-configuration only (needs HSK_OSSL4_TEST_HOOKS)"
+#endif
+
 void hsk_ossl4_free_ctx(OSSL_LIB_CTX *ctx)
 {
+#ifdef HSK_OSSL4_RETAIN_LIBCTX
+    (void)ctx;
+#else
     if (ctx != NULL)
         OSSL_LIB_CTX_free(ctx);
+#endif
 }
 
 /* --- env wrapper ----------------------------------------------------- */
