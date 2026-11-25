@@ -5,7 +5,7 @@ and old TODO category has exactly one row in spec/findings-ledger.json, with
 a valid decision and evidence.
 
 Sources (1:1 set equality, never a subset):
-  * examples/release/compare-classify/frozen-shared.txt   (45 findings)
+  * examples/release/compare-classify/frozen-shared.txt   (24 findings)
   * examples/release/compare-classify/frozen-subset.tsv   (65 exclusions)
   * cbits/function_tables.c stub_probe stubs + cbits/abi_stubs.inc
     x_live_check stubs                                     (11 C refusals)
@@ -73,11 +73,11 @@ DIMENSIONS = ["checker", "c-routing", "planner", "catalog", "todo"]
 EXCL_FAMILIES = ["A-msg-init-0x71", "B-blowfish", "C-tls12", "D-wtls",
                  "E-boundary", "F-collection"]
 
-COUNTS = {"finding": 45, "exclusion": 65, "c-function": 11,
+COUNTS = {"finding": 24, "exclusion": 65, "c-function": 11,
           "planner-function": 21, "mechanism-planned": 57,
           "unsupported": 89, "n-a": 2}
 
-RETIRED_COUNTS = {"finding": 29, "exclusion": 22}
+RETIRED_COUNTS = {"finding": 50, "exclusion": 22}
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 TODO_IDS = [
@@ -369,8 +369,8 @@ def run_gate():
     if errs:
         return 1
     n = len(json.loads(LEDGER.read_text())["rows"])
-    print("findings-ledger: ok (%d rows; 45 findings, 65 exclusions, "
-          "11 C refusals, 21 planner, 57/89/2 mechanisms; 51 retired)" % n)
+    print("findings-ledger: ok (%d rows; 24 findings, 65 exclusions, "
+          "11 C refusals, 21 planner, 57/89/2 mechanisms; 72 retired)" % n)
     return 0
 
 

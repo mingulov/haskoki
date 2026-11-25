@@ -76,6 +76,10 @@ Developer preview: entries land per task and finalize at release.
   (PKCS#11 §6.3.1 nLen): secp160r1/r2/k1 sign 42 bytes (was 40),
   secp224k1 signs 58 (was 56). Short even forms still verify, so
   previously emitted signatures keep verifying.
+- Derived DES-family keys take FIPS 46-3 odd-parity adjustment
+  (DES/DES2/DES3/CDMF, on every derive mechanism — byte ops,
+  digest KDFs, SHA1-KD — not just PBE), so `C_DeriveKey` output
+  carries valid parity bits instead of raw construction bytes.
 - EC private import bounds scalars by the group order (SEC1
   §2.3.6): 21-byte scalars load on the 160-bit curves with
   161-bit orders (were refused); 52-byte scalars refuse on

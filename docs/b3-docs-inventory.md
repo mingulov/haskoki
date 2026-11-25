@@ -150,7 +150,7 @@ is fixed reason-side.
 | README: checkout prepares v0.5.0.0 | `haskoki.cabal:3` reads `version: 0.5.0.0` | holds |
 | README + cabal description: 316 tested of 464 catalog mechanisms | `docs/coverage.md:5,19-21` (464 rows; behavior/real/synthetic 316 tested) | holds |
 | README: full profile 21 findings on the published v0.5.0.0 image, v0.4.0.0 reported 22; smoke expects zero | `docs/release-results.md` "What the findings mean" (21 after the v0.5 re-freeze and the derive-default delta, measured on the 0.5.0.0 candidate and confirmed on the release bytes by the v0.5.0.0 release run); the `:11-14` table and `summary.json` are the dated October baseline (22), which the v0.4.0.0 image's classifier asserts (83 exclusions, 22 shared) | holds |
-| `try-it.md`: smoke collects 743 cases (not 743 passes) | `summary.json` `total: 743` both smoke lanes | holds |
+| `try-it.md`: smoke collects 791 cases (not 791 passes) | measured on the 0.3.1 image (`report.json` `total: 791` both smoke lanes); `summary.json` `total: 743` is the dated October baseline | holds |
 | `try-it.md`: `proxy-example-ok: 5/5`, `p11-kit-demo-ok: 7/7` | `examples/release/p11-kit-example:104`; `test-demo-image.sh:553`; `test-demo-onboarding.sh:91,99` | holds |
 | `try-it.md`: `shell` / `proxy-demo` / `p11-kit-demo` modes | `docker/haskoki-demo:1121-1123` dispatch; usage `:50-58` | holds |
 | `try-it.md`: image pins checker 0.3.1, proxy v0.3.1 | checker gates `docker/Dockerfile.demo:160,237`; proxy `ARG PROXY_COMMIT` `:67` + v0.3.1 note `:75`, provenance gate `:101-102` | holds |

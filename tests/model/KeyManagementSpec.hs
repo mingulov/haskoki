@@ -1838,8 +1838,8 @@ caseDeriveAllowedMechanisms = do
 
 -- | Derived DES-family material takes FIPS 46-3 odd-parity
 -- adjustment at finish, on every derive mechanism (the planner
--- is type-driven, not mechanism-driven): 0x00 (even zero-count)
--- sets the low bit, 0xFF (odd one-count) clears it.
+-- is type-driven, not mechanism-driven): 0x00 (upper seven all
+-- zero) sets the low bit, 0xFF (upper seven all one) clears it.
 caseDeriveDesParity :: IO ()
 caseDeriveDesParity = do
   m0 <- seedModel

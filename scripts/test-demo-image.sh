@@ -320,9 +320,10 @@ if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 # direct / 27 proxy-core / diff-core + shared re-frozen below on
 # checker 0.3.0; triaged in task-R9-report.md; F-9 re-freeze: 22/22;
 # v0.5 re-freeze: 18/18 after the GMAC and HOTP message flags were
-# withdrawn; derive-default re-freeze: 21/21, see below). Direct is
-# byte-exact (deterministic across runs).
-# Proxy asserts a stable 21-line core exactly (strict, codex I4 —
+# withdrawn; derive-default re-freeze: 21/21, see below; 0.3.0
+# re-freeze: 45/45; 0.3.1 + parity re-freeze: 24/24, see below).
+# Direct is byte-exact (deterministic across runs).
+# Proxy asserts a stable 24-line core exactly (strict, codex I4 —
 # the failed pair's historical {pass, fail} bound is NOT suppressed);
 # any other line fails loudly. R9 delta vs R5: +2 GMAC message-init
 # lines (init params now forward; the backend's native 0x7 refusal
@@ -346,6 +347,16 @@ if [ "$PHASE" = all ] || [ "$PHASE" = full ]; then
 # Five X9.42 negative tests now xfail instead of reaching parameter
 # validation; tests/c/consumer_x942_derive.c pins the same refusals
 # (all CKR_MECHANISM_PARAM_INVALID) with a derive-capable base.
+# 0.3.0 re-freeze vs derive-default: 21 -> 45 (DES-parity,
+# attribute-encoding, sensitivity, EC-width and BLAKE2 families).
+# 0.3.1 + parity re-freeze vs 0.3.0: 45 -> 24. The checker widens
+# DES-parity coverage first (44 retained, 1 sha1 case renamed into
+# 3 parametrized ids, 48 digest-KD ids added: 95 pre-fix), then the
+# provider fix (FIPS 46-3 adjustment at derive finish) flips all 71
+# parity ids out of failed (49 pass; 22 DES2 xfail on the checker's
+# own marker — downstream ECB KAT init refuses, DES2 cipher rows
+# unserved). Full-direct findings equal the fast-lane failed set
+# exactly (same 24 ids, verified by re-run).
 run_check direct full 1
 RUN_DIR=$(latest_run "check-direct-full")
 cat > "$OUT/exp-full-direct.txt" <<'EOF'
@@ -353,27 +364,6 @@ failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_regist
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_256_HMAC]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_384_HMAC]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_512_HMAC]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_sha1_derive_des_parity
 failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_dsa_44]
 failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_kem_512]
 failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[slh_dsa_sha2_128s]
@@ -395,11 +385,11 @@ failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_componen
 failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[slhdsa-import-unsealed]
 failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[x942-import-unsealed]
 EOF
-[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 45 ] || fail "driver: want 45 expected direct findings"
+[ "$(wc -l < "$OUT/exp-full-direct.txt")" -eq 24 ] || fail "driver: want 24 expected direct findings"
 if ! diff -u "$OUT/exp-full-direct.txt" "$RUN_DIR/findings.txt"; then
-  fail "check direct/full findings differ from the exact expected 45"
+  fail "check direct/full findings differ from the exact expected 24"
 fi
-echo "check direct/full: exact 45 findings match"
+echo "check direct/full: exact 24 findings match"
 
 run_check proxy full 1
 RUN_DIR=$(latest_run "check-proxy-full")
@@ -408,27 +398,6 @@ failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_regist
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_256_HMAC]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_384_HMAC]
 failed test_mech_message.py::TestRegistryMessageBlake2GenericSecret::test_registry_message_blake2_generic_secret_sign[BLAKE2B_512_HMAC]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_DATA-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_BASE_AND_KEY-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_CONCATENATE_DATA_AND_BASE-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_EXTRACT_KEY_FROM_KEY-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-CDMF]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES2]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES3]
-failed test_misc_kdf.py::TestDerivedDesParity::test_byte_derive_des_parity[CKM_XOR_BASE_AND_DATA-DES]
-failed test_misc_kdf.py::TestDerivedDesParity::test_sha1_derive_des_parity
 failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_dsa_44]
 failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[ml_kem_512]
 failed test_object.py::TestAttributeValueEncodings::test_pqc_public_value_raw_lengths[slh_dsa_sha2_128s]
@@ -450,7 +419,7 @@ failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_componen
 failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[slhdsa-import-unsealed]
 failed test_sensitivity.py::TestProtectedComponentMatrix::test_unsealed_components_readable[x942-import-unsealed]
 EOF
-[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 45 ] || fail "driver: want 45 stable-core proxy findings"
+[ "$(wc -l < "$OUT/exp-full-proxy.txt")" -eq 24 ] || fail "driver: want 24 stable-core proxy findings"
 # R5 strict (codex I4): the failed pair's {pass, fail} bound is
 # historical (older pin) — v0.2.0 never demonstrated the flip, so
 # no failure form is suppressed here; any variance fails loud and
@@ -490,6 +459,16 @@ if [ "$PHASE" = all ] || [ "$PHASE" = compare ]; then
 # R10 proxy requal (v0.3.1): the 65-line core and 45-shared set hold
 # unchanged (no flips; max_contexts=8 harness adaptation for the
 # v0.3.x single-client default).
+# 0.3.1 + parity re-freeze: the exclusion core is byte-identical
+# (65/65, zero drift lines — the parity delta moved identically in
+# both lanes); the shared set shrinks 45 -> 24 as the 21 0.3.0 parity
+# ids (20 byte-concat + 1 sha1) leave via the provider fix (the 51 wider-parity ids
+# never landed here: digest-KD and sha1-param fail identically in
+# both lanes at 0.3.1 pre-fix and would have grown shared to 95 —
+# verified by re-run — but the freeze is cut post-fix, so shared
+# holds only the 24 non-parity ids: 12 attribute-encoding, 8
+# sensitivity, 4 BLAKE2 message). The retired 0.3.0 rows are the 20
+# byte-concat ids plus the one unparametrized sha1 id.
 # Parity-eligible = every other collected id (default-eligible;
 # the freeze is this exclusion list, not an 11k allowlist). Flaky
 # ids assert their measured v0.2.2 verdicts with NO variance
@@ -580,7 +559,7 @@ timeout -s KILL 300 docker run --rm --network none -v "$OUT:/out" \
   "/out/$CC_RUN" > "$OUT/classify.log" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] || fail "in-image compare-classify exited $rc, want 0"
-grep -q 'compare-classify-ok: 65 known-difference + shared 45/45 exact' \
+grep -q 'compare-classify-ok: 65 known-difference + shared 24/24 exact' \
   "$OUT/classify.log" || fail "compare-classify ok marker missing"
 [ -f "$RUN_DIR/classification.json" ] || fail "classification.json missing"
 python3 - "$RUN_DIR/classification.json" <<'PY' || fail "classification.json counts drifted"
@@ -589,8 +568,8 @@ c = json.load(open(sys.argv[1]))["counts"]
 assert c.pop("flaky_accepted") in (0, 1), c
 assert c == {"known_difference": 65, "direct_only": 0, "flaky": 0,
              "unexpected_difference": 0, "missing_known": 0,
-             "duplicate_diff_lines": 0, "shared_expected": 45,
-             "shared_actual": 45, "shared_exact": True}, c
+             "duplicate_diff_lines": 0, "shared_expected": 24,
+             "shared_actual": 24, "shared_exact": True}, c
 PY
 # Drift controls on run-dir copies (the raw run dir is untouched):
 # an injected line must surface as unexpected=1, a removed frozen
