@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.6.0.0] - unreleased (RnD)
+## [0.6.0.0] - 2026-11-25
 
 Testable RnD release. The per-change detail is in
 [docs/release-notes-0.6.0.0.md](docs/release-notes-0.6.0.0.md).
@@ -26,6 +26,9 @@ Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.0.0`.
 
 ### Changed
 
+- Supply chain: OpenSSL 4.1.0 (statically linked `libcrypto`,
+  shipped legacy provider), `pkcs11-check` 0.3.1 and
+  `pkcs11-proxy-ng` v0.3.1 in the demo image and CI lanes.
 - Exact per-function errors: rejected key material, over-length
   input, lost backend state, and ceilings report the spec-listed
   code for the calling function instead of `CKR_GENERAL_ERROR`;

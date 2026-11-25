@@ -2,22 +2,20 @@
 
 ## Measured baseline
 
-The [October 8 CI run](https://github.com/mingulov/haskoki/actions/runs/37774745195)
-for source `0603322` passed the demo-image driver. These counters come from
-its reports, recorded in the [JSON summary](release-results/summary.json).
-The subsequent [v0.3.0.0 release](release-notes-0.3.0.0.md) was published on
-October 9. The published v0.3.1.0 evidence keeps the same frozen
-full-finding set: its release compare record reports shared 22/22
-exact with zero unexpected differences
-(`test-results-0.3.1.0.tar.gz` member
-`test-results-0.3.1.0/demo/compare/compare-*/classification.txt`).
+The [November 25 CI run](https://github.com/mingulov/haskoki/actions/runs/45628210649)
+passed the demo-image driver on checker 0.3.1 with the v0.6.0.0 candidate
+image. These counters come from its reports, recorded in the
+[JSON summary](release-results/summary.json). The run tested the PR #44
+merge-ref `b25fc8c`, whose tree is byte-identical to the `fdfcb950`
+release source. The October 8 baseline (checker 0.2.3 era) is archived in
+the summary's `historical_snapshot`.
 
 | Profile | Mode | Collected | Passed | Findings | Skipped | Expected failures | Exit |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Smoke | Direct | 743 | 373 | 0 | 364 | 6 | 0 |
-| Smoke | Proxy | 743 | 374 | 0 | 364 | 5 | 0 |
-| Full | Direct | 10,993 | 5,060 | 22 | 4,963 | 948 | 1 |
-| Full | Proxy | 10,993 | 5,021 | 22 | 4,963 | 987 | 1 |
+| Smoke | Direct | 791 | 407 | 0 | 364 | 20 | 0 |
+| Smoke | Proxy | 791 | 407 | 0 | 364 | 20 | 0 |
+| Full | Direct | 11,466 | 5,756 | 24 | 5,043 | 643 | 1 |
+| Full | Proxy | 11,466 | 5,695 | 24 | 5,043 | 704 | 1 |
 
 All four reports record zero runner errors, crashes, and timeouts. Collected
 counts include skips and expected failures; they do not count passing tests
@@ -26,40 +24,56 @@ feature coverage or conformance.
 
 ## What the findings mean
 
-The October baseline above had 22 findings. After the v0.5 provider fixes
-and the derive-default re-freeze, the full profile has **21**, measured
-on the v0.5.0.0 candidate (direct: 10,973 collected, 5,430 passed, 21
-findings, 4,960 skipped, 562 expected failures; proxy: 10,973 collected,
-5,369 passed, 21 findings, 4,960 skipped, 623 expected failures; checker
-0.2.3, proxy v0.2.2). The v0.5.0.0 release run found the same 21 on the
-published image. The four findings that left are listed first.
+The full profile has **24** findings, all provider-owned value-encoding
+gaps (checker 0.3.1, proxy v0.3.1):
 
 | Family | Count | Cause |
 | --- | ---: | --- |
-| GMAC message shape | 0 (was 2) | Resolved: AES-GMAC no longer advertises `CKF_MESSAGE_SIGN`/`CKF_MESSAGE_VERIFY`, because the specification defines no message-API parameter shape for it; the checker no longer collects its ten message test ids. Single-part `CK_GCM_PARAMS` sign/verify is unchanged |
-| HOTP parameters | 0 (was 2) | Resolved: HOTP takes the standard `CK_OTP_PARAMS` and has no message API, so no message flags are advertised. Profile: keys are `CKO_SECRET_KEY` objects of type `CKK_HOTP` (not `CKO_OTP_KEY`), the output is the raw ASCII digit string (not `CK_OTP_SIGNATURE_INFO`), and the `CK_OTP_COUNTER` entry is required because no token counter is kept |
-| BLAKE2B key type | 16 | Checker defect: its "wrong" key is a generic secret, which PKCS#11 allows for BLAKE2B HMAC |
-| Async child results | 2 | Checker ctypes binding problem before the module call |
-| X9.42 derive default | 3 | Checker assumption: it generates X9.42 pairs without `CKA_DERIVE=TRUE`, while Haskoki follows PKCS#11 3.2 Table 26 (new keys default false); filed upstream as [pkcs11-check#62](https://github.com/mingulov/pkcs11-check/issues/62). Native legs pin the parameter refusals with a derive-capable base (`tests/c/consumer_x942_derive.c`) |
+| Attribute value encodings | 12 | Provider gap: `CKA_VALUE` reads return DER/textual forms instead of raw bytes (known DER read-back limitation); covers PQC public lengths, EC-family known material, public-value absence, and generated/imported equivalence |
+| Protected-component size/read | 8 | Provider gap: unsealed import reads report impossible lengths (size/bytes encoding mismatch, same DER family) |
+| BLAKE2 generic-secret message | 4 | Provider gap: output mismatch specific to the generic-secret import path; sibling keyed-BLAKE2 tests pass |
+
+The 0.2.3-era checker-side families are gone with checker 0.3.1: the
+async-ctypes binding failures and the X9.42 `CKA_DERIVE` default
+assumption ([pkcs11-check#62](https://github.com/mingulov/pkcs11-check/issues/62))
+no longer appear, and the sixteen BLAKE2B key-type cases were replaced
+by the checker's new message-interface coverage, which exposes the four
+genuine import-path gaps above. The DES-parity family (21 cases) was
+fixed provider-side by the FIPS 46-3 odd-parity adjustment and retired
+from the ledger.
 
 The set is shared by direct and proxy modes, with no proxy-only findings in
 this baseline. [Qualification notes](pkcs11-oracle-triage.md) explain the
 inputs and attribution. Findings remain visible as failed outcomes.
 
-On the published v0.5.0.0 image the comparison accepts only **61 frozen
-exclusions in five reason families** and **21 shared findings**, with zero
-allowed variance (the v0.4.0.0 image's classifier accepted 83
-and 22). The
+On the v0.6.0.0 candidate image the comparison accepts only **65 frozen
+exclusions in six reason families** (A-msg-init-0x71: 34, B-blowfish: 20,
+C-tls12: 2, D-wtls: 3, E-boundary: 2, F-collection: 4) and **24 shared
+findings**, with zero allowed variance (the v0.5.0.0 image's classifier
+accepted 61 and 21). The
 [per-case exclusions](../examples/release/compare-classify/frozen-subset.tsv)
 and [shared finding IDs](../examples/release/compare-classify/frozen-shared.txt)
 are checked by [the demo driver](../scripts/test-demo-image.sh). These are
 checker comparison sets; native consumer transport exclusions are maintained
 separately by [the parity driver](../scripts/test-proxy-parity.sh).
 
+## Client journeys
+
+OpenSC `pkcs11-tool`, GnuTLS, Java (SunPKCS11) and OpenSSL pass **61 of
+61** legs against the installed 0.6.0.0 bundle and **28 of 28** in the
+candidate demo image, recorded in
+[client-journeys.json](release-results/client-journeys.json). Both runs
+were replayed locally from the November 25 CI artifacts
+(`release-bundle` artifact 15031955815, re-tared to the harness layout
+with identical inner bytes; `demo-image-tested` artifact 15037407080,
+image `0074ddc8…f54dd`) with the legs.json-pinned clients in
+`ubuntu:26.04`, following the qualification recipe; both carry module
+`68d81bb6…f975` and pass the driver's own `--check`.
+
 ## Run and interpret the checks
 
 [Try Haskoki](try-it.md) gives the image setup and commands. The image pins
-`pkcs11-check` 0.3.0 and `pkcs11-proxy-ng` v0.3.1. Smoke/full select offline
+`pkcs11-check` 0.3.1 and `pkcs11-proxy-ng` v0.3.1. Smoke/full select offline
 cases, excluding vector corpora, stress, fuzz, and slow tests. Timeouts are
 180 seconds per direct case and 360 per proxy case. `doctor` must pass first.
 
@@ -109,5 +123,9 @@ without it; both exited 0. An exit code alone cannot establish vector coverage.
 
 Earlier measured counters are retained in the summary's `historical_snapshot`
 with their older
-27-finding and 11,003-collected figures. The [vector snapshot](release-results/environment.json)
-records the dated corpus pins and download sizes.
+27-finding and 11,003-collected figures, plus the October 8 baseline lanes.
+The [vector snapshot](release-results/environment.json)
+records the dated corpus pins and download sizes. The November 25 KAT run
+(checker 0.3.1, same CI run as the baseline above) fetched and ran four
+corpora: wycheproof `65ca494727a5`, cctv `b88c4b206254`, acvp
+`975de31eb83d`, and x509-limbo `519f4bcf6a31`.
