@@ -2740,7 +2740,7 @@ int main(int argc, char **argv) {
     }
     /* ML-DSA: keypair (the set rides the public template; the
      * mechanism takes no parameter) -> sign/verify. The struct
-     * is OPTIONAL (OASIS v3.2: absent means hedge-preferred,
+     * is OPTIONAL (PKCS #11 v3.2: absent means hedge-preferred,
      * empty context): NULL params serve — same as EdDSA.
      * Hedge 0/1/2 serve; anything else refuses
      * ARGUMENTS_BAD. */
@@ -3040,7 +3040,7 @@ int main(int argc, char **argv) {
     }
     /* DES3-MAC: keygen (16/24 via CKA_VALUE_LEN) -> sign/verify.
      * The plain row emits the first 4 of the CBC-MAC block (the
-     * OASIS half-block rule); the GENERAL row the requested
+     * spec half-block rule); the GENERAL row the requested
      * 1..8 prefix. Ragged input zero-pads. */
     {
       CK_KEY_TYPE dkt = CKK_DES3;

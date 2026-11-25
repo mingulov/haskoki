@@ -686,7 +686,7 @@ static CK_RV on_GetInfo(CK_INFO_PTR pInfo) {
   /* Pure static metadata: callable before C_Initialize and after
    * C_Finalize, without entering Haskell. */
   /* Cryptoki-version ruling (spec-verified, kept at {2,40} on every table):
-   * OASIS PKCS#11 Base v3.0 §5.4.3/CK_INFO says "For libraries
+   * PKCS #11 Base v3.0 §5.4.3/CK_INFO says "For libraries
    * written to this document, the value of cryptokiVersion should
    * match the version of this specification" — SHOULD, not MUST —
    * while CK_FUNCTION_LIST_3_0.version "must be 3.0 at minimum"

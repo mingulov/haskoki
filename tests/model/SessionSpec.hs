@@ -264,7 +264,7 @@ caseContextEligible = do
 -- | Private-object creation admission per login: public objects
 -- admit everywhere, while private objects admit only under the
 -- normal user (plain or holding a context grant). The SO joins
--- public in denial (OASIS PKCS#11 3.2 §5.7.1-5.7.2); the denial is
+-- public in denial (PKCS #11 3.2 §5.7.1-5.7.2); the denial is
 -- CKR_USER_NOT_LOGGED_IN.
 caseAdmitPrivateRoles :: IO ()
 caseAdmitPrivateRoles = do

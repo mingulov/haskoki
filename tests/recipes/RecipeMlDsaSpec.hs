@@ -3,7 +3,7 @@
 The ML-DSA group: one header mechanism, @CKM_ML_DSA@, with the
 optional @CK_SIGN_ADDITIONAL_CONTEXT@ parameter shape —
 @mldsa-params\/1@: a hedge word plus a context string (our
-engine convention). The struct is OPTIONAL (OASIS v3.2
+engine convention). The struct is OPTIONAL (PKCS #11 v3.2
 §ML-DSA Signature: no parameter means hedge-preferred with an
 empty context — the opposite of EdDSA): missing parameters
 decode to the default and validate. All three hedge variants
@@ -15,7 +15,7 @@ comes from the key's SPKI OID. @CKM_HASH_ML_DSA@ and its
 10 hash-specific variants stay catalog-only (haskoki does not
 implement the documented external-prehash plus unencoded-sign
 path), and @CKM_ML_DSA_EXTERNAL_MU[_GEN]@ are out of
-scope (absent from the OASIS 3.2 header).
+scope (absent from the 3.2 header).
 'Haskoki.Recipe.MlDsa' owns the group's canonical codec,
 parameter validation, and mechanism table; these tests pin the
 recipe and its consumers:

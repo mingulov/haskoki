@@ -442,7 +442,7 @@ planCipherFinal ops st kind _name = case withCipherSlot ops kind of
           )
 
 -- | Drop a decrypt final's link to its combined peer (digest or
--- verify) WITHOUT feeding the peer. OASIS PKCS#11 v3.0 §5.17.2
+-- verify) WITHOUT feeding the peer. PKCS #11 v3.0 §5.17.2
 -- (§5.17.4 for verify) links the operations only through the
 -- combined update call: the decrypt final feeds nothing, and the
 -- caller passes the recovered tail through an explicit peer

@@ -46,7 +46,7 @@ GENERATED_NOTE_PREFIX = "Catalog-only (generator note):"
 # emitted to attributes.json (template_rules) and to
 # core/Haskoki/Attribute/Generated.hs (generatedTemplateRules, enforced
 # by Haskoki.Object.checkRules at the strict keygen/pairgen paths).
-# Full base-spec required/forbidden tables need the OASIS prose, which
+# Full base-spec required/forbidden tables need the spec prose, which
 # is not vendored: see spec/source-issues.json GAP-TEMPLATES (named gap, never
 # invented). Forbidden lists stay empty until prose-grounds exist;
 # value-context forbiddens (wrong class/key-type, pair disagreements,
@@ -302,7 +302,7 @@ def main():
                        "header; template_rules is the generator-owned "
                        "reviewed subset (each rule cites its in-repo "
                        "source), enforced by Haskoki.Object.checkRules. "
-                       "Full base-spec tables need the OASIS prose (not "
+                       "Full base-spec tables need the spec prose (not "
                        "vendored): see source-issues.json GAP-TEMPLATES."),
     }
     ATTR_PATH.write_text(json.dumps(doc, indent=2) + "\n")

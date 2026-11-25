@@ -1,5 +1,5 @@
 /* tests/c/consumer_derive_protection.c — byte-derivation
- * preserves source protection (OASIS PKCS#11 3.2 §6.43.3–§6.43.7).
+ * preserves source protection (PKCS #11 3.2 §6.43.3–§6.43.7).
  *
  * A protected derivable generic-secret fixture (sensitive, unextractable,
  * unreadable positive control) must not produce a readable child through

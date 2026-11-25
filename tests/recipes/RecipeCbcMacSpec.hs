@@ -3,7 +3,7 @@
 The CBC-MAC group: 6 header mechanisms sharing the MAC parameter
 shape across three 16-byte-block ciphers (AES, ARIA, Camellia) —
 plain rows take empty parameters (@no-params\/1@) and emit the
-first 8 bytes of the final CBC-MAC block (the OASIS half-block
+first 8 bytes of the final CBC-MAC block (the spec half-block
 rule), GENERAL rows take the 8-byte tag length (@mac-general\/1@,
 the HMAC convention, reused verbatim) and emit its first 1..16
 bytes. Keys are 128\/192\/256-bit cipher keys; input zero-pads

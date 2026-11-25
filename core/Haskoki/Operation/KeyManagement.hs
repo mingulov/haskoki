@@ -1148,7 +1148,7 @@ pendingWantsTrusted pw = any isTrusted (pendingObjects pw)
 
 -- | Writability over the objects a key plan will create: read-only
 -- sessions admit session objects and deny token objects
--- (OASIS PKCS#11 Base v3.0 §5.7.1-5.7.3, via 'admitWritable').
+-- (PKCS #11 Base v3.0 §5.7.1-5.7.3, via 'admitWritable').
 -- Length queries and wrap paths create nothing and always admit.
 admitPending :: SessionState -> PendingWork -> Either KeyDeny ()
 admitPending st pw =
@@ -2236,7 +2236,7 @@ pendingFromAttrs st attrs = PendingObject
   , poSlot = ssSlot st
   }
 
--- | Required byte-operation child protection (OASIS PKCS#11 3.2
+-- | Required byte-operation child protection (PKCS #11 3.2
 -- §6.43.3–§6.43.7): sensitivity is required when any input key is
 -- sensitive; nonextractability is required when any input key is
 -- unextractable. Source values decide through the effective view
@@ -2670,7 +2670,7 @@ kemNoDerive raw attrs
         "KEM keys do not derive: CKA_DERIVE must not be true")
   | otherwise = Right (Map.insert AttrDerive (ValBool False) attrs)
 
--- | The ML-KEM parameter set for a pair: the OASIS keygen
+-- | The ML-KEM parameter set for a pair: the spec keygen
 -- input @AttrParameterSet@ (@CKP_ML_KEM_512\/768\/1024@ =
 -- 1\/2\/3, the 'mldsaSetOf' precedent) wins when present; the
 -- internal @AttrKemAlg@ tag (512\/768\/1024) serves callers
@@ -2720,7 +2720,7 @@ kemAlgOf pubA privA = do
 
 -- | The ML-DSA parameter-set id for a pair: the public
 -- template's @AttrParameterSet@ (@CKP_ML_DSA_44\/65\/87@ =
--- 1\/2\/3, the OASIS keygen input), which the private template
+-- 1\/2\/3, the spec keygen input), which the private template
 -- inherits when absent and must agree with when present.
 -- Absent everywhere defaults to 65 (the 'kemAlgOf' precedent:
 -- the middle set, as KEM defaults 768).
@@ -2752,7 +2752,7 @@ mldsaSetOf pubA privA = case Map.lookup AttrParameterSet pubA of
 
 -- | The SLH-DSA parameter-set id for a pair: the public
 -- template's @AttrParameterSet@ (@CKP_SLH_DSA_*@ = 1..12, the
--- OASIS keygen input), which the private template inherits
+-- spec keygen input), which the private template inherits
 -- when absent and must agree with when present. Absent
 -- everywhere defaults to 1 (SLH-DSA-SHA2-128s, the first set
 -- and the driver's unscannable-key default).

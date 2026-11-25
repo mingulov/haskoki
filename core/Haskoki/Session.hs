@@ -374,7 +374,7 @@ admitToken rules seatedCount
 -- target object's owner: the ONE pure writability decision.
 -- Read/write sessions admit everything; read-only sessions admit
 -- session objects and deny token objects with 'AdmitReadOnly'
--- (OASIS PKCS#11 Base v3.0 §5.7.1-5.7.3: "only session objects
+-- (PKCS #11 Base v3.0 §5.7.1-5.7.3: "only session objects
 -- can be created/destroyed during a read-only session"). Every
 -- creation path (create, copy, generate, keypair, unwrap, derive,
 -- encapsulate, decapsulate) and every mutation of an existing
@@ -385,7 +385,7 @@ admitToken rules seatedCount
 -- pure crypto, wrap (no object created), session lifecycle, and
 -- random generation are ungated (no object mutation). Public
 -- token objects stay mutable from public read/write sessions: the
--- selected standard baseline (OASIS PKCS#11 3.2 sections 5.7.1-5.7.3
+-- selected standard baseline (PKCS #11 3.2 sections 5.7.1-5.7.3
 -- and usage guide 2.6.3-2.6.4) restricts only private
 -- creation/destruction to the normal user and token changes to
 -- read/write sessions, so no universal login check belongs here.
@@ -397,7 +397,7 @@ admitWritable readOnly isToken
 -- | Admit private-object creation against the session login: only
 -- the normal user (plain or holding a context grant) admits; public
 -- and SO sessions creating a private object deny with
--- 'AdmitLoginRequired' (OASIS PKCS#11 3.2 §5.7.1-5.7.2: private
+-- 'AdmitLoginRequired' (PKCS #11 3.2 §5.7.1-5.7.2: private
 -- objects are created under a user login — SO authentication is a
 -- distinct role that administers public objects only). Checked
 -- before 'admitWritable': authentication outranks the session mode.

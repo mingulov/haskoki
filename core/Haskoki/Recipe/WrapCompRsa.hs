@@ -1,7 +1,7 @@
 {- | The wrap-composition RSA recipe: the single header mechanism
 @CKM_RSA_AES_KEY_WRAP@ (0x1054) and its canonical parameters.
 
-The construction (OASIS PKCS#11 v3.2 §2: RSA-AES key wrap): the
+The construction (PKCS #11 v3.2 §2: RSA-AES key wrap): the
 caller names an AES strength plus an OAEP frame; wrap mints a
 random temp KEK at that strength, RSA-OAEP-seals it under the
 recipient PUBLIC key, KWP-seals the target under the KEK, and

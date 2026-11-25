@@ -5,7 +5,7 @@ if you want to trace a policy from a user call to durable state.
 
 ## The rule
 
-Logging out a slot (OASIS PKCS#11 3.2, section 5.6.10):
+Logging out a slot (PKCS #11 3.2, section 5.6.10):
 
 - destroys every **private session object** on that slot;
 - stale-marks the handles bound to private objects there (destroyed

@@ -10,26 +10,26 @@
         "S-30 (pkcs11-base-v3.0-os.html, Related Work ALERT: attached headers outdated, may contain serious flaws; corrected headers at the TC)",
         "S-30-TC (TC published/3-00-errata-1 at pinned commit 2aee0a6)"
       ],
-      "inconsistency": "The S-30 publication explicitly warns that its own attached header set is outdated and flawed. Measured diff of the vendored OASIS attached set vs the TC corrected set (119 diff lines in pkcs11t.h, 27 in pkcs11f.h, 19 in pkcs11.h): (a) typo fixes with backward-compatible aliases in TC (CKM_DSA_PROBABLISTIC->PROBABILISTIC, CKF_MULTI_MESSGE->MULTI_MESSAGE, CKM_SHA3/SHAKE_*_KEY_DERIVE->KEY_DERIVATION); (b) TC additions (CKK_SHA512_224/256/T_HMAC, CKA_X2RATCHET_* 0x602-0x612, CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS, CKM_DSA_FIPS_G_GEN, CKM_SALSA20_KEY_GEN, CKR_OPERATION_CANCEL_FAILED, CKG_MGF1_SHA3_*, CK_SP800_108_*); (c) TC removals (CKM_TLS10_MAC_SERVER/CLIENT 0x3D6/0x3D7 present only in the attached set); (d) C_DecryptMessageNext parameter renames in TC (ABI-neutral, prose-aligned). The 92-entry function-pointer order is identical in both sets.",
+      "inconsistency": "The S-30 publication explicitly warns that its own attached header set is outdated and flawed. Measured diff of the vendored upstream attached set vs the TC corrected set (119 diff lines in pkcs11t.h, 27 in pkcs11f.h, 19 in pkcs11.h): (a) typo fixes with backward-compatible aliases in TC (CKM_DSA_PROBABLISTIC->PROBABILISTIC, CKF_MULTI_MESSGE->MULTI_MESSAGE, CKM_SHA3/SHAKE_*_KEY_DERIVE->KEY_DERIVATION); (b) TC additions (CKK_SHA512_224/256/T_HMAC, CKA_X2RATCHET_* 0x602-0x612, CKM_EC_KEY_PAIR_GEN_W_EXTRA_BITS, CKM_DSA_FIPS_G_GEN, CKM_SALSA20_KEY_GEN, CKR_OPERATION_CANCEL_FAILED, CKG_MGF1_SHA3_*, CK_SP800_108_*); (c) TC removals (CKM_TLS10_MAC_SERVER/CLIENT 0x3D6/0x3D7 present only in the attached set); (d) C_DecryptMessageNext parameter renames in TC (ABI-neutral, prose-aligned). The 92-entry function-pointer order is identical in both sets.",
       "affected": "ABI constants/identifiers for interface 3.0 (no function-table layout effect: order and count identical). Using the attached set would bake wrong/outdated mechanism, attribute, key-type and return-code constants.",
-      "decision": "SELECT TC published/3-00-errata-1 as the interface 3.0 family (newest corrected TC source in the 3.00 lineage; its pkcs11.h matches the TC 3.1 pkcs11.h blob, showing the lineage converged). REJECT the OASIS attached set; it is vendored under spec/vendor/oasis-3.0-attached/ as evidence only and is never a generation or probe input (validate-spec.py enforces role=rejected exclusion). HISTORICAL: the OASIS/TC sets were removed in the SRC-08 public-domain migration; interface 3.0 is now a positional prefix of the single PD header.",
+      "decision": "SELECT TC published/3-00-errata-1 as the interface 3.0 family (newest corrected TC source in the 3.00 lineage; its pkcs11.h matches the TC 3.1 pkcs11.h blob, showing the lineage converged). REJECT the upstream attached set; it was vendored under spec/vendor/ as evidence only (removed in SRC-08) and was never a generation or probe input (validate-spec.py enforces role=rejected exclusion). HISTORICAL: the publication/TC sets were removed in the SRC-08 public-domain migration; interface 3.0 is now a positional prefix of the single PD header.",
       "scope": "Source lock for interface 3.0; generation, probes and Types.hsc all consume the TC errata set.",
       "tests": "scripts/validate-spec.py (lock roles, no rejected input); scripts/generate-abi.py (function order parsed from the selected set); tests/c/layout_300.c (compiled against the selected set).",
       "blocks_completeness": false
     },
     {
       "id": "SRC-02",
-      "title": "3.1 OASIS publication vs TC mirror differ",
+      "title": "3.1 upstream publication vs TC mirror differ",
       "status": "resolved",
       "sources": [
-        "S-31 (OASIS 3.1 header directory)",
+        "S-31 (upstream 3.1 header directory)",
         "S-HEAD31 (TC published/3-01 at pinned commit 2aee0a6)"
       ],
-      "inconsistency": "The OASIS 3.1 set and the TC 3-01 set differ by 19 diff lines per file, ALL inside the top license/banner comment (OASIS OS banner vs older TC IPR banner). Zero non-comment bytes differ: function order (92), struct layouts, constants and prototypes are identical.",
+      "inconsistency": "The upstream 3.1 set and the TC 3-01 set differ by 19 diff lines per file, ALL inside the top license/banner comment (upstream OS banner vs older TC IPR banner). Zero non-comment bytes differ: function order (92), struct layouts, constants and prototypes are identical.",
       "affected": "None (ABI-identical). Provenance choice only.",
-      "decision": "SELECT the OASIS publication as the interface 3.1 family (immutable OASIS Standard); vendor the TC set as a corroborating mirror. Either input would generate identical ABI artifacts. HISTORICAL: the OASIS/TC sets were removed in the SRC-08 public-domain migration; interface 3.1 is now a positional prefix of the single PD header.",
+      "decision": "SELECT the upstream publication as the interface 3.1 family (immutable published standard); vendor the TC set as a corroborating mirror. Either input would generate identical ABI artifacts. HISTORICAL: the publication/TC sets were removed in the SRC-08 public-domain migration; interface 3.1 is now a positional prefix of the single PD header.",
       "scope": "Source lock for interface 3.1.",
-      "tests": "scripts/validate-spec.py (both hashes verified; generate-abi.py asserts parsed function orders match); tests/c/layout_310.c (compiled against the OASIS set).",
+      "tests": "scripts/validate-spec.py (both hashes verified; generate-abi.py asserts parsed function orders match); tests/c/layout_310.c (compiled against the upstream set).",
       "blocks_completeness": false
     },
     {
@@ -37,29 +37,29 @@
       "title": "3.2 S-32-INCLUDE vs TC mirror reconciliation",
       "status": "resolved",
       "sources": [
-        "S-32-INCLUDE (OASIS 3.2 header directory, 03-Jun-2026)",
+        "S-32-INCLUDE (upstream 3.2 header directory, 03-Jun-2026)",
         "S-HEAD32 (TC published/3-02 at pinned commit 2aee0a6)"
       ],
       "inconsistency": "None found: S-32-INCLUDE and the TC 3-02 mirror are byte-identical (all three SHA-256 match). No prose/header or mirror divergence at the ABI file level. Closes the header-family plan gap.",
       "affected": "None.",
-      "decision": "SELECT the OASIS publication as the interface 3.2 family; vendor the TC set as a corroborating mirror. HISTORICAL: the OASIS/TC sets were removed in the SRC-08 public-domain migration; the single PD header is now the only source.",
+      "decision": "SELECT the upstream publication as the interface 3.2 family; vendor the TC set as a corroborating mirror. HISTORICAL: the publication/TC sets were removed in the SRC-08 public-domain migration; the single PD header is now the only source.",
       "scope": "Source lock for interface 3.2.",
-      "tests": "scripts/validate-spec.py (hash equality of both sets); tests/c/layout_320.c (compiled against the OASIS set).",
+      "tests": "scripts/validate-spec.py (hash equality of both sets); tests/c/layout_320.c (compiled against the upstream set).",
       "blocks_completeness": false
     },
     {
       "id": "SRC-04",
-      "title": "2.40 OASIS errata01 vs TC mirror reconciliation",
+      "title": "2.40 upstream errata01 vs TC mirror reconciliation",
       "status": "resolved",
       "sources": [
-        "S-240 (OASIS 2.40+Errata01 header directory)",
+        "S-240 (upstream 2.40+Errata01 header directory)",
         "S-240-TC (TC published/2-40-errata-1 at pinned commit 2aee0a6)"
       ],
-      "inconsistency": "None found: the OASIS errata01 set and the TC 2-40-errata-1 mirror are byte-identical (all three SHA-256 match).",
+      "inconsistency": "None found: the upstream errata01 set and the TC 2-40-errata-1 mirror are byte-identical (all three SHA-256 match).",
       "affected": "None.",
-      "decision": "SELECT the OASIS publication as the interface 2.40 family; vendor the TC set as a corroborating mirror. HISTORICAL: the OASIS/TC sets were removed in the SRC-08 public-domain migration; interface 2.40 is now a positional prefix of the single PD header.",
+      "decision": "SELECT the upstream publication as the interface 2.40 family; vendor the TC set as a corroborating mirror. HISTORICAL: the publication/TC sets were removed in the SRC-08 public-domain migration; interface 2.40 is now a positional prefix of the single PD header.",
       "scope": "Source lock for interface 2.40.",
-      "tests": "scripts/validate-spec.py (hash equality of both sets); tests/c/layout_240.c (compiled against the OASIS set).",
+      "tests": "scripts/validate-spec.py (hash equality of both sets); tests/c/layout_240.c (compiled against the upstream set).",
       "blocks_completeness": false
     },
     {
@@ -78,15 +78,15 @@
     },
     {
       "id": "SRC-06",
-      "title": "3.1 file banner date (2023) vs OASIS directory listing date (2024)",
+      "title": "3.1 file banner date (2023) vs upstream directory listing date (2024)",
       "status": "resolved",
       "sources": [
         "S-31 file banners ('PKCS #11 Specification Version 3.1, 23 July 2023')",
         "S-31 directory listing (23-Jul-2024)"
       ],
-      "inconsistency": "The three OASIS 3.1 files banner themselves '23 July 2023' while the OASIS directory listing dates them 23-Jul-2024 (likely a site-migration timestamp). One-year metadata mismatch; file bytes are unaffected.",
+      "inconsistency": "The three upstream 3.1 files banner themselves '23 July 2023' while the upstream directory listing dates them 23-Jul-2024 (likely a site-migration timestamp). One-year metadata mismatch; file bytes are unaffected.",
       "affected": "None (provenance metadata only).",
-      "decision": "Record both dates verbatim in sources.lock.json (banner as publication, listing as observed fetch metadata). No ABI impact; no further action. HISTORICAL: the OASIS 3.1 set was removed in the SRC-08 public-domain migration.",
+      "decision": "Record both dates verbatim in sources.lock.json (banner as publication, listing as observed fetch metadata). No ABI impact; no further action. HISTORICAL: the upstream 3.1 set was removed in the SRC-08 public-domain migration.",
       "scope": "Provenance note only.",
       "tests": "None required (informational).",
       "blocks_completeness": false
@@ -114,14 +114,14 @@
     },
     {
       "id": "SRC-08",
-      "title": "OASIS/TC sets removed; single latchset public-domain header selected",
+      "title": "publication/TC sets removed; single latchset public-domain header selected",
       "status": "resolved",
       "sources": [
         "S-PD-32 (latchset/pkcs11-headers public-domain/3.2/pkcs11.h at pinned commit c5e6199, vendored verbatim as spec/vendor/pkcs11.h)"
       ],
-      "inconsistency": "The eight vendored OASIS/TC header sets (24 files) carry the non-open OASIS IPR license ('All Rights Reserved'), including the copy shipped to consumers in the release artifact. The latchset public-domain headers are a clean-room functional rewrite, but they differ in form: single-file layout, no CK_PKCS11_FUNCTION_INFO/CK_NEED_ARG_LIST idiom, no alias-style defines, and deprecated spellings gated behind PKCS11_DEPRECATED.",
+      "inconsistency": "The eight vendored publication/TC header sets (24 files) carry the non-open upstream IPR license ('All Rights Reserved'), including the copy shipped to consumers in the release artifact. The latchset public-domain headers are a clean-room functional rewrite, but they differ in form: single-file layout, no CK_PKCS11_FUNCTION_INFO/CK_NEED_ARG_LIST idiom, no alias-style defines, and deprecated spellings gated behind PKCS11_DEPRECATED.",
       "affected": "Every generation input and every C compile: header paths, parsers, lock roles, catalog source refs, and the shipped smoke headers.",
-      "decision": "Vendor ONLY the latchset public-domain v3.2 header, verbatim under its upstream name (spec/vendor/pkcs11.h, hash-pinned in sources.lock.json S-PD-32). One file suffices: v3.2 is a strict superset of every older interface (all 564+729+743 names present, same values, bit-identical struct layouts over all structs, same 68/92/92/104 function order), verified by differential audit at migration time. Older interfaces are positional prefixes of the 3.2 order with boundary pins (68 C_WaitForSlotEvent, 92 C_MessageVerifyFinal, 104 C_UnwrapKeyAuthenticated); any reorder fails loudly. baseline_versions is dropped from the catalogs (it was write-only metadata, consumed by nothing, and unverifiable from one header); source_refs collapse to the single canonical citation. The only deprecated-gated name our C uses (the DSA typo spelling asserted in tests/c/layout_300.c) is exposed by -DPKCS11_DEPRECATED=1 on that one probe compile. Regenerated catalogs are name/value/alias-identical to the OASIS era; the SRC-01 TC-vs-attached differences (incl. the TLS10_MAC 3.0 gap) are moot with no 3.0 source left. SRC-01..SRC-04 and SRC-06 are superseded historical records of the OASIS era.",
+      "decision": "Vendor ONLY the latchset public-domain v3.2 header, verbatim under its upstream name (spec/vendor/pkcs11.h, hash-pinned in sources.lock.json S-PD-32). One file suffices: v3.2 is a strict superset of every older interface (all 564+729+743 names present, same values, bit-identical struct layouts over all structs, same 68/92/92/104 function order), verified by differential audit at migration time. Older interfaces are positional prefixes of the 3.2 order with boundary pins (68 C_WaitForSlotEvent, 92 C_MessageVerifyFinal, 104 C_UnwrapKeyAuthenticated); any reorder fails loudly. baseline_versions is dropped from the catalogs (it was write-only metadata, consumed by nothing, and unverifiable from one header); source_refs collapse to the single canonical citation. The only deprecated-gated name our C uses (the DSA typo spelling asserted in tests/c/layout_300.c) is exposed by -DPKCS11_DEPRECATED=1 on that one probe compile. Regenerated catalogs are name/value/alias-identical to the upstream era; the SRC-01 TC-vs-attached differences (incl. the TLS10_MAC 3.0 gap) are moot with no 3.0 source left. SRC-01..SRC-04 and SRC-06 are superseded historical records of the upstream era.",
       "scope": "Source lock (one source, one file); scripts/hdr_parse.py (single-file parse, deprecated-aware canonical rule); generators (single source_ref, no baselines); all C compiles (-Ispec/vendor); release smoke headers; catalog JSONs.",
       "tests": "scripts/validate-spec.py (LOCK-SELECTION single-header tripwire, PD-LOCK marker check, SPOT-CHECKS boundary pins, INVENTORY-FRESH); scripts/check-denominators.py (480/160/13/69/104 byte-exact); tests/c/layout_*.c (recompiled against the single header); scripts/test-release-install.sh (clean-container proof).",
       "blocks_completeness": false
@@ -143,7 +143,7 @@
       "disposition": {
         "owner": "mechanism maintainer",
         "phase": "0.6.1",
-        "trigger": "OASIS base-spec template prose vendored (or byte-locked template-table extract with redistribution clearance) + per-creation-path supply/demand matrix recorded in the plan ledger",
+        "trigger": "base-spec template prose vendored (or byte-locked template-table extract with redistribution clearance) + per-creation-path supply/demand matrix recorded in the plan ledger",
         "exit_check": "TemplateRulesSpec + check-attributes + denominators passing on enforced per-class required/forbidden tables incl. C_CreateObject; forbidden lists stay empty until then",
         "stance": "deferred carry: reviewed 4-rule subset enforced; nothing invented"
       }
@@ -218,16 +218,16 @@
     },
     {
       "id": "GAP-CHACHA20-COUNTER",
-      "title": "CK_CHACHA20_PARAMS block-counter byte order is unspecified in the OASIS text",
+      "title": "CK_CHACHA20_PARAMS block-counter byte order is unspecified in the spec text",
       "status": "resolved",
       "sources": [
         "S-PD-32 header (CK_CHACHA20_PARAMS shape only)",
         "PKCS#11 chacha20.md working text (counter/nonce widths plus the IETF variant table; no byte-order sentence)",
         "RFC 8439 section 2.3 (ChaCha20 state words serialize little-endian)"
       ],
-      "inconsistency": "The OASIS text pins the counter widths (32/64 bits) and the IETF variant (96-bit nonce plus 32-bit counter) but never states the byte order of the pBlockCounter bytes. Counter value 1 as LE (01 00 00 00) vs BE (00 00 00 01) selects a different keystream, so the order is observable on the wire.",
+      "inconsistency": "The spec text pins the counter widths (32/64 bits) and the IETF variant (96-bit nonce plus 32-bit counter) but never states the byte order of the pBlockCounter bytes. Counter value 1 as LE (01 00 00 00) vs BE (00 00 00 01) selects a different keystream, so the order is observable on the wire.",
       "affected": "CKM_CHACHA20 native-struct intake only; the canonical chacha20-params/1 codec carries the counter as an integer and is unaffected.",
-      "decision": "Resolved 2026-11-19 (G1 closure slice): LE interpretation kept (RFC 8439 state-word order), evidenced by RecipeChacha20Spec caseNative (LE pin 0x1234, 64-bit width behavior), NativeParamsSpec struct chase, and the RFC 8439 section 2.4.2 consumer KAT (canonical codec unaffected: counter travels as an integer). Reopen iff OASIS pins big-endian (flip the decode together with the KAT counter bytes).",
+      "decision": "Resolved 2026-11-19 (G1 closure slice): LE interpretation kept (RFC 8439 state-word order), evidenced by RecipeChacha20Spec caseNative (LE pin 0x1234, 64-bit width behavior), NativeParamsSpec struct chase, and the RFC 8439 section 2.4.2 consumer KAT (canonical codec unaffected: counter travels as an integer). Reopen iff upstream pins big-endian (flip the decode together with the KAT counter bytes).",
       "scope": "Cipher group; blocks nothing (served under a documented interpretation).",
       "tests": "RecipeChacha20Spec:caseNative (LE pin 0x1234); NativeParamsSpec (struct chase); consumer_roundtrip (RFC 8439 2.4.2 KAT).",
       "blocks_completeness": false
@@ -239,11 +239,11 @@
       "sources": [
         "Per-name rationale in this GAP-ORACLE-NEW record and tests/model/MessageFlagBatterySpec.hs",
         "Pinned oracle pkcs11-check 0.2.2rc2 (src/pkcs11_check/testcases plus raw/types_std.py): id evidence per row",
-        "Pinned header spec/vendor/pkcs11.h: none of the 14 names carries a stable OASIS code point present in it"
+        "Pinned header spec/vendor/pkcs11.h: none of the 14 names carries a stable standard code point present in it"
       ],
-      "inconsistency": "The oracle names 14 mechanisms absent from spec/mechanisms.json names plus aliases; each needs an implement-vs-reason stance so no oracle-named mechanism is a silent third (the no-silent-thirds reasoned bucket). All 14 stances are REASON; none is implemented and none takes a numeric catalog row. Stances, faithful to the DG6 table: [DG6-01] CKM_AES_GCM_SIV -- id: oracle vendor 0x80000100 (testcases/acvp/aes/base_runner_aead.py:54); no OASIS point -- stance: REASON -- rationale: vendor-range id plus no backend GCM-SIV arm; needs backend survey plus vendor-range policy in a separate slice. [DG6-02] CKM_AES_XTS_KEY_GEN_VAL -- id: oracle-local alias of CKM_AES_XTS_KEY_GEN (testcases/mechanism_helpers.py:88-98) -- stance: REASON -- rationale: not a distinct mechanism; negative-only; covered by the tested CKM_AES_XTS_KEY_GEN row. [DG6-03] CKM_BLOWFISH_ECB -- id: none; oracle states not OASIS (testcases/test_blowfish.py:115) -- stance: REASON -- rationale: not an OASIS mechanism; no code point exists to row; sibling CBC rows stay served. [DG6-04] CKM_ECDSA_SHA -- id: none pinned; served rows are the digest-named ECDSA_SHA* set -- stance: REASON -- rationale: negative-only and alias-grade; bare SHA names no served digest row. [DG6-05] CKM_KMAC_128 -- id: none; vendor range, no OASIS point (testcases/test_remaining_gaps.py, testcases/test_extended_mechanisms.py:7) -- stance: REASON -- rationale: no code point plus needs a backend MAC arm and keygen rows; deferred to a KMAC slice. [DG6-06] CKM_KMAC_256 -- id: same as row 05 -- stance: REASON -- rationale: same as row 05. [DG6-07] CKM_ML_DSA_EXTERNAL_MU -- id: oracle-pinned 0x403C (raw/types_std.py:3347); absent from pinned header -- stance: REASON -- rationale: needs external-mu provider API survey plus KATs; joint slice with the deferred pre-hash PQC rows. [DG6-08] CKM_ML_DSA_EXTERNAL_MU_GEN -- id: oracle-pinned 0x403B (raw/types_std.py:3346); absent from pinned header -- stance: REASON -- rationale: same as row 07. [DG6-09] CKM_PKCS12_PBE_EXPORT -- id: oracle has_mechanism gate, skip-safe (testcases/test_remaining_gaps.py:1378-1382) -- stance: REASON -- rationale: PBE export framing unimplemented; no demo path. [DG6-10] CKM_PKCS12_PBE_IMPORT -- id: same as row 09 (testcases/test_remaining_gaps.py:1385-1386) -- stance: REASON -- rationale: PBE import framing unimplemented; no demo path. [DG6-11] CKM_RSA_PKCS_NULL -- id: no pinned id; oracle has_mechanism gate, skip-safe (testcases/test_remaining_gaps.py:1315-1317) -- stance: REASON -- rationale: no stable code point; raw-RSA semantics already served via CKM_RSA_X_509 (alias-grade). [DG6-12] CKM_SHAKE_128 -- id: oracle-local 0x418 (testcases/test_extended_mechanisms.py:87); absent from pinned header -- stance: REASON -- rationale: XOF digest needs the absent C_DigestXof surface; KDF extraction already served via CKM_SHAKE_128_KEY_DERIVATION; fixed-output-only advertisement would be dishonest. [DG6-13] CKM_SHAKE_256 -- id: oracle-local 0x419 (testcases/test_extended_mechanisms.py:88); absent from pinned header -- stance: REASON -- rationale: same as row 12. [DG6-14] CKM_TWOFISH_ECB -- id: none; oracle states not OASIS (testcases/test_twofish.py:115) -- stance: REASON -- rationale: not an OASIS mechanism; per-cipher decision coherent with the unsupported TWOFISH_CBC and TWOFISH_CBC_PAD rows.",
+      "inconsistency": "The oracle names 14 mechanisms absent from spec/mechanisms.json names plus aliases; each needs an implement-vs-reason stance so no oracle-named mechanism is a silent third (the no-silent-thirds reasoned bucket). All 14 stances are REASON; none is implemented and none takes a numeric catalog row. Stances, faithful to the DG6 table: [DG6-01] CKM_AES_GCM_SIV -- id: oracle vendor 0x80000100 (testcases/acvp/aes/base_runner_aead.py:54); no standard code point -- stance: REASON -- rationale: vendor-range id plus no backend GCM-SIV arm; needs backend survey plus vendor-range policy in a separate slice. [DG6-02] CKM_AES_XTS_KEY_GEN_VAL -- id: oracle-local alias of CKM_AES_XTS_KEY_GEN (testcases/mechanism_helpers.py:88-98) -- stance: REASON -- rationale: not a distinct mechanism; negative-only; covered by the tested CKM_AES_XTS_KEY_GEN row. [DG6-03] CKM_BLOWFISH_ECB -- id: none; oracle states non-standard (testcases/test_blowfish.py:115) -- stance: REASON -- rationale: not a standard mechanism; no code point exists to row; sibling CBC rows stay served. [DG6-04] CKM_ECDSA_SHA -- id: none pinned; served rows are the digest-named ECDSA_SHA* set -- stance: REASON -- rationale: negative-only and alias-grade; bare SHA names no served digest row. [DG6-05] CKM_KMAC_128 -- id: none; vendor range, no standard code point (testcases/test_remaining_gaps.py, testcases/test_extended_mechanisms.py:7) -- stance: REASON -- rationale: no code point plus needs a backend MAC arm and keygen rows; deferred to a KMAC slice. [DG6-06] CKM_KMAC_256 -- id: same as row 05 -- stance: REASON -- rationale: same as row 05. [DG6-07] CKM_ML_DSA_EXTERNAL_MU -- id: oracle-pinned 0x403C (raw/types_std.py:3347); absent from pinned header -- stance: REASON -- rationale: needs external-mu provider API survey plus KATs; joint slice with the deferred pre-hash PQC rows. [DG6-08] CKM_ML_DSA_EXTERNAL_MU_GEN -- id: oracle-pinned 0x403B (raw/types_std.py:3346); absent from pinned header -- stance: REASON -- rationale: same as row 07. [DG6-09] CKM_PKCS12_PBE_EXPORT -- id: oracle has_mechanism gate, skip-safe (testcases/test_remaining_gaps.py:1378-1382) -- stance: REASON -- rationale: PBE export framing unimplemented; no demo path. [DG6-10] CKM_PKCS12_PBE_IMPORT -- id: same as row 09 (testcases/test_remaining_gaps.py:1385-1386) -- stance: REASON -- rationale: PBE import framing unimplemented; no demo path. [DG6-11] CKM_RSA_PKCS_NULL -- id: no pinned id; oracle has_mechanism gate, skip-safe (testcases/test_remaining_gaps.py:1315-1317) -- stance: REASON -- rationale: no stable code point; raw-RSA semantics already served via CKM_RSA_X_509 (alias-grade). [DG6-12] CKM_SHAKE_128 -- id: oracle-local 0x418 (testcases/test_extended_mechanisms.py:87); absent from pinned header -- stance: REASON -- rationale: XOF digest needs the absent C_DigestXof surface; KDF extraction already served via CKM_SHAKE_128_KEY_DERIVATION; fixed-output-only advertisement would be dishonest. [DG6-13] CKM_SHAKE_256 -- id: oracle-local 0x419 (testcases/test_extended_mechanisms.py:88); absent from pinned header -- stance: REASON -- rationale: same as row 12. [DG6-14] CKM_TWOFISH_ECB -- id: none; oracle states non-standard (testcases/test_twofish.py:115) -- stance: REASON -- rationale: not a standard mechanism; per-cipher decision coherent with the unsupported TWOFISH_CBC and TWOFISH_CBC_PAD rows.",
       "affected": "No catalog row, projection, registry descriptor, flag, or route for any of the 14 names; C_GetMechanismList and C_GetMechanismInfo are unchanged (316 tested ids). The five pinned ids refuse as unknown mechanisms through classic init.",
-      "decision": "Record all 14 stances REASON with zero numeric catalog rows: a numeric row requires a stable OASIS code point present in (or confirmed for) the pinned header, and inventing code points -- including vendor-range allocation -- is out of slice. Header-absent names take no row; the five oracle-pinned ids (0x403B, 0x403C, 0x418, 0x419, 0x80000100) refuse (CKR_MECHANISM_INVALID, unknown mechanism) through classic init, pinned by the closed-set battery leg. Header-absent names without pinned ids are covered by this rationale, not by invented rows.",
+      "decision": "Record all 14 stances REASON with zero numeric catalog rows: a numeric row requires a stable standard code point present in (or confirmed for) the pinned header, and inventing code points -- including vendor-range allocation -- is out of slice. Header-absent names take no row; the five oracle-pinned ids (0x403B, 0x403C, 0x418, 0x419, 0x80000100) refuse (CKR_MECHANISM_INVALID, unknown mechanism) through classic init, pinned by the closed-set battery leg. Header-absent names without pinned ids are covered by this rationale, not by invented rows.",
       "scope": "DG6 stance register for the mechanisms slice: the no-silent-thirds reasoned bucket for all 14 oracle-new names.",
       "tests": "Closed-set battery leg DG6 closed set: pinned ids refuse unknown-mechanism in tests/model/MessageFlagBatterySpec.hs; task-m05 evidence (register field check, closed-set run, no-rows invariant, retained model plus engine suites).",
       "blocks_completeness": false

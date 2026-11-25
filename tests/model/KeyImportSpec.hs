@@ -684,7 +684,7 @@ caseEcScalarOrderWidths = do
     (planCreateObject m0 st (tmpl oid409k1 (BS.replicate 52 0x11)))
 
 -- | The scalar bound measures the integer, not the byte string
--- (OASIS Big integer has no minimal-encoding rule): zero-padded
+-- (spec big-integer has no minimal-encoding rule): zero-padded
 -- values load, all-zero (d=0) refuses, and over-wide integers
 -- refuse. Range above that (d < n) is NOT validated here —
 -- see the range-validation follow-up; d=n currently loads, pinned

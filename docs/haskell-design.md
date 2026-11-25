@@ -145,7 +145,7 @@ checklist above binds only extractions that happen.
 ### The logout journey
 
 `examples/haskell-reference/` carries one buildable program that
-teaches one checked rule — logout/object lifetime (OASIS PKCS#11
+teaches one checked rule — logout/object lifetime (PKCS #11
 3.2 5.6.10) — across the full pipeline: user call, `Request` ADT,
 `planCall` (`Reject` / `Immediate` / `Execute`), effect request,
 `finishEffect`, commit decision (`PreparedCommit`), in-memory
@@ -179,7 +179,7 @@ exactly the cases that own the mutated sub-rule.
 The same suite pins one variant, CKM_AES_GCM (`0x1087`): the exact
 init-frame bytes, the decoded triple, and the unit-stream cipher
 shape, plus a CKM_AES_CBC control vector. Expected bytes are
-hand-derived from the OASIS mechanism numbers and the documented
+hand-derived from the spec mechanism numbers and the documented
 frame layout (the parameter tail is an opaque 13-byte framing
 fixture, not inner GCM parameter structure). No codec source was
 touched; existing codec meanings stand.

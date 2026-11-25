@@ -2,7 +2,7 @@
 
 Two header mechanisms share the MAC parameter shape — the plain
 row takes empty parameters (@no-params\/1@) and emits the first
-4 bytes of the final CBC-MAC block (the OASIS half-block rule),
+4 bytes of the final CBC-MAC block (the spec half-block rule),
 the GENERAL row takes the 8-byte tag length
 (@mac-general\/1@, the HMAC convention, reused verbatim) and
 emits its first 1..8 bytes. Keys are two-key\/three-key 3DES
@@ -86,7 +86,7 @@ des3macKeyLens _ = [16, 24]
 des3macBlockLen :: Des3MacRecipe -> Int
 des3macBlockLen _ = 8
 
--- | Plain-row output width in bytes (the OASIS half-block rule:
+-- | Plain-row output width in bytes (the spec half-block rule:
 -- the first 4 of the final 8-byte CBC-MAC block).
 des3macPlainOutLen :: Des3MacRecipe -> Int
 des3macPlainOutLen _ = 4

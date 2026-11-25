@@ -1566,7 +1566,7 @@
         "max_key_size": 1568,
         "min_key_size": 800
       },
-      "notes": "pairgen from the public template CKA_PARAMETER_SET (CKP_ML_KEM_512/768/1024 = 1/2/3 via kemAlgOf, default 768, private inherits; the internal AttrKemAlg tag serves pre-resolved callers; unknown sets and disagreeing templates refuse CKR_TEMPLATE_INCONSISTENT; GenMlKem alg frame). The mechanism takes no parameter (OASIS v3.2). Keygen stores the provider SEQ{seed64, dk} form plus SPKI and stamps CKA_SEED (stampPairComponents; opaque synthetic doubles pass through) and CKA_PARAMETER_SET. Real execution pinned by OpenSSLSpec caseRealMlkemKeygen (halves parse, OIDs agree, fresh pairs round-trip). Bounds 800/1568 bytes (served encapsulation-key window, the OASIS mechanism-info unit).",
+      "notes": "pairgen from the public template CKA_PARAMETER_SET (CKP_ML_KEM_512/768/1024 = 1/2/3 via kemAlgOf, default 768, private inherits; the internal AttrKemAlg tag serves pre-resolved callers; unknown sets and disagreeing templates refuse CKR_TEMPLATE_INCONSISTENT; GenMlKem alg frame). The mechanism takes no parameter (PKCS #11 v3.2). Keygen stores the provider SEQ{seed64, dk} form plus SPKI and stamps CKA_SEED (stampPairComponents; opaque synthetic doubles pass through) and CKA_PARAMETER_SET. Real execution pinned by OpenSSLSpec caseRealMlkemKeygen (halves parse, OIDs agree, fresh pairs round-trip). Bounds 800/1568 bytes (served encapsulation-key window, the spec mechanism-info unit).",
       "numeric_id": "0x0000000f",
       "routes": [
         {
@@ -2921,7 +2921,7 @@
         "max_key_size": 2592,
         "min_key_size": 1312
       },
-      "notes": "pairgen from the public template CKA_PARAMETER_SET (CKP_ML_DSA_44/65/87 = 1/2/3 via mldsaSetOf, default 65, private inherits; unknown sets refuse CKR_TEMPLATE_INCONSISTENT; GenMlDsa ckp frame). The mechanism takes no parameter (OASIS v3.2). CKA_SEED stamped by stampPairComponents from the provider PKCS#8 half (seed the planner cannot know; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealMldsaKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 1312/2592 bytes (served public-key window, the OASIS mechanism-info unit).",
+      "notes": "pairgen from the public template CKA_PARAMETER_SET (CKP_ML_DSA_44/65/87 = 1/2/3 via mldsaSetOf, default 65, private inherits; unknown sets refuse CKR_TEMPLATE_INCONSISTENT; GenMlDsa ckp frame). The mechanism takes no parameter (PKCS #11 v3.2). CKA_SEED stamped by stampPairComponents from the provider PKCS#8 half (seed the planner cannot know; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealMldsaKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 1312/2592 bytes (served public-key window, the spec mechanism-info unit).",
       "numeric_id": "0x0000001c",
       "routes": [
         {
@@ -3560,7 +3560,7 @@
         "max_key_size": 64,
         "min_key_size": 32
       },
-      "notes": "pairgen from the public template CKA_PARAMETER_SET (CKP_SLH_DSA_* = 1..12 via slhdsaSetOf, default 1 = SLH-DSA-SHA2-128s, private inherits; unknown sets refuse CKR_TEMPLATE_INCONSISTENT; GenSlhDsa ckp frame). The mechanism takes no parameter (OASIS v3.2). CKA_SEED stamped by stampPairComponents from the provider PKCS#8 half (first n bytes of the flat 4n secret, the SK.seed the planner cannot know; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealSlhdsaKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 32/64 bytes (served public-key window, the OASIS mechanism-info unit).",
+      "notes": "pairgen from the public template CKA_PARAMETER_SET (CKP_SLH_DSA_* = 1..12 via slhdsaSetOf, default 1 = SLH-DSA-SHA2-128s, private inherits; unknown sets refuse CKR_TEMPLATE_INCONSISTENT; GenSlhDsa ckp frame). The mechanism takes no parameter (PKCS #11 v3.2). CKA_SEED stamped by stampPairComponents from the provider PKCS#8 half (first n bytes of the flat 4n secret, the SK.seed the planner cannot know; opaque synthetic doubles pass through, mirroring EC). Real execution pinned by OpenSSLSpec caseRealSlhdsaKeygen (fresh keys sign/verify; no KAT possible for randomized generation). Bounds 32/64 bytes (served public-key window, the spec mechanism-info unit).",
       "numeric_id": "0x0000002d",
       "routes": [
         {
@@ -8657,7 +8657,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "3DES-MAC recipe (core/Haskoki/Recipe/Des3Mac.hs): plain row, empty params, first 4 bytes of the final CBC-MAC block (the OASIS half-block rule); keys two-key/three-key 3DES (16/24 bytes); input zero-pads to the 8-byte block. The driver executes CBC-MAC chaining over the backend ECB route (single-block calls, zero IV) \u2014 real 3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverDes3Mac: lane des3_mac vectors); constructions pinned (SyntheticSpec caseDes3mac); params/init/map pinned (RecipeDes3MacSpec).",
+      "notes": "3DES-MAC recipe (core/Haskoki/Recipe/Des3Mac.hs): plain row, empty params, first 4 bytes of the final CBC-MAC block (the spec half-block rule); keys two-key/three-key 3DES (16/24 bytes); input zero-pads to the 8-byte block. The driver executes CBC-MAC chaining over the backend ECB route (single-block calls, zero IV) \u2014 real 3DES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverDes3Mac: lane des3_mac vectors); constructions pinned (SyntheticSpec caseDes3mac); params/init/map pinned (RecipeDes3MacSpec).",
       "numeric_id": "0x00000134",
       "routes": [
         {
@@ -20957,7 +20957,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_CAMELLIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend CAMELLIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real Camellia on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle camellia_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the spec half-block rule); keys 128/192/256-bit CKK_CAMELLIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend CAMELLIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real Camellia on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle camellia_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000553",
       "routes": [
         {
@@ -21899,7 +21899,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_ARIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend ARIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real ARIA on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle aria_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the spec half-block rule); keys 128/192/256-bit CKK_ARIA (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend ARIA-128/192/256-ECB route (single-block calls, zero IV) \u2014 real ARIA on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: oracle aria_mac vector; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00000563",
       "routes": [
         {
@@ -26600,7 +26600,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the OASIS half-block rule); keys 128/192/256-bit CKK_AES (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend AES-128/192/256-ECB route (single-block calls, zero IV) \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: FIPS-197 anchor; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
+      "notes": "CBC-MAC recipe (core/Haskoki/Recipe/CbcMac.hs): plain row, empty params, first 8 bytes of the final CBC-MAC block (the spec half-block rule); keys 128/192/256-bit CKK_AES (16/24/32 bytes); input zero-pads to the 16-byte block. The driver executes CBC-MAC chaining over the backend AES-128/192/256-ECB route (single-block calls, zero IV) \u2014 real AES on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverCbcMac: FIPS-197 anchor; CLI+pinned-python chaining vectors); constructions pinned (SyntheticSpec caseCbcMac); params/init/map pinned (RecipeCbcMacSpec).",
       "numeric_id": "0x00001083",
       "routes": [
         {
@@ -27841,7 +27841,7 @@
         "max_key_size": 0,
         "min_key_size": 0
       },
-      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per OASIS v3.2 section 6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec). Message flags withdrawn (v0.5): PKCS#11 v3.2 defines no message-API parameter shape for GMAC, so CKF_MESSAGE_SIGN/VERIFY are not advertised; the message-sign/verify routes stay for classic-shaped CK_GCM_PARAMS and native CK_GCM_MESSAGE_PARAMS refuses with CKR_MECHANISM_PARAM_INVALID (MessageFlagBatterySpec, message_routed gmac-shape).",
+      "notes": "GMAC recipe (core/Haskoki/Recipe/Gmac.hs): gcm-params/1 image (tag width from the SP 800-38D approved set per PKCS #11 v3.2 section 6.13.6, caller IV 1..64 bytes); keys 128/192/256-bit CKK_AES. The message travels as the GCM AAD with empty plaintext (the params AAD field carries no meaning on the sign path and is ignored); the tag is the GCM authentication tag. The driver executes over the backend AES-GCM route \u2014 real AES-GCM on the real backend, test constructions on synthetic. Real KATs pinned (RoutingE2ESpec caseDriverGmac: Python-cryptography AESGCM tags, the AEAD oracle root); constructions pinned (SyntheticSpec caseGmac); params/init/map pinned (RecipeGmacSpec). Message flags withdrawn (v0.5): PKCS#11 v3.2 defines no message-API parameter shape for GMAC, so CKF_MESSAGE_SIGN/VERIFY are not advertised; the message-sign/verify routes stay for classic-shaped CK_GCM_PARAMS and native CK_GCM_MESSAGE_PARAMS refuses with CKR_MECHANISM_PARAM_INVALID (MessageFlagBatterySpec, message_routed gmac-shape).",
       "numeric_id": "0x0000108e",
       "routes": [
         {
