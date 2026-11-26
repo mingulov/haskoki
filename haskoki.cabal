@@ -78,6 +78,19 @@ source-repository head
   type:     git
   location: https://github.com/mingulov/haskoki
 
+-- USDT observability probes (0.6.1): Latchset-compatible
+-- crypto_auditing records plus the private haskoki provider.
+-- Manual and default-off so source builds never depend on ambient
+-- system headers; the official bundle, demo image, and the USDT CI
+-- leg build with +usdt explicitly. On: compiles cbits/usdt.c and
+-- defines HSK_USDT (needs <sys/sdt.h>, i.e. systemtap-sdt-dev;
+-- the shim header fails clearly without it). Off: no probe path
+-- at all (Haskell calls and probe-only state compile out).
+flag usdt
+  description: Compile in USDT observability probes
+  default:     False
+  manual:      True
+
 -- Omission classes are fatal in the pinned validation
 -- configuration. Spellings confirmed by compiling probes on the pinned
 -- GHC 9.10.3; flag names must come from compiled probes, never copied
@@ -275,6 +288,10 @@ library haskoki-internal
   -- would not reach cbits/ossl4_ctx.c.
   cc-options:       -Wall -Wextra -std=c11 -pthread -DHSK_OSSL4_TEST_HOOKS -DHSK_OSSL4_RETAIN_LIBCTX
   cpp-options:      -DHSK_OSSL4_TEST_HOOKS
+  if flag(usdt)
+    cpp-options:  -DHSK_USDT
+    cc-options:   -DHSK_USDT
+    c-sources:    cbits/usdt.c
   default-language: GHC2024
 
 -- C-loadable provider module. Produces libhaskoki.so via the
@@ -357,6 +374,10 @@ foreign-library haskoki
     haskoki:haskoki-core
   ghc-options:      -Wall -threaded
   cc-options:       -Wall -Wextra -std=c11 -pthread
+  if flag(usdt)
+    cpp-options:  -DHSK_USDT
+    cc-options:   -DHSK_USDT
+    c-sources:    cbits/usdt.c
   -- Relocatable bundle: resolve the bundled libHS* closure from the
   -- directory containing libhaskoki.so, so consumers need no
   -- LD_LIBRARY_PATH (dlopen honors this object's own RUNPATH).
