@@ -82,7 +82,9 @@ import Haskoki.Model (Model, ObjectState (..), SessionState (..),
   lookupObject, lookupSession)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.State (SlotKind (..), activeMessage, commonKey,
-  commonMech, commonOf, lookupSingle, msCommon, stagedOf)
+  commonMech, commonOf, commonParams, lookupSingle, msCommon, stagedOf)
+import Haskoki.Recipe.RsaOaep (decodeOaepParams)
+import Haskoki.Recipe.RsaPss (decodePssParams)
 import Haskoki.Registry.Generated (generatedInventory)
 import Haskoki.Registry.Types (MechanismId (..))
 import Haskoki.Request (FunctionId (..))
@@ -242,6 +244,38 @@ hashOfMechanism mid = case mechNameOf mid of
   where
     has s h = s `isInfixOf'` h
 
+-- | Registry hash code for a validated PSS/OAEP digest stem.
+-- RIPEMD160 has no registry code and omits (0), like unknown stems.
+stemHashCode :: T.Text -> Word32
+stemHashCode stem = case T.unpack stem of
+  "MD5" -> 1
+  "SHA_1" -> 2
+  "SHA224" -> 3
+  "SHA256" -> 4
+  "SHA384" -> 5
+  "SHA512" -> 6
+  "SHA3_224" -> 7
+  "SHA3_256" -> 8
+  "SHA3_384" -> 9
+  "SHA3_512" -> 10
+  _ -> 0
+
+-- | Hash code with the validated parameters for the generic
+-- PSS/OAEP mechanisms, whose names carry no digest: the slot spec
+-- (sign/verify slots) or the plan-accepted call params (slotless
+-- wrap/unwrap) name the real hash. Anything else, and any
+-- undecodable params, falls back to the mechanism name (which omits
+-- for the generic pair, keeping the record honest).
+hashOfValidated :: MechanismId -> ByteString -> Word32
+hashOfValidated mech params = case mechNameOf mech of
+  Just "CKM_RSA_PKCS_PSS" -> case decodePssParams params of
+    Just (stem, _, _) -> stemHashCode stem
+    Nothing -> hashOfMechanism mech
+  Just "CKM_RSA_PKCS_OAEP" -> case decodeOaepParams params of
+    Just (stem, _, _) -> stemHashCode stem
+    Nothing -> hashOfMechanism mech
+  _ -> hashOfMechanism mech
+
 -- | Padding code from the canonical mechanism name.
 paddingOfMechanism :: MechanismId -> Word32
 paddingOfMechanism mid = case mechNameOf mid of
@@ -381,8 +415,9 @@ slotKindOfFunc f = case f of
 -- | Resolve a pk record for a route, or 'Nothing' for private-only
 -- traffic (MACs, symmetric ciphers, KDFs, composite wraps, domain
 -- parameters, public-from-private extraction).
-resolvePk :: PkRoute -> MechanismId -> PkKeyFacts -> Maybe PkRecord
-resolvePk route mech facts = case route of
+resolvePk :: PkRoute -> MechanismId -> PkKeyFacts -> ByteString
+  -> Maybe PkRecord
+resolvePk route mech facts params = case route of
   RouteSign
     | pkfAlg facts `elem` [1, 2, 3, 6, 7, 9] -> pk PkSign
     | otherwise -> Nothing
@@ -417,8 +452,8 @@ resolvePk route mech facts = case route of
     pk name
       | name == PkGenerate || name == PkDerive =
           Just (PkRecord name facts 0 0)
-      | otherwise = Just (PkRecord name facts (hashOfMechanism mech)
-          (paddingOfMechanism mech))
+      | otherwise = Just (PkRecord name facts
+          (hashOfValidated mech params) (paddingOfMechanism mech))
 
 isAgreementMech :: MechanismId -> Bool
 isAgreementMech mid = case mechNameOf mid of
@@ -574,7 +609,8 @@ usdtLiveMeta m sid kind func = do
         Just oid -> case lookupObject m oid of
           Nothing -> noPkFacts
           Just os -> keyFactsOf os
-      mrec = routeOfFunc func >>= \r -> resolvePk r mech facts
+      mrec = routeOfFunc func >>= \r ->
+        resolvePk r mech facts (commonParams sc)
   pure (UsdtStagedMeta (functionCode func) (unMechanismId mech) mrec)
 
 -- ---------------------------------------------------------------------------
