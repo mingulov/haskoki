@@ -12,6 +12,13 @@
  *   verify-empty     degenerate verdict emits like a wrong signature
  *   verify-null      NULL refusal arms nothing (silent)
  *   sign-shortbuf    short buffer + retry emits exactly one record
+ *   shortbuf-verify  the retry signature verifies (separate phase)
+ *   init-denied      init denial reports the requested mechanism
+ *   digestkey-denied DigestKey policy denial: reject, no end
+ *   msg-sign         pk::sign record via the message one-shot path
+ *   msg-verify-next  multipart verify: silent part, terminal final
+ *   msg-encrypt-next multipart encrypt: silent part, one delivery
+ *   msg-abandon      staged message recall killed by close
  *   sign-pss/verify-pss
  *                    generic PSS hash from validated slot params
  *   sign-abandon     staged recall killed by CloseSession emits
@@ -30,10 +37,18 @@
  *   wrap/unwrap      symmetric: ends only, no pk records
  *   wrap-oaep/unwrap-oaep
  *                    pk::encrypt / pk::decrypt (RSA/OAEP/SHA-256)
+ *   wrap-query-denied
+ *                    refused NULL query: reject + failed end
  *   kem              pk::encapsulate / pk::decapsulate, algorithm-only
+ *   logout-staged/fires/clean
+ *                    two-session logout retires + flushes; the next
+ *                    op resolves clean metadata (no stale retention)
  *   async-deliver    job accepted->ready->delivered + end
  *   async-cancel     job canceled
  *   async-xthread    cross-thread poll+complete still correlates
+ *   async-detach/rejoin
+ *                    detach hands off (handoff pair); rejoin is a
+ *                    fresh op (Accepted, Ready on claim win)
  * Exit status: 0 iff every functional check passes (a failed op
  * fails the recipe before any capture assert runs).
  */
@@ -105,6 +120,15 @@ typedef CK_RV (*fn_poll)(haskoki_async_ctx_t ctx, haskoki_async_job_t job,
 typedef CK_RV (*fn_complete)(haskoki_async_ctx_t ctx, haskoki_async_job_t job,
                              CK_ULONG func, async_data_t *pResult);
 typedef CK_RV (*fn_cancel)(haskoki_async_ctx_t ctx, haskoki_async_job_t job);
+typedef void *haskoki_async_store_t;
+typedef haskoki_async_store_t (*fn_store_open)(const char *path);
+typedef void (*fn_store_close)(haskoki_async_store_t *pbox);
+typedef haskoki_async_ctx_t (*fn_open_on)(haskoki_async_store_t box);
+typedef CK_RV (*fn_get_id)(haskoki_async_ctx_t ctx, haskoki_async_job_t job,
+                           CK_ULONG func, CK_ULONG *pId);
+typedef CK_RV (*fn_join)(haskoki_async_ctx_t ctx, CK_ULONG id, CK_ULONG func,
+                         CK_SESSION_HANDLE hSession, CK_ULONG cap,
+                         haskoki_async_job_t *pHandle, CK_ULONG *pNeed);
 
 /* FIPS 180-4: SHA-256("abc"). */
 static const CK_BYTE kWant[32] = {
@@ -137,8 +161,17 @@ static void write_config(void) {
 }
 
 static CK_FUNCTION_LIST_PTR T;
-static CK_FUNCTION_LIST_3_2_PTR T32;
+static CK_FUNCTION_LIST_3_2_PTR tab32;
 static CK_SESSION_HANDLE g_sess;
+
+/* P-256 OID for EC legs (mirrors consumer_roundtrip). */
+static const CK_BYTE kP256Oid[] = {
+  0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
+};
+
+/* Short-buffer retry signature, saved for the verify leg. */
+static CK_BYTE g_shortSig[512];
+static CK_ULONG g_shortSigLen;
 static CK_OBJECT_HANDLE g_pub, g_priv;
 static CK_BYTE g_sig[512];
 static CK_ULONG g_sigLen;
@@ -282,6 +315,68 @@ static int phase_sign_shortbuf(void) {
   rv = T->C_Sign(g_sess, (CK_BYTE_PTR)kMsg, strlen(kMsg), full, &fullLen);
   CHECKRV(rv, CKR_OK, "retry delivers");
   CHECKM(fullLen == 256, "retry sig length 256");
+  CHECKM(fullLen <= sizeof g_shortSig, "retry sig fits");
+  memcpy(g_shortSig, full, fullLen);
+  g_shortSigLen = fullLen;
+  return 0;
+}
+
+static int phase_shortbuf_verify(void) {
+  /* The retry signature is real: it verifies under the same key. */
+  CK_RV rv;
+  PHASE("shortbuf-verify");
+  rv = T->C_VerifyInit(g_sess, &g_rsaSign, g_pub);
+  CHECKRV(rv, CKR_OK, "shortbuf verify-init");
+  rv = T->C_Verify(g_sess, (CK_BYTE_PTR)kMsg, strlen(kMsg),
+                   g_shortSig, g_shortSigLen);
+  CHECKRV(rv, CKR_OK, "retry signature verifies");
+  return 0;
+}
+
+static int phase_init_denied(void) {
+  /* Init denial reports the REQUESTED mechanism: ECDSA init with an
+   * AES key refuses KEY_TYPE_INCONSISTENT on an empty slot. */
+  CK_RV rv;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE akt = CKK_AES;
+  CK_ULONG vlen = 16;
+  CK_BBOOL bFalse = CK_FALSE;
+  CK_MECHANISM em;
+  CK_OBJECT_HANDLE aes = 0;
+  CK_MECHANISM kgm;
+  CK_ATTRIBUTE tmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+  };
+  PHASE("init-denied");
+  kgm.mechanism = CKM_AES_KEY_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKey(g_sess, &kgm, tmpl, 4, &aes);
+  CHECKRV(rv, CKR_OK, "denied-leg aes mints");
+  em.mechanism = CKM_ECDSA_SHA256;
+  em.pParameter = NULL_PTR;
+  em.ulParameterLen = 0;
+  rv = T->C_SignInit(g_sess, &em, aes);
+  CHECKRV(rv, CKR_KEY_TYPE_INCONSISTENT, "ecdsa/aes refused");
+  return 0;
+}
+
+static int phase_digestkey_denied(void) {
+  /* DigestKey with a non-secret key refuses KEY_TYPE_INCONSISTENT
+   * (policy) on a live-but-unstaged digest slot: reject, no end. */
+  CK_RV rv;
+  CK_MECHANISM mech;
+  PHASE("digestkey-denied");
+  mech.mechanism = CKM_SHA256;
+  mech.pParameter = NULL_PTR;
+  mech.ulParameterLen = 0;
+  rv = T->C_DigestInit(g_sess, &mech);
+  CHECKRV(rv, CKR_OK, "denied digest-init");
+  rv = T->C_DigestKey(g_sess, g_pub);
+  CHECKRV(rv, CKR_KEY_TYPE_INCONSISTENT, "non-secret refused");
   return 0;
 }
 
@@ -430,6 +525,163 @@ static int phase_digest(void) {
 /* Staged digest recall killed by a key-resolution refusal:
  * C_DigestKey with a bad handle refuses KEY_HANDLE_INVALID and the
  * abandoned end must fire (the code is not policy: no reject). */
+static int phase_msg_sign(void) {
+  /* RSA message-sign one-shot: a pk::sign record via the message
+   * path (F_SignMessage routes like a classic final). */
+  CK_RV rv;
+  CK_MECHANISM mech;
+  CK_BYTE sig[512];
+  CK_ULONG sigLen;
+  CK_BYTE msg[] = "hello-msg-sign";
+  PHASE("msg-sign");
+  mech.mechanism = CKM_SHA256_RSA_PKCS;
+  mech.pParameter = NULL_PTR;
+  mech.ulParameterLen = 0;
+  rv = tab32->C_MessageSignInit(g_sess, &mech, g_priv);
+  CHECKRV(rv, CKR_OK, "msg sign-init");
+  sigLen = sizeof sig;
+  rv = tab32->C_SignMessage(g_sess, NULL, 0, msg, sizeof(msg) - 1,
+                          sig, &sigLen);
+  CHECKRV(rv, CKR_OK, "msg sign");
+  CHECKM(sigLen == 256, "msg sig length 256");
+  rv = tab32->C_MessageSignFinal(g_sess);
+  CHECKRV(rv, CKR_OK, "msg sign final closes silently");
+  return 0;
+}
+
+static int phase_msg_verify_next(void) {
+  /* Multipart message verify: the no-signature part is an update
+   * (silent); the part carrying the candidate is the final verdict
+   * (record + end, exactly once). */
+  CK_RV rv;
+  CK_MECHANISM mech;
+  CK_BYTE sig[512];
+  CK_ULONG sigLen;
+  CK_BYTE msg[] = "hello-msg-verify-partitioned";
+  PHASE("msg-verify-next");
+  mech.mechanism = CKM_SHA256_RSA_PKCS;
+  mech.pParameter = NULL_PTR;
+  mech.ulParameterLen = 0;
+  rv = tab32->C_MessageSignInit(g_sess, &mech, g_priv);
+  CHECKRV(rv, CKR_OK, "msg setup sign-init");
+  sigLen = sizeof sig;
+  rv = tab32->C_SignMessage(g_sess, NULL, 0, msg, sizeof(msg) - 1,
+                          sig, &sigLen);
+  CHECKRV(rv, CKR_OK, "msg setup sign");
+  rv = tab32->C_MessageSignFinal(g_sess);
+  CHECKRV(rv, CKR_OK, "msg setup sign final frees");
+  rv = tab32->C_MessageVerifyInit(g_sess, &mech, g_pub);
+  CHECKRV(rv, CKR_OK, "msg verify-init");
+  rv = tab32->C_VerifyMessageBegin(g_sess, NULL, 0);
+  CHECKRV(rv, CKR_OK, "msg verify begin");
+  rv = tab32->C_VerifyMessageNext(g_sess, NULL, 0, msg, 12, NULL, 0);
+  CHECKRV(rv, CKR_OK, "msg verify part steps silently");
+  rv = tab32->C_VerifyMessageNext(g_sess, NULL, 0, msg + 12,
+                                sizeof(msg) - 1 - 12, sig, sigLen);
+  CHECKRV(rv, CKR_OK, "msg verify final part delivers");
+  rv = tab32->C_MessageVerifyFinal(g_sess);
+  CHECKRV(rv, CKR_OK, "msg verify final closes silently");
+  return 0;
+}
+
+static int phase_msg_encrypt_next(void) {
+  /* Multipart message encrypt: the non-final part is an update
+   * (silent); the end==1 part delivers exactly once; final closes
+   * silently. AES stays private-only (no pk record). */
+  CK_RV rv;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE akt = CKK_AES;
+  CK_ULONG vlen = 16;
+  CK_BBOOL bFalse = CK_FALSE;
+  CK_MECHANISM kgm, cm;
+  CK_OBJECT_HANDLE aes = 0;
+  CK_ATTRIBUTE tmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+  };
+  static CK_BYTE iv[16] = {
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
+  };
+  static CK_BYTE p1[] = "0123456789abcdef";
+  static CK_BYTE p2[] = "fedcba9876543210";
+  CK_BYTE ct[64];
+  CK_ULONG ctLen;
+  PHASE("msg-encrypt-next");
+  kgm.mechanism = CKM_AES_KEY_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKey(g_sess, &kgm, tmpl, 4, &aes);
+  CHECKRV(rv, CKR_OK, "msg aes mints");
+  cm.mechanism = CKM_AES_CBC;
+  cm.pParameter = iv;
+  cm.ulParameterLen = sizeof(iv);
+  rv = tab32->C_MessageEncryptInit(g_sess, &cm, aes);
+  CHECKRV(rv, CKR_OK, "msg encrypt-init");
+  rv = tab32->C_EncryptMessageBegin(g_sess, iv, sizeof(iv), NULL, 0);
+  CHECKRV(rv, CKR_OK, "msg encrypt begin");
+  ctLen = sizeof(ct);
+  rv = tab32->C_EncryptMessageNext(g_sess, NULL, 0, p1, 16,
+                                 ct, &ctLen, 0);
+  CHECKRV(rv, CKR_OK, "msg non-final part steps silently");
+  ctLen = sizeof(ct);
+  rv = tab32->C_EncryptMessageNext(g_sess, NULL, 0, p2, 16,
+                                 ct, &ctLen, CKF_END_OF_MESSAGE);
+  CHECKRV(rv, CKR_OK, "msg final part delivers");
+  CHECKM(ctLen == 32, "msg ciphertext length 32");
+  rv = tab32->C_MessageEncryptFinal(g_sess);
+  CHECKRV(rv, CKR_OK, "msg encrypt final closes silently");
+  return 0;
+}
+
+static int phase_msg_abandon(void) {
+  /* A short-buffered message part stages recall metadata; closing
+   * the session kills it (abandoned end). Own session: opened and
+   * closed inside the leg. */
+  CK_RV rv;
+  CK_SESSION_HANDLE msess = 0;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE akt = CKK_AES;
+  CK_ULONG vlen = 16;
+  CK_BBOOL bFalse = CK_FALSE;
+  CK_MECHANISM kgm, cm;
+  CK_OBJECT_HANDLE aes = 0;
+  CK_ATTRIBUTE tmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+  };
+  static CK_BYTE iv[16] = {
+    9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9
+  };
+  static CK_BYTE pt[] = "abandon-this-msg!";
+  CK_BYTE small[4];
+  CK_ULONG smallLen;
+  PHASE("msg-abandon");
+  if (open_session(&msess)) CHECKM(0, "abandon session opens");
+  kgm.mechanism = CKM_AES_KEY_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKey(msess, &kgm, tmpl, 4, &aes);
+  CHECKRV(rv, CKR_OK, "abandon aes mints");
+  cm.mechanism = CKM_AES_CBC;
+  cm.pParameter = iv;
+  cm.ulParameterLen = sizeof(iv);
+  rv = tab32->C_MessageEncryptInit(msess, &cm, aes);
+  CHECKRV(rv, CKR_OK, "abandon encrypt-init");
+  rv = tab32->C_EncryptMessageBegin(msess, iv, sizeof(iv), NULL, 0);
+  CHECKRV(rv, CKR_OK, "abandon begin");
+  smallLen = sizeof(small);
+  rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, 16,
+                                 small, &smallLen, CKF_END_OF_MESSAGE);
+  CHECKRV(rv, CKR_BUFFER_TOO_SMALL, "abandon short stages recall");
+  rv = T->C_CloseSession(msess);
+  CHECKRV(rv, CKR_OK, "abandon close kills staged message");
+  return 0;
+}
+
 static int phase_digest_abandon_key(void) {
   CK_RV rv;
   CK_MECHANISM mech;
@@ -788,6 +1040,130 @@ static int phase_wrap_oaep(void) {
   return 0;
 }
 
+static int phase_wrap_query_denied(void) {
+  /* A NULL wrap query against an unextractable target refuses with
+   * KEY_UNEXTRACTABLE (policy): reject + failed-publish end. */
+  CK_RV rv;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE akt = CKK_AES;
+  CK_ULONG vlen = 32, tlen = 16;
+  CK_BBOOL bFalse = CK_FALSE, bTrue = CK_TRUE;
+  CK_BYTE iv[16];
+  CK_ULONG blobLen = 0;
+  CK_OBJECT_HANDLE wrapKey = 0, sealed = 0;
+  CK_MECHANISM wm, kgm;
+  CK_ATTRIBUTE wtmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+    { CKA_WRAP, &bTrue, sizeof(bTrue) },
+    { CKA_UNWRAP, &bTrue, sizeof(bTrue) }
+  };
+  CK_ATTRIBUTE stmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &tlen, sizeof(tlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+    { CKA_EXTRACTABLE, &bFalse, sizeof(bFalse) }
+  };
+  PHASE("wrap-query-denied");
+  memset(iv, 0x33, sizeof(iv));
+  kgm.mechanism = CKM_AES_KEY_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKey(g_sess, &kgm, wtmpl, 6, &wrapKey);
+  CHECKRV(rv, CKR_OK, "denied wrapKey mints");
+  rv = T->C_GenerateKey(g_sess, &kgm, stmpl, 5, &sealed);
+  CHECKRV(rv, CKR_OK, "sealed target mints");
+  wm.mechanism = CKM_AES_CBC;
+  wm.pParameter = iv;
+  wm.ulParameterLen = sizeof(iv);
+  rv = T->C_WrapKey(g_sess, &wm, wrapKey, sealed, NULL, &blobLen);
+  CHECKRV(rv, CKR_KEY_UNEXTRACTABLE, "sealed query refused");
+  return 0;
+}
+
+static int phase_logout_staged(void) {
+  /* Two-session logout: B stages a short HMAC recall on a private
+   * key; A's logout retires it (abandoned end). B then mints an EC
+   * pair and signs: the ECDSA record must be clean (no stale RSA
+   * retention behind it). */
+  CK_RV rv;
+  CK_SESSION_HANDLE sessA = 0, sessB = 0;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_OBJECT_CLASS pubClass = CKO_PUBLIC_KEY, privClass = CKO_PRIVATE_KEY;
+  CK_KEY_TYPE gkt = CKK_GENERIC_SECRET, ekt = CKK_EC;
+  CK_BBOOL t = CK_TRUE, fa = CK_FALSE;
+  CK_OBJECT_HANDLE hm = 0, epub = 0, epriv = 0;
+  CK_MECHANISM sm, em, kgm;
+  CK_BYTE small[4], sig[128];
+  CK_ULONG smallLen, sigLen;
+  CK_BYTE hraw[16] = {
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5
+  };
+  CK_ATTRIBUTE htmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &gkt, sizeof(gkt) },
+    { CKA_TOKEN, &fa, sizeof(fa) },
+    { CKA_PRIVATE, &t, sizeof(t) },
+    { CKA_SIGN, &t, sizeof(t) },
+    { CKA_VALUE, hraw, sizeof(hraw) },
+  };
+  CK_ATTRIBUTE epubT[] = {
+    { CKA_CLASS, &pubClass, sizeof(pubClass) },
+    { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
+    { CKA_EC_PARAMS, (CK_VOID_PTR)kP256Oid, sizeof(kP256Oid) },
+    { CKA_TOKEN, &fa, sizeof(fa) },
+    { CKA_VERIFY, &t, sizeof(t) },
+  };
+  CK_ATTRIBUTE eprivT[] = {
+    { CKA_CLASS, &privClass, sizeof(privClass) },
+    { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
+    { CKA_TOKEN, &fa, sizeof(fa) },
+    { CKA_SIGN, &t, sizeof(t) },
+  };
+  PHASE("logout-staged");
+  if (open_session(&sessA)) CHECKM(0, "logout sessA opens");
+  if (open_session(&sessB)) CHECKM(0, "logout sessB opens");
+  /* No explicit logins: auth is token-level and the slot is already
+   * user-logged-in, so a second login refuses ALREADY_LOGGED_IN. */
+  rv = T->C_CreateObject(sessB, htmpl, 6, &hm);
+  CHECKRV(rv, CKR_OK, "logout hmac imports");
+  sm.mechanism = CKM_SHA256_HMAC;
+  sm.pParameter = NULL_PTR;
+  sm.ulParameterLen = 0;
+  rv = T->C_SignInit(sessB, &sm, hm);
+  CHECKRV(rv, CKR_OK, "logout sign-init");
+  smallLen = sizeof(small);
+  rv = T->C_Sign(sessB, (CK_BYTE_PTR)kMsg, strlen(kMsg), small, &smallLen);
+  CHECKRV(rv, CKR_BUFFER_TOO_SMALL, "logout short stages");
+  PHASE("logout-fires");
+  rv = T->C_Logout(sessA);
+  CHECKRV(rv, CKR_OK, "logout lands");
+  PHASE("logout-clean");
+  kgm.mechanism = CKM_EC_KEY_PAIR_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKeyPair(sessB, &kgm, epubT, 5, eprivT, 4,
+                            &epub, &epriv);
+  CHECKRV(rv, CKR_OK, "logout ec pair mints");
+  em.mechanism = CKM_ECDSA_SHA256;
+  em.pParameter = NULL_PTR;
+  em.ulParameterLen = 0;
+  rv = T->C_SignInit(sessB, &em, epriv);
+  CHECKRV(rv, CKR_OK, "logout ecdsa sign-init");
+  sigLen = sizeof(sig);
+  rv = T->C_Sign(sessB, (CK_BYTE_PTR)kMsg, strlen(kMsg), sig, &sigLen);
+  CHECKRV(rv, CKR_OK, "logout ecdsa signs");
+  CHECKM(sigLen == 64, "ecdsa sig raw 64 bytes");
+  rv = T->C_CloseSession(sessA);
+  CHECKRV(rv, CKR_OK, "logout sessA closes");
+  rv = T->C_CloseSession(sessB);
+  CHECKRV(rv, CKR_OK, "logout sessB closes");
+  return 0;
+}
+
 static int phase_kem(void) {
   /* ML-KEM-768 round-trip (mirrors the consumer_kem 768 flow). */
   CK_RV rv;
@@ -850,7 +1226,7 @@ static int phase_kem(void) {
   secT[5].ulValueLen = sizeof(bFalse);
   PHASE("encaps");
   ctLen = sizeof(ct);
-  rv = T32->C_EncapsulateKey(g_sess, &kem, pub, secT, 6, ct, &ctLen, &secret);
+  rv = tab32->C_EncapsulateKey(g_sess, &kem, pub, secT, 6, ct, &ctLen, &secret);
   CHECKRV(rv, CKR_OK, "encapsulates");
   CHECKM(ctLen == 1088 && secret != 0, "encaps 1088 bytes plus a secret");
   getT[0].type = CKA_VALUE;
@@ -859,7 +1235,7 @@ static int phase_kem(void) {
   rv = T->C_GetAttributeValue(g_sess, secret, getT, 1);
   CHECKRV(rv, CKR_OK, "encaps secret reads");
   PHASE("decaps");
-  rv = T32->C_DecapsulateKey(g_sess, &kem, priv, secT, 6, ct, ctLen, &recovered);
+  rv = tab32->C_DecapsulateKey(g_sess, &kem, priv, secT, 6, ct, ctLen, &recovered);
   CHECKRV(rv, CKR_OK, "decapsulates");
   getT[0].type = CKA_VALUE;
   getT[0].pValue = ss2;
@@ -879,6 +1255,11 @@ static fn_start pStart;
 static fn_poll pPoll;
 static fn_complete pComplete;
 static fn_cancel pCancel;
+static fn_store_open pStoreOpen;
+static fn_store_close pStoreClose;
+static fn_open_on pOpenOn;
+static fn_get_id pGetId;
+static fn_join pJoin;
 
 static int async_resolve(void *h) {
   pOpen = (fn_open)dlsym(h, "haskoki_async_open");
@@ -888,7 +1269,13 @@ static int async_resolve(void *h) {
   pPoll = (fn_poll)dlsym(h, "haskoki_async_poll");
   pComplete = (fn_complete)dlsym(h, "haskoki_async_complete");
   pCancel = (fn_cancel)dlsym(h, "haskoki_async_cancel");
-  CHECKM(pOpen && pClose && pInit && pStart && pPoll && pComplete && pCancel,
+  pStoreOpen = (fn_store_open)dlsym(h, "haskoki_async_store_open");
+  pStoreClose = (fn_store_close)dlsym(h, "haskoki_async_store_close");
+  pOpenOn = (fn_open_on)dlsym(h, "haskoki_async_open_on");
+  pGetId = (fn_get_id)dlsym(h, "haskoki_async_get_id");
+  pJoin = (fn_join)dlsym(h, "haskoki_async_join");
+  CHECKM(pOpen && pClose && pInit && pStart && pPoll && pComplete && pCancel
+         && pStoreOpen && pStoreClose && pOpenOn && pGetId && pJoin,
          "async trampolines resolve");
   return 0;
 }
@@ -1003,6 +1390,57 @@ static int phase_async_xthread(void) {
   return 0;
 }
 
+static int phase_async_detach(void) {
+  /* Detached handoff: start on ctx1, detach (get_id closes the
+   * source op with handoff + handed-off end), close ctx1, rejoin
+   * on ctx2 (fresh op: Accepted, Ready on claim win), poll and
+   * complete there (Delivered + end). */
+  haskoki_async_store_t store = NULL;
+  haskoki_async_ctx_t ctx1 = NULL, ctx2 = NULL;
+  haskoki_async_job_t job = NULL, job2 = NULL;
+  CK_ULONG pid = 0, need = 0;
+  CK_RV rv;
+  async_data_t res;
+  CK_BYTE buf[64];
+  PHASE("async-detach");
+  store = pStoreOpen(NULL);
+  CHECKM(store != NULL, "detach store opens");
+  ctx1 = pOpenOn(store);
+  CHECKM(ctx1 != NULL, "detach ctx1 opens");
+  rv = pInit(ctx1, 1, CKM_SHA256, NULL, 0);
+  CHECKRV(rv, CKR_OK, "detach digest init");
+  rv = pStart(ctx1, 1, FN_DIGEST, (CK_BYTE_PTR)"abc", 3, 32, 1, &job);
+  CHECKRV(rv, CKR_PENDING, "detach job starts");
+  CHECKM(job != NULL, "detach job handle");
+  rv = pGetId(ctx1, job, FN_DIGEST, &pid);
+  CHECKRV(rv, CKR_OK, "detach get_id lands");
+  CHECKM(pid != 0, "detach persistent id minted");
+  pClose(&ctx1);
+  CHECKM(ctx1 == NULL, "detach ctx1 closes");
+  PHASE("async-rejoin");
+  ctx2 = pOpenOn(store);
+  CHECKM(ctx2 != NULL, "rejoin ctx2 opens");
+  rv = pInit(ctx2, 1, CKM_SHA256, NULL, 0);
+  CHECKRV(rv, CKR_OK, "rejoin digest init");
+  rv = pJoin(ctx2, pid, FN_DIGEST, 1, 32, &job2, &need);
+  CHECKRV(rv, CKR_PENDING, "rejoin join reports pending");
+  CHECKM(job2 != NULL, "rejoin job handle");
+  rv = pPoll(ctx2, job2, FN_DIGEST);
+  CHECKRV(rv, CKR_OK, "rejoin poll ready");
+  memset(&res, 0, sizeof(res));
+  res.pValue = buf;
+  res.ulValue = sizeof(buf);
+  rv = pComplete(ctx2, job2, FN_DIGEST, &res);
+  CHECKRV(rv, CKR_OK, "rejoin complete delivers");
+  CHECKM(res.ulValue == 32 && memcmp(buf, kWant, 32) == 0,
+         "rejoin KAT bytes exact");
+  pClose(&ctx2);
+  CHECKM(ctx2 == NULL, "rejoin ctx2 closes");
+  pStoreClose(&store);
+  CHECKM(store == NULL, "detach store closes");
+  return 0;
+}
+
 int main(int argc, char **argv) {
   void *handle;
   CK_C_GetFunctionList pGetList;
@@ -1026,8 +1464,8 @@ int main(int argc, char **argv) {
   v.minor = 2;
   rv = pGetInterface((CK_UTF8CHAR_PTR)"PKCS 11", &v, &pIf, 0);
   CHECKM(rv == CKR_OK && pIf != NULL_PTR, "GetInterface selects 3.2");
-  T32 = (CK_FUNCTION_LIST_3_2_PTR)pIf->pFunctionList;
-  CHECKM(T32 != NULL, "3.2 table fetched");
+  tab32 = (CK_FUNCTION_LIST_3_2_PTR)pIf->pFunctionList;
+  CHECKM(tab32 != NULL, "3.2 table fetched");
   if (async_resolve(handle)) return 1;
 
   PHASE("init");
@@ -1043,6 +1481,13 @@ int main(int argc, char **argv) {
   if (phase_verify_empty()) return 1;
   if (phase_verify_null()) return 1;
   if (phase_sign_shortbuf()) return 1;
+  if (phase_shortbuf_verify()) return 1;
+  if (phase_init_denied()) return 1;
+  if (phase_digestkey_denied()) return 1;
+  if (phase_msg_sign()) return 1;
+  if (phase_msg_verify_next()) return 1;
+  if (phase_msg_encrypt_next()) return 1;
+  if (phase_msg_abandon()) return 1;
   if (phase_sign_pss()) return 1;
   if (phase_sign_abandon()) return 1;
   if (open_session(&g_sess)) CHECKM(0, "session reopens");
@@ -1060,7 +1505,9 @@ int main(int argc, char **argv) {
   if (phase_derive_dh()) return 1;
   if (phase_wrap()) return 1;
   if (phase_wrap_oaep()) return 1;
+  if (phase_wrap_query_denied()) return 1;
   if (phase_kem()) return 1;
+  if (phase_logout_staged()) return 1;
 
   PHASE("teardown");
   rv = T->C_CloseSession(g_sess);
@@ -1071,6 +1518,7 @@ int main(int argc, char **argv) {
   if (phase_async_deliver()) return 1;
   if (phase_async_cancel()) return 1;
   if (phase_async_xthread()) return 1;
+  if (phase_async_detach()) return 1;
 
   PHASE("done");
   return 0;
