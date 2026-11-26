@@ -34,6 +34,7 @@ CKR_OK = 0
 CKR_FUNCTION_CANCELED = 80
 CKR_KEY_HANDLE_INVALID = 96
 CKR_KEY_TYPE_INCONSISTENT = 99
+CKR_KEY_FUNCTION_NOT_PERMITTED = 104
 CKR_KEY_UNEXTRACTABLE = 106
 CKR_OPERATION_NOT_INITIALIZED = 145
 CKR_PIN_INCORRECT = 160
@@ -53,6 +54,8 @@ M_SHA256 = 0x250
 M_HMAC_SHA256 = 0x251
 M_EC_KEYGEN = 0x1040
 M_ECDSA_SHA256 = 0x1044
+M_EDDSA_KEYGEN = 0x1055
+M_EDDSA = 0x1057
 M_AES_KEYGEN = 0x1080
 M_AES_CBC = 0x1082
 M_AES_CBC_PAD = 0x1085
@@ -61,14 +64,18 @@ PHASE_ORDER = [
     "init", "wrong-pin", "login", "keygen", "sign",
     "verify-ok", "verify-bad", "verify-empty", "verify-null",
     "sign-shortbuf", "shortbuf-verify", "init-denied",
-    "digestkey-denied", "msg-sign", "msg-verify-next",
-    "msg-encrypt-next", "msg-abandon", "sign-pss", "verify-pss",
+    "digestkey-denied", "digestkey-staged-denied", "msg-sign",
+    "msg-verify-next", "msg-encrypt-next", "msg-abandon",
+    "msg-init-denied", "msg-query-modes", "msg-query-staged",
+    "sign-pss", "verify-pss",
     "sign-abandon", "relogin", "setup-hmac",
     "sign-abandon-nullguard", "sign-abandon-oversize", "digest",
     "digest-abandon-key", "derive", "derive-dh", "wrap", "unwrap",
-    "wrap-oaep", "unwrap-oaep", "wrap-query-denied", "kem-keygen",
+    "wrap-oaep", "unwrap-oaep", "wrap-query-denied",
+    "encaps-query-denied", "eddsa", "kem-keygen",
     "encaps", "decaps", "logout-staged", "logout-fires",
-    "logout-clean", "teardown", "async-deliver", "async-cancel",
+    "logout-clean", "logout-ec-verify", "teardown", "async-deliver",
+    "async-cancel",
     "async-xthread", "async-xthread-handoff", "async-detach",
     "async-rejoin", "done",
 ]
@@ -89,10 +96,14 @@ COUNTS = {
     "shortbuf-verify": (1, 1, 1, 0, 0),
     "init-denied": (0, 0, 1, 1, 0),
     "digestkey-denied": (0, 0, 0, 1, 0),
+    "digestkey-staged-denied": (0, 0, 1, 1, 0),
     "msg-sign": (1, 1, 1, 0, 0),
     "msg-verify-next": (2, 2, 2, 0, 0),
     "msg-encrypt-next": (0, 0, 2, 0, 0),
     "msg-abandon": (0, 0, 2, 0, 0),
+    "msg-init-denied": (0, 0, 1, 1, 0),
+    "msg-query-modes": (0, 0, 2, 2, 0),
+    "msg-query-staged": (0, 0, 2, 0, 0),
     "sign-pss": (1, 1, 1, 0, 0),
     "verify-pss": (1, 1, 1, 0, 0),
     "sign-abandon": (0, 0, 1, 0, 0),
@@ -109,12 +120,15 @@ COUNTS = {
     "wrap-oaep": (2, 2, 3, 0, 0),
     "unwrap-oaep": (1, 1, 1, 0, 0),
     "wrap-query-denied": (0, 0, 3, 1, 0),
+    "encaps-query-denied": (1, 1, 2, 1, 0),
+    "eddsa": (3, 3, 3, 0, 0),
     "kem-keygen": (1, 1, 1, 0, 0),
     "encaps": (1, 1, 1, 0, 0),
     "decaps": (1, 1, 1, 0, 0),
     "logout-staged": (0, 0, 1, 0, 0),
     "logout-fires": (0, 0, 1, 0, 0),
     "logout-clean": (2, 2, 2, 0, 0),
+    "logout-ec-verify": (1, 1, 1, 0, 0),
     "teardown": (0, 0, 0, 0, 0),
     "async-deliver": (0, 0, 1, 0, 4),
     "async-cancel": (0, 0, 1, 0, 2),
@@ -275,6 +289,10 @@ class Checker:
                           % e["op"])
             if e["disp"] not in (1, 3, 4, 5, 6):
                 self.fail("END %s: bad disp %d" % (e["op"], e["disp"]))
+        ops = [e["op"] for e in ends]
+        if len(ops) != len(set(ops)):
+            self.fail("END op ids not unique: %d ends, %d distinct"
+                      % (len(ops), len(set(ops))))
         for r in rejs:
             if r["reason"] not in (1, 2, 3, 4, 5):
                 self.fail("REJ %s: bad reason %d" % (r["op"], r["reason"]))
@@ -284,6 +302,13 @@ class Checker:
                 self.fail("REJ %s: ov=%d but same-op END present=%s"
                           % (r["op"], r["ov"], has_end))
         for j in jobs:
+            # ckrValid holds only on Failed: every other phase
+            # carries ckr=0/cv=0 by construction (usdtJobPhase).
+            if bool(j["cv"]) != (j["phase"] == 5):
+                self.fail("JOB %s: cv=%d on phase %d"
+                          % (j["op"], j["cv"], j["phase"]))
+            if j["cv"] and j["ckr"] == 0:
+                self.fail("JOB %s: cv=1 with ckr=0" % j["op"])
             if j["phase"] not in (1, 2, 3, 4, 5, 6, 7):
                 self.fail("JOB %s: bad phase %d" % (j["op"], j["phase"]))
             if j["ov"] != 1:
@@ -318,11 +343,13 @@ class Checker:
                 self.fail("%s: END %s fields %s, want %s"
                           % (ph["name"], e["op"], got, want))
 
-    def expect_rej(self, ph, func, mech, mp, reason, ckr, ov):
-        if len(ph["rej"]) != 1:
-            self.fail("%s: %d REJs, want 1" % (ph["name"], len(ph["rej"])))
+    def expect_rej(self, ph, func, mech, mp, reason, ckr, ov, idx=0,
+                     nrej=1):
+        if len(ph["rej"]) != nrej:
+            self.fail("%s: %d REJs, want %d"
+                      % (ph["name"], len(ph["rej"]), nrej))
             return None
-        r = ph["rej"][0]
+        r = ph["rej"][idx]
         want = {"func": func, "mech": mech, "mp": mp, "reason": reason,
                 "ckr": ckr, "ov": ov}
         got = {k: r[k] for k in want}
@@ -397,6 +424,15 @@ class Checker:
         self.expect_rej(ph, f["F_DigestUpdate"], M_SHA256, 1, 2,
                         CKR_KEY_TYPE_INCONSISTENT, 0)
 
+        ph = self.phase("digestkey-staged-denied")
+        # Retention wears the staging call's identity: the bytes were
+        # staged by a one-shot C_Digest short query, so both halves
+        # of the pair report F_Digest, not the failed call's default.
+        op = self.expect_rej(ph, f["F_Digest"], M_SHA256, 1, 2,
+                             CKR_KEY_TYPE_INCONSISTENT, 1)
+        self.expect_end(ph, op, f["F_Digest"], M_SHA256, 1,
+                        CKR_OPERATION_NOT_INITIALIZED, 5, 0)
+
         ph = self.phase("msg-sign")
         ctx = self.expect_new(ph, "pk::sign", v15)
         self.expect_end(ph, ctx, f["F_SignMessage"], M_SHA256_RSA, 1,
@@ -421,6 +457,38 @@ class Checker:
         ph = self.phase("msg-abandon")
         self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
                         M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][1]["op"], f["F_EncryptMessageNext"],
+                        M_AES_CBC, 1, CKR_OPERATION_NOT_INITIALIZED, 5, 0)
+
+        ph = self.phase("msg-init-denied")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        # Requested-mech reporting on the message path: an ECDSA
+        # message-sign init refused on an AES key.
+        self.expect_rej(ph, f["F_MessageSignInit"], M_ECDSA_SHA256, 1,
+                        2, CKR_KEY_TYPE_INCONSISTENT, 0)
+
+        ph = self.phase("msg-query-modes")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        # Query finality: the same NOT_INITIALIZED failure stays
+        # end-less for a non-final query but reports a failed end
+        # for a final one (ov tracks the same-op end).
+        self.expect_rej(ph, f["F_EncryptMessageNext"], M_AES_CBC, 1,
+                        5, CKR_OPERATION_NOT_INITIALIZED, 0,
+                        idx=0, nrej=2)
+        op = self.expect_rej(ph, f["F_EncryptMessageNext"], M_AES_CBC,
+                             1, 5, CKR_OPERATION_NOT_INITIALIZED, 1,
+                             idx=1, nrej=2)
+        self.expect_end(ph, op, f["F_EncryptMessageNext"], M_AES_CBC,
+                        1, CKR_OPERATION_NOT_INITIALIZED, 3, 0)
+
+        ph = self.phase("msg-query-staged")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        # The NULL query reports its length silently; closing the
+        # session abandons the staged slot exactly once, via the
+        # flush (no reject: the close itself succeeded).
         self.expect_end(ph, ph["end"][1]["op"], f["F_EncryptMessageNext"],
                         M_AES_CBC, 1, CKR_OPERATION_NOT_INITIALIZED, 5, 0)
 
@@ -521,6 +589,33 @@ class Checker:
 
         kemgen = {"name": "str:pk::generate",
                   "pk::algorithm": "str:ML-KEM"}
+        ph = self.phase("encaps-query-denied")
+        ctx = self.expect_new(ph, "pk::generate", kemgen)
+        self.expect_end(ph, ctx, f["F_GenerateKeyPair"], M_ML_KEM_KEYGEN,
+                        1, CKR_OK, 1, 0)
+        op = self.expect_rej(ph, f["F_EncapsulateKey"], M_ML_KEM, 1, 2,
+                             CKR_KEY_FUNCTION_NOT_PERMITTED, 1)
+        self.expect_end(ph, op, f["F_EncapsulateKey"], M_ML_KEM, 1,
+                        CKR_KEY_FUNCTION_NOT_PERMITTED, 3, 0)
+
+        ph = self.phase("eddsa")
+        edgen = {"name": "str:pk::generate",
+                 "pk::algorithm": "str:EDDSA",
+                 "pk::curve": "str:ed25519", "pk::bits": "word:256"}
+        ctx = self.expect_new(ph, "pk::generate", edgen)
+        self.expect_end(ph, ctx, f["F_GenerateKeyPair"], M_EDDSA_KEYGEN,
+                        1, CKR_OK, 1, 0)
+        edsign = {"name": "str:pk::sign", "pk::algorithm": "str:EDDSA",
+                  "pk::curve": "str:ed25519", "pk::bits": "word:256"}
+        ctx = self.expect_new(ph, "pk::sign", edsign)
+        self.expect_end(ph, ctx, f["F_Sign"], M_EDDSA, 1, CKR_OK, 1, 0)
+        edver = {"name": "str:pk::verify", "pk::algorithm": "str:EDDSA",
+                 "pk::curve": "str:ed25519", "pk::bits": "word:256"}
+        ctx = self.expect_new(ph, "pk::verify", edver)
+        self.expect_end(ph, ctx, f["F_Verify"], M_EDDSA, 1, CKR_OK, 1, 0)
+
+        kemgen = {"name": "str:pk::generate",
+                  "pk::algorithm": "str:ML-KEM"}
         ph = self.phase("kem-keygen")
         ctx = self.expect_new(ph, "pk::generate", kemgen)
         self.expect_end(ph, ctx, f["F_GenerateKeyPair"], M_ML_KEM_KEYGEN,
@@ -558,6 +653,15 @@ class Checker:
         self.expect_end(ph, ctx, f["F_Sign"], M_ECDSA_SHA256, 1,
                         CKR_OK, 1, 0)
 
+        ph = self.phase("logout-ec-verify")
+        # The curve survives the stored-form round trip: resolvers
+        # read the engine's stored name, not DER (regression leg).
+        ecver = {"name": "str:pk::verify", "pk::algorithm": "str:EC",
+                 "pk::curve": "str:secp256r1", "pk::hash": "str:SHA256"}
+        ctx = self.expect_new(ph, "pk::verify", ecver)
+        self.expect_end(ph, ctx, f["F_Verify"], M_ECDSA_SHA256, 1,
+                        CKR_OK, 1, 0)
+
         self.check_async("async-deliver", [1, 2, 3, 4], CKR_OK, 1)
         self.check_async("async-cancel", [1, 6], CKR_FUNCTION_CANCELED, 5)
 
@@ -592,8 +696,10 @@ class Checker:
                 self.fail("async-detach: job identity splits")
             else:
                 e = a["end"][0]
-                if (e["op"], e["func"], e["disp"], e["mode"]) != \
-                        (next(iter(ids_a))[2], f["F_Digest"], 6, 1):
+                if (e["op"], e["func"], e["mech"], e["mp"], e["ckr"],
+                        e["disp"], e["mode"]) != \
+                        (next(iter(ids_a))[2], f["F_Digest"], M_SHA256,
+                         1, CKR_OK, 6, 1):
                     self.fail("async-detach: END %s" % e)
         b = self.phase("async-rejoin")
         if [j["phase"] for j in b["job"]] != [1, 2, 3, 4]:

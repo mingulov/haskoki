@@ -15,10 +15,18 @@
  *   shortbuf-verify  the retry signature verifies (separate phase)
  *   init-denied      init denial reports the requested mechanism
  *   digestkey-denied DigestKey policy denial: reject, no end
+ *   digestkey-staged-denied
+ *                    staged digest killed by policy DigestKey: one
+ *                    op carries reject + abandoned end
  *   msg-sign         pk::sign record via the message one-shot path
  *   msg-verify-next  multipart verify: silent part, terminal final
  *   msg-encrypt-next multipart encrypt: silent part, one delivery
  *   msg-abandon      staged message recall killed by close
+ *   msg-init-denied  message-init denial reports requested mech
+ *   msg-query-modes    same failure: silent non-final, failed
+ *                    end final
+ *   msg-query-staged  staged query reports length; close
+ *                    abandons exactly once
  *   sign-pss/verify-pss
  *                    generic PSS hash from validated slot params
  *   sign-abandon     staged recall killed by CloseSession emits
@@ -39,10 +47,14 @@
  *                    pk::encrypt / pk::decrypt (RSA/OAEP/SHA-256)
  *   wrap-query-denied
  *                    refused NULL query: reject + failed end
+ *   encaps-query-denied
+ *                    refused NULL encaps query: reject + failed end
+ *   eddsa            Ed25519 keygen/sign/verify (pub-side params)
  *   kem              pk::encapsulate / pk::decapsulate, algorithm-only
  *   logout-staged/fires/clean
  *                    two-session logout retires + flushes; the next
  *                    op resolves clean metadata (no stale retention)
+ *   logout-ec-verify ECDSA verify via the public half (DER params)
  *   async-deliver    job accepted->ready->delivered + end
  *   async-cancel     job canceled
  *   async-xthread    cross-thread poll+complete still correlates
@@ -1086,9 +1098,9 @@ static int phase_wrap_query_denied(void) {
 
 static int phase_logout_staged(void) {
   /* Two-session logout: B stages a short HMAC recall on a private
-   * key; A's logout retires it (abandoned end). B then mints an EC
-   * pair and signs: the ECDSA record must be clean (no stale RSA
-   * retention behind it). */
+   * key; A's logout retires it (abandoned end, cross-session flush).
+   * B then mints an EC pair and signs: the ECDSA record must be
+   * clean (no stale HMAC retention behind it). */
   CK_RV rv;
   CK_SESSION_HANDLE sessA = 0, sessB = 0;
   CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
@@ -1157,10 +1169,283 @@ static int phase_logout_staged(void) {
   rv = T->C_Sign(sessB, (CK_BYTE_PTR)kMsg, strlen(kMsg), sig, &sigLen);
   CHECKRV(rv, CKR_OK, "logout ecdsa signs");
   CHECKM(sigLen == 64, "ecdsa sig raw 64 bytes");
+  PHASE("logout-ec-verify");
+  rv = T->C_VerifyInit(sessB, &em, epub);
+  CHECKRV(rv, CKR_OK, "logout ecdsa verify-init");
+  rv = T->C_Verify(sessB, (CK_BYTE_PTR)kMsg, strlen(kMsg), sig, sigLen);
+  CHECKRV(rv, CKR_OK, "logout ecdsa verifies");
   rv = T->C_CloseSession(sessA);
   CHECKRV(rv, CKR_OK, "logout sessA closes");
   rv = T->C_CloseSession(sessB);
   CHECKRV(rv, CKR_OK, "logout sessB closes");
+  return 0;
+}
+
+static int phase_eddsa(void) {
+  /* Ed25519 keygen/sign/verify: the verify record resolves the
+   * public half (engine-name params, no value attribute). */
+  CK_RV rv;
+  CK_OBJECT_CLASS pcls = CKO_PUBLIC_KEY, scls = CKO_PRIVATE_KEY;
+  CK_KEY_TYPE ekt = CKK_EC_EDWARDS;
+  CK_BBOOL bFalse = CK_FALSE, bTrue = CK_TRUE;
+  CK_BYTE edParams[] = { 0x06, 0x03, 0x2B, 0x65, 0x70 };
+  CK_ATTRIBUTE epubT[] = {
+    { CKA_CLASS, &pcls, sizeof(pcls) },
+    { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
+    { CKA_EC_PARAMS, edParams, sizeof(edParams) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+    { CKA_VERIFY, &bTrue, sizeof(bTrue) },
+  };
+  CK_ATTRIBUTE eprivT[] = {
+    { CKA_CLASS, &scls, sizeof(scls) },
+    { CKA_KEY_TYPE, &ekt, sizeof(ekt) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+    { CKA_SIGN, &bTrue, sizeof(bTrue) },
+  };
+  CK_MECHANISM kgm, sm;
+  CK_EDDSA_PARAMS epure;
+  CK_OBJECT_HANDLE epub = 0, epriv = 0;
+  CK_BYTE sig[64], msg[] = "hello-eddsa";
+  CK_ULONG sigLen;
+  PHASE("eddsa");
+  kgm.mechanism = CKM_EC_EDWARDS_KEY_PAIR_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKeyPair(g_sess, &kgm, epubT, 5, eprivT, 4,
+                            &epub, &epriv);
+  CHECKRV(rv, CKR_OK, "eddsa pair mints");
+  epure.phFlag = CK_FALSE;
+  epure.ulContextDataLen = 0;
+  epure.pContextData = NULL_PTR;
+  sm.mechanism = CKM_EDDSA;
+  sm.pParameter = &epure;
+  sm.ulParameterLen = sizeof(epure);
+  rv = T->C_SignInit(g_sess, &sm, epriv);
+  CHECKRV(rv, CKR_OK, "eddsa sign-init");
+  sigLen = sizeof(sig);
+  rv = T->C_Sign(g_sess, msg, sizeof(msg) - 1, sig, &sigLen);
+  CHECKRV(rv, CKR_OK, "eddsa signs");
+  CHECKM(sigLen == 64, "eddsa sig 64 bytes");
+  rv = T->C_VerifyInit(g_sess, &sm, epub);
+  CHECKRV(rv, CKR_OK, "eddsa verify-init");
+  rv = T->C_Verify(g_sess, msg, sizeof(msg) - 1, sig, sigLen);
+  CHECKRV(rv, CKR_OK, "eddsa verifies");
+  return 0;
+}
+
+static int phase_msg_init_denied(void) {
+  /* Message-init denial reports the requested mechanism, like the
+   * classic path: ECDSA message-sign init on an AES key. */
+  CK_RV rv;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE akt = CKK_AES;
+  CK_ULONG vlen = 16;
+  CK_BBOOL bFalse = CK_FALSE;
+  CK_MECHANISM kgm, em;
+  CK_OBJECT_HANDLE aes = 0;
+  CK_ATTRIBUTE tmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+  };
+  PHASE("msg-init-denied");
+  kgm.mechanism = CKM_AES_KEY_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKey(g_sess, &kgm, tmpl, 4, &aes);
+  CHECKRV(rv, CKR_OK, "msg-denied aes mints");
+  em.mechanism = CKM_ECDSA_SHA256;
+  em.pParameter = NULL_PTR;
+  em.ulParameterLen = 0;
+  rv = tab32->C_MessageSignInit(g_sess, &em, aes);
+  CHECKRV(rv, CKR_KEY_TYPE_INCONSISTENT, "msg ecdsa/aes refused");
+  return 0;
+}
+
+static int phase_msg_query_modes(void) {
+  /* Query finality: the same NOT_INITIALIZED failure stays silent
+   * for a non-final query but reports a failed end for a final
+   * one. Own session. */
+  CK_RV rv;
+  CK_SESSION_HANDLE msess = 0;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE akt = CKK_AES;
+  CK_ULONG vlen = 16;
+  CK_BBOOL bFalse = CK_FALSE;
+  CK_MECHANISM kgm, cm;
+  CK_OBJECT_HANDLE aes = 0;
+  CK_ATTRIBUTE tmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+  };
+  static CK_BYTE iv[16] = {
+    11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11
+  };
+  static CK_BYTE pt[] = "query-blk-16byte";
+  CK_ULONG qLen;
+  PHASE("msg-query-modes");
+  if (open_session(&msess)) CHECKM(0, "query session opens");
+  kgm.mechanism = CKM_AES_KEY_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKey(msess, &kgm, tmpl, 4, &aes);
+  CHECKRV(rv, CKR_OK, "query aes mints");
+  cm.mechanism = CKM_AES_CBC;
+  cm.pParameter = iv;
+  cm.ulParameterLen = sizeof(iv);
+  rv = tab32->C_MessageEncryptInit(msess, &cm, aes);
+  CHECKRV(rv, CKR_OK, "query encrypt-init");
+  qLen = 0;
+  rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
+                                 NULL, &qLen, 0);
+  CHECKRV(rv, CKR_OPERATION_NOT_INITIALIZED, "non-final query silent");
+  qLen = 0;
+  rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
+                                 NULL, &qLen, CKF_END_OF_MESSAGE);
+  CHECKRV(rv, CKR_OPERATION_NOT_INITIALIZED, "final query reports");
+  rv = T->C_CloseSession(msess);
+  CHECKRV(rv, CKR_OK, "query session closes");
+  return 0;
+}
+
+static int phase_msg_query_staged(void) {
+  /* Queries neither disturb nor duplicate staged output: a NULL
+   * query on a staged slot reports its length, and closing still
+   * abandons exactly once. Own session. */
+  CK_RV rv;
+  CK_SESSION_HANDLE msess = 0;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE akt = CKK_AES;
+  CK_ULONG vlen = 16;
+  CK_BBOOL bFalse = CK_FALSE;
+  CK_MECHANISM kgm, cm;
+  CK_OBJECT_HANDLE aes = 0;
+  CK_ATTRIBUTE tmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+  };
+  static CK_BYTE iv[16] = {
+    13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13
+  };
+  static CK_BYTE pt[] = "staged-query-16!";
+  CK_BYTE small[4];
+  CK_ULONG smallLen, qLen;
+  PHASE("msg-query-staged");
+  if (open_session(&msess)) CHECKM(0, "staged session opens");
+  kgm.mechanism = CKM_AES_KEY_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKey(msess, &kgm, tmpl, 4, &aes);
+  CHECKRV(rv, CKR_OK, "staged aes mints");
+  cm.mechanism = CKM_AES_CBC;
+  cm.pParameter = iv;
+  cm.ulParameterLen = sizeof(iv);
+  rv = tab32->C_MessageEncryptInit(msess, &cm, aes);
+  CHECKRV(rv, CKR_OK, "staged encrypt-init");
+  rv = tab32->C_EncryptMessageBegin(msess, iv, sizeof(iv), NULL, 0);
+  CHECKRV(rv, CKR_OK, "staged begin");
+  smallLen = sizeof(small);
+  rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
+                                 small, &smallLen, CKF_END_OF_MESSAGE);
+  CHECKRV(rv, CKR_BUFFER_TOO_SMALL, "staged short stages");
+  qLen = 0;
+  rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
+                                 NULL, &qLen, 0);
+  CHECKRV(rv, CKR_OK, "staged query reports length");
+  CHECKM(qLen == 16, "staged length 16");
+  rv = T->C_CloseSession(msess);
+  CHECKRV(rv, CKR_OK, "staged close abandons once");
+  return 0;
+}
+
+static int phase_digestkey_staged_denied(void) {
+  /* Staged digest recall killed by a policy DigestKey refusal: one
+   * op carries the reject (ov=1) plus the abandoned end. */
+  CK_RV rv;
+  CK_MECHANISM mech;
+  CK_BYTE small[10];
+  CK_ULONG smallLen;
+  PHASE("digestkey-staged-denied");
+  mech.mechanism = CKM_SHA256;
+  mech.pParameter = NULL_PTR;
+  mech.ulParameterLen = 0;
+  rv = T->C_DigestInit(g_sess, &mech);
+  CHECKRV(rv, CKR_OK, "staged digest-init");
+  smallLen = sizeof small;
+  rv = T->C_Digest(g_sess, (CK_BYTE_PTR)"abc", 3, small, &smallLen);
+  CHECKRV(rv, CKR_BUFFER_TOO_SMALL, "staged short stages");
+  rv = T->C_DigestKey(g_sess, g_pub);
+  CHECKRV(rv, CKR_KEY_TYPE_INCONSISTENT, "staged non-secret refused");
+  return 0;
+}
+
+static int phase_encaps_query_denied(void) {
+  /* A NULL encapsulate query against a key without the encapsulate
+   * flag refuses with KEY_FUNCTION_NOT_PERMITTED (policy). */
+  CK_RV rv;
+  CK_OBJECT_CLASS pcls = CKO_PUBLIC_KEY, scls = CKO_PRIVATE_KEY,
+                  ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE kkt = CKK_ML_KEM, akt = CKK_AES;
+  CK_ULONG ckp = CKP_ML_KEM_768, vlen32 = 32;
+  CK_BBOOL bFalse = CK_FALSE, bTrue = CK_TRUE;
+  CK_MECHANISM kgm, kem;
+  CK_ATTRIBUTE pubT[6], privT[6], secT[6];
+  CK_OBJECT_HANDLE pub = 0, priv = 0;
+  CK_ULONG ctLen = 0;
+  CK_OBJECT_HANDLE secret = 0;
+  PHASE("encaps-query-denied");
+  kgm.mechanism = CKM_ML_KEM_KEY_PAIR_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  kem.mechanism = CKM_ML_KEM;
+  kem.pParameter = NULL_PTR;
+  kem.ulParameterLen = 0;
+  pubT[0].type = CKA_CLASS; pubT[0].pValue = &pcls;
+  pubT[0].ulValueLen = sizeof(pcls);
+  pubT[1].type = CKA_KEY_TYPE; pubT[1].pValue = &kkt;
+  pubT[1].ulValueLen = sizeof(kkt);
+  pubT[2].type = CKA_PARAMETER_SET; pubT[2].pValue = &ckp;
+  pubT[2].ulValueLen = sizeof(ckp);
+  pubT[3].type = CKA_TOKEN; pubT[3].pValue = &bFalse;
+  pubT[3].ulValueLen = sizeof(bFalse);
+  pubT[4].type = CKA_ENCAPSULATE; pubT[4].pValue = &bFalse;
+  pubT[4].ulValueLen = sizeof(bFalse);
+  pubT[5].type = CKA_EXTRACTABLE; pubT[5].pValue = &bTrue;
+  pubT[5].ulValueLen = sizeof(bTrue);
+  privT[0].type = CKA_CLASS; privT[0].pValue = &scls;
+  privT[0].ulValueLen = sizeof(scls);
+  privT[1].type = CKA_KEY_TYPE; privT[1].pValue = &kkt;
+  privT[1].ulValueLen = sizeof(kkt);
+  privT[2].type = CKA_TOKEN; privT[2].pValue = &bFalse;
+  privT[2].ulValueLen = sizeof(bFalse);
+  privT[3].type = CKA_DECAPSULATE; privT[3].pValue = &bTrue;
+  privT[3].ulValueLen = sizeof(bTrue);
+  privT[4].type = CKA_EXTRACTABLE; privT[4].pValue = &bTrue;
+  privT[4].ulValueLen = sizeof(bTrue);
+  privT[5].type = CKA_SENSITIVE; privT[5].pValue = &bFalse;
+  privT[5].ulValueLen = sizeof(bFalse);
+  rv = T->C_GenerateKeyPair(g_sess, &kgm, pubT, 6, privT, 6, &pub, &priv);
+  CHECKRV(rv, CKR_OK, "denied kem pair mints");
+  secT[0].type = CKA_CLASS; secT[0].pValue = &ckcls;
+  secT[0].ulValueLen = sizeof(ckcls);
+  secT[1].type = CKA_KEY_TYPE; secT[1].pValue = &akt;
+  secT[1].ulValueLen = sizeof(akt);
+  secT[2].type = CKA_VALUE_LEN; secT[2].pValue = &vlen32;
+  secT[2].ulValueLen = sizeof(vlen32);
+  secT[3].type = CKA_TOKEN; secT[3].pValue = &bFalse;
+  secT[3].ulValueLen = sizeof(bFalse);
+  secT[4].type = CKA_EXTRACTABLE; secT[4].pValue = &bTrue;
+  secT[4].ulValueLen = sizeof(bTrue);
+  secT[5].type = CKA_SENSITIVE; secT[5].pValue = &bFalse;
+  secT[5].ulValueLen = sizeof(bFalse);
+  rv = tab32->C_EncapsulateKey(g_sess, &kem, pub, secT, 6, NULL,
+                             &ctLen, &secret);
+  CHECKRV(rv, CKR_KEY_FUNCTION_NOT_PERMITTED, "sealed query refused");
   return 0;
 }
 
@@ -1484,10 +1769,14 @@ int main(int argc, char **argv) {
   if (phase_shortbuf_verify()) return 1;
   if (phase_init_denied()) return 1;
   if (phase_digestkey_denied()) return 1;
+  if (phase_digestkey_staged_denied()) return 1;
   if (phase_msg_sign()) return 1;
   if (phase_msg_verify_next()) return 1;
   if (phase_msg_encrypt_next()) return 1;
   if (phase_msg_abandon()) return 1;
+  if (phase_msg_init_denied()) return 1;
+  if (phase_msg_query_modes()) return 1;
+  if (phase_msg_query_staged()) return 1;
   if (phase_sign_pss()) return 1;
   if (phase_sign_abandon()) return 1;
   if (open_session(&g_sess)) CHECKM(0, "session reopens");
@@ -1506,6 +1795,8 @@ int main(int argc, char **argv) {
   if (phase_wrap()) return 1;
   if (phase_wrap_oaep()) return 1;
   if (phase_wrap_query_denied()) return 1;
+  if (phase_encaps_query_denied()) return 1;
+  if (phase_eddsa()) return 1;
   if (phase_kem()) return 1;
   if (phase_logout_staged()) return 1;
 
