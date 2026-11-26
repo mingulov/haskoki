@@ -150,11 +150,13 @@ typedef struct hsk_usdt_data_st {
  * hsk_usdt_pk_record emits name + present fields (bits==0 omits)
  * then releases, all in this call. Enum 0 omits its field.
  * Op ids come from a C-owned atomic counter (no Haskell globals):
- * hsk_usdt_alloc_op returns the 1-based counter value, or 0 once
- * saturated (the caller skips emission); hsk_usdt_saturations
- * counts the saturated allocations. */
+ * hsk_usdt_alloc_op returns an id in [1, UINT32_MAX], wrapping
+ * past the top (0 is never issued: it means "no id"). Wraparound
+ * reissues ids after 2^32-1 allocations; that is safe because
+ * sync ids never outlive one C call and async jobs are bounded
+ * by table capacity with reaping, so no live id survives a full
+ * cycle in practice. Correlate, never assume contiguity. */
 uint32_t hsk_usdt_alloc_op(void);
-uint64_t hsk_usdt_saturations(void);
 void hsk_usdt_pk_record(uint64_t op, uint32_t name, uint32_t alg,
     uint32_t curve, uint32_t group, uint64_t bits, uint32_t hash,
     uint32_t padding);
