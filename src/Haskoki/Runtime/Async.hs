@@ -233,6 +233,7 @@ import Control.Exception
   ( AsyncException (..)
   , Exception
   , SomeException
+  , finally
   , fromException
   , mask
   , mask_
@@ -588,7 +589,7 @@ jobFunctionFunc JobGenKey = F_GenerateKey
 jobFunctionFunc JobGenKeyPair = F_GenerateKeyPair
 
 -- | Emit one job_state event for a committed transition. Skipped
--- when the job carries no op id (allocation saturated at accept).
+-- when the job carries no op id (allocation failed at accept).
 usdtJobPhase :: AsyncTable -> JobId -> Job -> JobPhase -> Word32 -> Bool
   -> IO ()
 usdtJobPhase table (JobId n) job phase ckr ckrValid =
@@ -2191,12 +2192,14 @@ commitDetachRevoke dl = uninterruptibleMask_ $ do
   -- The handoff closes the source op: a rejoin continues under a
   -- fresh op id (no in-band link; correlate externally), so without
   -- this pair the source op would dangle at its last phase forever.
-  case mJob of
+  -- The release runs under 'finally': emission must not strand the
+  -- lease (revoked AND released is the contract).
+  (case mJob of
     Just job -> do
       usdtJobPhase (dlTable dl) (dlJob dl) job PhaseHandoff 0 False
       usdtAsyncEnd job (returnCodeToRV CKR_OK) DispHandedOff
-    Nothing -> pure ()
-  putMVar (dlLock dl) ()
+    Nothing -> pure ())
+    `finally` putMVar (dlLock dl) ()
 
 -- | Release a held lease with the job untouched. One-shot.
 abortDetach :: DetachLease -> IO ()
