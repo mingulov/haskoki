@@ -116,11 +116,12 @@ Haskell side, `scripts/check-usdt-codes.py` against `cbits/usdt.h`.
   deliveries; the record describes the attempt, the end carries
   the verdict code.
 - Op ids: C-owned atomic counter, 1-based, tagged `'HSK0'` in the
-  low word, nonzero and ordered, wrapping past 2^32-1 (sync ids
-  never outlive one call and async jobs are table-bounded, so no
-  live id survives a full cycle in practice). Silent failures
-  still allocate ids, so ids are neither contiguous nor dense;
-  correlate, never count on sequence.
+  low word, nonzero, wrapping past 2^32-1 (ordered within a cycle;
+  sync ids never outlive one call and async jobs are
+  table-bounded, so no live id survives a full cycle in
+  practice). Silent failures still allocate ids, so ids are
+  neither contiguous nor dense; correlate, never count on
+  sequence.
 - Slots: management calls without slots (login, PIN changes,
   object create/copy/set-attribute) emit the policy half on
   denials plus a bare end claim carrying only function identity.
@@ -129,18 +130,30 @@ Haskell side, `scripts/check-usdt-codes.py` against `cbits/usdt.h`.
   errors, and management failures. It never distinguishes cause
   (read the `ckr`, the optional reject, and the JSONL trace for
   that); code 2 (failed-exec) stays reserved.
-- Abandoned ends always carry `CKR_OPERATION_NOT_INITIALIZED`:
-  the slot is gone, whatever killed it.
+- Abandoned ends on sync teardown paths always carry
+  `CKR_OPERATION_NOT_INITIALIZED`: the slot is gone, whatever
+  killed it. (Async cancels are the exception: they carry
+  `CKR_FUNCTION_CANCELED` with the abandoned disposition.)
 - Message calls: multipart `...Next` parts are updates unless
   final (`end == 1` for cipher, signature present for verify),
   and final parts report terminally like classic finals; message
   `...Final` calls close the context without delivering, so they
   stay silent on success.
+- Refusal context: a failed non-terminal call reports the slot as
+  the call found it (entry snapshot), not the terminated husk —
+  the digest slot a refused `C_DigestKey` kills still wears its
+  SHA-256 identity. When staged bytes die, both halves of the
+  pair wear the *staging* call's identity from retention (a
+  one-shot `C_Digest` short query stages `F_Digest` facts, so the
+  later killer's pair reports `F_Digest`); inits and queries
+  override with the requested mechanism instead.
 - Detach hands the source op off terminally: the revoke emits a
-  handoff phase plus a handed-off end under the source op id,
-  and the rejoin continues as a genuine new-table admission
-  (fresh op, `Accepted`, first `Ready` on claim win). There is no
-  in-band link between the two op ids; correlate externally.
+  handoff phase plus a handed-off end under the source op id
+  (the end carries `CKR_OK` — the detach committed — so consumers
+  must read the disposition, not the code), and the rejoin
+  continues as a genuine new-table admission (fresh op,
+  `Accepted`, first `Ready` on claim win). There is no in-band
+  link between the two op ids; correlate externally.
 
 ## Redaction boundary
 
@@ -182,7 +195,7 @@ crau-agent -c /dev/null --library /path/to/libhaskoki.so \
 crau-query --log-file /tmp/crau-log.cbor
 ```
 
-which ingested all 24 pk records of the reference workload with
+which ingested all 29 pk records of the reference workload with
 typed fields intact. When both Haskoki and its OpenSSL backend
 emit for one logical operation, count the layer under test to
 avoid double-counting.

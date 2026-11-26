@@ -36,10 +36,10 @@ Developer preview: entries land per task and finalize at release.
   readelf manifest gate, dormant-probe bench); the off build
   carries zero probe notes. Publication needs the flag-on leg.
 - Live capture (`scripts/test-usdt-live.sh`, release manifest):
-  GDB recipe over a 47-phase workload asserting field-exact
+  GDB recipe over a 54-phase workload asserting field-exact
   records, exact per-phase counts, silence legs, and op-id
   correlation across abandonment, denial, retry, message,
-  logout, detach, and cross-thread delivery paths (57 ops, 24 pk
+  logout, detach, and cross-thread delivery paths (69 ops, 29 pk
   records on the reference run), plus an independent Tier-2
   review round whose majors (logout/retention scope, message
   finality, op_valid, detach handoff, counter wrap, refused
@@ -61,11 +61,11 @@ Developer preview: entries land per task and finalize at release.
 - Publication-failure emission has no live leg (no C-side fault
   knob); unit and mapping coverage stands.
 - `crau-agent` ingestion validated: the pinned agent
-  (`e9004d5`) ingested all 24 pk records of the reference workload
-  unmodified (6 generate, 6 sign, 6 verify, 2 derive, OAEP
+  (`e9004d5`) ingested all 29 pk records of the reference workload
+  unmodified (8 generate, 7 sign, 8 verify, 2 derive, OAEP
   encrypt/decrypt, KEM encapsulate/decapsulate), with typed fields
-  intact (including EC `secp256r1` curves) and correct executable
-  attribution.
+  intact (including EC `secp256r1` and EdDSA `ed25519` curves)
+  and correct executable attribution.
 - Finalize-time abandonment stays silent by design.
 - Upstream latchset fixes (collector attach-failure reporting,
   `matches_pid`, fallback-reader zero hazard) are drafted
