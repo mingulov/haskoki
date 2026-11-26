@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.1.0] - unreleased
+
+USDT observability release. The per-change detail is in
+[docs/release-notes-0.6.1.0.md](docs/release-notes-0.6.1.0.md).
+
+### Added
+
+- USDT probes in two providers: Latchset-compatible
+  `crypto_auditing` records (one per delivered public-key
+  operation) and a private `haskoki` namespace (`operation_end`,
+  `policy_reject`, `job_state`). Compiled in behind the `usdt`
+  Cabal flag (on for the official bundle and demo image); no
+  secret bytes in any probe.
+
 ## [0.6.0.0] - 2026-11-25
 
 Testable RnD release. The per-change detail is in
