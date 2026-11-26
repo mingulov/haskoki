@@ -35,14 +35,15 @@ CODE_GROUPS = [
     ("dispositionCode",
      [("DispDelivered", 1), ("DispFailedExec", 2),
       ("DispFailedPublish", 3), ("DispFailedWriteback", 4),
-      ("DispAbandoned", 5)]),
+      ("DispAbandoned", 5), ("DispHandedOff", 6)]),
     ("opModeCode", [("ModeSync", 0), ("ModeAsync", 1)]),
     ("policyReasonCode",
      [("ReasonAuth", 1), ("ReasonUsage", 2), ("ReasonReadonly", 3),
       ("ReasonTemplate", 4), ("ReasonState", 5)]),
     ("jobPhaseCode",
      [("PhaseAccepted", 1), ("PhaseClaimed", 2), ("PhaseReady", 3),
-      ("PhaseDelivered", 4), ("PhaseFailed", 5), ("PhaseCanceled", 6)]),
+      ("PhaseDelivered", 4), ("PhaseFailed", 5), ("PhaseCanceled", 6),
+      ("PhaseHandoff", 7)]),
 ]
 
 # C table -> [(define, spelling)]

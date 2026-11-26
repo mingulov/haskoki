@@ -53,13 +53,14 @@ codePins = testGroup "codes match cbits/usdt.h"
       assertEqual "decapsulate" 6 (pkNameCode PkDecapsulate)
       assertEqual "generate" 7 (pkNameCode PkGenerate)
       assertEqual "derive" 8 (pkNameCode PkDerive)
-  , testCase "dispositions 1..5" $ do
+  , testCase "dispositions 1..6" $ do
       assertEqual "delivered" 1 (dispositionCode DispDelivered)
       assertEqual "failed-exec" 2 (dispositionCode DispFailedExec)
       assertEqual "failed-publish" 3 (dispositionCode DispFailedPublish)
       assertEqual "failed-writeback" 4
         (dispositionCode DispFailedWriteback)
       assertEqual "abandoned" 5 (dispositionCode DispAbandoned)
+      assertEqual "handedoff" 6 (dispositionCode DispHandedOff)
   , testCase "modes" $ do
       assertEqual "sync" 0 (opModeCode ModeSync)
       assertEqual "async" 1 (opModeCode ModeAsync)
@@ -69,13 +70,14 @@ codePins = testGroup "codes match cbits/usdt.h"
       assertEqual "readonly" 3 (policyReasonCode ReasonReadonly)
       assertEqual "template" 4 (policyReasonCode ReasonTemplate)
       assertEqual "state" 5 (policyReasonCode ReasonState)
-  , testCase "phases 1..6" $ do
+  , testCase "phases 1..7" $ do
       assertEqual "accepted" 1 (jobPhaseCode PhaseAccepted)
       assertEqual "claimed" 2 (jobPhaseCode PhaseClaimed)
       assertEqual "ready" 3 (jobPhaseCode PhaseReady)
       assertEqual "delivered" 4 (jobPhaseCode PhaseDelivered)
       assertEqual "failed" 5 (jobPhaseCode PhaseFailed)
       assertEqual "canceled" 6 (jobPhaseCode PhaseCanceled)
+      assertEqual "handoff" 7 (jobPhaseCode PhaseHandoff)
   ]
 
 routePins :: TestTree
@@ -123,6 +125,13 @@ hashPadPins = testGroup "mechanism hash/padding"
       assertEqual "ecdsa-sha256" 4
         (hashOfMechanism (ckm "CKM_ECDSA_SHA256"))
       assertEqual "raw-ecdsa" 0 (hashOfMechanism (ckm "CKM_ECDSA"))
+  , testCase "truncated sha512 omits" $ do
+      assertEqual "sha512-224" 0
+        (hashOfMechanism (ckm "CKM_SHA512_224"))
+      assertEqual "sha512-256" 0
+        (hashOfMechanism (ckm "CKM_SHA512_256"))
+      assertEqual "sha512" 6
+        (hashOfMechanism (ckm "CKM_SHA512"))
   , testCase "paddings" $ do
       assertEqual "pss" 1 (paddingOfMechanism (ckm "CKM_RSA_PKCS_PSS"))
       assertEqual "oaep" 2 (paddingOfMechanism (ckm "CKM_RSA_PKCS_OAEP"))
@@ -180,12 +189,33 @@ keyFactPins = testGroup "key facts"
             , (AttrEcParams, ValBytes p256oid)
             ]
       assertEqual "p256" (PkKeyFacts 2 1 0 0) (keyFactsOf ec)
+  , testCase "ec engine-name params resolve" $ do
+      -- Generated keys store the engine name, imports the DER OID;
+      -- both forms must resolve (live shape caught by capture).
+      let ec = mkObj
+            [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_EC"))
+            , (AttrEcParams, ValBytes "P-256")
+            ]
+      assertEqual "p256-name" (PkKeyFacts 2 1 0 0) (keyFactsOf ec)
   , testCase "ed25519 exact" $ do
       let ed = mkObj
             [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_EC_EDWARDS"))
             , (AttrValue, ValBytes (BS.replicate 32 9))
             ]
       assertEqual "ed25519" (PkKeyFacts 6 5 0 256) (keyFactsOf ed)
+  , testCase "dsa from prime bits" $ do
+      let dsa = mkObj
+            [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_DSA"))
+            , (AttrPrime, ValBytes (BS.replicate 256 3))
+            , (AttrSubprime, ValBytes (BS.replicate 32 5))
+            ]
+      assertEqual "dsa-p" (PkKeyFacts 3 0 0 2048) (keyFactsOf dsa)
+  , testCase "x25519 reports 253" $ do
+      let x = mkObj
+            [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_EC_MONTGOMERY"))
+            , (AttrValue, ValBytes (BS.replicate 32 11))
+            ]
+      assertEqual "x25519" (PkKeyFacts 5 6 0 253) (keyFactsOf x)
   , testCase "ml-kem algorithm-only" $ do
       let kem = mkObj
             [(AttrKeyType, ValULong (mustKeyTypeId "CKK_ML_KEM"))]

@@ -3,14 +3,16 @@
 
 Reads a GDB capture produced by tests/gdb/usdt_cap.txt over
 tests/c/usdt_live.c and fails loudly on any deviation from the
-pinned record shapes (see the EXPECTS table). Correlation is by op
-id within the run (counter order is run-local: phantom allocations
-from silent failures consume ids, so ids are never hardcoded).
+pinned record shapes (see the per-phase asserts below).
+Correlation is by op id within the run (counter order is
+run-local: silent failures consume ids, so ids are never
+hardcoded, only correlated).
 
 Global invariants: NEW/REL pairing, NEW/END terminal pairing,
-REJ/END pairing, orphan parents, the 'HSK0' op tag, reason/
-disposition ranges, and the reserved DispFailedExec never emitted.
-Per-phase asserts pin exact fields, counts, and silence legs.
+REJ op_valid iff a same-op END exists, orphan parents, the 'HSK0'
+op tag, reason/disposition/phase ranges (failed-exec never
+emitted), and exact per-phase event counts (no silent extra or
+missing line anywhere).
 
 Func codes derive from core/Haskoki/Request.hs declaration order
 (the same fromEnum functionCode uses), so a reorder fails here
@@ -29,9 +31,10 @@ REQ = REPO / "core" / "Haskoki" / "Request.hs"
 
 # Stable external PKCS#11 constants (decimal as printed by the recipe).
 CKR_OK = 0
-CKR_ARGS_BAD = 7
 CKR_FUNCTION_CANCELED = 80
 CKR_KEY_HANDLE_INVALID = 96
+CKR_KEY_TYPE_INCONSISTENT = 99
+CKR_KEY_UNEXTRACTABLE = 106
 CKR_OPERATION_NOT_INITIALIZED = 145
 CKR_PIN_INCORRECT = 160
 CKR_SIGNATURE_INVALID = 192
@@ -48,6 +51,8 @@ M_SHA256_RSA = 0x40
 M_XOR = 0x364
 M_SHA256 = 0x250
 M_HMAC_SHA256 = 0x251
+M_EC_KEYGEN = 0x1040
+M_ECDSA_SHA256 = 0x1044
 M_AES_KEYGEN = 0x1080
 M_AES_CBC = 0x1082
 M_AES_CBC_PAD = 0x1085
@@ -55,14 +60,70 @@ M_AES_CBC_PAD = 0x1085
 PHASE_ORDER = [
     "init", "wrong-pin", "login", "keygen", "sign",
     "verify-ok", "verify-bad", "verify-empty", "verify-null",
-    "sign-shortbuf", "sign-pss", "verify-pss", "sign-abandon",
-    "relogin", "setup-hmac", "sign-abandon-nullguard",
-    "sign-abandon-oversize", "digest", "digest-abandon-key",
-    "derive", "derive-dh", "wrap", "unwrap", "wrap-oaep",
-    "unwrap-oaep", "kem-keygen", "encaps", "decaps", "teardown",
-    "async-deliver", "async-cancel", "async-xthread",
-    "async-xthread-handoff", "done",
+    "sign-shortbuf", "shortbuf-verify", "init-denied",
+    "digestkey-denied", "msg-sign", "msg-verify-next",
+    "msg-encrypt-next", "msg-abandon", "sign-pss", "verify-pss",
+    "sign-abandon", "relogin", "setup-hmac",
+    "sign-abandon-nullguard", "sign-abandon-oversize", "digest",
+    "digest-abandon-key", "derive", "derive-dh", "wrap", "unwrap",
+    "wrap-oaep", "unwrap-oaep", "wrap-query-denied", "kem-keygen",
+    "encaps", "decaps", "logout-staged", "logout-fires",
+    "logout-clean", "teardown", "async-deliver", "async-cancel",
+    "async-xthread", "async-xthread-handoff", "async-detach",
+    "async-rejoin", "done",
 ]
+
+# Exact per-phase event counts (new, rel, end, rej, job): no silent
+# extra or missing line anywhere in the capture.
+COUNTS = {
+    "init": (0, 0, 0, 0, 0),
+    "wrong-pin": (0, 0, 1, 1, 0),
+    "login": (0, 0, 1, 0, 0),
+    "keygen": (1, 1, 1, 0, 0),
+    "sign": (1, 1, 1, 0, 0),
+    "verify-ok": (1, 1, 1, 0, 0),
+    "verify-bad": (1, 1, 1, 0, 0),
+    "verify-empty": (1, 1, 1, 0, 0),
+    "verify-null": (0, 0, 0, 0, 0),
+    "sign-shortbuf": (1, 1, 1, 0, 0),
+    "shortbuf-verify": (1, 1, 1, 0, 0),
+    "init-denied": (0, 0, 1, 1, 0),
+    "digestkey-denied": (0, 0, 0, 1, 0),
+    "msg-sign": (1, 1, 1, 0, 0),
+    "msg-verify-next": (2, 2, 2, 0, 0),
+    "msg-encrypt-next": (0, 0, 2, 0, 0),
+    "msg-abandon": (0, 0, 2, 0, 0),
+    "sign-pss": (1, 1, 1, 0, 0),
+    "verify-pss": (1, 1, 1, 0, 0),
+    "sign-abandon": (0, 0, 1, 0, 0),
+    "relogin": (0, 0, 1, 0, 0),
+    "setup-hmac": (0, 0, 1, 0, 0),
+    "sign-abandon-nullguard": (0, 0, 1, 0, 0),
+    "sign-abandon-oversize": (0, 0, 1, 0, 0),
+    "digest": (0, 0, 1, 0, 0),
+    "digest-abandon-key": (0, 0, 1, 0, 0),
+    "derive": (0, 0, 2, 0, 0),
+    "derive-dh": (4, 4, 4, 0, 0),
+    "wrap": (0, 0, 3, 0, 0),
+    "unwrap": (0, 0, 3, 0, 0),
+    "wrap-oaep": (2, 2, 3, 0, 0),
+    "unwrap-oaep": (1, 1, 1, 0, 0),
+    "wrap-query-denied": (0, 0, 3, 1, 0),
+    "kem-keygen": (1, 1, 1, 0, 0),
+    "encaps": (1, 1, 1, 0, 0),
+    "decaps": (1, 1, 1, 0, 0),
+    "logout-staged": (0, 0, 1, 0, 0),
+    "logout-fires": (0, 0, 1, 0, 0),
+    "logout-clean": (2, 2, 2, 0, 0),
+    "teardown": (0, 0, 0, 0, 0),
+    "async-deliver": (0, 0, 1, 0, 4),
+    "async-cancel": (0, 0, 1, 0, 2),
+    "async-xthread": (0, 0, 0, 0, 1),
+    "async-xthread-handoff": (0, 0, 1, 0, 3),
+    "async-detach": (0, 0, 1, 0, 2),
+    "async-rejoin": (0, 0, 1, 0, 4),
+    "done": (0, 0, 0, 0, 0),
+}
 
 TAG = 0x48534B30  # 'HSK0'
 
@@ -171,11 +232,24 @@ class Checker:
             self.fail("phase order drift:\n got: %s\nwant: %s"
                       % (got, PHASE_ORDER))
 
+    def check_counts(self):
+        for p in self.phases:
+            want = COUNTS.get(p["name"])
+            if want is None:
+                self.fail("no count pin for phase: %s" % p["name"])
+                continue
+            got = (len(p["new"]), len(p["rel"]), len(p["end"]),
+                   len(p["rej"]), len(p["job"]))
+            if got != want:
+                self.fail("%s: counts %s, want %s"
+                          % (p["name"], got, want))
+
     def check_global(self):
         news = [n for p in self.phases for n in p["new"]]
         rels = [r for p in self.phases for r in p["rel"]]
         ends = [e for p in self.phases for e in p["end"]]
         rejs = [r for p in self.phases for r in p["rej"]]
+        jobs = [j for p in self.phases for j in p["job"]]
         for n in news:
             if n["parent"] != -1:
                 self.fail("NEW %s: parent %d, want orphan -1"
@@ -199,13 +273,21 @@ class Checker:
             if e["disp"] == 2:
                 self.fail("END %s: reserved DispFailedExec emitted"
                           % e["op"])
-            if e["disp"] not in (1, 3, 4, 5):
+            if e["disp"] not in (1, 3, 4, 5, 6):
                 self.fail("END %s: bad disp %d" % (e["op"], e["disp"]))
         for r in rejs:
             if r["reason"] not in (1, 2, 3, 4, 5):
                 self.fail("REJ %s: bad reason %d" % (r["op"], r["reason"]))
-            if sum(1 for e in ends if e["op"] == r["op"]) != 1:
-                self.fail("REJ %s: END count != 1" % r["op"])
+            # op_valid holds iff a same-op END exists for this call.
+            has_end = any(e["op"] == r["op"] for e in ends)
+            if bool(r["ov"]) != has_end:
+                self.fail("REJ %s: ov=%d but same-op END present=%s"
+                          % (r["op"], r["ov"], has_end))
+        for j in jobs:
+            if j["phase"] not in (1, 2, 3, 4, 5, 6, 7):
+                self.fail("JOB %s: bad phase %d" % (j["op"], j["phase"]))
+            if j["ov"] != 1:
+                self.fail("JOB %s: ov=%d, want 1" % (j["op"], j["ov"]))
 
     def expect_new(self, ph, name, fields):
         """One NEW with exact element set in phase ph; returns ctx."""
@@ -236,43 +318,38 @@ class Checker:
                 self.fail("%s: END %s fields %s, want %s"
                           % (ph["name"], e["op"], got, want))
 
-    def expect_silent(self, name):
-        ph = self.phase(name)
-        total = sum(len(ph[k]) for k in ("new", "rel", "end", "rej", "job"))
-        if total != 0:
-            self.fail("%s: %d probe lines, want silence" % (name, total))
+    def expect_rej(self, ph, func, mech, mp, reason, ckr, ov):
+        if len(ph["rej"]) != 1:
+            self.fail("%s: %d REJs, want 1" % (ph["name"], len(ph["rej"])))
+            return None
+        r = ph["rej"][0]
+        want = {"func": func, "mech": mech, "mp": mp, "reason": reason,
+                "ckr": ckr, "ov": ov}
+        got = {k: r[k] for k in want}
+        if got != want:
+            self.fail("%s: REJ fields %s, want %s"
+                      % (ph["name"], got, want))
+        return r["op"]
 
     def run(self):
         f = self.func
         self.check_order()
+        self.check_counts()
         self.check_global()
 
-        self.expect_silent("init")
-
         ph = self.phase("wrong-pin")
-        if len(ph["rej"]) != 1 or len(ph["end"]) != 1 or ph["new"]:
-            self.fail("wrong-pin: want 1 REJ + 1 END, no NEW")
-        else:
-            r = ph["rej"][0]
-            if (r["func"], r["reason"], r["ckr"]) != \
-                    (f["F_Login"], 1, CKR_PIN_INCORRECT):
-                self.fail("wrong-pin: REJ %s" % r)
-            self.expect_end(ph, r["op"], f["F_Login"], 0, 0,
-                            CKR_PIN_INCORRECT, 3, 0)
+        op = self.expect_rej(ph, f["F_Login"], 0, 0, 1,
+                             CKR_PIN_INCORRECT, 1)
+        self.expect_end(ph, op, f["F_Login"], 0, 0,
+                        CKR_PIN_INCORRECT, 3, 0)
 
         for name in ("login", "relogin"):
             ph = self.phase(name)
-            if len(ph["end"]) != 1 or ph["rej"] or ph["new"]:
-                self.fail("%s: want bare END only" % name)
-            else:
-                self.expect_end(ph, None, f["F_Login"], 0, 0, CKR_OK, 1, 0)
+            self.expect_end(ph, None, f["F_Login"], 0, 0, CKR_OK, 1, 0)
 
         ph = self.phase("setup-hmac")
-        if len(ph["end"]) != 1 or ph["new"]:
-            self.fail("setup-hmac: want 1 CreateObject END, no NEW")
-        else:
-            self.expect_end(ph, None, f["F_CreateObject"], 0, 0,
-                            CKR_OK, 1, 0)
+        self.expect_end(ph, None, f["F_CreateObject"], 0, 0,
+                        CKR_OK, 1, 0)
 
         rsa2048 = {"name": "str:pk::generate", "pk::algorithm": "str:RSA",
                    "pk::bits": "word:2048"}
@@ -288,26 +365,64 @@ class Checker:
         ctx = self.expect_new(ph, "pk::sign", v15)
         self.expect_end(ph, ctx, f["F_Sign"], M_SHA256_RSA, 1, CKR_OK, 1, 0)
 
-        for name, func in (("verify-ok", "F_Verify"),
-                           ("verify-bad", "F_Verify"),
-                           ("verify-empty", "F_Verify")):
+        for name in ("verify-ok", "verify-bad", "verify-empty"):
             ph = self.phase(name)
             rec = dict(v15)
             rec["name"] = "str:pk::verify"
             ctx = self.expect_new(ph, "pk::verify", rec)
             ckr = CKR_OK if name == "verify-ok" else CKR_SIGNATURE_INVALID
-            self.expect_end(ph, ctx, f[func], M_SHA256_RSA, 1, ckr, 1, 0)
-
-        self.expect_silent("verify-null")
+            self.expect_end(ph, ctx, f["F_Verify"], M_SHA256_RSA, 1,
+                            ckr, 1, 0)
 
         ph = self.phase("sign-shortbuf")
-        if len(ph["new"]) != 1:
-            self.fail("sign-shortbuf: %d NEWs, want exactly 1"
-                      % len(ph["new"]))
-        else:
-            ctx = self.expect_new(ph, "pk::sign", v15)
-            self.expect_end(ph, ctx, f["F_Sign"], M_SHA256_RSA, 1,
-                            CKR_OK, 1, 0)
+        ctx = self.expect_new(ph, "pk::sign", v15)
+        self.expect_end(ph, ctx, f["F_Sign"], M_SHA256_RSA, 1,
+                        CKR_OK, 1, 0)
+
+        ph = self.phase("shortbuf-verify")
+        rec = dict(v15)
+        rec["name"] = "str:pk::verify"
+        ctx = self.expect_new(ph, "pk::verify", rec)
+        self.expect_end(ph, ctx, f["F_Verify"], M_SHA256_RSA, 1,
+                        CKR_OK, 1, 0)
+
+        ph = self.phase("init-denied")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        # Requested-mech reporting: ECDSA init refused on an AES key.
+        self.expect_rej(ph, f["F_SignInit"], M_ECDSA_SHA256, 1, 2,
+                        CKR_KEY_TYPE_INCONSISTENT, 0)
+
+        ph = self.phase("digestkey-denied")
+        self.expect_rej(ph, f["F_DigestUpdate"], M_SHA256, 1, 2,
+                        CKR_KEY_TYPE_INCONSISTENT, 0)
+
+        ph = self.phase("msg-sign")
+        ctx = self.expect_new(ph, "pk::sign", v15)
+        self.expect_end(ph, ctx, f["F_SignMessage"], M_SHA256_RSA, 1,
+                        CKR_OK, 1, 0)
+
+        ph = self.phase("msg-verify-next")
+        ctx = self.expect_new(ph, "pk::sign", v15)
+        self.expect_end(ph, ctx, f["F_SignMessage"], M_SHA256_RSA, 1,
+                        CKR_OK, 1, 0)
+        rec = dict(v15)
+        rec["name"] = "str:pk::verify"
+        ctx = self.expect_new(ph, "pk::verify", rec)
+        self.expect_end(ph, ctx, f["F_VerifyMessageNext"], M_SHA256_RSA,
+                        1, CKR_OK, 1, 0)
+
+        ph = self.phase("msg-encrypt-next")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][1]["op"], f["F_EncryptMessageNext"],
+                        M_AES_CBC, 1, CKR_OK, 1, 0)
+
+        ph = self.phase("msg-abandon")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][1]["op"], f["F_EncryptMessageNext"],
+                        M_AES_CBC, 1, CKR_OPERATION_NOT_INITIALIZED, 5, 0)
 
         pss = {"name": "str:pk::sign", "pk::algorithm": "str:RSA",
                "pk::bits": "word:2048", "pk::hash": "str:SHA384",
@@ -322,91 +437,70 @@ class Checker:
         self.expect_end(ph, ctx, f["F_Verify"], M_PSS, 1, CKR_OK, 1, 0)
 
         ph = self.phase("sign-abandon")
-        if len(ph["end"]) != 1 or ph["new"]:
-            self.fail("sign-abandon: want 1 abandoned END, no NEW")
-        else:
-            self.expect_end(ph, None, f["F_Sign"], M_SHA256_RSA, 1,
-                            CKR_OPERATION_NOT_INITIALIZED, 5, 0)
+        self.expect_end(ph, None, f["F_Sign"], M_SHA256_RSA, 1,
+                        CKR_OPERATION_NOT_INITIALIZED, 5, 0)
 
         for name in ("sign-abandon-nullguard", "sign-abandon-oversize"):
             ph = self.phase(name)
-            if len(ph["end"]) != 1 or ph["new"]:
-                self.fail("%s: want 1 abandoned END, no NEW" % name)
-            else:
-                self.expect_end(ph, None, f["F_Sign"], M_HMAC_SHA256, 1,
-                                CKR_OPERATION_NOT_INITIALIZED, 5, 0)
-
-        ph = self.phase("digest")
-        if len(ph["end"]) != 1 or ph["new"]:
-            self.fail("digest: want private END only, no NEW")
-        else:
-            self.expect_end(ph, None, f["F_Digest"], M_SHA256, 1,
-                            CKR_OK, 1, 0)
-
-        ph = self.phase("digest-abandon-key")
-        if len(ph["end"]) != 1 or ph["new"] or ph["rej"]:
-            self.fail("digest-abandon-key: want 1 abandoned END "
-                      "(non-policy, no REJ)")
-        else:
-            self.expect_end(ph, None, f["F_Digest"], M_SHA256, 1,
+            self.expect_end(ph, None, f["F_Sign"], M_HMAC_SHA256, 1,
                             CKR_OPERATION_NOT_INITIALIZED, 5, 0)
 
+        ph = self.phase("digest")
+        self.expect_end(ph, None, f["F_Digest"], M_SHA256, 1,
+                        CKR_OK, 1, 0)
+
+        ph = self.phase("digest-abandon-key")
+        self.expect_end(ph, None, f["F_Digest"], M_SHA256, 1,
+                        CKR_OPERATION_NOT_INITIALIZED, 5, 0)
+
         ph = self.phase("derive")
-        if ph["new"] or len(ph["end"]) != 2:
-            self.fail("derive: want 0 NEW + 2 ENDs (create, derive)")
-        else:
-            self.expect_end(ph, ph["end"][0]["op"], f["F_CreateObject"],
-                            0, 0, CKR_OK, 1, 0)
-            self.expect_end(ph, ph["end"][1]["op"], f["F_DeriveKey"],
-                            M_XOR, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][0]["op"], f["F_CreateObject"],
+                        0, 0, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][1]["op"], f["F_DeriveKey"],
+                        M_XOR, 1, CKR_OK, 1, 0)
 
         ph = self.phase("derive-dh")
-        if len(ph["new"]) != 4:
-            self.fail("derive-dh: %d NEWs, want 4" % len(ph["new"]))
-        else:
-            dhgen = {"name": "str:pk::generate",
-                     "pk::algorithm": "str:DH", "pk::bits": "word:2048"}
-            dhder = {"name": "str:pk::derive",
-                     "pk::algorithm": "str:DH", "pk::bits": "word:2048"}
-            gens = [n for n in ph["new"] if elems_dict(n) == dhgen]
-            ders = [n for n in ph["new"] if elems_dict(n) == dhder]
-            if len(gens) != 2 or len(ders) != 2:
-                self.fail("derive-dh: want 2 DH-generate + 2 DH-derive "
-                          "records (DH/2048, no hash/pad/group)")
-        ends = [e for e in ph["end"] if e["func"] == f["F_DeriveKey"]]
-        if len(ends) != 2:
-            self.fail("derive-dh: %d derive ENDs, want 2" % len(ends))
-        for e in ends:
-            if (e["func"], e["mech"], e["disp"]) != \
-                    (f["F_DeriveKey"], M_DH_DERIVE, 1):
-                self.fail("derive-dh: END %s" % e)
+        dhgen = {"name": "str:pk::generate",
+                 "pk::algorithm": "str:DH", "pk::bits": "word:2048"}
+        dhder = {"name": "str:pk::derive",
+                 "pk::algorithm": "str:DH", "pk::bits": "word:2048"}
+        gens = [n for n in ph["new"] if elems_dict(n) == dhgen]
+        ders = [n for n in ph["new"] if elems_dict(n) == dhder]
+        if len(gens) != 2 or len(ders) != 2:
+            self.fail("derive-dh: want 2 DH-generate + 2 DH-derive "
+                      "records (DH/2048, no hash/pad/group)")
+        for e in ph["end"]:
+            if e["func"] == f["F_DeriveKey"]:
+                self.expect_end(ph, e["op"], f["F_DeriveKey"],
+                                M_DH_DERIVE, 1, CKR_OK, 1, 0)
+            else:
+                self.expect_end(ph, e["op"], f["F_GenerateKeyPair"],
+                                M_DH_KEYGEN, 1, CKR_OK, 1, 0)
 
         ph = self.phase("wrap")
-        if ph["new"] or len(ph["end"]) != 3:
-            self.fail("wrap: want 0 NEW + 3 ENDs")
-        else:
-            for e in ph["end"][:2]:
-                self.expect_end(ph, e["op"], f["F_GenerateKey"],
-                                M_AES_KEYGEN, 1, CKR_OK, 1, 0)
-            self.expect_end(ph, ph["end"][2]["op"], f["F_WrapKey"],
-                            M_AES_CBC, 1, CKR_OK, 1, 0)
+        for e in ph["end"][:2]:
+            self.expect_end(ph, e["op"], f["F_GenerateKey"],
+                            M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][2]["op"], f["F_WrapKey"],
+                        M_AES_CBC, 1, CKR_OK, 1, 0)
 
         ph = self.phase("unwrap")
-        if ph["new"] or len(ph["end"]) != 3:
-            self.fail("unwrap: want 0 NEW + 3 ENDs")
-        else:
-            self.expect_end(ph, ph["end"][0]["op"], f["F_UnwrapKey"],
-                            M_AES_CBC, 1, CKR_OK, 1, 0)
-            self.expect_end(ph, ph["end"][1]["op"], f["F_Encrypt"],
-                            M_AES_CBC_PAD, 1, CKR_OK, 1, 0)
-            self.expect_end(ph, ph["end"][2]["op"], f["F_Decrypt"],
-                            M_AES_CBC_PAD, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][0]["op"], f["F_UnwrapKey"],
+                        M_AES_CBC, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][1]["op"], f["F_Encrypt"],
+                        M_AES_CBC_PAD, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][2]["op"], f["F_Decrypt"],
+                        M_AES_CBC_PAD, 1, CKR_OK, 1, 0)
 
         oaep_enc = {"name": "str:pk::encrypt",
                     "pk::algorithm": "str:RSA", "pk::bits": "word:2048",
                     "pk::hash": "str:SHA256",
                     "pk::rsa_padding": "str:oaep"}
         ph = self.phase("wrap-oaep")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKeyPair"],
+                        M_RSA_KEYGEN, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][1]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
         ctx = self.expect_new(ph, "pk::encrypt", oaep_enc)
         self.expect_end(ph, ctx, f["F_WrapKey"], M_OAEP, 1, CKR_OK, 1, 0)
         ph = self.phase("unwrap-oaep")
@@ -414,6 +508,16 @@ class Checker:
         rec["name"] = "str:pk::decrypt"
         ctx = self.expect_new(ph, "pk::decrypt", rec)
         self.expect_end(ph, ctx, f["F_UnwrapKey"], M_OAEP, 1, CKR_OK, 1, 0)
+
+        ph = self.phase("wrap-query-denied")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][1]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        op = self.expect_rej(ph, f["F_WrapKey"], M_AES_CBC, 1, 2,
+                             CKR_KEY_UNEXTRACTABLE, 1)
+        self.expect_end(ph, op, f["F_WrapKey"], M_AES_CBC, 1,
+                        CKR_KEY_UNEXTRACTABLE, 3, 0)
 
         kemgen = {"name": "str:pk::generate",
                   "pk::algorithm": "str:ML-KEM"}
@@ -434,8 +538,25 @@ class Checker:
         self.expect_end(ph, ctx, f["F_DecapsulateKey"], M_ML_KEM, 1,
                         CKR_OK, 1, 0)
 
-        self.expect_silent("teardown")
-        self.expect_silent("done")
+        ph = self.phase("logout-staged")
+        self.expect_end(ph, None, f["F_CreateObject"], 0, 0,
+                        CKR_OK, 1, 0)
+
+        ph = self.phase("logout-fires")
+        self.expect_end(ph, None, f["F_Sign"], M_HMAC_SHA256, 1,
+                        CKR_OPERATION_NOT_INITIALIZED, 5, 0)
+
+        ph = self.phase("logout-clean")
+        ecgen = {"name": "str:pk::generate",
+                 "pk::algorithm": "str:EC", "pk::curve": "str:secp256r1"}
+        ctx = self.expect_new(ph, "pk::generate", ecgen)
+        self.expect_end(ph, ctx, f["F_GenerateKeyPair"], M_EC_KEYGEN, 1,
+                        CKR_OK, 1, 0)
+        ecdsa = {"name": "str:pk::sign", "pk::algorithm": "str:EC",
+                 "pk::curve": "str:secp256r1", "pk::hash": "str:SHA256"}
+        ctx = self.expect_new(ph, "pk::sign", ecdsa)
+        self.expect_end(ph, ctx, f["F_Sign"], M_ECDSA_SHA256, 1,
+                        CKR_OK, 1, 0)
 
         self.check_async("async-deliver", [1, 2, 3, 4], CKR_OK, 1)
         self.check_async("async-cancel", [1, 6], CKR_FUNCTION_CANCELED, 5)
@@ -454,13 +575,43 @@ class Checker:
         ids = {(j["tab"], j["job"], j["op"]) for j in ja + jb}
         if len(ids) != 1:
             self.fail("async-xthread: job identity splits: %s" % ids)
-        if len(b["end"]) != 1:
-            self.fail("async-xthread-handoff: want 1 END")
+        e = b["end"][0]
+        if (e["op"], e["func"], e["disp"], e["mode"]) != \
+                (next(iter(ids))[2], f["F_Digest"], 1, 1):
+            self.fail("async-xthread-handoff: END %s" % e)
+
+        # Detach hands off (handoff pair under the source op);
+        # rejoin is a fresh op (Accepted, Ready on claim win).
+        a = self.phase("async-detach")
+        if [j["phase"] for j in a["job"]] != [1, 7]:
+            self.fail("async-detach: want [accepted, handoff], got %s"
+                      % a["job"])
         else:
-            e = b["end"][0]
-            if (e["op"], e["func"], e["disp"], e["mode"]) != \
-                    (next(iter(ids))[2], f["F_Digest"], 1, 1):
-                self.fail("async-xthread-handoff: END %s" % e)
+            ids_a = {(j["tab"], j["job"], j["op"]) for j in a["job"]}
+            if len(ids_a) != 1:
+                self.fail("async-detach: job identity splits")
+            else:
+                e = a["end"][0]
+                if (e["op"], e["func"], e["disp"], e["mode"]) != \
+                        (next(iter(ids_a))[2], f["F_Digest"], 6, 1):
+                    self.fail("async-detach: END %s" % e)
+        b = self.phase("async-rejoin")
+        if [j["phase"] for j in b["job"]] != [1, 2, 3, 4]:
+            self.fail("async-rejoin: want [accepted, claimed, ready, "
+                      "delivered], got %s" % b["job"])
+        else:
+            ids_b = {(j["tab"], j["job"], j["op"]) for j in b["job"]}
+            if len(ids_b) != 1:
+                self.fail("async-rejoin: job identity splits")
+            else:
+                ops_a = {j["op"] for j in a["job"]}
+                ops_b = {j["op"] for j in b["job"]}
+                if ops_a == ops_b:
+                    self.fail("async-rejoin: op id not fresh")
+                e = b["end"][0]
+                if (e["op"], e["func"], e["disp"], e["mode"]) != \
+                        (next(iter(ids_b))[2], f["F_Digest"], 1, 1):
+                    self.fail("async-rejoin: END %s" % e)
 
     def check_async(self, name, phases, ckr, disp):
         ph = self.phase(name)
@@ -472,9 +623,6 @@ class Checker:
         ids = {(j["tab"], j["job"], j["op"]) for j in jobs}
         if len(ids) != 1:
             self.fail("%s: job identity splits: %s" % (name, ids))
-            return
-        if len(ph["end"]) != 1:
-            self.fail("%s: want 1 END" % name)
             return
         e = ph["end"][0]
         op = next(iter(ids))[2]
