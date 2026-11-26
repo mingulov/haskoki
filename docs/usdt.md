@@ -138,9 +138,11 @@ Haskell side, `scripts/check-usdt-codes.py` against `cbits/usdt.h`.
   `CKR_FUNCTION_CANCELED` with the abandoned disposition.)
 - Message calls: multipart `...Next` parts are updates unless
   final (`end == 1` for cipher, signature present for verify),
-  and final parts report terminally like classic finals; message
-  `...Final` calls close the context without delivering, so they
-  stay silent on success.
+  and final parts report terminally like classic finals; a recall
+  on a staged slot reports terminally regardless of the flag
+  (the staged output is always a final's, so the staged state,
+  not the flag, decides); message `...Final` calls close the
+  context without delivering, so they stay silent on success.
 - Refusal context: a failed non-terminal call reports the slot as
   the call found it (entry snapshot), not the terminated husk —
   the digest slot a refused `C_DigestKey` kills still wears its
@@ -148,8 +150,9 @@ Haskell side, `scripts/check-usdt-codes.py` against `cbits/usdt.h`.
   pair wear the *staging* call's identity from retention (a
   one-shot `C_Digest` short query stages `F_Digest` facts, so the
   later killer's pair reports `F_Digest`); inits override with
-  the requested mechanism instead, while queries report the
-  slot's live context.
+  the requested mechanism instead, while queries take no
+  override (live slot context, or retention when staged bytes
+  die).
 - Detach hands the source op off terminally: the revoke emits a
   handoff phase plus a handed-off end under the source op id
   (the end carries `CKR_OK` — the detach committed — so consumers
