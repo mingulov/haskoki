@@ -91,6 +91,7 @@ import qualified TemplateRulesSpec
 import qualified TraceSpec
 import qualified TransitionSpec
 import qualified ULongSpec
+import qualified UsdtMapSpec
 
 main :: IO ()
 -- GHC #27272 warm-up MITIGATION (not a fix): one single-threaded
@@ -193,5 +194,6 @@ tests = testGroup "haskoki model + lifecycle"
   , DecodedRequestSpec.spec
   , AdmissionSpec.spec
   , ULongSpec.spec
+  , UsdtMapSpec.spec
   , SecretsSpec.spec
   ]

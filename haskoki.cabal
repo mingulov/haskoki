@@ -563,6 +563,7 @@ test-suite haskoki-model-tests
     TemplateRulesSpec
     TraceSpec
     ULongSpec
+    UsdtMapSpec
   build-depends:
     base        >= 4.14 && < 5,
     bytestring  >= 0.10 && < 0.13,
