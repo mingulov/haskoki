@@ -67,6 +67,7 @@ PHASE_ORDER = [
     "digestkey-denied", "digestkey-staged-denied", "msg-sign",
     "msg-verify-next", "msg-encrypt-next", "msg-abandon",
     "msg-init-denied", "msg-query-modes", "msg-query-staged",
+    "msg-recall-nonfinal",
     "sign-pss", "verify-pss",
     "sign-abandon", "relogin", "setup-hmac",
     "sign-abandon-nullguard", "sign-abandon-oversize", "digest",
@@ -104,6 +105,7 @@ COUNTS = {
     "msg-init-denied": (0, 0, 1, 1, 0),
     "msg-query-modes": (0, 0, 2, 2, 0),
     "msg-query-staged": (0, 0, 2, 0, 0),
+    "msg-recall-nonfinal": (0, 0, 3, 0, 0),
     "sign-pss": (1, 1, 1, 0, 0),
     "verify-pss": (1, 1, 1, 0, 0),
     "sign-abandon": (0, 0, 1, 0, 0),
@@ -363,6 +365,10 @@ class Checker:
         self.check_order()
         self.check_counts()
         self.check_global()
+        # Legs index per-phase records positionally; running them
+        # after a count/order failure crashes instead of reporting.
+        if self.fails:
+            return
 
         ph = self.phase("wrong-pin")
         op = self.expect_rej(ph, f["F_Login"], 0, 0, 1,
@@ -491,6 +497,18 @@ class Checker:
         # flush (no reject: the close itself succeeded).
         self.expect_end(ph, ph["end"][1]["op"], f["F_EncryptMessageNext"],
                         M_AES_CBC, 1, CKR_OPERATION_NOT_INITIALIZED, 5, 0)
+
+        ph = self.phase("msg-recall-nonfinal")
+        self.expect_end(ph, ph["end"][0]["op"], f["F_GenerateKey"],
+                        M_AES_KEYGEN, 1, CKR_OK, 1, 0)
+        # N1: the non-final recall delivers the staged final bytes
+        # with a delivered end (staged state promotes it past the
+        # caller's end=0); the re-init plus one-shot pins a clean
+        # F_EncryptMessage identity.
+        self.expect_end(ph, ph["end"][1]["op"], f["F_EncryptMessageNext"],
+                        M_AES_CBC, 1, CKR_OK, 1, 0)
+        self.expect_end(ph, ph["end"][2]["op"], f["F_EncryptMessage"],
+                        M_AES_CBC, 1, CKR_OK, 1, 0)
 
         pss = {"name": "str:pk::sign", "pk::algorithm": "str:RSA",
                "pk::bits": "word:2048", "pk::hash": "str:SHA384",

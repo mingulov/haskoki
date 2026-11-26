@@ -534,9 +534,6 @@ static int phase_digest(void) {
   return 0;
 }
 
-/* Staged digest recall killed by a key-resolution refusal:
- * C_DigestKey with a bad handle refuses KEY_HANDLE_INVALID and the
- * abandoned end must fire (the code is not policy: no reject). */
 static int phase_msg_sign(void) {
   /* RSA message-sign one-shot: a pk::sign record via the message
    * path (F_SignMessage routes like a classic final). */
@@ -694,6 +691,9 @@ static int phase_msg_abandon(void) {
   return 0;
 }
 
+/* Staged digest recall killed by a key-resolution refusal:
+ * C_DigestKey with a bad handle refuses KEY_HANDLE_INVALID and the
+ * abandoned end must fire (the code is not policy: no reject). */
 static int phase_digest_abandon_key(void) {
   CK_RV rv;
   CK_MECHANISM mech;
@@ -1363,6 +1363,71 @@ static int phase_msg_query_staged(void) {
   return 0;
 }
 
+static int phase_msg_recall_nonfinal(void) {
+  /* N1: a non-final recall on a staged slot still delivers the
+   * staged final output: the staged state, not the caller's end
+   * flag, decides terminality. Final short, then a non-final
+   * recall with room (one delivered end — unfixed, zero ends),
+   * then a re-init plus a one-shot pinning F_EncryptMessage
+   * (one-shots need init; the recall's terminal delivery is what
+   * drops the retention, in the same path that emits its end).
+   * Own session. */
+  CK_RV rv;
+  CK_SESSION_HANDLE msess = 0;
+  CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
+  CK_KEY_TYPE akt = CKK_AES;
+  CK_ULONG vlen = 16;
+  CK_BBOOL bFalse = CK_FALSE;
+  CK_MECHANISM kgm, cm;
+  CK_OBJECT_HANDLE aes = 0;
+  CK_ATTRIBUTE tmpl[] = {
+    { CKA_CLASS, &ckcls, sizeof(ckcls) },
+    { CKA_KEY_TYPE, &akt, sizeof(akt) },
+    { CKA_VALUE_LEN, &vlen, sizeof(vlen) },
+    { CKA_TOKEN, &bFalse, sizeof(bFalse) },
+  };
+  static CK_BYTE iv[16] = {
+    17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17
+  };
+  static CK_BYTE pt[] = "recall-nonfin-16";
+  CK_BYTE small[4], out[32], once[32];
+  CK_ULONG smallLen, outLen, onceLen;
+  PHASE("msg-recall-nonfinal");
+  if (open_session(&msess)) CHECKM(0, "recall session opens");
+  kgm.mechanism = CKM_AES_KEY_GEN;
+  kgm.pParameter = NULL_PTR;
+  kgm.ulParameterLen = 0;
+  rv = T->C_GenerateKey(msess, &kgm, tmpl, 4, &aes);
+  CHECKRV(rv, CKR_OK, "recall aes mints");
+  cm.mechanism = CKM_AES_CBC;
+  cm.pParameter = iv;
+  cm.ulParameterLen = sizeof(iv);
+  rv = tab32->C_MessageEncryptInit(msess, &cm, aes);
+  CHECKRV(rv, CKR_OK, "recall encrypt-init");
+  rv = tab32->C_EncryptMessageBegin(msess, iv, sizeof(iv), NULL, 0);
+  CHECKRV(rv, CKR_OK, "recall begin");
+  smallLen = sizeof(small);
+  rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
+                                 small, &smallLen, CKF_END_OF_MESSAGE);
+  CHECKRV(rv, CKR_BUFFER_TOO_SMALL, "recall final short stages");
+  outLen = sizeof(out);
+  rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
+                                 out, &outLen, 0);
+  CHECKRV(rv, CKR_OK, "recall non-final delivers");
+  CHECKM(outLen == 16, "recall delivers 16");
+  rv = tab32->C_MessageEncryptFinal(msess);
+  CHECKRV(rv, CKR_OK, "recall final closes context");
+  rv = tab32->C_MessageEncryptInit(msess, &cm, aes);
+  CHECKRV(rv, CKR_OK, "recall re-init for one-shot");
+  onceLen = sizeof(once);
+  rv = tab32->C_EncryptMessage(msess, iv, sizeof(iv), NULL, 0, pt,
+                             sizeof(pt) - 1, once, &onceLen);
+  CHECKRV(rv, CKR_OK, "recall one-shot clean");
+  rv = T->C_CloseSession(msess);
+  CHECKRV(rv, CKR_OK, "recall close");
+  return 0;
+}
+
 static int phase_digestkey_staged_denied(void) {
   /* Staged digest recall killed by a policy DigestKey refusal: one
    * op carries the reject (ov=1) plus the abandoned end. */
@@ -1777,6 +1842,7 @@ int main(int argc, char **argv) {
   if (phase_msg_init_denied()) return 1;
   if (phase_msg_query_modes()) return 1;
   if (phase_msg_query_staged()) return 1;
+  if (phase_msg_recall_nonfinal()) return 1;
   if (phase_sign_pss()) return 1;
   if (phase_sign_abandon()) return 1;
   if (open_session(&g_sess)) CHECKM(0, "session reopens");
