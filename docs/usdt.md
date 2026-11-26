@@ -66,7 +66,10 @@ reported code word.
 `policy_reject(op, op_valid, func, mech, mech_present, reason, ckr)`:
 admission denials with a reason class (see below). Zero or more
 per denied call; terminal only when the same decision commits the
-teardown.
+teardown. `op_valid` answers "is an `operation_end` with this op
+id emitted for this call": true on terminal paths (the end always
+follows), and on non-terminal paths exactly when staged bytes die
+with metadata to report.
 
 `job_state(table, job, op, op_valid, phase, ckr, ckr_valid)`:
 async job transitions; `table`/`job` identify the job, `op`
@@ -76,10 +79,10 @@ Code tables:
 
 | Enum | Codes |
 |---|---|
-| Disposition | 1 delivered, 3 failed-publish, 4 failed-writeback, 5 abandoned (2 failed-exec reserved, never emitted) |
+| Disposition | 1 delivered, 3 failed-publish, 4 failed-writeback, 5 abandoned, 6 handed-off (2 failed-exec reserved, never emitted) |
 | OpMode | 0 sync, 1 async |
 | PolicyReason | 1 auth, 2 usage, 3 readonly, 4 template, 5 state |
-| JobPhase | 1 accepted, 2 claimed, 3 ready, 4 delivered, 5 failed, 6 canceled |
+| JobPhase | 1 accepted, 2 claimed, 3 ready, 4 delivered, 5 failed, 6 canceled, 7 handoff |
 
 Codes are pinned both ways: `tests/model/UsdtMapSpec.hs` on the
 Haskell side, `scripts/check-usdt-codes.py` against `cbits/usdt.h`.
@@ -101,22 +104,43 @@ Haskell side, `scripts/check-usdt-codes.py` against `cbits/usdt.h`.
   key-resolution refusal — get the abandoned end from the
   centralized teardown flush (`terminateSlot`); finalize-time
   abandonment stays silent by design.
-- Silence: inits, updates, and size queries emit nothing on
-  success; failures without policy relevance and without dying
-  staged bytes stay silent. Caller-bug refusals before admission
-  (NULL arguments, oversize lengths) arm nothing.
+- Silence (crypto/data paths): inits, updates, and size queries
+  emit nothing on success; failures without policy relevance and
+  without dying staged bytes stay silent. Caller-bug refusals
+  before admission (NULL arguments, oversize lengths) arm nothing.
+  Management calls differ: every return gets an end claim,
+  including caller bugs (there is no admission phase to
+  distinguish), with the policy half firing only on denials.
 - Verdicts: committed negative verdicts (bad signature, including
   degenerate empty-signature calls) emit exactly like successful
   deliveries; the record describes the attempt, the end carries
   the verdict code.
 - Op ids: C-owned atomic counter, 1-based, tagged `'HSK0'` in the
-  low word, nonzero and ordered. Silent failures still allocate
-  ids, so ids are neither contiguous nor dense; correlate, never
-  count on sequence. Saturation (past `UINT32_MAX`) skips emission
-  and counts `hsk_usdt_saturations`.
+  low word, nonzero and ordered, wrapping past 2^32-1 (sync ids
+  never outlive one call and async jobs are table-bounded, so no
+  live id survives a full cycle in practice). Silent failures
+  still allocate ids, so ids are neither contiguous nor dense;
+  correlate, never count on sequence.
 - Slots: management calls without slots (login, PIN changes,
   object create/copy/set-attribute) emit the policy half on
   denials plus a bare end claim carrying only function identity.
+- Disposition 3 (failed-publish) is the shared terminal-failure
+  code past admission: plan refusals with teardown, engine
+  errors, and management failures. It never distinguishes cause
+  (read the `ckr`, the optional reject, and the JSONL trace for
+  that); code 2 (failed-exec) stays reserved.
+- Abandoned ends always carry `CKR_OPERATION_NOT_INITIALIZED`:
+  the slot is gone, whatever killed it.
+- Message calls: multipart `...Next` parts are updates unless
+  final (`end == 1` for cipher, signature present for verify),
+  and final parts report terminally like classic finals; message
+  `...Final` calls close the context without delivering, so they
+  stay silent on success.
+- Detach hands the source op off terminally: the revoke emits a
+  handoff phase plus a handed-off end under the source op id,
+  and the rejoin continues as a genuine new-table admission
+  (fresh op, `Accepted`, first `Ready` on claim win). There is no
+  in-band link between the two op ids; correlate externally.
 
 ## Redaction boundary
 
@@ -158,7 +182,7 @@ crau-agent -c /dev/null --library /path/to/libhaskoki.so \
 crau-query --log-file /tmp/crau-log.cbor
 ```
 
-which ingested all 18 pk records of the reference workload with
+which ingested all 24 pk records of the reference workload with
 typed fields intact. When both Haskoki and its OpenSSL backend
 emit for one logical operation, count the layer under test to
 avoid double-counting.
@@ -224,9 +248,8 @@ past a 2x bound (catastrophe detection, not a tight budget).
 - Publication-failure emission has no live leg: no fault-injection
   knob exists for the C driver. The unit and mapping coverage
   stands; the scenario stays a follow-up.
-- `crau-agent` ingestion validation: the GDB recipe proves
-  emission shape and counts; running the pinned agent against the
-  module end to end remains owner follow-up (needs BPF-capable
-  runners, per the upstream external-test pattern).
+- `crau-agent` ingestion is validated (see the consumer guide),
+  not merely recipe-proven; re-validate against newer agent pins
+  before leaning on fields this document marks omitted.
 - Finalize-time abandonment stays silent (documented): process
   teardown claims nothing.
