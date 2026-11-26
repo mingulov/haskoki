@@ -4562,6 +4562,14 @@ runMessageBuffered :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> Byt
 runMessageBuffered inst sid fam func input pOut pLen cap mode = do
   m <- snapshotModel (siEnv inst)
   let kind = msgFamilyKind fam
+      -- A recall on a staged slot delivers the staged (final)
+      -- output however the caller's end flag reads: the staged
+      -- state, not the flag, decides terminality. Without this a
+      -- non-final recall delivers with zero ends and strands the
+      -- retention for the next delivery to misread (N1). NULL
+      -- queries keep flag finality: they never deliver, so the
+      -- staged state must not promote them.
+      mode' = if usdtSlotStaged m sid kind then EncodeTerminal else mode
       req = Request Pkcs11_3_2 func (Just sid) Nothing input
         [RegionBytes (messageRegion fam) (IntentBuffer cap)]
   result <- runCryptoPlan inst m req
@@ -4570,12 +4578,13 @@ runMessageBuffered inst sid fam func input pOut pLen cap mode = do
       | rv == ckrBufferTooSmall -> do
           mPost <- snapshotModel (siEnv inst)
           -- Only final parts retain: a non-final short stages
-          -- nothing reportable (and shorts never arm anyway).
-          when (mode == EncodeTerminal
+          -- nothing reportable (and shorts never arm anyway). A
+          -- re-short on a staged slot re-retains identically.
+          when (mode' == EncodeTerminal
                 && usdtSlotStaged mPost sid kind) $
             usdtRetainFor inst mPost sid kind func
           reportShortLength inst sid kind pLen
-      | otherwise -> case mode of
+      | otherwise -> case mode' of
           EncodeTerminal -> usdtTerminalRV inst m sid kind func
             ModeSync PathReject Nothing rv
           EncodeUpdate -> usdtNonTerminalRV inst m sid kind func
@@ -4583,12 +4592,12 @@ runMessageBuffered inst sid fam func input pOut pLen cap mode = do
     Right pc
       | pcCode pc == CKR_OK && null (pcOutputs pc) -> do
           _ <- encodeLength pLen 0
-          case mode of
+          case mode' of
             EncodeTerminal -> usdtTerminalRV inst m sid kind func
               ModeSync PathCommit Nothing ckrOk
             EncodeUpdate -> pure ckrOk
       | otherwise ->
-          encodeCryptoCommit inst sid kind func m mode Nothing
+          encodeCryptoCommit inst sid kind func m mode' Nothing
             pOut pLen cap pc
 
 runMessageQuery :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr CULong -> UsdtEncodeMode -> IO CULong
@@ -4918,11 +4927,15 @@ haskokiStdDigestKey ctx h (CULong keyH) =
     -- retention out from under the hook and split the op.
     let refuse code = do
           cancelStdAsyncBinding inst sid JobDigest
-          forM_ (lookupSession m sid) $ \st ->
+          -- Re-snapshot after the cancel (N2): the termination
+          -- delta overwrites the session ops, so it must postdate
+          -- the cancel exactly like terminateSlot's does.
+          mFresh <- snapshotModel (siEnv inst)
+          forM_ (lookupSession mFresh sid) $ \st ->
             forM_ (lookupSingle (ssOps st) SlotDigest) $ \_ ->
               publishStd inst (terminateSlotDelta st SlotDigest)
                 >> pure ()
-          usdtNonTerminalRV inst m sid SlotDigest F_DigestUpdate
+          usdtNonTerminalRV inst mFresh sid SlotDigest F_DigestUpdate
             Nothing code
     case resolveHandle m (ExternalHandle (fromIntegral keyH)) of
       Nothing -> refuse (stdRvOf CKR_KEY_HANDLE_INVALID)
