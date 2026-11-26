@@ -36,14 +36,15 @@ Developer preview: entries land per task and finalize at release.
   readelf manifest gate, dormant-probe bench); the off build
   carries zero probe notes. Publication needs the flag-on leg.
 - Live capture (`scripts/test-usdt-live.sh`, release manifest):
-  GDB recipe over a 54-phase workload asserting field-exact
+  GDB recipe over a 55-phase workload asserting field-exact
   records, exact per-phase counts, silence legs, and op-id
   correlation across abandonment, denial, retry, message,
-  logout, detach, and cross-thread delivery paths (69 ops, 29 pk
-  records on the reference run), plus an independent Tier-2
-  review round whose majors (logout/retention scope, message
+  logout, detach, and cross-thread delivery paths (72 ops, 29 pk
+  records on the reference run), plus independent Tier-2
+  review rounds whose majors (logout/retention scope, message
   finality, op_valid, detach handoff, counter wrap, refused
-  queries) are all fixed and leg-proven here.
+  queries, staged-state recall promotion) are all fixed and
+  leg-proven here.
 - Mapping pins (`tests/model/UsdtMapSpec.hs`), C consistency
   (`scripts/check-usdt-codes.py`), and the FFI arg allowlist
   (`scripts/check-usdt-redaction.py`) hold both flag settings

@@ -101,9 +101,11 @@ Haskell side, `scripts/check-usdt-codes.py` against `cbits/usdt.h`.
 - Exactly-once ends: each admitted operation gets one
   `operation_end`. Staged (short-buffered) bytes dying anywhere —
   close, cancel, logout, guard refusal, decoder refusal,
-  key-resolution refusal — get the abandoned end from the
-  centralized teardown flush (`terminateSlot`); finalize-time
-  abandonment stays silent by design.
+  key-resolution refusal — get exactly one abandoned end: from
+  the centralized teardown flush (`terminateSlot`) on most paths,
+  or paired with the killer's reject through the non-terminal
+  hook for refused `C_DigestKey` (same pair shape, one op);
+  finalize-time abandonment stays silent by design.
 - Silence (crypto/data paths): inits, updates, and size queries
   emit nothing on success; failures without policy relevance and
   without dying staged bytes stay silent. Caller-bug refusals
@@ -145,8 +147,9 @@ Haskell side, `scripts/check-usdt-codes.py` against `cbits/usdt.h`.
   SHA-256 identity. When staged bytes die, both halves of the
   pair wear the *staging* call's identity from retention (a
   one-shot `C_Digest` short query stages `F_Digest` facts, so the
-  later killer's pair reports `F_Digest`); inits and queries
-  override with the requested mechanism instead.
+  later killer's pair reports `F_Digest`); inits override with
+  the requested mechanism instead, while queries report the
+  slot's live context.
 - Detach hands the source op off terminally: the revoke emits a
   handoff phase plus a handed-off end under the source op id
   (the end carries `CKR_OK` — the detach committed — so consumers
