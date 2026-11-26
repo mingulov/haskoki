@@ -282,7 +282,8 @@
         "StormBudget",
         "TemplateRulesSpec",
         "TraceSpec",
-        "ULongSpec"
+        "ULongSpec",
+        "UsdtMapSpec"
       ],
       "required_groups": [
         "haskoki model + lifecycle"
@@ -566,6 +567,9 @@
         ],
         "ULongSpec": [
           "Unsigned attributes"
+        ],
+        "UsdtMapSpec": [
+          "USDT mapping"
         ]
       }
     },

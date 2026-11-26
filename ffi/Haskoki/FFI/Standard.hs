@@ -4098,9 +4098,9 @@ usdtDeliveryMeta inst mPre sid kind func mArgMech = do
 -- from the caller, key facts from the given handle in the post
 -- model. The pk record fires on delivered outcomes with eligible
 -- route+key only.
-usdtTerminalKey :: StdInstance -> FunctionId -> MechanismId
+usdtTerminalKey :: StdInstance -> FunctionId -> MechanismId -> ByteString
   -> Maybe ExternalHandle -> CULong -> IO CULong
-usdtTerminalKey inst func mech mHandle rv = do
+usdtTerminalKey inst func mech params mHandle rv = do
   mOp <- newUsdtOpId
   case mOp of
     Nothing -> pure rv
@@ -4114,7 +4114,7 @@ usdtTerminalKey inst func mech mHandle rv = do
               Nothing -> noPkFacts
               Just os -> keyFactsOf os
           mrec = if ok
-            then routeOfFunc func >>= \r -> resolvePk r mech facts
+            then routeOfFunc func >>= \r -> resolvePk r mech facts params
             else Nothing
       case mrec of
         Just rec -> emitPkRecord op rec
@@ -4588,7 +4588,8 @@ terminateSlot inst sid kind = do
 
 -- | Refuse a crypto data call with ARGS_BAD after terminating the
 -- session's active operation of this slot kind. With no active op
--- this is a plain refusal.
+-- this is a plain refusal. Staged bytes dying here get their
+-- abandoned end from 'terminateSlot' itself, which flushes.
 refuseArgsTerminate :: StdInstance -> SessionId -> SlotKind -> IO CULong
 refuseArgsTerminate inst sid kind =
   terminateSlot inst sid kind >> pure ckrArgsBad
@@ -5024,19 +5025,19 @@ haskokiStdGenerateKey ctx h (CULong mech) pFrame (CULong frameLen)
                 eOut <- runKeyPlanFull inst m st
                   (planGenerateKey (envRules (siEnv inst)) m st mid params entries)
                 case eOut of
-                  Left rv -> usdtTerminalKey inst F_GenerateKey mid Nothing rv
+                  Left rv -> usdtTerminalKey inst F_GenerateKey mid BS.empty Nothing rv
                   Right outs -> do
                     rv <- publishPbeKey slot outs phKey
-                    usdtTerminalKey inst F_GenerateKey mid Nothing rv
+                    usdtTerminalKey inst F_GenerateKey mid BS.empty Nothing rv
               Nothing -> do
                 eHs <- runKeyPlan inst m st
                   (planGenerateKey (envRules (siEnv inst)) m st mid params entries)
                 case eHs of
-                  Left rv -> usdtTerminalKey inst F_GenerateKey mid Nothing rv
+                  Left rv -> usdtTerminalKey inst F_GenerateKey mid BS.empty Nothing rv
                   Right [oh] -> do
                     poke phKey (CULong oh)
-                    usdtTerminalKey inst F_GenerateKey mid Nothing ckrOk
-                  Right _ -> usdtTerminalKey inst F_GenerateKey mid Nothing
+                    usdtTerminalKey inst F_GenerateKey mid BS.empty Nothing ckrOk
+                  Right _ -> usdtTerminalKey inst F_GenerateKey mid BS.empty Nothing
                     ckrGeneralError
 
 -- | A PBE IV slot matches its row: IV rows require the
@@ -5087,14 +5088,14 @@ haskokiStdGenerateKeyPair ctx h (CULong mech)
                 let mid = MechanismId (fromIntegral mech)
                 case eHs of
                   Left rv ->
-                    usdtTerminalKey inst F_GenerateKeyPair mid Nothing rv
+                    usdtTerminalKey inst F_GenerateKeyPair mid BS.empty Nothing rv
                   Right [ohPub, ohPriv] -> do
                     poke phPub (CULong ohPub)
                     poke phPriv (CULong ohPriv)
-                    usdtTerminalKey inst F_GenerateKeyPair mid
+                    usdtTerminalKey inst F_GenerateKeyPair mid BS.empty
                       (Just (ExternalHandle (fromIntegral ohPriv))) ckrOk
                   Right _ ->
-                    usdtTerminalKey inst F_GenerateKeyPair mid Nothing
+                    usdtTerminalKey inst F_GenerateKeyPair mid BS.empty Nothing
                       ckrGeneralError
 
 -- ---------------------------------------------------------------------------
@@ -5879,6 +5880,8 @@ foreign export ccall "haskoki_std_dual_decrypt_verify" haskokiStdDualDecryptVeri
 
 -- | Refuse a dual data call with ARGS_BAD after terminating both
 -- sides (a malformed dual call ends the joint step on both slots).
+-- Staged bytes dying on either side get their abandoned end from
+-- 'terminateSlot' itself, which flushes.
 refuseDualArgsTerminate :: StdInstance -> SessionId -> SlotKind -> SlotKind -> IO CULong
 refuseDualArgsTerminate inst sid ka kb =
   terminateSlot inst sid ka >> terminateSlot inst sid kb >> pure ckrArgsBad
@@ -6285,7 +6288,7 @@ haskokiStdEncapsulateKey ctx h (CULong mech) pParams (CULong paramsLen)
                     -- NULL/short queries answer lengths without crypto.
                     if pOut == nullPtr || rv == ckrBufferTooSmall
                       then pure rv
-                      else usdtTerminalKey inst F_EncapsulateKey mid (Just kh) rv
+                      else usdtTerminalKey inst F_EncapsulateKey mid BS.empty (Just kh) rv
 
 -- | Decapsulate with a KEM private key: the parameter rule
 -- matches encapsulate; the ciphertext is the whole input and
@@ -6320,12 +6323,12 @@ haskokiStdDecapsulateKey ctx h (CULong mech) pParams (CULong paramsLen)
                           (planKemDecaps m st mid kh (kemAlgOfKey m kh) ct entries)
                         case eHs of
                           Left rv ->
-                            usdtTerminalKey inst F_DecapsulateKey mid (Just kh) rv
+                            usdtTerminalKey inst F_DecapsulateKey mid BS.empty (Just kh) rv
                           Right [oh] -> do
                             poke phKey (CULong oh)
-                            usdtTerminalKey inst F_DecapsulateKey mid (Just kh) ckrOk
+                            usdtTerminalKey inst F_DecapsulateKey mid BS.empty (Just kh) ckrOk
                           Right _ ->
-                            usdtTerminalKey inst F_DecapsulateKey mid (Just kh)
+                            usdtTerminalKey inst F_DecapsulateKey mid BS.empty (Just kh)
                               ckrGeneralError
 
 -- ---------------------------------------------------------------------------
@@ -6432,7 +6435,7 @@ haskokiStdWrapKey ctx h (CULong mech) pIv (CULong ivLen)
             -- NULL/short queries answer lengths without crypto.
             if pOut == nullPtr || rv == ckrBufferTooSmall
               then pure rv
-              else usdtTerminalKey inst F_WrapKey mid
+              else usdtTerminalKey inst F_WrapKey mid params
                 (Just (ExternalHandle (fromIntegral wrapH))) rv
 
 -- | Unwrap one blob into a key from a template frame.
@@ -6466,11 +6469,11 @@ haskokiStdUnwrapKey ctx h (CULong mech) pIv (CULong ivLen) (CULong wrapH)
                         (ExternalHandle (fromIntegral wrapH)) blob entries)
                     let wh = ExternalHandle (fromIntegral wrapH)
                     case eHs of
-                      Left rv -> usdtTerminalKey inst F_UnwrapKey mid (Just wh) rv
+                      Left rv -> usdtTerminalKey inst F_UnwrapKey mid params (Just wh) rv
                       Right [oh] -> do
                         poke phKey (CULong oh)
-                        usdtTerminalKey inst F_UnwrapKey mid (Just wh) ckrOk
-                      Right _ -> usdtTerminalKey inst F_UnwrapKey mid (Just wh)
+                        usdtTerminalKey inst F_UnwrapKey mid params (Just wh) ckrOk
+                      Right _ -> usdtTerminalKey inst F_UnwrapKey mid params (Just wh)
                         ckrGeneralError
 
 -- | Opaque derive for the ECDH, DH, SHA-KDF, TLS-PRF,
@@ -6533,20 +6536,20 @@ haskokiStdDeriveOpaque ctx h (CULong mech) pParams (CULong paramsLen)
                       WbKeyMat slots -> do
                         eOut <- runKeyPlanFull inst m st plan
                         case eOut of
-                          Left rv -> usdtTerminalKey inst F_DeriveKey mid
+                          Left rv -> usdtTerminalKey inst F_DeriveKey mid BS.empty
                             (Just (ExternalHandle (fromIntegral baseH))) rv
                           Right outs -> do
                             rv <- publishKeyMat slots outs phKey
-                            usdtTerminalKey inst F_DeriveKey mid
+                            usdtTerminalKey inst F_DeriveKey mid BS.empty
                               (Just (ExternalHandle (fromIntegral baseH))) rv
                       _ -> do
                         eHs <- runKeyPlan inst m st plan
                         case eHs of
-                          Left rv -> usdtTerminalKey inst F_DeriveKey mid
+                          Left rv -> usdtTerminalKey inst F_DeriveKey mid BS.empty
                             (Just (ExternalHandle (fromIntegral baseH))) rv
                           Right hs -> do
                             rv <- publishHandles wb hs
-                            usdtTerminalKey inst F_DeriveKey mid
+                            usdtTerminalKey inst F_DeriveKey mid BS.empty
                               (Just (ExternalHandle (fromIntegral baseH))) rv
   where
     publishHandles phun hs = case (phun, hs) of
@@ -6734,10 +6737,10 @@ haskokiStdDeriveHkdf ctx h (CULong mech) pInfo (CULong infoLen)
                           (encodeHkdfInfo (fromIntegral prf) (fromIntegral mode) salt info) [entries]))
                     let bh = ExternalHandle (fromIntegral baseH)
                     case eHs of
-                      Left rv -> usdtTerminalKey inst F_DeriveKey mid (Just bh) rv
+                      Left rv -> usdtTerminalKey inst F_DeriveKey mid BS.empty (Just bh) rv
                       Right [oh] -> do
                         poke phKey (CULong oh)
-                        usdtTerminalKey inst F_DeriveKey mid (Just bh) ckrOk
-                      Right _ -> usdtTerminalKey inst F_DeriveKey mid (Just bh)
+                        usdtTerminalKey inst F_DeriveKey mid BS.empty (Just bh) ckrOk
+                      Right _ -> usdtTerminalKey inst F_DeriveKey mid BS.empty (Just bh)
                         ckrGeneralError
           _ -> pure ckrArgsBad

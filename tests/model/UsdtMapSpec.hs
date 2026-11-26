@@ -20,6 +20,8 @@ import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Model (ObjectState (..))
 import Haskoki.Operation.State (SlotKind (..))
+import Haskoki.Recipe.RsaOaep (encodeOaepParams)
+import Haskoki.Recipe.RsaPss (encodePssParams)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..))
 import Haskoki.Request (FunctionId (..))
@@ -37,6 +39,7 @@ spec = testGroup "USDT mapping"
   , policyPins
   , slotPins
   , idPins
+  , redactPins
   ]
 
 codePins :: TestTree
@@ -127,6 +130,24 @@ hashPadPins = testGroup "mechanism hash/padding"
       assertEqual "x509" 0 (paddingOfMechanism (ckm "CKM_RSA_X_509"))
       assertEqual "ecdsa" 0
         (paddingOfMechanism (ckm "CKM_ECDSA_SHA256"))
+  , testCase "generic pss/oaep hash from validated params" $ do
+      let rsa = PkKeyFacts 1 0 0 2048
+          pss = ckm "CKM_RSA_PKCS_PSS"
+          oaep = ckm "CKM_RSA_PKCS_OAEP"
+      assertEqual "pss-sha384" (Just (PkRecord PkSign rsa 5 1))
+        (resolvePk RouteSign pss rsa
+          (encodePssParams "SHA384" "SHA384" 48))
+      assertEqual "oaep-sha1" (Just (PkRecord PkEncrypt rsa 2 2))
+        (resolvePk RouteEncrypt oaep rsa
+          (encodeOaepParams "SHA_1" "SHA_1" BS.empty))
+      assertEqual "oaep-garbage-omits" (Just (PkRecord PkEncrypt rsa 0 2))
+        (resolvePk RouteEncrypt oaep rsa "not-params")
+      assertEqual "pss-ripemd-omits" (Just (PkRecord PkSign rsa 0 1))
+        (resolvePk RouteSign pss rsa
+          (encodePssParams "RIPEMD160" "RIPEMD160" 20))
+      assertEqual "bound-mech-ignores-params"
+        (Just (PkRecord PkSign rsa 4 3))
+        (resolvePk RouteSign (ckm "CKM_SHA256_RSA_PKCS") rsa "not-params")
   ]
 
 mkObj :: [(AttributeType, AttributeValue)] -> ObjectState
@@ -178,15 +199,17 @@ keyFactPins = testGroup "key facts"
   , testCase "resolvePk eligibility" $ do
       let rsa = PkKeyFacts 1 0 0 2048
           mech = ckm "CKM_SHA256_RSA_PKCS"
+          noParams = BS.empty
       assertEqual "rsa-sign" (Just (PkRecord PkSign rsa 4 3))
-        (resolvePk RouteSign mech rsa)
+        (resolvePk RouteSign mech rsa noParams)
       assertEqual "hmac-sign-private" Nothing
-        (resolvePk RouteSign mech noPkFacts)
-      case resolvePk RouteWrap (ckm "CKM_RSA_PKCS_OAEP") rsa of
-        Just rec -> assertEqual "oaep-wrap" PkEncrypt (prName rec)
-        Nothing -> assertBool "oaep-wrap resolves" False
+        (resolvePk RouteSign mech noPkFacts noParams)
+      assertEqual "oaep-wrap" (Just (PkRecord PkEncrypt rsa 4 2))
+        (resolvePk RouteWrap (ckm "CKM_RSA_PKCS_OAEP") rsa
+          (encodeOaepParams "SHA256" "SHA256" BS.empty))
       assertEqual "aes-wrap-private" Nothing
-        (resolvePk RouteWrap (ckm "CKM_AES_KEY_WRAP_PAD") noPkFacts)
+        (resolvePk RouteWrap (ckm "CKM_AES_KEY_WRAP_PAD") noPkFacts
+          noParams)
   ]
 
 p256oid :: BS.ByteString
@@ -244,4 +267,61 @@ idPins = testGroup "op ids"
           assertBool "unique" (a /= b)
           assertBool "ordered" (a < b)
         _ -> assertBool "saturated in test" False
+  ]
+
+-- Distinctive fixture secrets: every emitted USDT fact must be
+-- content-independent in these blobs (only lengths and validated
+-- codes flow). The A/B pairs share lengths but differ in content,
+-- so equal outputs prove no secret byte reaches the record.
+-- Curve/group selection from validated OIDs is metadata by design
+-- (the registry requires pk::curve); the redaction property is
+-- that outputs are small codes, never secret bytes.
+secretCycle :: BS.ByteString -> Int -> BS.ByteString
+secretCycle seed n =
+  BS.take n (BS.concat (replicate (n `div` BS.length seed + 1) seed))
+
+secretModA, secretModB :: BS.ByteString
+secretModA = secretCycle "USDT-REDACT-ALPHA-MODULUS-must-never-leak:" 256
+secretModB = secretCycle "USDT-REDACT-BETA-MODULUS-must-never-leak!!" 256
+
+secretKeyA, secretKeyB :: BS.ByteString
+secretKeyA = secretCycle "USDT-REDACT-ALPHA-KEY-must-never-leak:" 32
+secretKeyB = secretCycle "USDT-REDACT-BETA-KEY-must-never-leak!!" 32
+
+redactPins :: TestTree
+redactPins = testGroup "secret content independence"
+  [ testCase "rsa modulus content-independent" $ do
+      let mk m = mkObj
+            [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_RSA"))
+            , (AttrModulus, ValBytes m)
+            ]
+      assertEqual "same facts" (keyFactsOf (mk secretModA))
+        (keyFactsOf (mk secretModB))
+      assertEqual "length-only" (PkKeyFacts 1 0 0 2048)
+        (keyFactsOf (mk secretModA))
+  , testCase "symmetric value content-independent" $ do
+      let mk v = mkObj
+            [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_AES"))
+            , (AttrValue, ValBytes v)
+            ]
+      assertEqual "aes-a" noPkFacts (keyFactsOf (mk secretKeyA))
+      assertEqual "aes-b" noPkFacts (keyFactsOf (mk secretKeyB))
+  , testCase "edwards value content-independent" $ do
+      let mk v = mkObj
+            [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_EC_EDWARDS"))
+            , (AttrValue, ValBytes v)
+            ]
+      assertEqual "same facts" (keyFactsOf (mk secretKeyA))
+        (keyFactsOf (mk secretKeyB))
+      assertEqual "length-only" (PkKeyFacts 6 5 0 256)
+        (keyFactsOf (mk secretKeyA))
+  , testCase "record chain content-independent" $ do
+      let mk m = mkObj
+            [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_RSA"))
+            , (AttrModulus, ValBytes m)
+            ]
+          mech = ckm "CKM_SHA256_RSA_PKCS"
+      assertEqual "same record"
+        (resolvePk RouteSign mech (keyFactsOf (mk secretModA)) BS.empty)
+        (resolvePk RouteSign mech (keyFactsOf (mk secretModB)) BS.empty)
   ]
