@@ -17,3 +17,47 @@ Developer preview: entries land per task and finalize at release.
   render, matching the JSONL trace redaction discipline.
 - Compiled in behind the `usdt` Cabal flag (on for the official
   bundle and demo image, off by default for source builds).
+- Emission at actual delivery with same-call record pairing
+  (collectors bind contexts to threads); committed negative
+  verdicts emit like deliveries; inits, updates, and queries stay
+  silent on success. Management calls (login, PIN changes, object
+  create/copy/set-attribute) emit the policy half on denials plus
+  a bare end claim. Generic PSS/OAEP mechanisms resolve the real
+  hash from validated parameters. Consumer guide: `docs/usdt.md`.
+
+## Verification
+
+- CI matrix: the `haskell` leg (default flags) plus the
+  `haskell-usdt` leg (full 8-suite matrix with the flag on,
+  readelf manifest gate, dormant-probe bench); the off build
+  carries zero probe notes. Publication needs the flag-on leg.
+- Live capture (`scripts/test-usdt-live.sh`, release manifest):
+  GDB recipe over a 34-phase workload asserting field-exact
+  records, counts, silence legs, and op-id correlation across
+  abandonment, denial, retry, and cross-thread delivery paths
+  (39 ops, 18 pk records on the reference run).
+- Mapping pins (`tests/model/UsdtMapSpec.hs`), C consistency
+  (`scripts/check-usdt-codes.py`), and the FFI arg allowlist
+  (`scripts/check-usdt-redaction.py`) hold both flag settings
+  with zero GHC warnings.
+- Overhead: dormant probes measure 1.055x over a warmed AES-CBC
+  workload (inside run-to-run noise); the bench gate fails past
+  2x. No attached-consumer measurement is claimed.
+
+## Known limits and follow-ups
+
+- DH records carry algorithm + bits; the `pk::group` enrichment
+  needs prime matching and is not implemented (honest omission).
+- Exotic EC curves (brainpool, binary) omit curve codes while
+  keeping algorithm + mechanism.
+- Publication-failure emission has no live leg (no C-side fault
+  knob); unit and mapping coverage stands.
+- `crau-agent` ingestion validated: the pinned agent
+  (`e9004d5`) ingested all 18 pk records of the reference workload
+  unmodified (5 generate, 3 sign, 4 verify, 2 derive, OAEP
+  encrypt/decrypt, KEM encapsulate/decapsulate), with typed fields
+  intact and correct executable attribution.
+- Finalize-time abandonment stays silent by design.
+- Upstream latchset fixes (collector attach-failure reporting,
+  `matches_pid`, fallback-reader zero hazard) are drafted
+  separately by the owner.
