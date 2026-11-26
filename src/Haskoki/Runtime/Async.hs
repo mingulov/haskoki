@@ -616,8 +616,10 @@ usdtAsyncEnd job ckr disp =
             disp ModeAsync
 
 -- | Emit the first ready of a seeded (rejoin) attachment. The
--- detached claim winner calls this after 'commitClaim'; the
--- provisional insert itself stays silent.
+-- detached claim winner calls this after 'commitClaim'. The seeded
+-- insert itself emits Accepted like any admission (a rejoin is a
+-- genuine new-table admission under a fresh op id); only the source
+-- op's handoff pair (at revoke) ties the two lifecycles together.
 usdtSeededReady :: AsyncTable -> JobId -> IO ()
 usdtSeededReady table jid = do
   mJob <- readJob table jid
@@ -1369,6 +1371,9 @@ completeJob env table func jid del release =
               (jbState job) (jbEpoch job) of
             Right s -> do
               commitStep table jid s
+              let w = returnCodeToRV CKR_GENERAL_ERROR
+              usdtJobPhase table jid job PhaseFailed w True
+              usdtAsyncEnd job w DispFailedPublish
               pure (CompleteAlready (TermFailed CKR_GENERAL_ERROR why))
             Left _ -> pure (CompleteAlready (TermFailed CKR_GENERAL_ERROR
               "stepJob EvFail breached its contract"))
@@ -1707,7 +1712,11 @@ withJobLock table jid def k = do
           JobRunning -> case stepJob
             (EvFail CKR_GENERAL_ERROR "lease escape while running")
             JobRunning (jbEpoch j) of
-              Right s -> commitStep table jid s
+              Right s -> do
+                commitStep table jid s
+                let w = returnCodeToRV CKR_GENERAL_ERROR
+                usdtJobPhase table jid j PhaseFailed w True
+                usdtAsyncEnd j w DispFailedPublish
               Left _ -> pure ()
           _ -> pure ()
         Nothing -> pure ())
@@ -2173,11 +2182,20 @@ leaseSnapshot = dlSnapshot
 -- (revoked AND released).
 commitDetachRevoke :: DetachLease -> IO ()
 commitDetachRevoke dl = uninterruptibleMask_ $ do
-  atomically $ do
+  mJob <- atomically $ do
     jobs <- readTVar (atJobs (dlTable dl))
     -- Forced: see the forcing invariant on 'commitStep'.
     let jobs' = Map.delete (dlJob dl) jobs
     jobs' `seq` writeTVar (atJobs (dlTable dl)) jobs'
+    pure (Map.lookup (dlJob dl) jobs)
+  -- The handoff closes the source op: a rejoin continues under a
+  -- fresh op id (no in-band link; correlate externally), so without
+  -- this pair the source op would dangle at its last phase forever.
+  case mJob of
+    Just job -> do
+      usdtJobPhase (dlTable dl) (dlJob dl) job PhaseHandoff 0 False
+      usdtAsyncEnd job (returnCodeToRV CKR_OK) DispHandedOff
+    Nothing -> pure ()
   putMVar (dlLock dl) ()
 
 -- | Release a held lease with the job untouched. One-shot.

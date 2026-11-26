@@ -3533,8 +3533,13 @@ haskokiStdLogin ctx (CULong h) (CULong userType) pPin (CULong pinLen) =
                     Left _ -> pure ckrGeneralError
                     Right () -> do
                       when (rejectionLoggedOut rej) $
-                        forM_ (lookupSession m0 (SessionId (fromIntegral h))) $ \st ->
+                        forM_ (lookupSession m0 (SessionId (fromIntegral h))) $ \st -> do
                           clearSlotCursors inst m0 (ssSlot st)
+                          -- The lockout runs the logout transition:
+                          -- flush every touched session like Logout.
+                          mPost <- snapshotModel (siEnv inst)
+                          forM_ (sessionsOnSlot m0 (ssSlot st)) $
+                            usdtFlushAbandoned inst m0 mPost . ssId
                       pure (stdRvOf (rejCode rej))
                 Execute _ _ -> pure ckrGeneralError
 
@@ -3560,7 +3565,13 @@ haskokiStdLogout ctx (CULong h) =
                   Nothing -> clearCursor inst sid
                   Just st -> clearSlotCursors inst m0 (ssSlot st)
                 mPost <- snapshotModel (siEnv inst)
-                usdtFlushAbandoned inst m0 mPost sid
+                -- Logout retires private-key ops on EVERY session of
+                -- the slot: flush each, or abandoned ends drop and
+                -- retained metadata goes stale behind later records.
+                case lookupSession m0 sid of
+                  Nothing -> usdtFlushAbandoned inst m0 mPost sid
+                  Just st -> forM_ (sessionsOnSlot m0 (ssSlot st)) $
+                    usdtFlushAbandoned inst m0 mPost . ssId
                 pure ckrOk
             | otherwise -> pure (stdRvOf (pcCode pc))
       Reject rej -> do
@@ -4120,7 +4131,7 @@ usdtTerminalKey inst func mech params mHandle rv = do
         Just rec -> emitPkRecord op rec
         Nothing -> pure ()
       case policyReasonOfRv w of
-        Just reason -> emitPolicyReject op False (functionCode func)
+        Just reason -> emitPolicyReject op True (functionCode func)
           (unMechanismId mech) True reason w
         Nothing -> pure ()
       emitOperationEnd op (functionCode func) (unMechanismId mech) True
@@ -4172,7 +4183,7 @@ usdtEmit mMeta func mode disp ckr = do
           Just rec -> emitPkRecord op rec
           Nothing -> pure ()
         _ -> pure ()
-      usdtEmitPolicy op mMeta func (rvWord ckr)
+      usdtEmitPolicy op True mMeta func (rvWord ckr)
       let (funcCode, mech, mechPresent) = usdtMetaFields mMeta func
       emitOperationEnd op funcCode mech mechPresent (rvWord ckr)
         disp mode
@@ -4187,13 +4198,17 @@ usdtMetaFields mMeta func = case mMeta of
   Nothing -> (functionCode func, 0, False)
 
 -- | Policy half of 'usdtEmit', shared with non-terminal paths.
-usdtEmitPolicy :: UsdtOpId -> Maybe UsdtStagedMeta -> FunctionId -> Word32
-  -> IO ()
-usdtEmitPolicy op mMeta func w =
+-- 'opValid' answers "is an 'operation_end' with this op id emitted
+-- for this call": true on terminal paths (the end always follows),
+-- 'abandoned && isJust mMeta' on non-terminal ones (the end fires
+-- exactly then).
+usdtEmitPolicy :: UsdtOpId -> Bool -> Maybe UsdtStagedMeta -> FunctionId
+  -> Word32 -> IO ()
+usdtEmitPolicy op opValid mMeta func w =
   case policyReasonOfRv w of
     Just reason ->
       let (funcCode, mech, mechPresent) = usdtMetaFields mMeta func
-      in emitPolicyReject op mechPresent funcCode mech mechPresent
+      in emitPolicyReject op opValid funcCode mech mechPresent
         reason w
     Nothing -> pure ()
 
@@ -4213,8 +4228,8 @@ usdtPolicyOnly func rv = usdtEmit Nothing func ModeSync disp rv
 -- when staged bytes die here (silent-phase work otherwise leaves no
 -- claim; the terminal will report).
 usdtNonTerminalRV :: StdInstance -> Model -> SessionId -> SlotKind
-  -> FunctionId -> CULong -> IO CULong
-usdtNonTerminalRV inst mPre sid kind func rv
+  -> FunctionId -> Maybe MechanismId -> CULong -> IO CULong
+usdtNonTerminalRV inst mPre sid kind func mReqMech rv
   | rv == ckrOk = pure rv
   | otherwise = do
       mOp <- newUsdtOpId
@@ -4233,11 +4248,21 @@ usdtNonTerminalRV inst mPre sid kind func rv
                 Just meta -> pure (Just meta)
                 Nothing -> pure (usdtLiveMeta mPost sid kind func)
             else pure (usdtLiveMeta mPost sid kind func)
-          usdtEmitPolicy op mMeta func w
+          -- Inits report the REQUESTED mechanism (the live slot, if
+          -- any, holds the incumbent op's): a refused SignInit(ECDSA)
+          -- must not wear the active RSA slot's identity.
+          let pMeta = case mReqMech of
+                Just rm -> Just (UsdtStagedMeta (functionCode func)
+                  (unMechanismId rm) Nothing)
+                Nothing -> mMeta
+          usdtEmitPolicy op (abandoned && isJust mMeta) pMeta func w
           case (abandoned, mMeta) of
             (True, Just meta) ->
+              -- Abandoned ends always carry OPERATION_NOT_INITIALIZED
+              -- (the slot is gone), matching the teardown flush.
               emitOperationEnd op (usmFunc meta) (usmMech meta) True
-                w DispAbandoned ModeSync
+                (returnCodeToRV CKR_OPERATION_NOT_INITIALIZED)
+                DispAbandoned ModeSync
             _ -> pure ()
           pure rv
 
@@ -4293,7 +4318,30 @@ runCryptoSilent inst req = do
         || reqFunction req == F_VerifyMessage ->
           usdtTerminalRV inst m sid kind (reqFunction req) ModeSync
             PathCommit Nothing rv
-      | otherwise -> usdtNonTerminalRV inst m sid kind (reqFunction req) rv
+      | otherwise -> do
+          -- Successful message inits supersede the slot (classic
+          -- inits drop via hookInit): clear any stale retention.
+          when (rv == ckrOk && reqFunction req `elem`
+                  [F_MessageEncryptInit, F_MessageDecryptInit,
+                   F_MessageSignInit, F_MessageVerifyInit]) $
+            usdtDropRetained inst sid kind
+          usdtNonTerminalRV inst m sid kind (reqFunction req) Nothing rv
+    _ -> pure rv
+
+-- | Silent verify-next dialogue: non-final parts are updates,
+-- while a final part (candidate signature present) reports its
+-- verdict terminally, exactly like a classic verify final.
+runCryptoSilentVerifyNext :: StdInstance -> Request -> Bool -> IO CULong
+runCryptoSilentVerifyNext inst req isFinal = do
+  m <- snapshotModel (siEnv inst)
+  epc <- runCryptoPlan inst m req
+  rv <- encodeSilent epc
+  case (reqSession req, slotKindOfFunc (reqFunction req)) of
+    (Just sid, Just kind)
+      | isFinal -> usdtTerminalRV inst m sid kind (reqFunction req)
+          ModeSync PathCommit Nothing rv
+      | otherwise -> usdtNonTerminalRV inst m sid kind (reqFunction req)
+          Nothing rv
     _ -> pure rv
 
 -- | Silent crypto dialogue over a decoded request:
@@ -4305,14 +4353,19 @@ runCryptoSilentDecoded inst dreq = do
   rv <- encodeSilent epc
   -- Decoded inits are non-terminal; other decoded legs have no slot.
   case dreq of
-    DRInit sid ifunc _ _ _ _ _ -> hookInit m rv sid ifunc
-    DRInitRecover sid ifunc _ _ _ _ _ _ -> hookInit m rv sid ifunc
+    DRInit sid ifunc _ mech _ _ _ -> hookInit m rv sid ifunc mech
+    DRInitRecover sid ifunc _ mech _ _ _ _ -> hookInit m rv sid ifunc mech
     _ -> pure rv
   where
-    hookInit m0 rv0 sid ifunc =
+    hookInit m0 rv0 sid ifunc mech =
       case slotKindOfFunc (initFunctionId ifunc) of
-        Just kind ->
-          usdtNonTerminalRV inst m0 sid kind (initFunctionId ifunc) rv0
+        Just kind -> do
+          -- A successful init supersedes the slot: drop any
+          -- retention (normally empty — inits are refused on staged
+          -- slots — so this only ever clears stale entries).
+          when (rv0 == ckrOk) $ usdtDropRetained inst sid kind
+          usdtNonTerminalRV inst m0 sid kind (initFunctionId ifunc)
+            (Just mech) rv0
         Nothing -> pure rv0
 
 -- | Encode one silent dialogue outcome: byte-carrying and decoded
@@ -4359,7 +4412,7 @@ encodeCryptoCommit inst sid kind func mPre mode mArgMech pOut pLen cap pc
         usdtTerminalRV inst mPre sid kind func ModeSync PathCommit
           mArgMech (stdRvOf (pcCode pc))
       EncodeUpdate ->
-        usdtNonTerminalRV inst mPre sid kind func (stdRvOf (pcCode pc))
+        usdtNonTerminalRV inst mPre sid kind func Nothing (stdRvOf (pcCode pc))
   | otherwise = case traverse nativeToWrite (pcOutputs pc) of
       Nothing -> emitWritebackFailure
       Just [] -> emitWritebackFailure
@@ -4381,7 +4434,7 @@ encodeCryptoCommit inst sid kind func mPre mode mArgMech pOut pLen cap pc
         usdtTerminalRV inst mPre sid kind func ModeSync PathWriteback
           mArgMech ckrGeneralError
       EncodeUpdate ->
-        usdtNonTerminalRV inst mPre sid kind func ckrGeneralError
+        usdtNonTerminalRV inst mPre sid kind func Nothing ckrGeneralError
 
 -- | Report a size query: return the staged length with the slot
 -- kept for the recall (a successful query does not terminate the
@@ -4479,8 +4532,8 @@ messageContinuation fam func input = case (fam, func, decodeMsgNext fam input) o
   (MsgDecrypt, F_DecryptMessageNext, Just (MsgNextCipher _ _ False)) -> True
   _ -> False
 
-runMessageBuffered :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr Word8 -> Ptr CULong -> Word64 -> IO CULong
-runMessageBuffered inst sid fam func input pOut pLen cap = do
+runMessageBuffered :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr Word8 -> Ptr CULong -> Word64 -> UsdtEncodeMode -> IO CULong
+runMessageBuffered inst sid fam func input pOut pLen cap mode = do
   m <- snapshotModel (siEnv inst)
   let kind = msgFamilyKind fam
       req = Request Pkcs11_3_2 func (Just sid) Nothing input
@@ -4490,18 +4543,26 @@ runMessageBuffered inst sid fam func input pOut pLen cap = do
     Left rv
       | rv == ckrBufferTooSmall -> do
           mPost <- snapshotModel (siEnv inst)
-          when (usdtSlotStaged mPost sid kind) $
+          -- Only final parts retain: a non-final short stages
+          -- nothing reportable (and shorts never arm anyway).
+          when (mode == EncodeTerminal
+                && usdtSlotStaged mPost sid kind) $
             usdtRetainFor inst mPost sid kind func
           reportShortLength inst sid kind pLen
-      | otherwise -> usdtTerminalRV inst m sid kind func ModeSync
-          PathReject Nothing rv
+      | otherwise -> case mode of
+          EncodeTerminal -> usdtTerminalRV inst m sid kind func
+            ModeSync PathReject Nothing rv
+          EncodeUpdate -> usdtNonTerminalRV inst m sid kind func
+            Nothing rv
     Right pc
       | pcCode pc == CKR_OK && null (pcOutputs pc) -> do
           _ <- encodeLength pLen 0
-          usdtTerminalRV inst m sid kind func ModeSync PathCommit
-            Nothing ckrOk
+          case mode of
+            EncodeTerminal -> usdtTerminalRV inst m sid kind func
+              ModeSync PathCommit Nothing ckrOk
+            EncodeUpdate -> pure ckrOk
       | otherwise ->
-          encodeCryptoCommit inst sid kind func m EncodeTerminal Nothing
+          encodeCryptoCommit inst sid kind func m mode Nothing
             pOut pLen cap pc
 
 runMessageQuery :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr CULong -> IO CULong
@@ -4512,32 +4573,45 @@ runMessageQuery inst sid fam func input pLen = do
         [RegionBytes (messageRegion fam) IntentNull]
       planned = planCall (envRules (siEnv inst)) m req
       report n = encodeLength pLen n >> pure ckrOk
+      -- Short legs retain staged metadata like the classical query
+      -- path (a later teardown must find it); failures report
+      -- terminally (policy denials reject, like classical queries).
+      retainShort = do
+        mPost <- snapshotModel (siEnv inst)
+        when (usdtSlotStaged mPost sid kind) $
+          usdtRetainFor inst mPost sid kind func
+        reportCryptoQuery inst sid kind pLen
       execute = do
         result <- runCryptoPlanOn inst m planned
         case result of
           Left rv
-            | rv == ckrBufferTooSmall -> reportCryptoQuery inst sid kind pLen
-            | otherwise -> pure rv
+            | rv == ckrBufferTooSmall -> retainShort
+            | otherwise -> usdtTerminalRV inst m sid kind func ModeSync
+                PathReject Nothing rv
           Right pc
-            | pcCode pc == CKR_BUFFER_TOO_SMALL -> reportCryptoQuery inst sid kind pLen
-            | pcCode pc /= CKR_OK -> pure (stdRvOf (pcCode pc))
-            | otherwise -> pure ckrGeneralError
+            | pcCode pc == CKR_BUFFER_TOO_SMALL -> retainShort
+            | pcCode pc /= CKR_OK -> usdtTerminalRV inst m sid kind func
+                ModeSync PathCommit Nothing (stdRvOf (pcCode pc))
+            | otherwise -> usdtTerminalRV inst m sid kind func ModeSync
+                PathReject Nothing ckrGeneralError
   case planned of
     Reject _ -> execute
     Execute _ _ -> execute
     Immediate pc
-      | pcCode pc /= CKR_OK -> pure (stdRvOf (pcCode pc))
+      | pcCode pc /= CKR_OK -> usdtTerminalRV inst m sid kind func
+          ModeSync PathReject Nothing (stdRvOf (pcCode pc))
       | Just n <- matchingMessageLength fam m sid -> report n
       | messageContinuation fam func input -> report 0
-      | otherwise -> pure ckrGeneralError
+      | otherwise -> usdtTerminalRV inst m sid kind func ModeSync
+          PathReject Nothing ckrGeneralError
 
-messageBytes :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr Word8 -> Ptr CULong -> IO CULong
-messageBytes inst sid fam func frame pOut pLen
+messageBytes :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr Word8 -> Ptr CULong -> UsdtEncodeMode -> IO CULong
+messageBytes inst sid fam func frame pOut pLen mode
   | pLen == nullPtr = pure ckrArgsBad
   | pOut == nullPtr = runMessageQuery inst sid fam func frame pLen
   | otherwise = do
       cap <- fromIntegral <$> peek pLen
-      runMessageBuffered inst sid fam func frame pOut pLen cap
+      runMessageBuffered inst sid fam func frame pOut pLen cap mode
 
 -- | Resolve a session for the crypto dialogues (unknown handles
 -- refuse exactly as planning would).
@@ -4807,7 +4881,19 @@ haskokiStdDigestKey
 haskokiStdDigestKey ctx h (CULong keyH) =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
     m <- snapshotModel (siEnv inst)
-    let refuse code = terminateSlot inst sid SlotDigest >> pure code
+    -- Key-resolution refusals terminate the digest like every other
+    -- error; policy ones also reject (ov=False: no end shares this
+    -- op — a teardown flush, if staged bytes die, mints its own).
+    let refuse code = do
+          terminateSlot inst sid SlotDigest
+          mOp <- newUsdtOpId
+          case mOp of
+            Nothing -> pure code
+            Just op -> do
+              usdtEmitPolicy op False
+                (usdtLiveMeta m sid SlotDigest F_DigestUpdate)
+                F_DigestUpdate (rvWord code)
+              pure code
     case resolveHandle m (ExternalHandle (fromIntegral keyH)) of
       Nothing -> refuse (stdRvOf CKR_KEY_HANDLE_INVALID)
       Just ost -> case lookupSession m sid of
@@ -5443,7 +5529,7 @@ haskokiStdMessageEncrypt ctx h p pn a an d dn out len =
     frame <- decodeMessageCipherFrame MsgEncrypt p (fromIntegral pn) a (fromIntegral an) d (fromIntegral dn)
     case frame of
       Left _ -> pure ckrArgsBad
-      Right input -> messageBytes inst sid MsgEncrypt F_EncryptMessage input out len
+      Right input -> messageBytes inst sid MsgEncrypt F_EncryptMessage input out len EncodeTerminal
 
 foreign export ccall "haskoki_std_message_encrypt_begin" haskokiStdMessageEncryptBegin
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
@@ -5465,7 +5551,7 @@ haskokiStdMessageEncryptNext ctx h p pn d dn out len end =
       frame <- decodeMessageCipherNextFrame MsgEncrypt p (fromIntegral pn) d (fromIntegral dn) (end == 1)
       case frame of
         Left _ -> pure ckrArgsBad
-        Right input -> messageBytes inst sid MsgEncrypt F_EncryptMessageNext input out len
+        Right input -> messageBytes inst sid MsgEncrypt F_EncryptMessageNext input out len (if end == 1 then EncodeTerminal else EncodeUpdate)
 
 foreign export ccall "haskoki_std_message_encrypt_final" haskokiStdMessageEncryptFinal
   :: StablePtr StdInstance -> CULong -> IO CULong
@@ -5495,7 +5581,7 @@ haskokiStdMessageDecrypt ctx h p pn a an d dn out len =
     frame <- decodeMessageCipherFrame MsgDecrypt p (fromIntegral pn) a (fromIntegral an) d (fromIntegral dn)
     case frame of
       Left _ -> pure ckrArgsBad
-      Right input -> messageBytes inst sid MsgDecrypt F_DecryptMessage input out len
+      Right input -> messageBytes inst sid MsgDecrypt F_DecryptMessage input out len EncodeTerminal
 
 foreign export ccall "haskoki_std_message_decrypt_begin" haskokiStdMessageDecryptBegin
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8 -> CULong -> IO CULong
@@ -5517,7 +5603,7 @@ haskokiStdMessageDecryptNext ctx h p pn d dn out len end =
       frame <- decodeMessageCipherNextFrame MsgDecrypt p (fromIntegral pn) d (fromIntegral dn) (end == 1)
       case frame of
         Left _ -> pure ckrArgsBad
-        Right input -> messageBytes inst sid MsgDecrypt F_DecryptMessageNext input out len
+        Right input -> messageBytes inst sid MsgDecrypt F_DecryptMessageNext input out len (if end == 1 then EncodeTerminal else EncodeUpdate)
 
 foreign export ccall "haskoki_std_message_decrypt_final" haskokiStdMessageDecryptFinal
   :: StablePtr StdInstance -> CULong -> IO CULong
@@ -5547,7 +5633,7 @@ haskokiStdMessageSign ctx h p pn d dn out len =
     frame <- decodeMessageSignFrame p (fromIntegral pn) d (fromIntegral dn)
     case frame of
       Left _ -> pure ckrArgsBad
-      Right input -> messageBytes inst sid MsgSign F_SignMessage input out len
+      Right input -> messageBytes inst sid MsgSign F_SignMessage input out len EncodeTerminal
 
 foreign export ccall "haskoki_std_message_sign_begin" haskokiStdMessageSignBegin
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> IO CULong
@@ -5572,7 +5658,7 @@ haskokiStdMessageSignNext ctx h p pn d dn out len =
         | len == nullPtr -> runCryptoSilent inst
             (Request Pkcs11_3_2 F_SignMessageNext (Just sid) Nothing input
               [RegionBytes "message-sign" (IntentBuffer 0)])
-        | otherwise -> messageBytes inst sid MsgSign F_SignMessageNext input out len
+        | otherwise -> messageBytes inst sid MsgSign F_SignMessageNext input out len EncodeTerminal
 
 foreign export ccall "haskoki_std_message_sign_final" haskokiStdMessageSignFinal
   :: StablePtr StdInstance -> CULong -> IO CULong
@@ -5623,9 +5709,12 @@ haskokiStdMessageVerifyNext ctx h p pn d dn out wn =
     frame <- decodeMessageVerifyNextFrame p (fromIntegral pn) d (fromIntegral dn) out (fromIntegral wn)
     case frame of
       Left _ -> pure ckrArgsBad
-      Right input -> runCryptoSilent inst
+      -- A part carrying the candidate signature is the final part:
+      -- its verdict reports terminally, like a classic final.
+      Right input -> runCryptoSilentVerifyNext inst
         (Request Pkcs11_3_2 F_VerifyMessageNext (Just sid) Nothing input
           [RegionBytes "message-verify" (IntentBuffer 0)])
+        (out /= nullPtr)
 
 foreign export ccall "haskoki_std_message_verify_final" haskokiStdMessageVerifyFinal
   :: StablePtr StdInstance -> CULong -> IO CULong
@@ -5677,7 +5766,7 @@ runCryptoUpdateBuffered inst sid kind func input regionName pOut pLen cap = do
   case epc of
     Left rv
       | rv == ckrBufferTooSmall -> reportUpdateShortLength inst sid kind input pLen
-      | otherwise -> usdtNonTerminalRV inst m sid kind func rv
+      | otherwise -> usdtNonTerminalRV inst m sid kind func Nothing rv
     Right pc
       | pcCode pc == CKR_OK && null (pcOutputs pc) -> do
           _ <- encodeLength pLen 0
@@ -5717,7 +5806,7 @@ runCryptoUpdateQuery inst sid kind func input regionName pLen = do
   case planCall (envRules (siEnv inst)) m req of
     Reject rej -> do
       publishRejection inst rej
-      usdtNonTerminalRV inst m sid kind func (stdRvOf (rejCode rej))
+      usdtNonTerminalRV inst m sid kind func Nothing (stdRvOf (rejCode rej))
     Immediate _ -> do
       _ <- encodeLength pLen 0
       pure ckrOk
@@ -6003,23 +6092,23 @@ runDualUpdateBuffered inst sid cKind cFunc cRegion dKind dFunc isDecrypt input p
         case epcC of
           Left rv
             | rv == ckrBufferTooSmall -> reportUpdateShortLength inst sid cKind input pLen
-            | otherwise -> usdtNonTerminalRV inst m sid cKind cFunc rv
+            | otherwise -> usdtNonTerminalRV inst m sid cKind cFunc Nothing rv
           Right pcC
             | pcCode pcC == CKR_OK && null (pcOutputs pcC) -> do
                 _ <- encodeLength pLen 0
                 peerRv <- runPeer (if isDecrypt then BS.empty else input)
-                usdtNonTerminalRV inst m sid dKind dFunc peerRv
+                usdtNonTerminalRV inst m sid dKind dFunc Nothing peerRv
             | otherwise -> do
                 enc <- encodeCryptoCommit inst sid cKind cFunc m
                   EncodeUpdate Nothing pOut pLen cap pcC
                 if enc /= ckrOk then pure enc
                 else case dualCipherBytes (pcOutputs pcC) of
-                  Nothing -> usdtNonTerminalRV inst m sid dKind dFunc ckrGeneralError
+                  Nothing -> usdtNonTerminalRV inst m sid dKind dFunc Nothing ckrGeneralError
                   Just cBytes -> do
                     peerRv <- runPeer
                       (if isDecrypt then cBytes else input)
-                    usdtNonTerminalRV inst m sid dKind dFunc peerRv
-      _ -> usdtNonTerminalRV inst m sid cKind cFunc
+                    usdtNonTerminalRV inst m sid dKind dFunc Nothing peerRv
+      _ -> usdtNonTerminalRV inst m sid cKind cFunc Nothing
         (stdRvOf CKR_OPERATION_NOT_INITIALIZED)
 
 -- | Dual size-query dialogue: the peer must be active and
@@ -6033,12 +6122,12 @@ runDualUpdateQuery
 runDualUpdateQuery inst sid cKind cFunc cRegion dKind input pLen = do
   m <- snapshotModel (siEnv inst)
   case lookupSession m sid of
-    Nothing -> usdtNonTerminalRV inst m sid cKind cFunc
+    Nothing -> usdtNonTerminalRV inst m sid cKind cFunc Nothing
       (stdRvOf CKR_SESSION_HANDLE_INVALID)
     Just st -> case (lookupSingle (ssOps st) cKind, lookupSingle (ssOps st) dKind) of
       (Just _, Just _) | dualPeerEligible (ssOps st) dKind ->
         runCryptoUpdateQuery inst sid cKind cFunc input cRegion pLen
-      _ -> usdtNonTerminalRV inst m sid cKind cFunc
+      _ -> usdtNonTerminalRV inst m sid cKind cFunc Nothing
         (stdRvOf CKR_OPERATION_NOT_INITIALIZED)
 
 -- | Digest+encrypt combined update (digests and encrypts the part).
@@ -6285,8 +6374,10 @@ haskokiStdEncapsulateKey ctx h (CULong mech) pParams (CULong paramsLen)
                     rv <- runEncapsPlan inst m st
                       (planKemEncaps m st mid kh (kemAlgOfKey m kh) entries intent)
                       pOut pLen phKey
-                    -- NULL/short queries answer lengths without crypto.
-                    if pOut == nullPtr || rv == ckrBufferTooSmall
+                    -- Successful NULL/short queries answer lengths
+                    -- without crypto; refused queries report through
+                    -- the hook (policy denials must reject).
+                    if (pOut == nullPtr && rv == ckrOk) || rv == ckrBufferTooSmall
                       then pure rv
                       else usdtTerminalKey inst F_EncapsulateKey mid BS.empty (Just kh) rv
 
@@ -6432,8 +6523,10 @@ haskokiStdWrapKey ctx h (CULong mech) pIv (CULong ivLen)
                 (ExternalHandle (fromIntegral wrapH))
                 (ExternalHandle (fromIntegral targetH)) intent)
               pOut pLen
-            -- NULL/short queries answer lengths without crypto.
-            if pOut == nullPtr || rv == ckrBufferTooSmall
+            -- Successful NULL/short queries answer lengths
+            -- without crypto; refused queries report through
+            -- the hook (policy denials must reject).
+            if (pOut == nullPtr && rv == ckrOk) || rv == ckrBufferTooSmall
               then pure rv
               else usdtTerminalKey inst F_WrapKey mid params
                 (Just (ExternalHandle (fromIntegral wrapH))) rv

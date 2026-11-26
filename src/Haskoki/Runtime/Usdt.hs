@@ -21,7 +21,6 @@ no-op and no probe path exists.
 module Haskoki.Runtime.Usdt
   ( UsdtOpId (..)
   , newUsdtOpId
-  , usdtSaturations
   , PkName (..)
   , pkNameCode
   , PkKeyFacts (..)
@@ -76,8 +75,8 @@ import Data.Unique (hashUnique, newUnique)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der (curveNameOfOid, edwardsNameOfOid,
-  montgomeryNameOfOid)
+import Haskoki.Der (curveNameOfOid, curveOidOfParams,
+  edwardsNameOfOid, montgomeryNameOfOid, montgomeryOidOfParams)
 import Haskoki.Model (Model, ObjectState (..), SessionState (..),
   lookupObject, lookupSession)
 import Haskoki.Operation.Effect (CryptoEffect (..))
@@ -106,10 +105,13 @@ usdtTag = 0x48534B30
 mkOpId :: Word32 -> UsdtOpId
 mkOpId n = UsdtOpId ((fromIntegral n `shiftL` 32) .|. usdtTag)
 
--- | Allocate a fresh op id, or 'Nothing' once the counter saturates
--- (no wrap, no reuse; saturations are counted). The counter is
--- C-owned (no Haskell globals, per the FFI hygiene rule); without
--- HSK_USDT the RTS unique supply stands in (never emitted).
+-- | Allocate an op id. The counter is C-owned (no Haskell
+-- globals, per the FFI hygiene rule) and wraps past 2^32-1,
+-- reissuing ids after a full cycle; that is safe because sync ids
+-- never outlive one C call and async jobs are table-bounded with
+-- reaping. Without HSK_USDT the RTS unique supply stands in
+-- (never emitted). 'Nothing' only if the allocator ever yields 0
+-- (defensive: the C side never issues it).
 newUsdtOpId :: IO (Maybe UsdtOpId)
 #ifdef HSK_USDT
 newUsdtOpId = do
@@ -120,14 +122,6 @@ newUsdtOpId = do
   h <- hashUnique <$> newUnique
   let n = fromIntegral h .&. 0xFFFFFFFF
   pure (if n == 0 then Nothing else Just (mkOpId n))
-#endif
-
--- | How many allocations hit saturation (practically zero).
-usdtSaturations :: IO Word64
-#ifdef HSK_USDT
-usdtSaturations = c_saturations
-#else
-usdtSaturations = pure 0
 #endif
 
 -- ---------------------------------------------------------------------------
@@ -174,13 +168,13 @@ data UsdtStagedMeta = UsdtStagedMeta
 
 data Disposition
   = DispDelivered | DispFailedExec | DispFailedPublish
-  | DispFailedWriteback | DispAbandoned
+  | DispFailedWriteback | DispAbandoned | DispHandedOff
   deriving (Eq, Show)
 
 dispositionCode :: Disposition -> Word32
 dispositionCode d = case d of
   DispDelivered -> 1; DispFailedExec -> 2; DispFailedPublish -> 3
-  DispFailedWriteback -> 4; DispAbandoned -> 5
+  DispFailedWriteback -> 4; DispAbandoned -> 5; DispHandedOff -> 6
 
 data OpMode = ModeSync | ModeAsync
   deriving (Eq, Show)
@@ -201,13 +195,14 @@ policyReasonCode r = case r of
 
 data JobPhase
   = PhaseAccepted | PhaseClaimed | PhaseReady | PhaseDelivered
-  | PhaseFailed | PhaseCanceled
+  | PhaseFailed | PhaseCanceled | PhaseHandoff
   deriving (Eq, Show)
 
 jobPhaseCode :: JobPhase -> Word32
 jobPhaseCode p = case p of
   PhaseAccepted -> 1; PhaseClaimed -> 2; PhaseReady -> 3
   PhaseDelivered -> 4; PhaseFailed -> 5; PhaseCanceled -> 6
+  PhaseHandoff -> 7
 
 -- | Stable function code: 'FunctionId' is append-only ('Request.hs'),
 -- so 'fromEnum' is a frozen numbering.
@@ -232,8 +227,11 @@ hashOfMechanism mid = case mechNameOf mid of
     | has "SHA3_256" n -> 8
     | has "SHA3_384" n -> 9
     | has "SHA3_512" n -> 10
-    | has "SHA512_224" n -> 3
-    | has "SHA512_256" n -> 4
+    -- SHA-512/224 and SHA-512/256 are distinct hashes with no
+    -- registry code: omit rather than mislabel as SHA-224/256.
+    -- (Placed before SHA512: the names contain that stem.)
+    | has "SHA512_224" n -> 0
+    | has "SHA512_256" n -> 0
     | has "SHA224" n -> 3
     | has "SHA256" n -> 4
     | has "SHA384" n -> 5
@@ -514,7 +512,10 @@ keyFactsOf st = case attrULong attrs AttrKeyType of
           Nothing -> case attrBytesLen attrs AttrModulus of
             Just n -> fromIntegral n * 8
             Nothing -> 0
-    ecFacts = case attrBytes attrs AttrEcParams >>= curveNameOfOid of
+    -- Stored params are engine names ("P-256") on generated keys
+    -- and DER OIDs on imports: normalize either form first.
+    ecFacts = case attrBytes attrs AttrEcParams >>= curveOidOfParams
+      >>= curveNameOfOid of
       Just "P-256" -> PkKeyFacts 2 1 0 0
       Just "P-384" -> PkKeyFacts 2 2 0 0
       Just "P-521" -> PkKeyFacts 2 3 0 0
@@ -522,11 +523,13 @@ keyFactsOf st = case attrULong attrs AttrKeyType of
       -- Served exotic curves resolve to no registry code yet (the
       -- record still carries algorithm + mechanism).
       _ -> PkKeyFacts 2 0 0 0
+    -- OpenSSL DSA_bits reports the prime-p size (BN_num_bits p),
+    -- not the subprime: match it, so a 2048-bit key reports 2048.
     dsaFacts = PkKeyFacts 3 0 0 bits
       where
-        bits = case attrULong attrs AttrSubprimeBits of
+        bits = case attrULong attrs AttrPrimeBits of
           Just b -> b
-          Nothing -> case attrBytesLen attrs AttrSubprime of
+          Nothing -> case attrBytesLen attrs AttrPrime of
             Just n -> fromIntegral n * 8
             Nothing -> 0
     dhFacts = PkKeyFacts 4 0 0 bits
@@ -541,11 +544,14 @@ keyFactsOf st = case attrULong attrs AttrKeyType of
         Just "Ed25519" -> PkKeyFacts 6 5 0 256
         Just "Ed448" -> PkKeyFacts 6 7 0 456
         _ -> PkKeyFacts 6 0 0 0
+    -- X25519 reports 253 (OpenSSL X25519_BITS, the order size),
+    -- not the 256-bit key length; X448 agrees at 448 either way.
     montgomeryFacts = case attrBytesLen attrs AttrValue of
-      Just 32 -> PkKeyFacts 5 6 0 256
+      Just 32 -> PkKeyFacts 5 6 0 253
       Just 56 -> PkKeyFacts 5 8 0 448
-      _ -> case attrBytes attrs AttrEcParams >>= montgomeryNameOfOid of
-        Just "X25519" -> PkKeyFacts 5 6 0 256
+      _ -> case attrBytes attrs AttrEcParams >>= montgomeryOidOfParams
+        >>= montgomeryNameOfOid of
+        Just "X25519" -> PkKeyFacts 5 6 0 253
         Just "X448" -> PkKeyFacts 5 8 0 448
         _ -> PkKeyFacts 5 0 0 0
 
@@ -701,9 +707,6 @@ dropRetainedMeta sid kind = Map.delete (sid, kind)
 foreign import ccall unsafe "usdt.h hsk_usdt_alloc_op"
   c_allocOp :: IO Word32
 
-foreign import ccall unsafe "usdt.h hsk_usdt_saturations"
-  c_saturations :: IO Word64
-
 foreign import ccall unsafe "usdt.h hsk_usdt_pk_record"
   c_pkRecord :: Word64 -> Word32 -> Word32 -> Word32 -> Word32
     -> Word64 -> Word32 -> Word32 -> IO ()
@@ -755,8 +758,11 @@ emitOperationEnd (UsdtOpId op) func mech mechPresent ckr disp mode =
   c_operationEnd op func mech (fromBool mechPresent) ckr
     (dispositionCode disp) (opModeCode mode)
 
--- | Emit one admission denial (never terminal by itself; the
--- teardown path adds 'emitOperationEnd' when removal commits).
+-- | Emit one admission denial. 'opValid' answers "is an
+-- 'operation_end' with this op id emitted for this call": true on
+-- terminal paths (the end always follows the reject), and on
+-- non-terminal paths exactly when staged bytes die with metadata
+-- to report (the abandoned end fires exactly then).
 emitPolicyReject :: UsdtOpId -> Bool -> Word32 -> Word64 -> Bool
   -> PolicyReason -> Word32 -> IO ()
 emitPolicyReject (UsdtOpId op) opValid func mech mechPresent reason ckr =
