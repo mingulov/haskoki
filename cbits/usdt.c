@@ -5,6 +5,27 @@
 #include "usdt.h"
 
 #ifdef HSK_USDT
+#include <stdatomic.h>
+
+static _Atomic uint_fast32_t hsk_op_counter = 1;
+static _Atomic uint_fast64_t hsk_op_saturations = 0;
+
+uint32_t hsk_usdt_alloc_op(void)
+{
+    uint_fast32_t prev =
+        atomic_fetch_add_explicit(&hsk_op_counter, 1, memory_order_relaxed);
+    if (prev == 0 || prev >= UINT32_MAX) {
+        atomic_fetch_add_explicit(&hsk_op_saturations, 1, memory_order_relaxed);
+        return 0;
+    }
+    return (uint32_t)prev;
+}
+
+uint64_t hsk_usdt_saturations(void)
+{
+    return (uint64_t)atomic_load_explicit(&hsk_op_saturations,
+        memory_order_relaxed);
+}
 
 static const char *const hsk_pk_names[] = {
     [HSK_PK_SIGN] = "pk::sign",

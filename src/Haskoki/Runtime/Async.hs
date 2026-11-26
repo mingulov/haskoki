@@ -208,6 +208,7 @@ module Haskoki.Runtime.Async
   , pollJob
   , completeJob
   , cancelJob
+  , usdtSeededReady
   , reapJob
     -- * Scope classifiers (pure; see the rebind\/expiry rulings below)
   , callCompletion
@@ -298,6 +299,10 @@ import Haskoki.Request (FunctionId (..), OutputRegion (..))
 import Haskoki.Runtime.Attach (AsyncTableId (..))
 import Haskoki.Runtime.Lifecycle (Env, checkReservation, envRules, envTracer, publish, snapshotModel)
 import Haskoki.Runtime.Trace (emitKeptJobFailure)
+import Haskoki.Runtime.Usdt (Disposition (..), JobPhase (..),
+  UsdtOpId, emitJobState, emitOperationEnd, functionCode, fxMechOf,
+  newUsdtOpId, OpMode (..))
+import Haskoki.ReturnCode.Generated (returnCodeToRV)
 import Haskoki.Transition (finishEffect)
 import Haskoki.Types
   ( ExternalHandle
@@ -571,7 +576,54 @@ data Job = Job
   , jbState :: !JobState
   , jbEpoch :: !Word64
   , jbLock :: !(MVar ())
+  , jbUsdt :: !(Maybe UsdtOpId)
   }
+
+-- | The representative C function of a job family, for USDT
+-- attribution (async contributes private events only).
+jobFunctionFunc :: JobFunction -> FunctionId
+jobFunctionFunc JobDigest = F_Digest
+jobFunctionFunc JobSign = F_Sign
+jobFunctionFunc JobGenKey = F_GenerateKey
+jobFunctionFunc JobGenKeyPair = F_GenerateKeyPair
+
+-- | Emit one job_state event for a committed transition. Skipped
+-- when the job carries no op id (allocation saturated at accept).
+usdtJobPhase :: AsyncTable -> JobId -> Job -> JobPhase -> Word32 -> Bool
+  -> IO ()
+usdtJobPhase table (JobId n) job phase ckr ckrValid =
+  case jbUsdt job of
+    Nothing -> pure ()
+    Just op ->
+      let AsyncTableId t = asyncTableId table
+      in emitJobState (fromIntegral t) (fromIntegral n) op True
+        phase ckr ckrValid
+
+-- | Terminal async outcome: private end (async contributes no pk
+-- contexts). Func/mech from the job's function and work effect.
+usdtAsyncEnd :: Job -> Word32 -> Disposition -> IO ()
+usdtAsyncEnd job ckr disp =
+  case jbUsdt job of
+    Nothing -> pure ()
+    Just op -> do
+      let func = jobFunctionFunc (jbFunction job)
+      case fxMechOf (workEffect (jbWork job)) of
+        Just (MechanismId w) ->
+          emitOperationEnd op (functionCode func) w True ckr
+            disp ModeAsync
+        Nothing ->
+          emitOperationEnd op (functionCode func) 0 False ckr
+            disp ModeAsync
+
+-- | Emit the first ready of a seeded (rejoin) attachment. The
+-- detached claim winner calls this after 'commitClaim'; the
+-- provisional insert itself stays silent.
+usdtSeededReady :: AsyncTable -> JobId -> IO ()
+usdtSeededReady table jid = do
+  mJob <- readJob table jid
+  case mJob of
+    Just job -> usdtJobPhase table jid job PhaseReady 0 False
+    Nothing -> pure ()
 
 -- ---------------------------------------------------------------------------
 -- Closed transitions
@@ -1031,7 +1083,10 @@ startJobChecked table req initial checkCoherence
       pure (Left StartIncompatibleWork)
   | otherwise = do
       lock <- newMVar ()
-      atomically $ do
+      -- Op id first: gaps on refusal are harmless (uniqueness is
+      -- what matters); the id rides every later transition event.
+      mOpId <- newUsdtOpId
+      res <- atomically $ do
         async <- readTVar (atAsync table)
         jobs <- readTVar (atJobs table)
         if jbSessionOf req `Set.notMember` async
@@ -1051,11 +1106,17 @@ startJobChecked table req initial checkCoherence
                       , jbState = initial
                       , jbEpoch = 0
                       , jbLock = lock
+                      , jbUsdt = mOpId
                       }
                 -- Forced: see the forcing invariant on 'commitStep'.
                 let jobs' = Map.insert (JobId n) job jobs
                 jobs' `seq` writeTVar (atJobs table) jobs'
-                pure (Right (JobId n))
+                pure (Right (JobId n, job))
+      case res of
+        Right (jid, job) -> do
+          usdtJobPhase table jid job PhaseAccepted 0 False
+          pure (Right jid)
+        Left deny -> pure (Left deny)
   where
     jbSessionOf :: JobRequest -> SessionId
     jbSessionOf = jrSession
@@ -1197,6 +1258,7 @@ driveJob run env table jid job
           "stepJob EvClaim breached its contract"))
         Right claimed -> mask $ \restore -> do
           commitStep table jid claimed
+          usdtJobPhase table jid job PhaseClaimed 0 False
           r <- try (restore (run (workEffect (jbWork job))))
           case r of
             Right res -> holdDrive res (stepState claimed) (stepEpoch claimed)
@@ -1221,6 +1283,7 @@ driveJob run env table jid job
       let holdStep = case stepJob (EvHold res) st e of
             Right s -> do
               commitStep table jid s
+              usdtJobPhase table jid job PhaseReady 0 False
               pure PollReady
             Left _ -> pure (PollTerminal (TermFailed CKR_GENERAL_ERROR
               "stepJob EvHold breached its contract"))
@@ -1248,6 +1311,12 @@ driveJob run env table jid job
     failDrive ev st e t = case stepJob ev st e of
       Right s -> do
         commitStep table jid s
+        let code = case ev of
+              EvFail c _ -> c
+              _ -> CKR_GENERAL_ERROR
+            w = returnCodeToRV code
+        usdtJobPhase table jid job PhaseFailed w True
+        usdtAsyncEnd job w DispFailedPublish
         pure (PollTerminal t)
       Left _ -> pure (PollTerminal (TermFailed CKR_GENERAL_ERROR
         "stepJob EvFail breached its contract"))
@@ -1394,6 +1463,8 @@ commitAndTryDeliver env table jid job del delta releases release completion = do
                 -- other-thread kills in non-blocking code.
                 dWrite del (encodeCompletion completion)
                 commitStep table jid s
+                usdtJobPhase table jid j PhaseDelivered 0 False
+                usdtAsyncEnd j (returnCodeToRV CKR_OK) DispDelivered
                 pure (CompleteDelivered completion)
               Left _ -> pure (CompleteAlready (TermFailed CKR_GENERAL_ERROR
                 "stepJob EvDeliver breached its contract"))
@@ -1465,6 +1536,9 @@ failJob table jid job code reason =
   case stepJob (EvFail code reason) (jbState job) (jbEpoch job) of
     Right s -> do
       commitStep table jid s
+      let w = returnCodeToRV code
+      usdtJobPhase table jid job PhaseFailed w True
+      usdtAsyncEnd job w DispFailedPublish
       pure (CompleteAlready (TermFailed code reason))
     Left _ -> pure (CompleteAlready (TermFailed CKR_GENERAL_ERROR
       "stepJob EvFail breached its contract"))
@@ -1520,6 +1594,8 @@ cancelJob table jid = withJobLock table jid CancelUnknown $ \job ->
   case stepJob EvCancel (jbState job) (jbEpoch job) of
     Right s -> do
       commitStep table jid s
+      usdtJobPhase table jid job PhaseCanceled 0 False
+      usdtAsyncEnd job (returnCodeToRV CKR_FUNCTION_CANCELED) DispAbandoned
       pure CancelOk
     Left (JobReject _ (JobTerminal t)) -> pure (CancelAlready t)
     Left _ -> pure (CancelAlready (TermFailed CKR_GENERAL_ERROR
