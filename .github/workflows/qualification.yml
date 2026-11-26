@@ -619,7 +619,7 @@ jobs:
           } 2>&1 | tee "$RUNNER_TEMP/qualify-evidence-run.log"
       - name: Run ownership matrix (private RTS)
         # Separate obligation from the 25-cell matrix and from the
-        # 19-step manifest (scripts/driver-inventory.json role
+        # 21-step manifest (scripts/driver-inventory.json role
         # qualification): one receipt per (case, RTS -N1/-N2/-N4)
         # under qualify-evidence/ownership. Runs even when the matrix
         # step failed so both verdicts are recorded; fails the job on
