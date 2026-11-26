@@ -85,7 +85,9 @@ source-repository head
 -- leg build with +usdt explicitly. On: compiles cbits/usdt.c and
 -- defines HSK_USDT (needs <sys/sdt.h>, i.e. systemtap-sdt-dev;
 -- the shim header fails clearly without it). Off: no probe path
--- at all (Haskell calls and probe-only state compile out).
+-- at all (the C shim does not compile and every Haskell emitter
+-- stubs out), though the Haskell-side hook calls still run with
+-- no-op sinks, so both flag settings execute identical logic.
 flag usdt
   description: Compile in USDT observability probes
   default:     False
