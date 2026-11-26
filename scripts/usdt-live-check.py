@@ -503,8 +503,10 @@ class Checker:
                         M_AES_KEYGEN, 1, CKR_OK, 1, 0)
         # N1: the non-final recall delivers the staged final bytes
         # with a delivered end (staged state promotes it past the
-        # caller's end=0); the re-init plus one-shot pins a clean
-        # F_EncryptMessage identity.
+        # caller's end=0); the one-shot on the same still-open
+        # context pins a clean F_EncryptMessage identity (no
+        # intervening init: stranded retention would surface as
+        # F_EncryptMessageNext here).
         self.expect_end(ph, ph["end"][1]["op"], f["F_EncryptMessageNext"],
                         M_AES_CBC, 1, CKR_OK, 1, 0)
         self.expect_end(ph, ph["end"][2]["op"], f["F_EncryptMessage"],

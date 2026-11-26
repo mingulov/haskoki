@@ -1366,12 +1366,15 @@ static int phase_msg_query_staged(void) {
 static int phase_msg_recall_nonfinal(void) {
   /* N1: a non-final recall on a staged slot still delivers the
    * staged final output: the staged state, not the caller's end
-   * flag, decides terminality. Final short, then a non-final
-   * recall with room (one delivered end — unfixed, zero ends),
-   * then a re-init plus a one-shot pinning F_EncryptMessage
-   * (one-shots need init; the recall's terminal delivery is what
-   * drops the retention, in the same path that emits its end).
-   * Own session. */
+   * flag, decides terminality. Final short, a NULL query (silent,
+   * length only — queries never publish, so the recall below
+   * still sees the staged slot), then a non-final recall with
+   * room (one delivered end — unfixed, zero ends), then a
+   * one-shot on the same still-open context pinning
+   * F_EncryptMessage: the recall's terminal delivery dropped the
+   * retention in the same path that emitted its end, so stranded
+   * F_EncryptMessageNext identity would show here. Final closes
+   * the context. Own session. */
   CK_RV rv;
   CK_SESSION_HANDLE msess = 0;
   CK_OBJECT_CLASS ckcls = CKO_SECRET_KEY;
@@ -1391,7 +1394,7 @@ static int phase_msg_recall_nonfinal(void) {
   };
   static CK_BYTE pt[] = "recall-nonfin-16";
   CK_BYTE small[4], out[32], once[32];
-  CK_ULONG smallLen, outLen, onceLen;
+  CK_ULONG smallLen, outLen, onceLen, qLen;
   PHASE("msg-recall-nonfinal");
   if (open_session(&msess)) CHECKM(0, "recall session opens");
   kgm.mechanism = CKM_AES_KEY_GEN;
@@ -1410,19 +1413,22 @@ static int phase_msg_recall_nonfinal(void) {
   rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
                                  small, &smallLen, CKF_END_OF_MESSAGE);
   CHECKRV(rv, CKR_BUFFER_TOO_SMALL, "recall final short stages");
+  qLen = 0;
+  rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
+                                 NULL, &qLen, 0);
+  CHECKRV(rv, CKR_OK, "recall query reports length");
+  CHECKM(qLen == 16, "recall query length 16");
   outLen = sizeof(out);
   rv = tab32->C_EncryptMessageNext(msess, NULL, 0, pt, sizeof(pt) - 1,
                                  out, &outLen, 0);
   CHECKRV(rv, CKR_OK, "recall non-final delivers");
   CHECKM(outLen == 16, "recall delivers 16");
-  rv = tab32->C_MessageEncryptFinal(msess);
-  CHECKRV(rv, CKR_OK, "recall final closes context");
-  rv = tab32->C_MessageEncryptInit(msess, &cm, aes);
-  CHECKRV(rv, CKR_OK, "recall re-init for one-shot");
   onceLen = sizeof(once);
   rv = tab32->C_EncryptMessage(msess, iv, sizeof(iv), NULL, 0, pt,
                              sizeof(pt) - 1, once, &onceLen);
   CHECKRV(rv, CKR_OK, "recall one-shot clean");
+  rv = tab32->C_MessageEncryptFinal(msess);
+  CHECKRV(rv, CKR_OK, "recall final closes context");
   rv = T->C_CloseSession(msess);
   CHECKRV(rv, CKR_OK, "recall close");
   return 0;
