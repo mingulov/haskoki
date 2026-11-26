@@ -35,6 +35,10 @@
           "job": "haskell"
         },
         {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell-usdt"
+        },
+        {
           "workflow": ".github/workflows/hpc.yml",
           "job": "hpc"
         }
@@ -132,6 +136,10 @@
         {
           "workflow": ".github/workflows/ci.yml",
           "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell-usdt"
         },
         {
           "workflow": ".github/workflows/hpc.yml",
@@ -295,6 +303,10 @@
         {
           "workflow": ".github/workflows/ci.yml",
           "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell-usdt"
         },
         {
           "workflow": ".github/workflows/hpc.yml",
@@ -612,6 +624,10 @@
           "job": "haskell"
         },
         {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell-usdt"
+        },
+        {
           "workflow": ".github/workflows/prop-nightly.yml",
           "job": "haskell-prop-nightly"
         },
@@ -701,6 +717,10 @@
           "job": "haskell"
         },
         {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell-usdt"
+        },
+        {
           "workflow": ".github/workflows/hpc.yml",
           "job": "hpc"
         }
@@ -746,6 +766,10 @@
           "job": "haskell"
         },
         {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell-usdt"
+        },
+        {
           "workflow": ".github/workflows/hpc.yml",
           "job": "hpc"
         }
@@ -768,6 +792,10 @@
         {
           "workflow": ".github/workflows/ci.yml",
           "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell-usdt"
         },
         {
           "workflow": ".github/workflows/hpc.yml",
@@ -929,6 +957,10 @@
         {
           "workflow": ".github/workflows/ci.yml",
           "job": "haskell"
+        },
+        {
+          "workflow": ".github/workflows/ci.yml",
+          "job": "haskell-usdt"
         },
         {
           "workflow": ".github/workflows/hpc.yml",

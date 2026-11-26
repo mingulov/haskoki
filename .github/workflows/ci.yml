@@ -197,7 +197,8 @@ jobs:
               check-coverage-boundary \
               check-release-pivots check-loader-norm check-release-install-flags \
               check-smoke-surface check-history-codes check-sealed-callwork check-ossl4-laziness check-actions-pinned \
-              check-qualification-wiring check-findings-ledger check-planner-join check-rv-generated check-exposure; do
+              check-qualification-wiring check-findings-ledger check-planner-join check-rv-generated check-exposure \
+              check-usdt-codes check-usdt-redaction; do
             python3 scripts/$g.py
           done
           python3 scripts/check-history-codes.py --self-test
@@ -223,6 +224,8 @@ jobs:
           python3 scripts/check-planner-join.py --self-test
           python3 scripts/check-rv-generated.py --self-test
           python3 scripts/check-exposure.py --self-test
+          python3 scripts/check-usdt-codes.py --self-test
+          python3 scripts/check-usdt-redaction.py --self-test
           python3 scripts/check-seed-honesty.py --self-test
           python3 scripts/test-release-request.py
           python3 scripts/test-release-workflow.py
@@ -292,6 +295,18 @@ jobs:
           test -x "$BENCH_BIN" \
             || { echo "benchmark binary not executable: $BENCH_BIN"; exit 2; }
           "$BENCH_BIN" --self-test
+      - name: USDT off-manifest gate
+        run: |
+          set -euo pipefail
+          # The default-flags build carries zero probe notes (the
+          # flag-on half is gated in `haskell-usdt`).
+          cabal build flib:haskoki
+          n=0; SO=""
+          for f in dist-newstyle/build/*/ghc-*/haskoki-*/f/haskoki/build/haskoki/libhaskoki.so; do
+            n=$((n+1)); SO=$f
+          done
+          test "$n" = "1" || { echo "expected exactly one flib, found $n"; exit 2; }
+          python3 scripts/check-usdt-probes.py --so "$SO" --expect-off
       - name: Collect executed test trees
         run: |
           set -euo pipefail
@@ -313,8 +328,126 @@ jobs:
           if-no-files-found: warn
 
   # ------------------------------------------------------------------
+  # USDT flag-on matrix leg (0.6.1 U4): the same build+test shape as
+  # `haskell` with the manual `usdt` flag enabled, plus the readelf
+  # manifest gate (exact providers/probes/arities on the built
+  # foreign library) and the dormant-probe overhead bench (off vs
+  # unattached through the real .so). Static gates stay in `haskell`
+  # (one lane owns them); the off half of the manifest (zero notes)
+  # is gated there too. Publication needs this leg: the release
+  # bundle builds with +usdt.
+  # ------------------------------------------------------------------
+  haskell-usdt:
+    needs: release-request
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ubuntu:26.04
+    env:
+      # Same mounted-store shape as `haskell` so the host-side cache
+      # action can persist the cabal store across runs.
+      CABAL_DIR: ${{ github.workspace }}/.cabal
+    steps:
+      - name: Base packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ghc cabal-install libgmp-dev git perl curl \
+            ca-certificates python3 systemtap-sdt-dev
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Restore OpenSSL prefix cache
+        id: ossl-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ossl-cache/openssl-4.1.0.tar.gz
+          key: openssl-4.1.0-static-v1
+      - name: Build OpenSSL prefix (cache miss only)
+        if: steps.ossl-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ossl-build ossl-cache
+          cd /tmp/ossl-build
+          OSSL_URL=https://github.com/openssl/openssl/releases/download
+          curl -fsSLO "$OSSL_URL/openssl-4.1.0/openssl-4.1.0.tar.gz"
+          OSSL_SHA=50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
+          echo "$OSSL_SHA  openssl-4.1.0.tar.gz" | sha256sum -c -
+          tar xzf openssl-4.1.0.tar.gz
+          cd openssl-4.1.0
+          perl ./Configure --prefix=/opt/openssl-4.1.0 --openssldir=/opt/openssl-4.1.0/ssl \
+            --libdir=lib no-docs no-tests threads no-shared no-pinshared linux-x86_64
+          make -j"$(nproc)"
+          make install_sw
+          /opt/openssl-4.1.0/bin/openssl version
+          tar czf "$GITHUB_WORKSPACE/ossl-cache/openssl-4.1.0.tar.gz" -C / opt/openssl-4.1.0
+      - name: Install cached OpenSSL prefix
+        if: steps.ossl-cache.outputs.cache-hit == 'true'
+        run: tar xzf ossl-cache/openssl-4.1.0.tar.gz -C /
+      - name: Restore cabal store cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cabal
+          key: cabal-store-9.10.3-${{ hashFiles('cabal.project.freeze') }}
+          restore-keys: |
+            cabal-store-9.10.3-
+      - name: Build and test (+usdt)
+        run: |
+          set -euo pipefail
+          # Same dead-mirror re-pin as `haskell` (shared cache shape).
+          if [ -f "$CABAL_DIR/config" ]; then
+            sed -i 's|https\?://objects-us-east-1\.dream\.io/hackage-mirror|https://hackage.haskell.org|g' "$CABAL_DIR/config"
+          fi
+          cabal update
+          # Zero-warning norm, same as `haskell`: fresh checkout, only
+          # .cabal cached, every package compiled here.
+          cabal build all --enable-tests --enable-benchmarks --flags=+usdt 2>&1 | tee usdt-build.log
+          rc=0
+          grep -F 'warning: [GHC-' usdt-build.log || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::GHC warnings in the +usdt build (norm is zero)"
+            exit 1
+          elif [ "$rc" -ne 1 ]; then
+            echo "::error::warning scan failed (grep exit $rc)"
+            exit "$rc"
+          fi
+          scripts/make-release.sh --check-hooks-only "$(cabal list-bin haskoki-ctl)" 'main|hs_main'
+          cabal test haskoki-client-tests haskoki-core-tests haskoki-tests haskoki-prop-tests haskoki-engine-tests haskoki-model-tests haskoki-logout-oracle-tests --flags=+usdt 2>&1 | tee usdt-test.log
+          # Storage permission cases assert only as non-root (R-04),
+          # mirroring `haskell`.
+          id -u runner >/dev/null 2>&1 || useradd -u 1001 -M runner
+          chown -R 1001 dist-newstyle "$CABAL_DIR"
+          su runner -s /bin/bash -c 'export HOME="$GITHUB_WORKSPACE" && cabal test haskoki-storage-tests --flags=+usdt --test-show-details=direct' 2>&1 | tee -a usdt-test.log
+          python3 scripts/check-test-execution.py --scan-log usdt-test.log
+      - name: USDT readelf manifest gate
+        run: |
+          set -euo pipefail
+          cabal build flib:haskoki --flags=+usdt
+          n=0; SO=""
+          for f in dist-newstyle/build/*/ghc-*/haskoki-*/f/haskoki/build/haskoki/libhaskoki.so; do
+            n=$((n+1)); SO=$f
+          done
+          test "$n" = "1" || { echo "expected exactly one flib, found $n"; exit 2; }
+          python3 scripts/check-usdt-probes.py --so "$SO"
+      - name: USDT dormant-probe bench
+        run: |
+          set -euo pipefail
+          sh scripts/test-usdt-bench.sh 2>&1 | tee usdt-bench.log
+      - name: Upload usdt logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: haskell-usdt-logs
+          path: |
+            usdt-test.log
+            usdt-build.log
+            usdt-bench.log
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------
   # Per-PR C-driver gate (F-7 / TEST1): the timed deterministic subset
-  # of the 15 container drivers, on every CI run, in an Ubuntu 26.04
+  # of the 17 container drivers, on every CI run, in an Ubuntu 26.04
   # container (same base + OpenSSL prefix + cabal cache shape as the
   # `haskell` job). Subset in run order:
   #   test-loader.sh, test-c-abi.sh (+ --negative, T-1),
@@ -807,7 +940,7 @@ jobs:
   # creates keys.
   # ------------------------------------------------------------------
   publish:
-    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]
+    needs: [release-request, haskell, haskell-usdt, bundle, c-drivers, pkcs11-fast, demo-image]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.mode == 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 45

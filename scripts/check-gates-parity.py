@@ -31,7 +31,7 @@ STEP_MARKER = "- name: Static gates (build-free)"
 KNOWN_CI_ONLY = [
     "publish", "release-request", "Build and test", "Benchmark self-test",
     "pkcs11-fast", "pkcs11-kat", "demo-image-build", "demo-image-shards",
-    "demo-image", "bundle", "c-drivers",
+    "demo-image", "bundle", "c-drivers", "haskell-usdt",
 ]
 
 
