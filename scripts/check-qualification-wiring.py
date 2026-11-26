@@ -357,7 +357,7 @@ def check_inventory(root, failures):
         by_name[name] = entry
         if name == OWNERSHIP_DRIVER and role != "qualification":
             _add(failures, "QW-INV-ROLE",
-                 f"{name}: must be role 'qualification' (outside the 19-step manifest), got {role!r}")
+                 f"{name}: must be role 'qualification' (outside the 21-step manifest), got {role!r}")
         if role not in ("container", "host", "nested", "qualification"):
             _add(failures, "QW-INV-ROLE", f"{name}: bad role: {role!r}")
         elif role in ("container", "host", "qualification"):

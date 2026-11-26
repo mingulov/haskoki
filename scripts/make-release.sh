@@ -106,7 +106,20 @@ if [ "${1:-}" = "--check-hooks-only" ]; then
   exit 0
 fi
 
-cabal build all || fail "cabal build all failed"
+# USDT probes ship in the bundle (0.6.1): the release build always
+# enables the manual `usdt` flag. sdt.h comes from the toolchain
+# image (Dockerfile); a stale image self-provisions via apt (this
+# script runs as root in its containers) and fails loudly otherwise.
+if ! echo '#include <sys/sdt.h>' | cc -E -x c - -o /dev/null >/dev/null 2>&1; then
+  echo "sys/sdt.h missing: installing systemtap-sdt-dev"
+  apt-get update || fail "apt-get update failed (need systemtap-sdt-dev)"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    systemtap-sdt-dev || fail "apt-get install systemtap-sdt-dev failed"
+  echo '#include <sys/sdt.h>' | cc -E -x c - -o /dev/null >/dev/null 2>&1 \
+    || fail "sys/sdt.h still missing after install"
+fi
+
+cabal build all --flags=+usdt || fail "cabal build all --flags=+usdt failed"
 
 SO_LIST=$(find dist-newstyle -name 'libhaskoki*.so' 2>/dev/null | sort)
 SO_COUNT=$(echo "$SO_LIST" | grep -c . || true)
@@ -128,6 +141,10 @@ mkdir -p "$OUT/lib" "$OUT/bin" "$OUT/smoke/include" "$OUT/closure" \
 
 cp "$SO" "$OUT/lib/libhaskoki.so" || fail "copy module"
 cp "$CTL" "$OUT/bin/haskoki-ctl" || fail "copy ctl"
+
+# The shipped module must carry exactly the pinned probe manifest.
+python3 scripts/check-usdt-probes.py --so "$OUT/lib/libhaskoki.so" \
+  || fail "shipped libhaskoki.so probe manifest mismatch"
 cp tests/c/release_smoke.c "$OUT/smoke/" || fail "copy smoke"
 cp spec/vendor/pkcs11.h "$OUT/smoke/include/" \
   || fail "copy smoke headers"

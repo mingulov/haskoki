@@ -7,7 +7,7 @@
 # per-driver logs plus a MANIFEST.txt. Passing here (invoked as the
 # final step of scripts/run-gates.sh) means a passing release story.
 #
-# Layout (15 container drivers + release build + 2 host drivers +
+# Layout (17 container drivers + release build + 2 host drivers +
 # 1 nested child), from scripts/driver-inventory.json:
 #   * each role=container driver runs INSIDE the pinned toolchain
 #     container (per its header recipe), with the standing hard rules
@@ -40,7 +40,7 @@
 #
 #   * role=qualification drivers (test-ownership-matrix.sh) are owned
 #     by the inventory but SKIPPED here: they belong to the
-#     qualification workflow and stay outside the 19-step manifest;
+#     qualification workflow and stay outside the 21-step manifest;
 # The driver inventory is the single source of truth AND is
 # drift-checked against scripts/test-*.sh: a new driver script fails
 # this manifest until it is classified there, and an inventory entry

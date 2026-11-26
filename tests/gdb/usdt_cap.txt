@@ -1,0 +1,57 @@
+set pagination off
+# OPENSSL_MODULES inherits from the environment (fresh prefixes need none)
+set env LD_PRELOAD=./libhaskoki-on.so
+file ./usdt_live
+break main
+run ./libhaskoki-on.so
+break -probe-stap crypto_auditing:new_context_with_data
+commands
+silent
+printf "NEW ctx=%llx parent=%lld n=%d\n", $_probe_arg0, $_probe_arg1, $_probe_arg3
+python
+import gdb
+n = int(gdb.parse_and_eval("$_probe_arg3"))
+base = int(gdb.parse_and_eval("$_probe_arg2"))
+inf = gdb.selected_inferior()
+for i in range(min(n, 8)):
+    e = base + i * 24
+    key_ptr = int.from_bytes(inf.read_memory(e, 8), 'little')
+    val_ptr = int.from_bytes(inf.read_memory(e + 8, 8), 'little')
+    size = int.from_bytes(inf.read_memory(e + 16, 8), 'little', signed=True)
+    key = inf.read_memory(key_ptr, 64).tobytes().split(b'\0')[0].decode()
+    if size == -1:
+        val = inf.read_memory(val_ptr, 128).tobytes().split(b'\0')[0].decode()
+        print(f"  {key} = str:{val}")
+    elif size == -2:
+        print(f"  {key} = word:{val_ptr}")
+    else:
+        print(f"  {key} = blob(len {size})")
+end
+continue
+end
+break -probe-stap crypto_auditing:release_context
+commands
+silent
+printf "REL ctx=%llx\n", $_probe_arg0
+continue
+end
+break -probe-stap haskoki:operation_end
+commands
+silent
+printf "END op=%llx func=%d mech=%llx mp=%d ckr=%d disp=%d mode=%d\n", $_probe_arg0, $_probe_arg1, $_probe_arg2, $_probe_arg3, $_probe_arg4, $_probe_arg5, $_probe_arg6
+continue
+end
+break -probe-stap haskoki:policy_reject
+commands
+silent
+printf "REJ op=%llx ov=%d func=%d mech=%llx mp=%d reason=%d ckr=%d\n", $_probe_arg0, $_probe_arg1, $_probe_arg2, $_probe_arg3, $_probe_arg4, $_probe_arg5, $_probe_arg6
+continue
+end
+break -probe-stap haskoki:job_state
+commands
+silent
+printf "JOB tab=%d job=%d op=%llx ov=%d phase=%d ckr=%d cv=%d\n", $_probe_arg0, $_probe_arg1, $_probe_arg2, $_probe_arg3, $_probe_arg4, $_probe_arg5, $_probe_arg6
+continue
+end
+continue
+quit

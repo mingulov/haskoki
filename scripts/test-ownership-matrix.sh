@@ -5,7 +5,7 @@
 # under a PRIVATE RTS setting -N1, -N2 and -N4, one receipt per
 # (case, RTS), in the pinned toolchain container. Role: qualification
 # (scripts/driver-inventory.json): inventoried so the drift rule owns
-# it, but outside the 19-step release manifest -- release-evidence.sh
+# it, but outside the 21-step release manifest -- release-evidence.sh
 # never runs it; the qualification workflow does.
 #
 #   Run (from the repo root):

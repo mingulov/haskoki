@@ -389,7 +389,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("rev: ", manifest)
         self.assertIn(f"image: {FAKE_IMAGE}", manifest)
         self.assertIn(f"image id: {FAKE_IMAGE_ID}", manifest)
-        self.assertIn("pass: 19 miss: 0 blocked: 0", manifest)
+        self.assertIn("pass: 21 miss: 0 blocked: 0", manifest)
         for name in ("test-loader.sh", "test-c-abi.sh --negative",
                      "make-release.sh", "test-release-install.sh",
                      "test-demo-image.sh"):
@@ -486,7 +486,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("phase compare: NOT RUN", combined)
         self.assertFalse((ev / "demo-image" / "compare.log").exists(),
                          "later phases are not run after a failure")
-        self.assertIn("pass: 18 miss: 1 blocked: 0", manifest)
+        self.assertIn("pass: 20 miss: 1 blocked: 0", manifest)
 
     # A failed build runs no test phase and resolves no image id.
     def test_failing_build_phase_skips_tests_and_inspect(self):
@@ -524,14 +524,14 @@ class ReleaseEvidenceTests(unittest.TestCase):
     # Ruling 3: a role=qualification driver is inventoried (so the
     # drift rule still owns it) but never executed by the manifest: the
     # manifest stays at 19 steps.
-    def test_qualification_role_is_skipped_and_manifest_stays_19(self):
+    def test_qualification_role_is_skipped_and_manifest_stays_21(self):
         inv = json.loads(INVENTORY.read_text())
         roles = {d["name"]: d["role"] for d in inv["drivers"]}
         self.assertEqual(roles.get("test-ownership-matrix.sh"), "qualification")
         fix = self.make()
         proc = fix.run_runner()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("pass: 19 miss: 0 blocked: 0", fix.manifest())
+        self.assertIn("pass: 21 miss: 0 blocked: 0", fix.manifest())
         self.assertNotIn("test-ownership-matrix.sh", fix.manifest())
         self.assertNotIn("test-ownership-matrix.sh",
                          (fix.root / "docker.log").read_text())
