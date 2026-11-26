@@ -196,6 +196,7 @@ import Haskoki.Runtime.Async
   , snapshotJob
   , startJob
   , startSeededJob
+  , usdtSeededReady
   , withDetachLease
   )
 import Haskoki.Runtime.Attach
@@ -1454,7 +1455,14 @@ joinClaimed dc env table req st recFunc recipe mSeed =
                   committed <- (restoreStart hook >> commitClaim dc pid tid sid uniq jid)
                     `onException` mask_ (retireFresh table jid >> rollback)
                   if committed
-                    then pure (JoinOk jid)
+                    then do
+                      -- The committed claim owns the seeded
+                      -- attachment's first ready; unseeded jobs run
+                      -- the normal claim/hold path instead.
+                      case mSeed of
+                        Just _ -> usdtSeededReady table jid
+                        Nothing -> pure ()
+                      pure (JoinOk jid)
                     else do
                       mask_ (retireFresh table jid >> rollback)
                       pure (JoinAlreadyAttached joinPolicyName)

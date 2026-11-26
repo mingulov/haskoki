@@ -228,6 +228,7 @@ library haskoki-internal
     Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Trace
+    Haskoki.Runtime.Usdt
   -- Private provider-only OpenSSL 4 raw bindings (not a public API),
   -- and the private store-handle-owned detached-job claim authority
   -- (keeps the AsyncTableId constructor out of the public API).
@@ -333,6 +334,7 @@ foreign-library haskoki
     Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Trace
+    Haskoki.Runtime.Usdt
   c-sources:
     cbits/rts_bootstrap.c
     cbits/function_tables.c
