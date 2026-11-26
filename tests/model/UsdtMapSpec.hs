@@ -203,6 +203,14 @@ keyFactPins = testGroup "key facts"
             , (AttrValue, ValBytes (BS.replicate 32 9))
             ]
       assertEqual "ed25519" (PkKeyFacts 6 5 0 256) (keyFactsOf ed)
+  , testCase "edwards engine-name params resolve" $ do
+      -- Public halves carry params but no value: the engine-name
+      -- form must resolve like the DER form.
+      let ed = mkObj
+            [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_EC_EDWARDS"))
+            , (AttrEcParams, ValBytes "Ed25519")
+            ]
+      assertEqual "ed25519-name" (PkKeyFacts 6 5 0 256) (keyFactsOf ed)
   , testCase "dsa from prime bits" $ do
       let dsa = mkObj
             [ (AttrKeyType, ValULong (mustKeyTypeId "CKK_DSA"))
