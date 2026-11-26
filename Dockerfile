@@ -57,7 +57,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # The frozen build plan (cabal.project.freeze) pins base-4.20.x, so the
 # image refuses an archive drift past GHC 9.10 with a loud error.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential ghc cabal-install libgmp-dev git \
+      build-essential ghc cabal-install libgmp-dev git systemtap-sdt-dev \
     && rm -rf /var/lib/apt/lists/* \
     && ghc --numeric-version && cabal --numeric-version \
     && if ! ghc --numeric-version | grep -q '^9\.10\.'; then \
