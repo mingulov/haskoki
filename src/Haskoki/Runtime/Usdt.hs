@@ -62,7 +62,7 @@ module Haskoki.Runtime.Usdt
   , emitJobState
   ) where
 
-import Data.Bits (shiftL, (.&.), (.|.))
+import Data.Bits (shiftL, (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
@@ -70,6 +70,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Data.Word (Word32, Word64)
 #ifndef HSK_USDT
+import Data.Bits ((.&.))
 import Data.Unique (hashUnique, newUnique)
 #endif
 
@@ -410,8 +411,14 @@ resolvePk route mech facts = case route of
   RouteEncapsulate -> pk PkEncapsulate
   RouteDecapsulate -> pk PkDecapsulate
   where
-    pk name = Just (PkRecord name facts (hashOfMechanism mech)
-      (paddingOfMechanism mech))
+    -- The registry defines hash/padding only for sign, verify,
+    -- encrypt, and decrypt contexts; generate/derive carry
+    -- algorithm/curve/group/bits only.
+    pk name
+      | name == PkGenerate || name == PkDerive =
+          Just (PkRecord name facts 0 0)
+      | otherwise = Just (PkRecord name facts (hashOfMechanism mech)
+          (paddingOfMechanism mech))
 
 isAgreementMech :: MechanismId -> Bool
 isAgreementMech mid = case mechNameOf mid of
