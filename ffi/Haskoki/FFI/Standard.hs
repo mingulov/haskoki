@@ -262,6 +262,7 @@ import Data.List (find, isPrefixOf)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import Control.Applicative ((<|>))
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
 import Data.Word (Word32, Word64, Word8)
@@ -387,7 +388,7 @@ import Haskoki.Operation
   , stagedOf
   )
 import Haskoki.Operation.Cipher (cipherUpdateSplit)
-import Haskoki.Operation.Codec (decodeMsgNext, encodeCancelInput, encodeVerifyInput)
+import Haskoki.Operation.Codec (decodeInitInput, decodeMsgNext, encodeCancelInput, encodeVerifyInput)
 import Haskoki.Operation.Message (MsgNext (..), lookupMessage)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
@@ -4185,7 +4186,13 @@ usdtEmit mMeta func mode disp ckr = do
         _ -> pure ()
       usdtEmitPolicy op True mMeta func (rvWord ckr)
       let (funcCode, mech, mechPresent) = usdtMetaFields mMeta func
-      emitOperationEnd op funcCode mech mechPresent (rvWord ckr)
+          -- Abandoned ends always carry OPERATION_NOT_INITIALIZED
+          -- (the slot is gone), matching teardown flushes; the
+          -- policy half above still sees the call's own code.
+          endCkr = if disp == DispAbandoned
+            then returnCodeToRV CKR_OPERATION_NOT_INITIALIZED
+            else rvWord ckr
+      emitOperationEnd op funcCode mech mechPresent endCkr
         disp mode
       pure ckr
 
@@ -4240,14 +4247,21 @@ usdtNonTerminalRV inst mPre sid kind func mReqMech rv
           let w = rvWord rv
               abandoned = usdtSlotStaged mPre sid kind
                 && not (usdtSlotStaged mPost sid kind)
+          -- Meta prefers the call's entry state: refusal paths
+          -- terminate the slot BEFORE this hook runs, so the post
+          -- snapshot shows a dead slot (zeros) while the op the
+          -- failed call found is the truthful context. Abandoned
+          -- ends likewise prefer retained, then pre-state: staged
+          -- bytes that die without retention still wear the slot
+          -- identity they died in, never zeros.
+          let preMeta = usdtLiveMeta mPre sid kind func
+              postMeta = usdtLiveMeta mPost sid kind func
           mMeta <- if abandoned
             then do
               mret <- atomicModifyIORef' (siUsdtRetain inst) $ \mp ->
                 let (hit, mp') = takeRetainedMeta sid kind mp in (mp', hit)
-              case mret of
-                Just meta -> pure (Just meta)
-                Nothing -> pure (usdtLiveMeta mPost sid kind func)
-            else pure (usdtLiveMeta mPost sid kind func)
+              pure (mret <|> preMeta <|> postMeta)
+            else pure (preMeta <|> postMeta)
           -- Inits report the REQUESTED mechanism (the live slot, if
           -- any, holds the incumbent op's): a refused SignInit(ECDSA)
           -- must not wear the active RSA slot's identity.
@@ -4325,7 +4339,19 @@ runCryptoSilent inst req = do
                   [F_MessageEncryptInit, F_MessageDecryptInit,
                    F_MessageSignInit, F_MessageVerifyInit]) $
             usdtDropRetained inst sid kind
-          usdtNonTerminalRV inst m sid kind (reqFunction req) Nothing rv
+          -- Message-init denials report the requested mechanism
+          -- (decoded like planMessageInit does), not the incumbent
+          -- slot's: a refused MessageSignInit(ECDSA) must not wear
+          -- an active RSA slot's identity.
+          let mReqMech = case reqFunction req of
+                f | f `elem` [F_MessageEncryptInit, F_MessageDecryptInit,
+                              F_MessageSignInit, F_MessageVerifyInit] ->
+                  case decodeInitInput (reqInput req) of
+                    Just (mech, _, _, _) -> Just mech
+                    Nothing -> Nothing
+                _ -> Nothing
+          usdtNonTerminalRV inst m sid kind (reqFunction req)
+            mReqMech rv
     _ -> pure rv
 
 -- | Silent verify-next dialogue: non-final parts are updates,
@@ -4565,8 +4591,8 @@ runMessageBuffered inst sid fam func input pOut pLen cap mode = do
           encodeCryptoCommit inst sid kind func m mode Nothing
             pOut pLen cap pc
 
-runMessageQuery :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr CULong -> IO CULong
-runMessageQuery inst sid fam func input pLen = do
+runMessageQuery :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr CULong -> UsdtEncodeMode -> IO CULong
+runMessageQuery inst sid fam func input pLen mode = do
   m <- snapshotModel (siEnv inst)
   let kind = msgFamilyKind fam
       req = Request Pkcs11_3_2 func (Just sid) Nothing input
@@ -4574,41 +4600,45 @@ runMessageQuery inst sid fam func input pLen = do
       planned = planCall (envRules (siEnv inst)) m req
       report n = encodeLength pLen n >> pure ckrOk
       -- Short legs retain staged metadata like the classical query
-      -- path (a later teardown must find it); failures report
-      -- terminally (policy denials reject, like classical queries).
+      -- path (a later teardown must find it); failures report like
+      -- the buffered path (terminally for final parts, as updates
+      -- otherwise), so finality never depends on a NULL pointer.
       retainShort = do
         mPost <- snapshotModel (siEnv inst)
-        when (usdtSlotStaged mPost sid kind) $
+        when (mode == EncodeTerminal
+              && usdtSlotStaged mPost sid kind) $
           usdtRetainFor inst mPost sid kind func
         reportCryptoQuery inst sid kind pLen
+      reportFailure path rv = case mode of
+        EncodeTerminal -> usdtTerminalRV inst m sid kind func ModeSync
+          path Nothing rv
+        EncodeUpdate -> usdtNonTerminalRV inst m sid kind func
+          Nothing rv
       execute = do
         result <- runCryptoPlanOn inst m planned
         case result of
           Left rv
             | rv == ckrBufferTooSmall -> retainShort
-            | otherwise -> usdtTerminalRV inst m sid kind func ModeSync
-                PathReject Nothing rv
+            | otherwise -> reportFailure PathReject rv
           Right pc
             | pcCode pc == CKR_BUFFER_TOO_SMALL -> retainShort
-            | pcCode pc /= CKR_OK -> usdtTerminalRV inst m sid kind func
-                ModeSync PathCommit Nothing (stdRvOf (pcCode pc))
-            | otherwise -> usdtTerminalRV inst m sid kind func ModeSync
-                PathReject Nothing ckrGeneralError
+            | pcCode pc /= CKR_OK -> reportFailure PathCommit
+                (stdRvOf (pcCode pc))
+            | otherwise -> reportFailure PathReject ckrGeneralError
   case planned of
     Reject _ -> execute
     Execute _ _ -> execute
     Immediate pc
-      | pcCode pc /= CKR_OK -> usdtTerminalRV inst m sid kind func
-          ModeSync PathReject Nothing (stdRvOf (pcCode pc))
+      | pcCode pc /= CKR_OK -> reportFailure PathReject
+          (stdRvOf (pcCode pc))
       | Just n <- matchingMessageLength fam m sid -> report n
       | messageContinuation fam func input -> report 0
-      | otherwise -> usdtTerminalRV inst m sid kind func ModeSync
-          PathReject Nothing ckrGeneralError
+      | otherwise -> reportFailure PathReject ckrGeneralError
 
 messageBytes :: StdInstance -> SessionId -> MsgFamily -> FunctionId -> ByteString -> Ptr Word8 -> Ptr CULong -> UsdtEncodeMode -> IO CULong
 messageBytes inst sid fam func frame pOut pLen mode
   | pLen == nullPtr = pure ckrArgsBad
-  | pOut == nullPtr = runMessageQuery inst sid fam func frame pLen
+  | pOut == nullPtr = runMessageQuery inst sid fam func frame pLen mode
   | otherwise = do
       cap <- fromIntegral <$> peek pLen
       runMessageBuffered inst sid fam func frame pOut pLen cap mode
@@ -4882,18 +4912,18 @@ haskokiStdDigestKey ctx h (CULong keyH) =
   withStdCtx ctx $ \inst -> withStdSession inst h $ \sid -> do
     m <- snapshotModel (siEnv inst)
     -- Key-resolution refusals terminate the digest like every other
-    -- error; policy ones also reject (ov=False: no end shares this
-    -- op — a teardown flush, if staged bytes die, mints its own).
+    -- error, then report through the single-op hook (reject plus
+    -- the abandoned end iff staged bytes die). Mirrors
+    -- 'terminateSlot' minus its flush, which would consume the
+    -- retention out from under the hook and split the op.
     let refuse code = do
-          terminateSlot inst sid SlotDigest
-          mOp <- newUsdtOpId
-          case mOp of
-            Nothing -> pure code
-            Just op -> do
-              usdtEmitPolicy op False
-                (usdtLiveMeta m sid SlotDigest F_DigestUpdate)
-                F_DigestUpdate (rvWord code)
-              pure code
+          cancelStdAsyncBinding inst sid JobDigest
+          forM_ (lookupSession m sid) $ \st ->
+            forM_ (lookupSingle (ssOps st) SlotDigest) $ \_ ->
+              publishStd inst (terminateSlotDelta st SlotDigest)
+                >> pure ()
+          usdtNonTerminalRV inst m sid SlotDigest F_DigestUpdate
+            Nothing code
     case resolveHandle m (ExternalHandle (fromIntegral keyH)) of
       Nothing -> refuse (stdRvOf CKR_KEY_HANDLE_INVALID)
       Just ost -> case lookupSession m sid of

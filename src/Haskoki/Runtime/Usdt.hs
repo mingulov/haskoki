@@ -9,9 +9,10 @@ arguments are scalars; key material, PINs, and message bodies never
 cross this module (attribute lengths and metadata only, mirroring the
 JSONL 'TraceSecret' discipline).
 
-Op ids are process-wide unique 'UsdtOpId' values with a constant low
-word (@0x48534B30@, never 0, -1, or a PID); the counter saturates
-instead of wrapping. Emission always happens after final delivery,
+Op ids are process-wide 'UsdtOpId' values with a constant low
+word (@0x48534B30@, never 0, -1, or a PID), unique within any
+2^32-1 window (the counter wraps past the top). Emission always
+happens after final delivery,
 outside STM, as the last step of the delivery path: a failure before
 emission skips the record, never fabricates one.
 
@@ -76,7 +77,8 @@ import Data.Unique (hashUnique, newUnique)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Attribute.Generated (mustKeyTypeId)
 import Haskoki.Der (curveNameOfOid, curveOidOfParams,
-  edwardsNameOfOid, montgomeryNameOfOid, montgomeryOidOfParams)
+  edwardsNameOfOid, edwardsOidOfParams, montgomeryNameOfOid,
+  montgomeryOidOfParams)
 import Haskoki.Model (Model, ObjectState (..), SessionState (..),
   lookupObject, lookupSession)
 import Haskoki.Operation.Effect (CryptoEffect (..))
@@ -540,7 +542,11 @@ keyFactsOf st = case attrULong attrs AttrKeyType of
     edwardsFacts = case attrBytesLen attrs AttrValue of
       Just 32 -> PkKeyFacts 6 5 0 256
       Just 57 -> PkKeyFacts 6 7 0 456
-      _ -> case attrBytes attrs AttrEcParams >>= edwardsNameOfOid of
+      -- Stored params are engine names on generated keys, DER OIDs
+      -- on imports: normalize either form (public halves carry no
+      -- value attribute, so this arm is their only curve source).
+      _ -> case attrBytes attrs AttrEcParams >>= edwardsOidOfParams
+        >>= edwardsNameOfOid of
         Just "Ed25519" -> PkKeyFacts 6 5 0 256
         Just "Ed448" -> PkKeyFacts 6 7 0 456
         _ -> PkKeyFacts 6 0 0 0
