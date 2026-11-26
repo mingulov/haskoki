@@ -760,12 +760,12 @@ def e2e_quoted_needs_text() -> str:
     quoted forms and attributed the successor's list to publish."""
     t = DEFAULT.read_text()
     mangled = t.replace(
-        "    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
+        "    needs: [release-request, haskell, haskell-usdt, bundle, c-drivers, pkcs11-fast, demo-image]\n",
         '    "needs": [haskell, bundle, pkcs11-fast, demo-image]\n', 1)
     pub_at = mangled.index("  publish:\n")
     nxt = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", mangled[pub_at + 10:])
     succ = ('  "zzz":\n'
-            '    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n')
+            '    needs: [release-request, haskell, haskell-usdt, bundle, c-drivers, pkcs11-fast, demo-image]\n')
     at = pub_at + 10 + nxt.start()
     return mangled[:at] + succ + mangled[at:]
 SELF_CASES = [
@@ -1116,11 +1116,13 @@ def self_test() -> int:
         # provision; both lanes install pinned uv 0.12.23 by
         # URL + SHA256 instead.
         # 41 -> 43: preflight checkout and immutable signed-assets checkpoint.
-        count_ok = ("all 52 third-party" in out) if name == "real-ci-yml" else True
+        # 52 -> 56: the haskell-usdt matrix leg (checkout, two cache
+        # restores, log upload).
+        count_ok = ("all 56 third-party" in out) if name == "real-ci-yml" else True
         ok = (rc == expect) and count_ok
         print(f"{'ok' if ok else 'FAIL'}: selftest-{name}: "
               f"rc={rc} (want {expect})"
-              + ("" if name != "real-ci-yml" else " + 43/43 count"))
+              + ("" if name != "real-ci-yml" else " + 56/56 count"))
         if not ok:
             bad += 1
             print(out)
@@ -2566,7 +2568,8 @@ def f6_only_binary_ok(docker: str) -> bool:
 # (publish runs untested); addition only adds preconditions, so
 # the assert is "at least" (superset), not equality.
 REQUIRED_PUBLISH_NEEDS = frozenset(
-    {"haskell", "bundle", "c-drivers", "pkcs11-fast", "demo-image"})
+    {"haskell", "haskell-usdt", "bundle", "c-drivers", "pkcs11-fast",
+     "demo-image"})
 
 JOBS_RE = re.compile(r"^jobs:\s*$")
 JOB_HDR_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
@@ -2807,8 +2810,8 @@ def probe_mutations(ci: str, docker: str):
                            "        # shell: bash\n", 1)
     without_shell = ci.replace("        shell: bash\n", "", 1)
     needs_sub = ci.replace(
-        "    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
-        "    needs: [haskell, bundle, pkcs11-fast, demo-image] # c-drivers\n",
+        "    needs: [release-request, haskell, haskell-usdt, bundle, c-drivers, pkcs11-fast, demo-image]\n",
+        "    needs: [release-request, haskell, haskell-usdt, bundle, pkcs11-fast, demo-image] # c-drivers\n",
         1)
     echo_sub = docker.replace(
         "         --only-binary=:all: \\\n"
@@ -2824,9 +2827,9 @@ def probe_mutations(ci: str, docker: str):
         "        for reference\"\n",
         1)
     needs_str = ci.replace(
-        "    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n",
+        "    needs: [release-request, haskell, haskell-usdt, bundle, c-drivers, pkcs11-fast, demo-image]\n",
         "    name: \"staged release\n"
-        "    needs: [release-request, haskell, bundle, c-drivers, pkcs11-fast, demo-image]\n"
+        "    needs: [release-request, haskell, haskell-usdt, bundle, c-drivers, pkcs11-fast, demo-image]\n"
         "    trailer\"\n",
         1)
     midline_echo = docker.replace(

@@ -10,7 +10,7 @@
 # all`, the benchmark self-test and an sdist build (all in the
 # pinned toolchain container), the executed test-tree join,
 # funnel-cwd (needs the built tests), and the release-evidence
-# manifest (15 container + 2 host drivers + release build +
+# manifest (17 container + 2 host drivers + release build +
 # clean-container install; nested children run in-parent).
 #
 # Known CI-only coverage (not run here): unpacked-sdist build+test
@@ -33,7 +33,7 @@
 # test-sim-threaded.sh, test-async-attached.sh,
 # test-async-detached.sh, test-control-events.sh, test-lifecycle.sh,
 # test-crypto-routed.sh, test-proxy-parity.sh. This script always runs
-# the FULL 15-driver manifest; the PR subset never replaces it.
+# the FULL 17-driver manifest; the PR subset never replaces it.
 #
 #   Run (from haskoki/, on the HOST):
 #     bash scripts/run-gates.sh [--static-only]
@@ -109,6 +109,10 @@ python3 scripts/check-rv-generated.py
 python3 scripts/check-rv-generated.py --self-test
 python3 scripts/check-exposure.py
 python3 scripts/check-exposure.py --self-test
+python3 scripts/check-usdt-codes.py
+python3 scripts/check-usdt-codes.py --self-test
+python3 scripts/check-usdt-redaction.py
+python3 scripts/check-usdt-redaction.py --self-test
 python3 scripts/check-qualification-wiring.py
 python3 scripts/check-qualification-wiring.py --self-test
 python3 scripts/check-loader-norm.py
