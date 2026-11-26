@@ -3145,77 +3145,81 @@ haskokiStdCreateObject
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr CULong
   -> IO CULong
 haskokiStdCreateObject ctx (CULong h) pFrame (CULong frameLen) phObj =
-  withStdCtx ctx $ \inst ->
-    if phObj == nullPtr
-      then pure ckrArgsBad
-      else do
-        eW <- requireSession inst (SessionId (fromIntegral h))
-        case eW of
-          Left rv -> pure rv
-          Right () -> do
-            eTmpl <- readFrame pFrame (CULong frameLen)
-            case eTmpl of
-              Left ferr -> pure (frameErrorRV ferr)
-              Right entries -> do
-                m0 <- snapshotModel (siEnv inst)
-                -- The decoded frame goes straight to the
-                -- planner — no re-encode into 'reqInput', no
-                -- re-parse on the plan path.
-                let dreq = DRCreateObject (SessionId (fromIntegral h)) entries
-                case planDecoded (envRules (siEnv inst)) m0 dreq of
-                  Immediate pc -> case decodeOneHandle (pcOutputs pc) of
-                    Nothing -> pure ckrGeneralError
-                    Just oh -> do
-                      pr <- publishCommit inst pc
-                      case pr of
-                        Left _ -> pure ckrGeneralError
-                        Right ()
-                          | pcCode pc == CKR_OK -> do
-                              poke phObj (CULong oh)
-                              pure ckrOk
-                          | otherwise -> pure (stdRvOf (pcCode pc))
-                  Reject rej -> do
-                    publishRejection inst rej
-                    pure (stdRvOf (rejCode rej))
-                  Execute _ _ -> pure ckrGeneralError
+  withStdCtx ctx $ \inst -> do
+    usdtRv <- do
+      if phObj == nullPtr
+        then pure ckrArgsBad
+        else do
+          eW <- requireSession inst (SessionId (fromIntegral h))
+          case eW of
+            Left rv -> pure rv
+            Right () -> do
+              eTmpl <- readFrame pFrame (CULong frameLen)
+              case eTmpl of
+                Left ferr -> pure (frameErrorRV ferr)
+                Right entries -> do
+                  m0 <- snapshotModel (siEnv inst)
+                  -- The decoded frame goes straight to the
+                  -- planner — no re-encode into 'reqInput', no
+                  -- re-parse on the plan path.
+                  let dreq = DRCreateObject (SessionId (fromIntegral h)) entries
+                  case planDecoded (envRules (siEnv inst)) m0 dreq of
+                    Immediate pc -> case decodeOneHandle (pcOutputs pc) of
+                      Nothing -> pure ckrGeneralError
+                      Just oh -> do
+                        pr <- publishCommit inst pc
+                        case pr of
+                          Left _ -> pure ckrGeneralError
+                          Right ()
+                            | pcCode pc == CKR_OK -> do
+                                poke phObj (CULong oh)
+                                pure ckrOk
+                            | otherwise -> pure (stdRvOf (pcCode pc))
+                    Reject rej -> do
+                      publishRejection inst rej
+                      pure (stdRvOf (rejCode rej))
+                    Execute _ _ -> pure ckrGeneralError
+    usdtPolicyOnly F_CreateObject usdtRv
 
 -- | Copy an object under a modifier frame.
 haskokiStdCopyObject
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> Ptr CULong -> IO CULong
 haskokiStdCopyObject ctx (CULong h) (CULong o) pFrame (CULong frameLen) phNew =
-  withStdCtx ctx $ \inst ->
-    if phNew == nullPtr
-      then pure ckrArgsBad
-      else do
-        eW <- requireSession inst (SessionId (fromIntegral h))
-        case eW of
-          Left rv -> pure rv
-          Right () -> do
-            eTmpl <- readFrame pFrame (CULong frameLen)
-            case eTmpl of
-              Left ferr -> pure (frameErrorRV ferr)
-              Right entries -> do
-                m0 <- snapshotModel (siEnv inst)
-                -- Decoded frame straight to the planner.
-                let dreq = DRCopyObject (SessionId (fromIntegral h))
-                      (ExternalHandle (fromIntegral o)) entries
-                case planDecoded (envRules (siEnv inst)) m0 dreq of
-                  Immediate pc -> case decodeOneHandle (pcOutputs pc) of
-                    Nothing -> pure ckrGeneralError
-                    Just oh -> do
-                      pr <- publishCommit inst pc
-                      case pr of
-                        Left _ -> pure ckrGeneralError
-                        Right ()
-                          | pcCode pc == CKR_OK -> do
-                              poke phNew (CULong oh)
-                              pure ckrOk
-                          | otherwise -> pure (stdRvOf (pcCode pc))
-                  Reject rej -> do
-                    publishRejection inst rej
-                    pure (stdRvOf (rejCode rej))
-                  Execute _ _ -> pure ckrGeneralError
+  withStdCtx ctx $ \inst -> do
+    usdtRv <- do
+      if phNew == nullPtr
+        then pure ckrArgsBad
+        else do
+          eW <- requireSession inst (SessionId (fromIntegral h))
+          case eW of
+            Left rv -> pure rv
+            Right () -> do
+              eTmpl <- readFrame pFrame (CULong frameLen)
+              case eTmpl of
+                Left ferr -> pure (frameErrorRV ferr)
+                Right entries -> do
+                  m0 <- snapshotModel (siEnv inst)
+                  -- Decoded frame straight to the planner.
+                  let dreq = DRCopyObject (SessionId (fromIntegral h))
+                        (ExternalHandle (fromIntegral o)) entries
+                  case planDecoded (envRules (siEnv inst)) m0 dreq of
+                    Immediate pc -> case decodeOneHandle (pcOutputs pc) of
+                      Nothing -> pure ckrGeneralError
+                      Just oh -> do
+                        pr <- publishCommit inst pc
+                        case pr of
+                          Left _ -> pure ckrGeneralError
+                          Right ()
+                            | pcCode pc == CKR_OK -> do
+                                poke phNew (CULong oh)
+                                pure ckrOk
+                            | otherwise -> pure (stdRvOf (pcCode pc))
+                    Reject rej -> do
+                      publishRejection inst rej
+                      pure (stdRvOf (rejCode rej))
+                    Execute _ _ -> pure ckrGeneralError
+    usdtPolicyOnly F_CopyObject usdtRv
 
 -- | Set attributes on an object from a template frame. The plan
 -- carries no outputs: success is the commit itself.
@@ -3224,32 +3228,34 @@ haskokiStdSetAttributeValue
   -> IO CULong
 haskokiStdSetAttributeValue ctx (CULong h) (CULong o) pFrame (CULong frameLen) =
   withStdCtx ctx $ \inst -> do
-    eW <- requireSession inst (SessionId (fromIntegral h))
-    case eW of
-      Left rv -> pure rv
-      Right () -> do
-        eTmpl <- readFrame pFrame (CULong frameLen)
-        case eTmpl of
-          Left ferr -> pure (frameErrorRV ferr)
-          Right entries -> do
-            m0 <- snapshotModel (siEnv inst)
-            -- Decoded frame straight to the planner.
-            let dreq = DRSetAttributeValue (SessionId (fromIntegral h))
-                  (ExternalHandle (fromIntegral o)) entries
-            case planDecoded (envRules (siEnv inst)) m0 dreq of
-              Immediate pc
-                | not (null (pcOutputs pc)) -> pure ckrGeneralError
-                | otherwise -> do
-                    pr <- publishCommit inst pc
-                    case pr of
-                      Left _ -> pure ckrGeneralError
-                      Right ()
-                        | pcCode pc == CKR_OK -> pure ckrOk
-                        | otherwise -> pure (stdRvOf (pcCode pc))
-              Reject rej -> do
-                publishRejection inst rej
-                pure (stdRvOf (rejCode rej))
-              Execute _ _ -> pure ckrGeneralError
+    usdtRv <- do
+      eW <- requireSession inst (SessionId (fromIntegral h))
+      case eW of
+        Left rv -> pure rv
+        Right () -> do
+          eTmpl <- readFrame pFrame (CULong frameLen)
+          case eTmpl of
+            Left ferr -> pure (frameErrorRV ferr)
+            Right entries -> do
+              m0 <- snapshotModel (siEnv inst)
+              -- Decoded frame straight to the planner.
+              let dreq = DRSetAttributeValue (SessionId (fromIntegral h))
+                    (ExternalHandle (fromIntegral o)) entries
+              case planDecoded (envRules (siEnv inst)) m0 dreq of
+                Immediate pc
+                  | not (null (pcOutputs pc)) -> pure ckrGeneralError
+                  | otherwise -> do
+                      pr <- publishCommit inst pc
+                      case pr of
+                        Left _ -> pure ckrGeneralError
+                        Right ()
+                          | pcCode pc == CKR_OK -> pure ckrOk
+                          | otherwise -> pure (stdRvOf (pcCode pc))
+                Reject rej -> do
+                  publishRejection inst rej
+                  pure (stdRvOf (rejCode rej))
+                Execute _ _ -> pure ckrGeneralError
+    usdtPolicyOnly F_SetAttributeValue usdtRv
 
 -- | Destroy an object.
 haskokiStdDestroyObject :: StablePtr StdInstance -> CULong -> CULong -> IO CULong
@@ -3465,12 +3471,13 @@ haskokiStdLogin
   :: StablePtr StdInstance -> CULong -> CULong -> Ptr Word8 -> CULong
   -> IO CULong
 haskokiStdLogin ctx (CULong h) (CULong userType) pPin (CULong pinLen) =
-  withStdCtx ctx $ \inst ->
-    case userType of
+  withStdCtx ctx $ \inst -> do
+    usdtRv <- case userType of
       0 -> loginAs inst "so" (Just . scSoPin)
       1 -> loginAs inst "user" scUserPin
       2 -> loginAs inst "context" scUserPin
       _ -> pure ckrUserTypeInvalid
+    usdtPolicyOnly F_Login usdtRv
   where
     loginAs :: StdInstance -> ByteString -> (ServingCredential -> Maybe ByteString) -> IO CULong
     loginAs inst who pick
@@ -3810,7 +3817,7 @@ haskokiStdInitPin
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong
   -> IO CULong
 haskokiStdInitPin ctx (CULong h) pPin (CULong pinLen) =
-  withStdCtx ctx initPinAs
+  withStdCtx ctx $ \inst -> initPinAs inst >>= usdtPolicyOnly F_InitPIN
   where
     initPinAs inst
       | pPin == nullPtr = pure ckrArgsBad
@@ -3881,7 +3888,7 @@ haskokiStdSetPin
   :: StablePtr StdInstance -> CULong -> Ptr Word8 -> CULong -> Ptr Word8
   -> CULong -> IO CULong
 haskokiStdSetPin ctx (CULong h) pOld (CULong oldLen) pNew (CULong newLen) =
-  withStdCtx ctx setPinAs
+  withStdCtx ctx $ \inst -> setPinAs inst >>= usdtPolicyOnly F_SetPIN
   where
     setPinAs inst
       | pOld == nullPtr || pNew == nullPtr = pure ckrArgsBad
@@ -4189,6 +4196,17 @@ usdtEmitPolicy op mMeta func w =
       in emitPolicyReject op mechPresent funcCode mech mechPresent
         reason w
     Nothing -> pure ()
+
+-- | Management calls (login, PIN changes, object CRUD): slotless,
+-- with no staged bytes and no pk record. The policy half fires on
+-- denials; the end claim carries the bare function identity. Callers
+-- wrap the whole handler body and pass its return code through.
+usdtPolicyOnly :: FunctionId -> CULong -> IO CULong
+usdtPolicyOnly func rv = usdtEmit Nothing func ModeSync disp rv
+  where
+    disp
+      | rv == ckrOk = DispDelivered
+      | otherwise = DispFailedPublish
 
 -- | Non-terminal calls (inits, updates, begins): silent on success;
 -- on failure, policy_reject when policy plus an abandoned end only
