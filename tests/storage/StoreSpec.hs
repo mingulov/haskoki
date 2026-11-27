@@ -292,9 +292,8 @@ testOpenFdSourceGate = do
   root <- findPackageRoot "."
   let backendDir = root </> "src/Haskoki/Runtime/Storage/SQLite"
       preflight = root </> "src/Haskoki/Runtime/Storage/Preflight.hs"
-  modFiles <- filter ((== ".hs") . takeExtension) <$> listDirectory backendDir
-  let fdFiles = (root </> "src/Haskoki/Runtime/Storage/SQLite.hs")
-        : map (backendDir </>) modFiles
+  modFiles <- sourceFilesUnder [backendDir]
+  let fdFiles = (root </> "src/Haskoki/Runtime/Storage/SQLite.hs") : modFiles
   bodies <- mapM readFile fdFiles
   pbody <- readFile preflight
   obody <- readFile (backendDir </> "Ownership.hs")

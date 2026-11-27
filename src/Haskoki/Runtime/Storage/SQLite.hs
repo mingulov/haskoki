@@ -95,10 +95,10 @@ module Haskoki.Runtime.Storage.SQLite
   ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (SomeException, bracket, bracketOnError, finally, mask, mask_, onException, throwIO, try)
+import Control.Exception (SomeException, mask, mask_, onException, throwIO, try)
 import Control.Monad (when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.List (intercalate, nub, sort)
+import Data.List (nub)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
@@ -106,8 +106,8 @@ import Data.Text (Text)
 import Data.Word (Word64)
 import qualified Database.SQLite3 as S
 import Database.SQLite3.Direct (getAutoCommit)
-import System.Posix.Files (FileStatus, deviceID, fileExist, fileID, fileSize, getFdStatus, getFileStatus, getSymbolicLinkStatus, isRegularFile, modificationTime, readSymbolicLink, removeLink, setFdSize, setFileMode)
-import System.Posix.Types (Fd, ProcessID)
+import System.Posix.Files (fileSize, getFdStatus)
+import System.Posix.Types (Fd)
 
 import Haskoki.Runtime.Attach (newClaimAuthority)
 import Haskoki.Runtime.Storage
@@ -160,7 +160,7 @@ import Haskoki.Runtime.Storage.SQLite.Snapshot
 import Haskoki.Runtime.Storage.SQLite.Conn
 import Haskoki.Runtime.Storage.SQLite.Records
 import Haskoki.Runtime.Storage.SQLite.Txn
-import Haskoki.Runtime.Trace (SpellingRefusal (..), effectiveStorePath, recheckResolved, renderSpellingRefusal)
+import Haskoki.Runtime.Trace (renderSpellingRefusal)
 import Haskoki.Types (Generation (..), ObjectId (..), SlotId (..), TokenId (..))
 -- ---------------------------------------------------------------------------
 -- Open
@@ -808,3 +808,4 @@ inspectConn db = do
     (Left err, _, _) -> pure (Left err)
     (_, Left err, _) -> pure (Left err)
     (_, _, Left err) -> pure (Left err)
+-- probe8
