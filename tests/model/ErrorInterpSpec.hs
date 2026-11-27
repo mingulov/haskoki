@@ -305,12 +305,13 @@ caseFunnel = do
         , "core/Haskoki/Operation/Dual.hs"
         , "core/Haskoki/Operation/Message.hs"
         , "core/Haskoki/Operation/Signature.hs"
-        , "core/Haskoki/Operation/KeyManagement.hs"
+        , "core/Haskoki/Operation/KeyManagement/Currency.hs"
         , "src/Haskoki/Runtime/Async.hs"
         ]
       unrouted =
         [ "core/Haskoki/Transition.hs"
         , "src/Haskoki/Engine/Driver.hs"
+        , "core/Haskoki/Operation/KeyManagement.hs"
         ]
   routedBodies <- mapM (readFile . (root </>)) routed
   unroutedBodies <- mapM (readFile . (root </>)) unrouted
