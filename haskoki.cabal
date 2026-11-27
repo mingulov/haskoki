@@ -141,6 +141,7 @@ library haskoki-core
     Haskoki.Operation.Derive
     Haskoki.Operation.Kem
     Haskoki.Operation.KeyManagement
+    Haskoki.Operation.KeyManagement.Codec
     Haskoki.Operation.KeyManagement.Codes
     Haskoki.Operation.KeyManagement.MechIds
     Haskoki.Operation.Message
