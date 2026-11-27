@@ -22,7 +22,6 @@ import Haskoki.Runtime.Storage
   , noFaults
   , zeroStats
   )
-import Haskoki.Runtime.Trace (renderSpellingRefusal)
 import Haskoki.Runtime.Storage.SQLite.Commit
 import Haskoki.Runtime.Storage.SQLite.Conn
 import Haskoki.Runtime.Storage.SQLite.Init
@@ -30,6 +29,7 @@ import Haskoki.Runtime.Storage.SQLite.Ownership
 import Haskoki.Runtime.Storage.SQLite.Snapshot
 import Haskoki.Runtime.Storage.SQLite.Statements
 import Haskoki.Runtime.Storage.SQLite.Types
+import Haskoki.Runtime.Trace (renderSpellingRefusal)
 
 -- ---------------------------------------------------------------------------
 -- Open

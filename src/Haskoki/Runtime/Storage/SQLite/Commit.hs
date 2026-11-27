@@ -52,13 +52,13 @@ import Haskoki.Runtime.Storage
   , scrubDeltaAuth
   , storeClosed
   )
-import Haskoki.Types (Generation (..), ObjectId (..), SlotId (..), TokenId (..))
 import Haskoki.Runtime.Storage.SQLite.Conn
 import Haskoki.Runtime.Storage.SQLite.Records
 import Haskoki.Runtime.Storage.SQLite.Statements
 import Haskoki.Runtime.Storage.SQLite.Stats
 import Haskoki.Runtime.Storage.SQLite.Txn
 import Haskoki.Runtime.Storage.SQLite.Types
+import Haskoki.Types (Generation (..), ObjectId (..), SlotId (..), TokenId (..))
 
 -- ---------------------------------------------------------------------------
 -- Store operations
