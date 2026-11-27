@@ -1204,6 +1204,13 @@ jobs:
     needs: bundle
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Checker 0.3.0 persists call-counter evidence synchronously per
+    # PKCS#11 call (K=1); batch snapshots so the lane is not
+    # disk-bound. A crash could lose up to K-1 tail units, always
+    # flagged incomplete (the baseline gate refuses such results
+    # loudly); both lanes run crash-free.
+    env:
+      PKCS11_CHECK_COUNTERS_FLUSH_K: "100"
     # The staged bundle was built on ubuntu:26.04 (glibc 2.42+) and
     # cannot dlopen on the older host runner: run the lane in the
     # matching userland (haskell/c-drivers precedent).
@@ -1295,6 +1302,10 @@ jobs:
     needs: [bundle, fetch-data]
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    # Same counter-batching as pkcs11-fast: the KAT lane's ~100k-op
+    # vector files are the worst case for K=1 per-call persistence.
+    env:
+      PKCS11_CHECK_COUNTERS_FLUSH_K: "100"
     # The staged bundle was built on ubuntu:26.04 (glibc 2.42+) and
     # cannot dlopen on the older host runner: run the lane in the
     # matching userland (haskell/c-drivers precedent).
