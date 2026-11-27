@@ -1296,12 +1296,20 @@ jobs:
           if-no-files-found: warn
 
   # ------------------------------------------------------------------
-  # KAT lane: full markers over the fetched vector data.
+  # KAT lane: full markers over the fetched vector data, split into
+  # 4 file-balanced shards (checker-native shard-units LPT; each
+  # shard plans deterministically and selects its own line, so no
+  # coordinator job). pkcs11-kat-merge recombines the shard
+  # reports into the single pkcs11-kat-report artifact.
   # ------------------------------------------------------------------
   pkcs11-kat:
     needs: [bundle, fetch-data]
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     # Same counter-batching as pkcs11-fast: the KAT lane's ~100k-op
     # vector files are the worst case for K=1 per-call persistence.
     env:
@@ -1367,15 +1375,34 @@ jobs:
           tar xzf release-bundle.tar.gz
           ART=$(echo dist-release/haskoki-*)
           test -f "$ART/lib/libhaskoki.so" || { echo "staged bundle broken: $ART"; exit 2; }
+      - name: Plan shard files
+        run: |
+          set -euo pipefail
+          # Cold-start weights (known-heavy files isolated, rest by
+          # median): no prior report needed, deterministic, each
+          # shard self-selects its line.
+          uv run --project pkcs11-check pkcs11-check shard-units -n 4 \
+            --testcases pkcs11-check/src/pkcs11_check/testcases \
+            --format lines > shards.txt
+          sed -n "$(( ${{ matrix.shard }} + 1 ))p" shards.txt > shard.txt
+          test -s shard.txt || { echo "empty shard plan"; exit 2; }
+          echo "shard ${{ matrix.shard }}: $(wc -w < shard.txt) files"
       - name: Run KAT lane
         run: |
+          SHARD_DIR="kat-shard${{ matrix.shard }}"
+          mkdir -p "$SHARD_DIR"
           ART=$(echo dist-release/haskoki-*)
+          # The lane's --output-file lands results.json plus its
+          # sibling report.jsonl inside the shard dir, which is
+          # exactly the merge-shards input shape.
+          # shellcheck disable=SC2086
           PKCS11_CHECK="uv run --project pkcs11-check pkcs11-check" \
-            bash scripts/ci-pkcs11-lane.sh kat "$ART" pkcs11-kat-results.json
+          PKCS11_CHECK_EXTRA_ARGS="$(cat shard.txt)" \
+            bash scripts/ci-pkcs11-lane.sh kat "$ART" "$SHARD_DIR/results.json"
       - name: Summarize results
         if: always()
         run: |
-          python3 - pkcs11-kat-results.json kat <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          python3 - "kat-shard${{ matrix.shard }}/results.json" "kat shard ${{ matrix.shard }}" <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import sys, json
           path, lane = sys.argv[1], sys.argv[2]
           try:
@@ -1392,8 +1419,94 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          name: pkcs11-kat-shard-${{ matrix.shard }}
+          path: kat-shard${{ matrix.shard }}/
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------
+  # KAT merge: recombine the 4 shard reports into the single
+  # pkcs11-kat-report artifact (same name/shape as the old
+  # single-job lane, so consumers are unaffected).
+  # ------------------------------------------------------------------
+  pkcs11-kat-merge:
+    needs: pkcs11-kat
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: ubuntu:26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Checkout framework
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mingulov/pkcs11-check
+          ref: ${{ env.FRAMEWORK_REF }}
+          path: pkcs11-check
+      - name: Base packages + uv
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl python3 libgmp10 libffi8 libnuma1
+          UV_VER=0.12.23
+          UV_SHA=9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6
+          UV_TGZ="uv-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLO "https://github.com/astral-sh/uv/releases/download/$UV_VER/$UV_TGZ"
+          echo "$UV_SHA  $UV_TGZ" | sha256sum -c -
+          tar xzf "$UV_TGZ" -C /tmp
+          install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv
+          rm -rf "$UV_TGZ" /tmp/uv-x86_64-unknown-linux-gnu
+          uv --version
+      - run: uv sync --project pkcs11-check --frozen --extra dev
+      - name: Download shard 0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkcs11-kat-shard-0
+          path: shard0
+      - name: Download shard 1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkcs11-kat-shard-1
+          path: shard1
+      - name: Download shard 2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkcs11-kat-shard-2
+          path: shard2
+      - name: Download shard 3
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkcs11-kat-shard-3
+          path: shard3
+      - name: Merge shard reports
+        run: |
+          uv run --project pkcs11-check pkcs11-check merge-shards \
+            shard0 shard1 shard2 shard3 -o merged/
+      - name: Summarize results
+        if: always()
+        run: |
+          python3 - merged/results.json kat <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import sys, json
+          path, lane = sys.argv[1], sys.argv[2]
+          try:
+              s = json.load(open(path)).get("summary", {})
+              g = s.get
+              print(f"### {lane}: {g('total', 0)} tests - "
+                    f"{g('passed', 0)} passed, {g('failed', 0)} failed, "
+                    f"{g('crashed', 0)} crashed, {g('timeout', 0)} timeout, "
+                    f"{g('xfailed', 0)} xfailed, {g('skipped', 0)} skipped")
+          except Exception as e:  # noqa: BLE001
+              print(f"### {lane}: no JSON report ({e})")
+          PY
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
           name: pkcs11-kat-report
-          path: pkcs11-kat-results.json
+          path: merged/results.json
           if-no-files-found: warn
 
 
