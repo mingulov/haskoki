@@ -203,7 +203,10 @@ library haskoki-internal
   exposed-modules:
     Haskoki.Engine.Backend
     Haskoki.Engine.Driver
+    Haskoki.Engine.Driver.Aead
+    Haskoki.Engine.Driver.AuthWrap
     Haskoki.Engine.Driver.CbcMac
+    Haskoki.Engine.Driver.Cipher
     Haskoki.Engine.Driver.Cmac
     Haskoki.Engine.Driver.Common
     Haskoki.Engine.Driver.Des3Mac
@@ -214,6 +217,7 @@ library haskoki-internal
     Haskoki.Engine.Driver.KeyGen
     Haskoki.Engine.Driver.Poly1305
     Haskoki.Engine.Driver.Result
+    Haskoki.Engine.Driver.Rsa
     Haskoki.Engine.Driver.Xcbc
     Haskoki.Engine.OpenSSL4
     Haskoki.Engine.Synthetic
@@ -323,7 +327,10 @@ foreign-library haskoki
   other-modules:
     Haskoki.Engine.Backend
     Haskoki.Engine.Driver
+    Haskoki.Engine.Driver.Aead
+    Haskoki.Engine.Driver.AuthWrap
     Haskoki.Engine.Driver.CbcMac
+    Haskoki.Engine.Driver.Cipher
     Haskoki.Engine.Driver.Cmac
     Haskoki.Engine.Driver.Common
     Haskoki.Engine.Driver.Des3Mac
@@ -334,6 +341,7 @@ foreign-library haskoki
     Haskoki.Engine.Driver.KeyGen
     Haskoki.Engine.Driver.Poly1305
     Haskoki.Engine.Driver.Result
+    Haskoki.Engine.Driver.Rsa
     Haskoki.Engine.Driver.Xcbc
     Haskoki.Engine.OpenSSL4
     Haskoki.FFI.Async

@@ -190,7 +190,6 @@ module Haskoki.Engine.Driver
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
-import Control.Applicative ((<|>))
 import Control.Monad (guard)
 import Data.Bits ((.&.), (.|.), shiftL, shiftR, testBit)
 import Data.Word (Word64, Word8)
@@ -198,8 +197,7 @@ import Data.Maybe (fromMaybe, isJust, isNothing)
 import qualified Data.Text as T
 
 import Haskoki.Engine.Backend
-  ( AeadSpec (..)
-  , BackendError (..)
+  ( BackendError (..)
   , CipherSpec (..)
   , CryptoBackend (..)
   , DigestAlg (..)
@@ -215,14 +213,28 @@ import Haskoki.Engine.Backend
   , OaepParams (..)
   , PqcSigAlg (..)
   , RsaCipherParams (..)
-  , PssParams (..)
   , SigSpec (..)
   )
+import Haskoki.Engine.Driver.Aead
+  ( aeadSpecFor
+  , isCcmMech
+  , isChachaPolyMech
+  , isGcmMech
+  , runAead
+  , runAeadMessage
+  )
+import Haskoki.Engine.Driver.AuthWrap (runAuthWrap)
 import Haskoki.Engine.Driver.CbcMac
   ( cbcmacSpecFor
   , isCbcMacMech
   , runCbcMacSign
   , runCbcMacVerify
+  )
+import Haskoki.Engine.Driver.Cipher
+  ( cipherCtor
+  , cipherSpecFor
+  , isCipherMech
+  , runCipher
   )
 import Haskoki.Engine.Driver.Cmac
   ( cmacSpecFor
@@ -263,6 +275,25 @@ import Haskoki.Engine.Driver.Hotp
   , runHotpVerify
   )
 import Haskoki.Engine.Driver.Poly1305 (isPoly1305Mech, poly1305MacFor)
+import Haskoki.Engine.Driver.Rsa
+  ( isRsaOaepMech
+  , isRsaPkcs1Mech
+  , isRsaPssMech
+  , isRsaX509Mech
+  , isRsaX931Mech
+  , recoverType1Pad
+  , recoverType1Strip
+  , rsaOaepParamsFor
+  , rsaPkcs1SpecFor
+  , rsaPssSpecFor
+  , rsaRecoverCipherFor
+  , rsaX509CipherFor
+  , rsaX509SigFor
+  , rsaX931SigFor
+  , runOaep
+  , runPkcs1
+  , runX509
+  )
 import Haskoki.Engine.Driver.Xcbc
   ( isXcbcMech
   , runXcbcSign
@@ -295,16 +326,6 @@ import Haskoki.Engine.Driver.Result
   )
 import Haskoki.Operation.Derive (hkdfDataMech, hkdfDeriveMech, maxDerivedTotal, maxXofTotal, pubPrivMech)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
-import Haskoki.Recipe.Cipher
-  ( BlockCipherRecipe (..)
-  , cipherKeyLenValid
-  , cipherParamsValid
-  , cipherRecipeFor
-  , ctrRecipeFor
-  , decodeCtrParams
-  , decodeRc2Params
-  , rc2Names
-  )
 import Haskoki.Recipe.Dh
   ( decodeDhParams
   , dhParamsValid
@@ -376,7 +397,6 @@ import Haskoki.Recipe.TlsKeyMat
   , tlsKeyMatParamsValid
   , tlsKeyMatRecipeFor
   )
-import Haskoki.Recipe.Ccm (ccmParamsValid, ccmRecipeFor, decodeCcmParams)
 import Haskoki.Recipe.Pbe (PbeKdf (..), PbeRecipe (pbeKind), decodePbeParams, maxPbeIters, pbeDesParity, pbeIvLen, pbeKdf, pbeKeyLen, pbeNeedsParity, pbeRecipeFor)
 import Haskoki.Recipe.Ssl3
   ( Ssl3Kind (..)
@@ -387,16 +407,6 @@ import Haskoki.Recipe.Ssl3
   , ssl3ParamsValid
   , ssl3RecipeFor
   )
-import Haskoki.Recipe.Chacha20
-  ( Chacha20Recipe (..)
-  , chachaParamsValid
-  , chachaRecipeFor
-  , decodeChachaPolyParams
-  , decodeChachaStreamParams
-  , encodeChachaIv
-  )
-import Haskoki.Recipe.Gcm (decodeGcmParams, gcmParamsValid, gcmRecipeFor)
-import Haskoki.Recipe.RsaOaep (decodeOaepParams, rsaOaepParamsValid, rsaOaepRecipeFor)
 import Haskoki.Recipe.WrapCompRsa
   ( WrapCompRsaRecipe (..)
   , wrapCompRsaAesBytes
@@ -407,19 +417,7 @@ import Haskoki.Recipe.WrapCompRsa
   , wrapCompRsaSplitBlob
   , wrapCompRsaUnframeHead
   )
-import Haskoki.Recipe.RsaX509 (rsaX509ParamsValid, rsaX509RecipeFor)
 import Haskoki.Recipe.RsaX509 (x509PadBlock)
-import Haskoki.Recipe.RsaX931 (rsaX931ParamsValid, rsaX931RecipeFor, rx931Name)
-import Haskoki.Recipe.RsaPkcs1
-  ( RsaPkcs1Recipe (..)
-  , rsaPkcs1ParamsValid
-  , rsaPkcs1RecipeFor
-  )
-import Haskoki.Recipe.RsaPss
-  ( decodePssParams
-  , rsaPssParamsValid
-  , rsaPssRecipeFor
-  )
 import Haskoki.Operation.Kem (kemAlgFromName, mlKemKeyPairGenMech, mlKemMech)
 import Haskoki.Operation.KeyManagement
   ( GenArgs (..)
@@ -516,7 +514,7 @@ import Haskoki.Recipe.TlsPrf
   , tlsPrfParamsValid
   , tlsPrfRecipeFor
   )
-import Haskoki.Registry (MechanismId (..), MechanismName)
+import Haskoki.Registry (MechanismId (..))
 import Haskoki.Registry.Generated
   ( ckm_RSA_PKCS
   )
@@ -870,300 +868,6 @@ isTlsPrfMech mech = case tlsPrfRecipeFor mech of
   Just _ -> True
   Nothing -> False
 
--- | Cipher dispatch: covered (mechanism, key length, params)
--- triples to backend specs (pinned against
--- 'Haskoki.Recipe.Cipher' by RecipeCipherSpec, so the table and the
--- recipe can never drift silently). The recipe validates the
--- parameters (IV geometry) and the key length; the constructor
--- below selects the width. 'Nothing' means uncovered (non-cipher
--- mechanism) or a rejected triple.
-cipherSpecFor :: MechanismId -> Int -> ByteString -> Maybe CipherSpec
-cipherSpecFor mech keyLen params =
-  blockParts <|> chachaParts
-  where
-    blockParts = do
-      r <- cipherRecipeFor mech
-      guard (cipherParamsValid r params)
-      guard (cipherKeyLenValid r keyLen)
-      -- RC2 carries the effective-bits word in the spec (the FFI
-      -- key-bits control needs it); the recipe already validated
-      -- the range and the row shape.
-      if crName r `elem` rc2Names then rc2Parts r else cipherCtor (crName r) keyLen
-    rc2Parts r = do
-      (bits, _) <- decodeRc2Params params
-      case crName r of
-        "CKM_RC2_ECB" -> pure (C_RC2_ECB bits)
-        _ -> pure (C_RC2_CBC bits)
-    -- The raw ChaCha20 stream row: 256-bit keys only; the recipe
-    -- validates the (counter, nonce) image.
-    chachaParts = do
-      r <- chachaRecipeFor mech
-      guard (chachaName r == "CKM_CHACHA20")
-      guard (chachaParamsValid r params)
-      guard (keyLen == 32)
-      pure C_CHACHA20
-
--- | A cipher mechanism regardless of triple validity (drives the
--- parameter-refusal branch: rejected triples are 'CryptoFailed',
--- never 'CryptoUnsupported').
-isCipherMech :: MechanismId -> Bool
-isCipherMech mech = isJust (cipherRecipeFor mech) || isChachaStreamMech mech
-
--- | The raw ChaCha20 stream row regardless of triple validity
--- (same refusal branch as the block ciphers).
-isChachaStreamMech :: MechanismId -> Bool
-isChachaStreamMech mech = case chachaRecipeFor mech of
-  Just r -> chachaName r == "CKM_CHACHA20"
-  Nothing -> False
-
-isRc2Mech :: MechanismId -> Bool
-isRc2Mech mech = case cipherRecipeFor mech of
-  Just r -> crName r `elem` rc2Names
-  Nothing -> False
-
--- | AEAD dispatch: covered (mechanism, key length, params)
--- triples to the backend spec plus the decoded (IV, AAD) (pinned
--- against 'Haskoki.Recipe.Gcm' by RecipeGcmSpec, so the table and
--- the recipe can never drift silently). The recipe validates the
--- parameters (caller IV, approved tag width) and the key length
--- selects the AES width; the nonce length is the IV length.
--- 'Nothing' means uncovered (non-AEAD mechanism) or a rejected
--- triple.
-aeadPartsFor :: MechanismId -> Int -> ByteString -> Maybe (AeadSpec, ByteString, ByteString)
-aeadPartsFor mech keyLen params =
-  gcmParts <|> ccmParts <|> chachaParts
-  where
-    gcmParts = do
-      r <- gcmRecipeFor mech
-      guard (gcmParamsValid r params)
-      (iv, aad, tagLen) <- decodeGcmParams params
-      alg <- case keyLen of
-        16 -> Just "AES-128-GCM"
-        24 -> Just "AES-192-GCM"
-        32 -> Just "AES-256-GCM"
-        _ -> Nothing
-      pure (AeadSpec alg (BS.length iv) tagLen, iv, aad)
-    ccmParts = do
-      r <- ccmRecipeFor mech
-      guard (ccmParamsValid r params)
-      (nonce, aad, tagLen, _) <- decodeCcmParams params
-      alg <- case keyLen of
-        16 -> Just "AES-128-CCM"
-        24 -> Just "AES-192-CCM"
-        32 -> Just "AES-256-CCM"
-        _ -> Nothing
-      pure (AeadSpec alg (BS.length nonce) tagLen, nonce, aad)
-    -- ChaCha20-Poly1305: 256-bit keys only; the recipe pins the
-    -- fixed 16-byte tag and the 12-byte nonce.
-    chachaParts = do
-      r <- chachaRecipeFor mech
-      guard (chachaName r == "CKM_CHACHA20_POLY1305")
-      guard (chachaParamsValid r params)
-      (nonce, aad, tagLen) <- decodeChachaPolyParams params
-      guard (keyLen == 32)
-      pure (AeadSpec "ChaCha20-Poly1305" (BS.length nonce) tagLen, nonce, aad)
-
--- | The backend spec of a covered AEAD triple ('aeadPartsFor'
--- without the decoded parts).
-aeadSpecFor :: MechanismId -> Int -> ByteString -> Maybe AeadSpec
-aeadSpecFor mech keyLen params =
-  (\(spec, _, _) -> spec) <$> aeadPartsFor mech keyLen params
-
--- | CCM data-length agreement: @ulDataLen@ must equal the
--- plaintext length (encrypt: the input; decrypt: the input minus
--- the tag). Short decrypt inputs defer to the authentication
--- failure in 'runAeadSealed' instead of failing here.
-ccmLengthBad :: CipherDir -> ByteString -> ByteString -> Int -> Bool
-ccmLengthBad dir params input tagLen = case decodeCcmParams params of
-  Just (_, _, _, dataLen) -> case dir of
-    DirEncrypt -> dataLen /= BS.length input
-    DirDecrypt
-      | BS.length input < tagLen -> False
-      | otherwise -> dataLen /= BS.length input - tagLen
-  Nothing -> True
-
--- | An AEAD mechanism regardless of triple validity (drives the
--- parameter-refusal branch: rejected triples are 'CryptoFailed',
--- never 'CryptoUnsupported').
-isGcmMech :: MechanismId -> Bool
-isGcmMech mech = isJust (gcmRecipeFor mech)
-
--- | A CCM mechanism regardless of triple validity (same refusal
--- branch as GCM: rejected triples are 'CryptoFailed', never
--- 'CryptoUnsupported').
-isCcmMech :: MechanismId -> Bool
-isCcmMech mech = isJust (ccmRecipeFor mech)
-
--- | The ChaCha20-Poly1305 AEAD row regardless of triple validity
--- (same refusal branch as GCM/CCM).
-isChachaPolyMech :: MechanismId -> Bool
-isChachaPolyMech mech = case chachaRecipeFor mech of
-  Just r -> chachaName r == "CKM_CHACHA20_POLY1305"
-  Nothing -> False
-
--- | Recipe row + key length onto the backend width. The CBC_PAD
--- rows share the CBC specs (the planner pads before the effect
--- input is fixed); the CTR rows map their three widths (the
--- counter block is split from the parameter image in 'runCipher');
--- Triple-DES widths collapse (the engines expand two-key material
--- to @K1||K2||K1@).
-cipherCtor :: MechanismName -> Int -> Maybe CipherSpec
-cipherCtor name keyLen
-  | name == "CKM_AES_CBC" || name == "CKM_AES_CBC_PAD" = aesCbc keyLen
-  | name == "CKM_AES_CTR" = aesCtr keyLen
-  | name == "CKM_AES_ECB" = aesEcb keyLen
-  | name == "CKM_AES_CTS" = aesCts keyLen
-  | name == "CKM_AES_CFB128" = aesCfb128 keyLen
-  | name == "CKM_AES_CFB8" = aesCfb8 keyLen
-  | name == "CKM_AES_CFB1" = aesCfb1 keyLen
-  | name == "CKM_AES_OFB" = aesOfb keyLen
-  | name == "CKM_AES_KEY_WRAP" = aesKw keyLen
-  | name == "CKM_AES_KEY_WRAP_KWP" = aesKwp keyLen
-  | name == "CKM_AES_KEY_WRAP_PAD" = aesKwp keyLen
-  -- KW-PKCS7 pads in the pure layer and executes the plain KW
-  -- spec (the optional caller IV rides the params, empty means
-  -- the default AIV).
-  | name == "CKM_AES_KEY_WRAP_PKCS7" = aesKw keyLen
-  | name == "CKM_AES_XTS" = aesXts keyLen
-  | name == "CKM_DES3_CBC" || name == "CKM_DES3_CBC_PAD" = des3 C_DES3_CBC
-  | name == "CKM_DES3_ECB" = des3 C_DES3_ECB
-  | name == "CKM_DES_ECB" = des1 C_DES_ECB
-  | name == "CKM_DES_CBC" || name == "CKM_DES_CBC_PAD" = des1 C_DES_CBC
-  | name == "CKM_DES_OFB64" = des1 C_DES_OFB64
-  | name == "CKM_DES_CFB64" = des1 C_DES_CFB64
-  | name == "CKM_DES_CFB8" = des1 C_DES_CFB8
-  | name == "CKM_CAST128_ECB" = cast128 C_CAST128_ECB
-  | name == "CKM_CAST128_CBC" || name == "CKM_CAST128_CBC_PAD" = cast128 C_CAST128_CBC
-  | name == "CKM_CAST_ECB" = castN 5 C_CAST_ECB
-  | name == "CKM_CAST_CBC" || name == "CKM_CAST_CBC_PAD" = castN 5 C_CAST_CBC
-  | name == "CKM_CAST3_ECB" = castN 10 C_CAST3_ECB
-  | name == "CKM_CAST3_CBC" || name == "CKM_CAST3_CBC_PAD" = castN 10 C_CAST3_CBC
-  | name == "CKM_IDEA_ECB" = idea16 C_IDEA_ECB
-  | name == "CKM_IDEA_CBC" || name == "CKM_IDEA_CBC_PAD" = idea16 C_IDEA_CBC
-  | name == "CKM_SEED_ECB" = idea16 C_SEED_ECB
-  | name == "CKM_SEED_CBC" || name == "CKM_SEED_CBC_PAD" = idea16 C_SEED_CBC
-  | name == "CKM_BLOWFISH_CBC" || name == "CKM_BLOWFISH_CBC_PAD" = blowfish C_BLOWFISH_CBC
-  | name == "CKM_RC4" = rc4any C_RC4
-  | name == "CKM_ARIA_CBC" || name == "CKM_ARIA_CBC_PAD" =
-      aria C_ARIA128_CBC C_ARIA192_CBC C_ARIA256_CBC
-  | name == "CKM_ARIA_ECB" = aria C_ARIA128_ECB C_ARIA192_ECB C_ARIA256_ECB
-  | name == "CKM_CAMELLIA_CBC" || name == "CKM_CAMELLIA_CBC_PAD" =
-      aria C_CAMELLIA128_CBC C_CAMELLIA192_CBC C_CAMELLIA256_CBC
-  | name == "CKM_CAMELLIA_ECB" =
-      aria C_CAMELLIA128_ECB C_CAMELLIA192_ECB C_CAMELLIA256_ECB
-  | name == "CKM_CAMELLIA_CTR" = camCtr keyLen
-  | otherwise = Nothing
-  where
-    aesCbc n = case n of
-      16 -> Just C_AES128_CBC
-      24 -> Just C_AES192_CBC
-      32 -> Just C_AES256_CBC
-      _ -> Nothing
-    aesCtr n = case n of
-      16 -> Just C_AES128_CTR
-      24 -> Just C_AES192_CTR
-      32 -> Just C_AES256_CTR
-      _ -> Nothing
-    camCtr n = case n of
-      16 -> Just C_CAMELLIA128_CTR
-      24 -> Just C_CAMELLIA192_CTR
-      32 -> Just C_CAMELLIA256_CTR
-      _ -> Nothing
-    aesEcb n = case n of
-      16 -> Just C_AES128_ECB
-      24 -> Just C_AES192_ECB
-      32 -> Just C_AES256_ECB
-      _ -> Nothing
-    aesCts n = case n of
-      16 -> Just C_AES128_CTS
-      24 -> Just C_AES192_CTS
-      32 -> Just C_AES256_CTS
-      _ -> Nothing
-    aesCfb128 n = case n of
-      16 -> Just C_AES128_CFB128
-      24 -> Just C_AES192_CFB128
-      32 -> Just C_AES256_CFB128
-      _ -> Nothing
-    aesCfb8 n = case n of
-      16 -> Just C_AES128_CFB8
-      24 -> Just C_AES192_CFB8
-      32 -> Just C_AES256_CFB8
-      _ -> Nothing
-    aesCfb1 n = case n of
-      16 -> Just C_AES128_CFB1
-      24 -> Just C_AES192_CFB1
-      32 -> Just C_AES256_CFB1
-      _ -> Nothing
-    aesOfb n = case n of
-      16 -> Just C_AES128_OFB
-      24 -> Just C_AES192_OFB
-      32 -> Just C_AES256_OFB
-      _ -> Nothing
-    aesKw n = case n of
-      16 -> Just C_AES128_KW
-      24 -> Just C_AES192_KW
-      32 -> Just C_AES256_KW
-      _ -> Nothing
-    -- CKM_AES_KEY_WRAP_PAD takes KWP semantics (the oracle runs no
-    -- distinct vectors for it and calls it the "KWP-PAD path").
-    aesKwp n = case n of
-      16 -> Just C_AES128_KWP
-      24 -> Just C_AES192_KWP
-      32 -> Just C_AES256_KWP
-      _ -> Nothing
-    -- XTS keys are double-width (data + tweak halves); there is no
-    -- 192 width (the provider has no AES-192-XTS).
-    aesXts n = case n of
-      32 -> Just C_AES128_XTS
-      64 -> Just C_AES256_XTS
-      _ -> Nothing
-    des3 spec
-      | keyLen == 16 || keyLen == 24 = Just spec
-      | otherwise = Nothing
-    des1 spec
-      | keyLen == 8 = Just spec
-      | otherwise = Nothing
-    cast128 spec
-      | keyLen >= 1 && keyLen <= 16 = Just spec
-      | otherwise = Nothing
-    castN n spec
-      | keyLen == n = Just spec
-      | otherwise = Nothing
-    idea16 spec
-      | keyLen == 16 = Just spec
-      | otherwise = Nothing
-    blowfish spec
-      | keyLen >= 4 && keyLen <= 56 = Just spec
-      | otherwise = Nothing
-    rc4any spec
-      | keyLen >= 1 && keyLen <= 255 = Just spec
-      | otherwise = Nothing
-    aria c128 c192 c256 = case keyLen of
-      16 -> Just c128
-      24 -> Just c192
-      32 -> Just c256
-      _ -> Nothing
-
--- | RSA v1.5 dispatch: covered (mechanism, params) pairs to
--- backend specs (pinned against
--- 'Haskoki.Recipe.RsaPkcs1' by RecipeRsaSpec, so the table and the
--- recipe can never drift silently). Digested rows map their stem;
--- the raw row maps to 'SigRSA_Raw'. 'Nothing' means uncovered
--- (non-RSA mechanism) or malformed parameters.
-rsaPkcs1SpecFor :: MechanismId -> ByteString -> Maybe SigSpec
-rsaPkcs1SpecFor mech params = do
-  r <- rsaPkcs1RecipeFor mech
-  guard (rsaPkcs1ParamsValid r params)
-  case rrDigestStem r of
-    Nothing -> pure SigRSA_Raw
-    Just stem -> SigRSA_PKCS1v15 <$> rsaDigest stem
-
--- | An RSA v1.5 mechanism regardless of parameter validity (drives
--- the parameter-refusal branch: malformed RSA params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isRsaPkcs1Mech :: MechanismId -> Bool
-isRsaPkcs1Mech mech = isJust (rsaPkcs1RecipeFor mech)
-
 -- | The raw RSA v1.5 row: the only v1.5 mechanism that wraps
 -- (the digest rows are signature-only).
 isRsaPkcsWrapMech :: MechanismId -> Bool
@@ -1176,138 +880,6 @@ isRsaPkcsWrapMech mech = mech == rsaPkcsMech
 isAesKwWrapMech :: MechanismId -> Bool
 isAesKwWrapMech mech =
   mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech || mech == aesKwp7Mech
-
--- | RSA-PSS dispatch: covered (mechanism, params) pairs to
--- backend specs (pinned against
--- 'Haskoki.Recipe.RsaPss' by RecipePssSpec). The recipe validates
--- the binding and bounds; the decode below re-reads the same words
--- (total on validated input). 'Nothing' means uncovered
--- (non-PSS mechanism) or malformed parameters.
-rsaPssSpecFor :: MechanismId -> ByteString -> Maybe SigSpec
-rsaPssSpecFor mech params = do
-  r <- rsaPssRecipeFor mech
-  guard (rsaPssParamsValid r params)
-  (d, m, salt) <- decodePssParams params
-  hashAlg <- rsaDigest d
-  mgfAlg <- rsaDigest m
-  pure (SigRSA_PSS (PssParams hashAlg mgfAlg salt))
-
--- | A PSS mechanism regardless of parameter validity (drives the
--- parameter-refusal branch: malformed PSS params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isRsaPssMech :: MechanismId -> Bool
-isRsaPssMech mech = isJust (rsaPssRecipeFor mech)
-
--- | RSA-OAEP dispatch: the covered (mechanism, params) pair to
--- backend parameters (pinned against
--- 'Haskoki.Recipe.RsaOaep' by RecipeOaepSpec). 'Nothing' means
--- uncovered (non-OAEP mechanism) or malformed parameters.
-rsaOaepParamsFor :: MechanismId -> ByteString -> Maybe OaepParams
-rsaOaepParamsFor mech params = do
-  r <- rsaOaepRecipeFor mech
-  guard (rsaOaepParamsValid r params)
-  (d, m, label) <- decodeOaepParams params
-  hashAlg <- rsaDigest d
-  mgfAlg <- rsaDigest m
-  pure (OaepParams hashAlg mgfAlg label)
-
--- | An OAEP mechanism regardless of parameter validity (drives the
--- parameter-refusal branch: malformed OAEP params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isRsaOaepMech :: MechanismId -> Bool
-isRsaOaepMech mech = isJust (rsaOaepRecipeFor mech)
-
--- | RSA-X.509 dispatch: the covered (mechanism, params) pair to
--- its sign/verify backend spec (pinned against
--- 'Haskoki.Recipe.RsaX509' by RecipeX509Spec). 'Nothing' means
--- uncovered (non-X.509 mechanism) or malformed parameters.
-rsaX509SigFor :: MechanismId -> ByteString -> Maybe SigSpec
-rsaX509SigFor mech params = do
-  r <- rsaX509RecipeFor mech
-  guard (rsaX509ParamsValid r params)
-  pure SigRSA_X509
-
--- | RSA-X.509 dispatch: the covered (mechanism, params) pair to
--- its cipher backend params (pinned against
--- 'Haskoki.Recipe.RsaX509' by RecipeX509Spec). 'Nothing' means
--- uncovered (non-X.509 mechanism) or malformed parameters.
-rsaX509CipherFor :: MechanismId -> ByteString -> Maybe RsaCipherParams
-rsaX509CipherFor mech params = do
-  r <- rsaX509RecipeFor mech
-  guard (rsaX509ParamsValid r params)
-  pure RsaX509
-
--- | An X.509 mechanism regardless of parameter validity (drives the
--- parameter-refusal branch: malformed X.509 params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isRsaX509Mech :: MechanismId -> Bool
-isRsaX509Mech mech = isJust (rsaX509RecipeFor mech)
-
--- | Recover dispatch: the covered (mechanism, params) pair to its
--- raw backend params (pinned against the recipe tables by
--- RecipeX509Spec and RecipeRsaSpec). 'Just RsaX509' covers the
--- two raw-RSA rows with empty parameters: X.509 runs the raw
--- op directly, while the raw PKCS row frames block-type-1 in
--- the driver ('recoverType1Pad'/'recoverType1Strip') around the
--- same raw op. The eleven PKCS digest rows and every other
--- mechanism map to 'Nothing' (never 'CryptoUnsupported' here;
--- the arms' fallthrough owns that refusal).
-rsaRecoverCipherFor :: MechanismId -> ByteString -> Maybe RsaCipherParams
-rsaRecoverCipherFor mech params
-  | isJust (rsaX509CipherFor mech params) = Just RsaX509
-  | mech == MechanismId ckm_RSA_PKCS
-  , Just r <- rsaPkcs1RecipeFor mech
-  , rsaPkcs1ParamsValid r params = Just RsaX509
-  | otherwise = Nothing
-
--- | PKCS#1 block-type-1 framing for the raw-PKCS recover arm:
--- pad @0x00 0x01 0xFF.. 0x00 data@ out to the given width
--- ('Nothing' when the data cannot fit with the mandatory
--- 8-byte filler).
-recoverType1Pad :: Int -> ByteString -> Maybe ByteString
-recoverType1Pad width input
-  | BS.length input + 11 > width = Nothing
-  | otherwise = Just
-      (BS.pack [0x00, 0x01]
-        <> BS.replicate (width - BS.length input - 3) 0xff
-        <> BS.pack [0x00]
-        <> input)
-
--- | The inverse framing: validate @0x00 0x01 0xFF.. 0x00 data@
--- and return the data ('Nothing' on any deviation, which the
--- arm reports as a mismatch verdict).
-recoverType1Strip :: ByteString -> Maybe ByteString
-recoverType1Strip raw = case BS.uncons raw of
-  Just (0x00, r1) -> case BS.uncons r1 of
-    Just (0x01, r2) ->
-      let (fill, rest) = BS.span (== 0xff) r2
-      in case BS.uncons rest of
-        Just (0x00, dat)
-          | BS.length fill >= 8 -> Just dat
-        _ -> Nothing
-    _ -> Nothing
-  _ -> Nothing
-
--- | RSA-X9.31 dispatch: the covered (mechanism, params) pair to
--- its sign/verify backend spec (pinned against
--- 'Haskoki.Recipe.RsaX931' by RecipeRsaX931Spec). The raw row
--- maps to the prehash spec (the input length selects the hash id
--- at op time); the SHA-1 row maps to the digested spec.
--- 'Nothing' means uncovered (non-X9.31 mechanism) or malformed
--- parameters.
-rsaX931SigFor :: MechanismId -> ByteString -> Maybe SigSpec
-rsaX931SigFor mech params = do
-  r <- rsaX931RecipeFor mech
-  guard (rsaX931ParamsValid r params)
-  case rx931Name r of
-    "CKM_SHA1_RSA_X9_31" -> pure (SigRSA_X931 (Just D_SHA1))
-    _ -> pure (SigRSA_X931 Nothing)
-
--- | An X9.31 mechanism regardless of parameter validity (drives the
--- parameter-refusal branch: malformed X9.31 params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isRsaX931Mech :: MechanismId -> Bool
-isRsaX931Mech mech = isJust (rsaX931RecipeFor mech)
 
 -- | ECDSA dispatch: covered (mechanism, params, key) triples to
 -- backend specs (pinned against
@@ -1535,158 +1107,6 @@ isDhMech mech = isJust (dhRecipeFor mech)
 -- re-indentation and @env@ threading between workers. The next step
 -- splits them per family.
 
-runCipher :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runCipher env dir mech key iv input = case key of
-  KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: cipher (mechanism, key length, params) rejected by the recipe"))
-    -- CTR parameters are the canonical image, not the raw
-    -- counter block: split the served 128-bit image (the recipe
-    -- already validated it; a mistimed image fails closed).
-    -- ChaCha20 parameters split the same way into the backend
-    -- (counter, nonce) framing.
-    Just spec -> case cipherImage iv of
-      Nothing -> pure (GotCryptoError (CryptoFailed
-        "driver: cipher parameter image rejected"))
-      Just cb -> case dir of
-        DirEncrypt -> toBytes <$> cipherEncrypt env spec key cb input
-        DirDecrypt -> toBytes <$> cipherDecrypt env spec key cb input
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "block ciphers need raw symmetric key bytes"))
-  where
-    cipherImage params = case ctrRecipeFor mech of
-      Just _ -> case decodeCtrParams params of
-        Just (128, cb) -> Just cb
-        _ -> Nothing
-      Nothing
-        | isChachaStreamMech mech -> case decodeChachaStreamParams params of
-            Just (counter, nonce) -> Just (encodeChachaIv counter nonce)
-            _ -> Nothing
-        -- RC2 parameters are the canonical image, not the raw
-        -- IV: split off the effective-bits word (the recipe
-        -- already validated the range and the row shape; the
-        -- spec carries the bits to the FFI control).
-        | isRc2Mech mech -> case decodeRc2Params params of
-            Just (_, splitIv) -> Just splitIv
-            _ -> Nothing
-        | otherwise -> Just params
-
--- | AEAD cipher effects: the @gcm-params/1@ image decodes to
--- (IV, AAD, tag length); the key length selects the AES width.
--- Encrypt answers ciphertext and tag concatenated; decrypt
--- splits the input at the tag length. An input shorter than
--- the tag carries no tag to verify and fails authentication
--- ('CryptoAuthFailed', never a wrong plaintext).
-runAead :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runAead env dir mech key params input = case key of
-  KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
-    Just (spec, iv, aad)
-      | isCcmMech mech, ccmLengthBad dir params input (aeadTagLen spec) ->
-          pure (GotCryptoError (CryptoFailed
-            "driver: CCM ulDataLen does not match the input length"))
-      | otherwise -> runAeadSealed env dir spec key iv aad input
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "AEAD needs raw symmetric key bytes"))
--- | AEAD message effects: the parameters decode (IV, tag length)
--- as above, but the AAD travels on the effect, not in the
--- parameters.
-runAeadMessage :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
-runAeadMessage env dir mech key params aad input = case key of
-  KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
-    Just (spec, iv, _) -> runAeadSealed env dir spec key iv aad input
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "AEAD needs raw symmetric key bytes"))
-runAeadSealed :: CryptoBackend b => BackendEnv b -> CipherDir -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
-runAeadSealed env dir spec key iv aad input = case dir of
-  DirEncrypt -> toKemPair <$> aeadEncrypt env spec key iv aad input
-  DirDecrypt
-    | BS.length input < aeadTagLen spec -> pure (GotCryptoError (CryptoAuthFailed
-        "driver: AEAD input shorter than the authentication tag"))
-    | otherwise ->
-        let (ct, tag) = BS.splitAt (BS.length input - aeadTagLen spec) input
-        in toBytes <$> aeadDecrypt env spec key iv aad ct tag
-
--- | RSA-OAEP cipher effects: the effect parameters carry the
--- @oaep-params\/1@ encoding straight to the asymmetric backend
--- entry points (encrypt takes the public half, decrypt the
--- private half; both travel as DER key material).
-runOaep :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runOaep env dir mech key params input =
-  case rsaOaepParamsFor mech params of
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: OAEP mechanism parameters rejected by the recipe"))
-    Just oparams -> case dir of
-      DirEncrypt -> toBytes <$> pkeyEncrypt env (RsaOaep oparams) key input
-      DirDecrypt -> toBytes <$> pkeyDecrypt env (RsaOaep oparams) key input
-
--- | RSA v1.5 cipher effects (wrap/unwrap only): empty
--- parameters straight to the asymmetric backend entry points
--- (encrypt takes the public half, decrypt the private half;
--- both travel as DER key material).
-runPkcs1 :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runPkcs1 env dir _mech key params input
-  | not (BS.null params) = pure (GotCryptoError (CryptoFailed
-      "driver: v1.5 wrap takes no mechanism parameters"))
-  | otherwise = case dir of
-      DirEncrypt -> toBytes <$> pkeyEncrypt env RsaPkcs1 key input
-      DirDecrypt -> toBytes <$> pkeyDecrypt env RsaPkcs1 key input
-
--- | RSA-X.509 cipher effects: empty parameters straight to the
--- asymmetric backend entry points (encrypt takes the public
--- half, decrypt the private half; both travel as DER key
--- material). The backends left-pad short inputs to the modulus
--- width and answer full k-blocks.
-runX509 :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runX509 env dir mech key params input =
-  case rsaX509CipherFor mech params of
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: X.509 mechanism parameters rejected by the recipe"))
-    Just cparams -> case dir of
-      DirEncrypt -> toBytes <$> pkeyEncrypt env cparams key input
-      DirDecrypt -> toBytes <$> pkeyDecrypt env cparams key input
-runAuthWrap :: CryptoBackend b => BackendEnv b -> Bool -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
-runAuthWrap env isWrap mech key iv aad input = case key of
-  KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: auth-wrap (mechanism, key length, params) rejected by the recipe"))
-    Just spec -> do
-      macKeyR <- macSign env hmacSpec key authWrapDomain
-      case macKeyR of
-        EngineFail err -> pure (GotCryptoError (toCryptoError err))
-        EngineOk macKey -> run (KeyBytes macKey) spec
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "auth-wrap needs raw symmetric key bytes"))
-  where
-    run macKey spec
-      | isWrap = wrapWith macKey spec
-      | badUnwrapLen = pure (GotCryptoError
-          (CryptoFailed "driver: authenticated blob length"))
-      | otherwise = unwrapWith macKey spec
-    badUnwrapLen = BS.length input < 32
-      || (BS.length input - 32) `mod` 16 /= 0
-    wrapWith macKey spec = do
-      ctR <- cipherEncrypt env spec key iv input
-      case ctR of
-        EngineFail err -> pure (GotCryptoError (toCryptoError err))
-        EngineOk ct -> do
-          tagR <- macSign env hmacSpec macKey (aad <> ct)
-          pure $ case tagR of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk tag -> GotBytes (ct <> tag)
-    unwrapWith macKey spec = do
-      let (ct, tag) = BS.splitAt (BS.length input - 32) input
-      verR <- macVerify env hmacSpec macKey (aad <> ct) tag
-      case verR of
-        EngineFail (BackendAuthFailed _) ->
-          pure (GotCryptoError (CryptoAuthFailed "auth-unwrap"))
-        EngineFail err -> pure (GotCryptoError (toCryptoError err))
-        EngineOk False ->
-          pure (GotCryptoError (CryptoAuthFailed "auth-unwrap"))
-        EngineOk True -> toBytes <$> cipherDecrypt env spec key iv ct
 -- | ECDH agreement effects: the backend agrees the full raw
 -- secret over (base key, peer public key) and the driver
 -- truncates to the planned length. A planned length past the
@@ -3207,17 +2627,6 @@ word32BE n = BS.pack
   , fromIntegral ((n `shiftR` 8) .&. 0xff)
   , fromIntegral (n .&. 0xff)
   ]
-
--- | The fixed HMAC-SHA-256 spec behind derivation and
--- authenticated wrapping.
-hmacSpec :: MacSpec
-hmacSpec = MacHMAC D_SHA256 Nothing
-
--- | Domain separation between the wrapping key's cipher use and its
--- tag use: the tag key is @HMAC(wrapKey, domain)@, never the raw
--- wrapping key.
-authWrapDomain :: ByteString
-authWrapDomain = "HASKOKI-AUTHWRAP-MAC-V1"
 
 -- | HKDF effect params (@prf:u8 mode:u8 salt@) onto the
 -- backend digest, its hash length, the stage mode, and the salt.
