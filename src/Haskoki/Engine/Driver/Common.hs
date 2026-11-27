@@ -1,6 +1,9 @@
 {- | Driver-wide shared workers: key resolution, the refusal
 shapes every family renders, raw-bytes extraction, the recipe
-digest and PQC level stems, and pub-from-priv extraction.
+digest and PQC level stems, pub-from-priv extraction, and the
+byte utilities shared across families (xor and the constant-time
+compare reach PBE, TLS, SSL3 and ByteOps; the block helpers are
+shared by the MAC families).
 
 Below all 'Haskoki.Engine.Driver.*' family modules: families import
 this (and 'Haskoki.Engine.Driver.Result'); nothing here imports a
@@ -17,9 +20,18 @@ module Haskoki.Engine.Driver.Common
   , runPubFromPriv
   , rsaDigest
   , levelOfName
+
+  , xorB
+  , padBlock
+  , chunksOf
+  , zeroPad
+  , driverCtEq
   ) where
 
+import Data.Bits ((.|.), xor)
+import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import Data.List (unsnoc)
 import qualified Data.Text as T
 
 import Haskoki.Engine.Backend
@@ -113,3 +125,36 @@ runPubFromPriv env key = do
 
 unsupported :: CryptoEffect -> CryptoResult
 unsupported e = GotCryptoError (CryptoUnsupported "driver" (show e))
+
+-- | Byte-wise xor (block pairs by construction).
+xorB :: ByteString -> ByteString -> ByteString
+xorB a b = BS.pack (BS.zipWith xor a b)
+
+-- | CMAC 10* padding of a short last block.
+padBlock :: Int -> ByteString -> ByteString
+padBlock blk lastB =
+  lastB <> BS.singleton 0x80 <> BS.replicate (blk - BS.length lastB - 1) 0
+
+-- | Split into full-or-final blocks.
+chunksOf :: Int -> ByteString -> [ByteString]
+chunksOf n bs
+  | BS.null bs = []
+  | otherwise = let (h, t) = BS.splitAt n bs in h : chunksOf n t
+
+-- | Split into zero-padded full blocks (empty input yields one
+-- zero block, so CBC-MAC over empty input is well-defined).
+zeroPad :: Int -> ByteString -> [ByteString]
+zeroPad n bs = case chunksOf n bs of
+  [] -> [BS.replicate n 0]
+  blks -> case unsnoc blks of
+    Just (pre, lst)
+      | BS.length lst == n -> blks
+      | otherwise -> pre ++ [lst <> BS.replicate (n - BS.length lst) 0]
+    Nothing -> [BS.replicate n 0]
+
+-- | Constant-time byte equality for driver-level MAC verification
+-- (mirrors the backend-local compares).
+driverCtEq :: ByteString -> ByteString -> Bool
+driverCtEq a b =
+  BS.length a == BS.length b
+    && foldl' (\acc (x, y) -> acc .|. (x `xor` y)) 0 (BS.zip a b) == 0
