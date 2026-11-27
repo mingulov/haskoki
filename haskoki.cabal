@@ -203,6 +203,9 @@ library haskoki-internal
   exposed-modules:
     Haskoki.Engine.Backend
     Haskoki.Engine.Driver
+    Haskoki.Engine.Driver.Common
+    Haskoki.Engine.Driver.KeyGen
+    Haskoki.Engine.Driver.Result
     Haskoki.Engine.OpenSSL4
     Haskoki.Engine.Synthetic
     Haskoki.Ctl
@@ -311,6 +314,9 @@ foreign-library haskoki
   other-modules:
     Haskoki.Engine.Backend
     Haskoki.Engine.Driver
+    Haskoki.Engine.Driver.Common
+    Haskoki.Engine.Driver.KeyGen
+    Haskoki.Engine.Driver.Result
     Haskoki.Engine.OpenSSL4
     Haskoki.FFI.Async
     Haskoki.FFI.Decode
