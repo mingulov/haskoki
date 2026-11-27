@@ -111,6 +111,7 @@ import Haskoki.Types
 spec :: TestTree
 spec = testGroup "message operations"
   [ testCase "two messages under one outer context, then outer final" caseTwoMessages
+  , testCase "null recall re-reports staged length" caseNullRecallReReports
   , testCase "message init conflicts and arg shape" caseMessageInitConflicts
   , testCase "invalid ordering rejected without mutation" caseMessageOrdering
   , testCase "message error keeps the outer context" caseMessageErrorKeepsOuter
@@ -314,6 +315,25 @@ caseTwoMessages = do
   assertEqual "outer final ok" CKR_OK (soCode final)
   assertEqual "outer final frees the slot" [] (activeSlots ops7)
   assertEqual "message gone with the slot" Nothing (lookupMessage ops7 SlotEncrypt)
+
+caseNullRecallReReports :: IO ()
+caseNullRecallReReports = do
+  let (ops0, i0) =
+        initMessageOperation MsgEncrypt testEnv emptySessionOps testSession encryptArgs
+  assertEqual "message init ok" CKR_OK (ioCode i0)
+  let one = MsgOneShotCipher (BS.replicate 16 2) BS.empty "second"
+      (ops1, _, o1) = planMessageOneShot ops0 testSession MsgEncrypt "ct" one
+  assertEqual "one-shot plans ok" CKR_OK (soCode o1)
+  case soEffects o1 of
+    [fx] -> do
+      let (opsS, short) = finishMessage F_EncryptMessage MsgEncrypt ops1 SlotEncrypt "ct"
+            (runMessageEffect fx) (IntentBuffer 2)
+      assertEqual "short buffer stages" CKR_BUFFER_TOO_SMALL (soCode short)
+      assertEqual "short keeps the outer slot" [SlotEncrypt] (activeSlots opsS)
+      let (opsQ, requ) = retryMessageStaged MsgEncrypt opsS SlotEncrypt IntentNull
+      assertEqual "null recall re-reports" CKR_BUFFER_TOO_SMALL (soCode requ)
+      assertEqual "null recall keeps outer slot" [SlotEncrypt] (activeSlots opsQ)
+    other -> assertFailure ("expected one one-shot effect, got " ++ show other)
 
 -- ---------------------------------------------------------------------------
 -- Init conflicts and argument shape

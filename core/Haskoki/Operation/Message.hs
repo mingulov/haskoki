@@ -84,7 +84,7 @@ import Haskoki.Operation.Cipher (pkcs7Pad, pkcs7Unpad)
 import Haskoki.Output (OpDisposition (..), OutputPlan (..), ResultDisposition (..), planOneShot)
 import Haskoki.Recipe.Gcm (gcmParamsValid, gcmRecipeFor)
 import Haskoki.Registry.Types (MechanismId)
-import Haskoki.Request (FunctionId (..), OutputIntent)
+import Haskoki.Request (FunctionId (..), OutputIntent (..))
 import Haskoki.Types (ReturnCode (..))
 
 -- ---------------------------------------------------------------------------
@@ -886,7 +886,8 @@ runFinishVerify fid ops ms name result = case stagedOf (msCommon ms) of
 
 -- | Retry a staged message output with a fresh intent. Success
 -- concludes the message (counted) and keeps the outer context; a
--- still-short buffer keeps the staged bytes again.
+-- still-short buffer keeps the staged bytes again. A null-intent
+-- re-query re-reports the staged length and keeps everything.
 retryMessageStaged
   :: MsgFamily -> SessionOps -> SlotKind -> OutputIntent
   -> (SessionOps, StepOutcome)
@@ -903,8 +904,19 @@ retryMessageStaged fam ops kind intent
           let (st', plan) = planOneShot (stState staged)
                 (stName staged) (stBytes staged) intent
               sc = msCommon ms
-          in case opCode plan of
-            CKR_OK ->
+          in case (intent, opCode plan) of
+            -- A re-query re-reports the staged length and keeps the
+            -- slot; only a fitting buffer completes the retry.
+            -- Mirrors the classic 'retryStaged' IntentNull arm, but
+            -- the outer message context survives (storeMessage,
+            -- never removeSingle).
+            (IntentNull, _) ->
+              ( storeMessage ops
+                  (ms { msCommon = setStaged (Just (staged { stState = st' })) sc })
+              , StepOutcome CKR_BUFFER_TOO_SMALL [] (Just plan)
+                  ["message re-query re-reports the staged length"] [] Nothing
+              )
+            (_, CKR_OK) ->
               ( storeMessage ops
                   (deliverMessage (ms { msCommon = resetToBuffered sc }))
               , StepOutcome CKR_OK [] (Just plan) ["message retry complete"] [] Nothing
