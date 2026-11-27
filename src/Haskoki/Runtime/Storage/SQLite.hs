@@ -141,15 +141,11 @@ import Haskoki.Runtime.Storage
   , StoreStats (..)
   , StoredDoc (..)
   , TokenRecord (..)
-  
   , checkLimits
   , checkSlotUnique
   , checkTokenRefs
   , coverDeletedJobIds
-  
-  
   , decodeHex16
-  
   , decodeTokenRecord
   , defaultLimits
   , encodeCredentialRecord
@@ -158,10 +154,7 @@ import Haskoki.Runtime.Storage
   , encodeJobRecord
   , encodeObjectRecord
   , encodeTokenRecord
-  
   , jobIdCounterKey
-  
-  
   , noFaults
   , reconcileCredentialsReload
   , reconcileJobsReload
@@ -178,11 +171,9 @@ import Haskoki.Runtime.Storage.SQLite.Records
 import Haskoki.Runtime.Storage.SQLite.Txn
 import Haskoki.Runtime.Trace (SpellingRefusal (..), effectiveStorePath, recheckResolved, renderSpellingRefusal)
 import Haskoki.Types (Generation (..), ObjectId (..), SlotId (..), TokenId (..))
-
 -- ---------------------------------------------------------------------------
 -- Open
 -- ---------------------------------------------------------------------------
-
 -- | Open the SQLite store at the given path, taking single-writer
 -- ownership. Any failure releases ownership before returning; an
 -- async exception during open releases the lock and then
@@ -190,7 +181,6 @@ import Haskoki.Types (Generation (..), ObjectId (..), SlotId (..), TokenId (..))
 -- Default limits, no fault injection.
 openSQLiteStore :: FilePath -> IO (Either StoreError Store)
 openSQLiteStore path = openSQLiteStoreWith False path defaultLimits noFaults
-
 -- | Open with explicit limits (always enforced) and an
 -- explicit fault injector. The whole acquisition runs masked;
 -- the only interruptible points are the flock-retry delays
@@ -219,7 +209,6 @@ openSQLiteStoreWith
   :: Bool -> FilePath -> StoreLimits -> FaultInjector -> IO (Either StoreError Store)
 openSQLiteStoreWith allowEnv path limits inj =
   openSQLiteStoreWithHooks allowEnv path limits inj noSQLiteTestHooks
-
 -- | 'openSQLiteStoreWith' plus test-only connection hooks
 -- ('SQLiteTestHooks'); the storage suites use it to stimulate
 -- real statement failures on the store's own connection. The
@@ -260,7 +249,6 @@ openSQLiteStoreWithHooks allowEnv path0 limits inj hooks = do
               ("dangling symlink " ++ path0 ++ " (target " ++ path
                 ++ " is missing); refusing to create a store at a link target")))
             _ -> openSQLiteStoreResolved allowEnv path limits inj hooks
-
 -- | 'openSQLiteStoreWithHooks' on an already-resolved path.
 openSQLiteStoreResolved
   :: Bool -> FilePath -> StoreLimits -> FaultInjector -> SQLiteTestHooks
@@ -330,7 +318,6 @@ openSQLiteStoreResolved allowEnv path limits inj hooks = mask $ \restore -> do
                         }
                   pure (Right (mkStore conn)))
                 `onException` closeQuiet db
-
 -- | The @\/proc@ root for owner-liveness checks. Honoured only
 -- with the env-seam opt-in (@True@): @HASKOKI_PROC_ROOT@ overrides
 -- (tests mask liveness deterministically); empty or unset means
@@ -343,11 +330,9 @@ procRootFromEnv False = pure "/proc"
 procRootFromEnv True = do
   mRoot <- lookupEnv "HASKOKI_PROC_ROOT"
   pure (case mRoot of Just r | not (null r) -> r; _ -> "/proc")
-
 -- ---------------------------------------------------------------------------
 -- Ownership
 -- ---------------------------------------------------------------------------
-
 -- | Flags for every lock and guard fd: close-on-exec is requested
 -- at creation (@O_CLOEXEC@), never set afterwards. A separate
 -- @fcntl(F_SETFD)@ after the open leaves a window in which a
@@ -358,14 +343,12 @@ procRootFromEnv True = do
 -- writer.
 guardFlags :: OpenFileFlags
 guardFlags = defaultFileFlags { cloexec = True, nonBlock = True, nofollow = True }
-
 -- | All bytes of a file, read through a 'guardFlags' descriptor. A GHC
 -- 'Handle' open ('readFile', 'BS.readFile') does not set O_CLOEXEC, so
 -- a concurrent fork+exec could inherit it.
 readFileCloexec :: FilePath -> IO ByteString
 readFileCloexec p = bracket open hClose BS.hGetContents
   where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
-
 -- | A lock sidecar's pid line through a 'guardFlags' descriptor: a
 -- single raw 64-byte read (lock files only ever hold @pid\n@, so a
 -- bounded read cannot be swamped), and the pid line must be complete
@@ -378,7 +361,6 @@ readLockBytes :: FilePath -> IO ByteString
 readLockBytes p = bracket (openFd p ReadOnly guardFlags) closeFd $ \fd -> do
   bs <- fdRead fd 64
   if BS.elem 10 bs then pure bs else ioError (userError ("lock file has no pid line: " ++ p))
-
 -- | Why a lock read failed: an empty file (a crash between create
 -- and pid write, or a power loss leaving a zero-length file), a
 -- small readable file without a pid line (complete contents, so
@@ -388,7 +370,6 @@ readLockBytes p = bracket (openFd p ReadOnly guardFlags) closeFd $ \fd -> do
 -- the last fails closed without it, preserving the oversized and
 -- permission-denied refusals.
 data LockReadFailure = LockEmpty | LockSmallUnparsable | LockUnreadable deriving (Eq, Show)
-
 -- | Classify a 'readLockBytes' failure from the file size and a
 -- bounded re-read. Runs only on the failure path; the re-read is
 -- capped by the size check, so it cannot be swamped.
@@ -405,7 +386,6 @@ classifyLockReadFailure p = do
           pure (case eFull of
             Right full | not (BS.elem 10 full) -> LockSmallUnparsable
             _ -> LockUnreadable)
-
 -- | lstat without following the final component and without opening:
 -- missing files report 'Nothing' (callers keep their create/absent
 -- paths); present files report their status for a regular-file
@@ -419,7 +399,6 @@ lstatOpt path = do
       | isDoesNotExistError err -> Right Nothing
       | otherwise -> Left (show err)
     Right st -> Right (Just st)
-
 -- | Refuse anything but a regular file or a missing path (missing
 -- paths keep their downstream report): lstat only, never opened, so
 -- a FIFO cannot hang the caller.
@@ -430,7 +409,6 @@ requireRegularStore path = do
     Right (Just st) | not (isRegularFile st) ->
       Left (StoreIO ("not a regular file: " ++ path))
     _ -> Right ()
-
 -- | Take single-writer ownership via an O_EXCL sidecar lock carrying
 -- our pid. An existing lock is taken over when the kernel flock
 -- confirms no live holder — the same pid, a live pid, an
@@ -468,7 +446,6 @@ takeOwnership dbPath lockPath procRoot attempts
                 Left _ -> pure (Left (StoreIO
                   ("store lock cannot be created: " ++ lockPath
                     ++ " (" ++ ioeGetErrorString e ++ ")")))
-
 -- | Claim a freshly created lock file: take the kernel lock before
 -- writing our pid, and keep the fd open. A lost race retries
 -- (bounded); the retry then sees the winner's live pid and refuses.
@@ -486,7 +463,6 @@ claimFresh dbPath lockPath procRoot attempts fd pid = do
     else do
       _ <- tryIOError (fdWrite fd (show pid ++ "\n")) `onException` closeQuietFd fd
       pure (Right fd)
-
 -- | Diagnose an existing lock: the kernel flock is the authority
 -- for the same pid, a live pid, an unknowable pid, an unparsable
 -- pid, and an empty file — a free lock is taken over and the pid
@@ -524,20 +500,17 @@ inspectLock dbPath lockPath procRoot pid attempts = do
             ++ " but owner liveness is unknowable (/proc unreadable); refusing second writer: " ++ dbPath)
           PidDead -> confirmTakeover dbPath lockPath procRoot pid attempts
       _ -> takeOver ("store is locked by an unknown owner: " ++ lockPath)
-
 -- | Owner-liveness verdict: alive, provably dead (sufficient
 -- death evidence), or unknowable (anything else: masked,
 -- unreadable, or partially hidden proc). Unknowable fails closed
 -- while the kernel lock is held; a free lock proceeds to takeover
 -- (which still needs a writable sidecar).
 data PidLiveness = PidAlive | PidDead | PidUnknown deriving (Eq, Show)
-
 -- | One @\/proc@ entry probe: present, cleanly absent (@ENOENT@),
 -- or unknowable (any other error: permission denied, I\/O error,
 -- not a directory, ...). Unlike 'fileExist', no probe error ever
 -- escapes to the caller.
 data ProcProbe = ProbePresent | ProbeAbsent | ProbeUnknown deriving (Eq, Show)
-
 probeProc :: FilePath -> IO ProcProbe
 probeProc entry = do
   eSt <- tryIOError (getFileStatus entry)
@@ -546,7 +519,6 @@ probeProc entry = do
     Left err
       | isDoesNotExistError err -> pure ProbeAbsent
       | otherwise -> pure ProbeUnknown
-
 -- | Pure liveness verdict from probe results (exported so the
 -- table is deterministically unit-testable; 'pidLiveness' is its
 -- only production caller). Death needs sufficient evidence:
@@ -576,7 +548,6 @@ livenessFromProbes selfProbe meProbe mParentProbe ownerProbe
       ProbePresent -> PidAlive
       ProbeAbsent -> PidDead
       ProbeUnknown -> PidUnknown
-
 -- | Pid liveness via @\/proc@ (Linux-only, matching the supported
 -- loader policy): no signal is ever sent. Takeover needs
 -- sufficient death evidence (see 'livenessFromProbes'):
@@ -609,7 +580,6 @@ pidLiveness procRoot ownerPid = do
           pure (livenessFromProbes selfProbe meProbe mParentProbe ownerProbe)
         _ -> pure PidUnknown
     _ -> pure PidUnknown
-
 -- | True exactly when a pid reads dead ('PidDead') through the
 -- consulted @\/proc@ view: the real @\/proc@ by default, the
 -- @HASKOKI_PROC_ROOT@ view only with the env-seam opt-in. Hiding
@@ -622,7 +592,6 @@ pidIsDead allowEnv pid = do
   procRoot <- procRootFromEnv allowEnv
   live <- pidLiveness procRoot pid
   pure (live == PidDead)
-
 -- | Take over an apparently-stale lock: the kernel lock confirms
 -- staleness (a live-but-hidden owner still holds it, and we refuse),
 -- and an fstat-vs-path revalidation closes the unlink race (a lock
@@ -635,7 +604,6 @@ confirmTakeover dbPath lockPath procRoot pid attempts =
   confirmTakeoverWithReason dbPath lockPath procRoot pid attempts
     ("store lock is held by a live owner (kernel lock held on "
       ++ lockPath ++ "); refusing second writer: " ++ dbPath)
-
 -- | Like 'confirmTakeover', but a held kernel lock refuses with the
 -- caller's reason (the @\/proc@ verdict for the message text) rather
 -- than the generic kernel-held line. A free lock is taken over
@@ -676,7 +644,6 @@ confirmTakeoverWithReason dbPath lockPath procRoot pid attempts heldMsg = do
                     _ <- tryIOError (setFdSize fd 0)
                     tryIOError (fdWrite fd (show pid ++ "\n"))) `onException` closeQuietFd fd
                   pure (Right fd)
-
 -- | Take the database-anchored kernel guard on an open database
 -- fd: an exclusive non-blocking @flock(2)@ held for the store's
 -- lifetime. A replacement sidecar lock is a different inode whose
@@ -694,7 +661,6 @@ takeDbGuard dbPath fd = do
       closeQuietFd fd
       pure (Left (StoreSecondWriter ("store database is locked by a live owner (kernel lock held on "
         ++ dbPath ++ "); refusing second writer: " ++ dbPath)))
-
 -- | Ensure the database file exists and take the database-anchored
 -- kernel guard BEFORE any SQLite work, on both creation paths: a
 -- missing file is created (@O_CREAT|O_EXCL@) and guarded here, so
@@ -731,15 +697,12 @@ ensureDbGuard dbPath = mask_ (go (3 :: Int))
                           | isAlreadyExistsError e2 -> go (n - 1)
                           | otherwise -> pure (Left (StoreIO ("store database cannot be created: " ++ dbPath)))
                   | otherwise -> pure (Left (StoreIO ("store database cannot be guarded: " ++ dbPath)))
-
 -- | @flock(2)@ constants (Linux ABI; this backend is Linux-only, as
 -- is the @\/proc@ liveness check above).
 lockEx, lockNb :: CInt
 lockEx = 2 -- LOCK_EX: exclusive
 lockNb = 4 -- LOCK_NB: non-blocking
-
 foreign import ccall unsafe "sys/file.h flock" c_flock :: CInt -> CInt -> IO CInt
-
 -- | Try an exclusive non-blocking kernel lock on a guard fd,
 -- retrying briefly: a conflicting lock may be a
 -- microsecond-transient inheritance (a forked child between fork
@@ -757,11 +720,9 @@ tryFlock fd = go (0 :: Int)
       if ok || n >= 9
         then pure ok
         else threadDelay 5000 >> go (n + 1)
-
 -- ---------------------------------------------------------------------------
 -- Init and verify
 -- ---------------------------------------------------------------------------
-
 -- | Open the database file, configure it, and initialize or verify
 -- the schema. Runs under the caller's mask (see
 -- 'openSQLiteStoreWith'), whose @restore@ this takes: the only
@@ -812,7 +773,6 @@ openAndInit allowEnv restore guardFd path created = do
         Right ()
           | fresh -> initSchema db guardFd dbPath
           | otherwise -> verifyExisting db dbPath
-
 -- | Test seam: when @HASKOKI_OPEN_PAUSE@ is a nonempty value AND
 -- @HASKOKI_OPEN_PAUSE_PATH@ names THIS open's database path
 -- (exact string match) AND this open created the file, write a
@@ -853,14 +813,12 @@ pauseForFreshCreate True dbPath = do
       _ <- tryIOError (writeFile (dir ++ "/polls") (show nPolls ++ "\n"))
       pure ()
     _ -> pure ()
-
 -- | Wait for the @go@ handshake file: poll @fileExist@ through
 -- 'waitForPoll', reporting how many polls ran. The count is part
 -- of the contract: a single-check reimplementation returns a count
 -- of one, which the composition test rejects.
 waitForGoFile :: FilePath -> Int -> IO (Bool, Int)
 waitForGoFile goFile maxPolls = waitForPoll (fileExist goFile) maxPolls
-
 -- | Poll a @go@-style probe every 10ms, up to @maxPolls@ times.
 -- Returns whether it fired paired with the polls performed: True
 -- the moment it fires, (False, 0) without probing on a
@@ -878,7 +836,6 @@ waitForPoll probe maxPolls = go 0
       done <- probe
       let n' = n + 1
       if done then pure (True, n') else threadDelay 10000 >> if n' >= maxPolls then pure (False, n') else go n'
-
 -- | Configure one connection: foreign keys, bounded busy timeout,
 -- rollback journal, durable sync — then verify the durable modes
 -- read back as set.
@@ -896,7 +853,6 @@ configure db = do
       , "PRAGMA synchronous = EXTRA"
       , "PRAGMA busy_timeout = 5000"
       ]
-
 -- | Verify the durable modes were honored (a database that
 -- silently runs an unsafe mode is a misconfiguration, not a store).
 verifyPragmas :: S.Database -> IO (Either StoreError ())
@@ -912,7 +868,6 @@ verifyPragmas db = do
     (_, Left err, _) -> pure (Left err)
     (_, _, Left err) -> pure (Left err)
     _ -> pure (Left (StoreIO "sqlite pragmas returned unexpected rows"))
-
 -- | Transactionally initialize a fresh database from the schema.
 -- On failure the partial file is removed (best effort) so a retry
 -- sees a fresh path, never a half-schema — but ONLY while the path
@@ -941,7 +896,6 @@ initSchema db guardFd path = do
             Right () -> do
               _ <- tryIOError (setFileMode path 0o600)
               pure (Right db)
-
 -- | Best-effort removal of a failed-init database, only while the
 -- path still names our guarded inode. Sound: we hold the exclusive
 -- guard on that inode, and any live owner holds a guard on the
@@ -953,7 +907,6 @@ removeIfOurs guardFd path = do
   when ours $ do
     _ <- tryIOError (removeLink path)
     pure ()
-
 -- | Judge an existing file's schema from its table names and its
 -- @schema_version@ rows. Shared by the serving open and the
 -- read-only snapshot, so both judge a file identically. 'Right' is
@@ -976,7 +929,6 @@ classifySchema path names eRows
         _ -> Left (StoreCorrupt (path ++ ": corrupt store metadata"))
   where
     hasCreds = "credentials" `elem` names
-
 -- | Verify an existing database: only the current schema serves.
 -- An older schema refuses as migration-required and anything else
 -- refuses as unsupported or corrupt, in every case WITHOUT writing a
@@ -996,7 +948,6 @@ verifyExisting db path = do
         Right v
           | v == sqliteSchemaVersion -> Right db
           | otherwise -> Left (StoreNeedsMigration v sqliteSchemaVersion)
-
 -- | The schema (mirrors @spec\/storage-schema.sql@).
 schemaStatements :: [Text]
 schemaStatements =
@@ -1011,7 +962,6 @@ schemaStatements =
   , "INSERT INTO store_meta(key, value) VALUES ('schema_version', '3')"
   , "INSERT INTO store_meta(key, value) VALUES ('next_persistent_job_id', '0000000000000001')"
   ]
-
 -- | The @credentials@ table: one provisioned credential row per
 -- token, owned by its token (@ON DELETE CASCADE@, mirroring the
 -- object and job tables). Shared by fresh schemas and the explicit
@@ -1019,11 +969,9 @@ schemaStatements =
 createCredentialsTable :: Text
 createCredentialsTable =
   "CREATE TABLE credentials (token_id TEXT PRIMARY KEY NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
-
 -- ---------------------------------------------------------------------------
 -- Store operations
 -- ---------------------------------------------------------------------------
-
 -- | Build the 'Store' record over an open connection. Every
 -- world-touching operation runs under the connection guard and
 -- reports the closed handle unless open; quarantine and stats
@@ -1045,7 +993,6 @@ mkStore conn = Store
   , storeLoadMeta = withLive conn Left loadMeta
   , storeClaims = sqClaims conn
   }
-
 -- | The commit protocol: closed-handle refusal, quarantine
 -- refusal, pre-commit validation (limits, expected revisions),
 -- pre-commit fault rollback, then the masked durable section (one
@@ -1057,7 +1004,6 @@ mkStore conn = Store
 protocolDelta :: SQLiteConn -> StoreDelta -> IO CommitResult
 protocolDelta conn delta =
   withLive conn NotCommitted (\db -> protocolLocked conn db delta)
-
 -- | Token reset: the expected generation must match the current
 -- one, then the replacement plus the removal of every owned
 -- object and job run as one ordinary protocol flow
@@ -1070,7 +1016,6 @@ resetTokenConn conn tid wantGen replacement =
     case eEff of
       Left err -> pure (NotCommitted err)
       Right eff -> protocolLocked conn db eff
-
 -- | Build the reset's effective delta from one consistent read
 -- (runs under the connection guard, so the generation check is
 -- exact). Owned objects and jobs are dropped explicitly (the
@@ -1119,7 +1064,6 @@ resetEffectiveDb db tid wantGen replacement = do
     parseOid _ = Nothing
     parsePid [S.SQLBlob b] = decodeBlobW64 b
     parsePid _ = Nothing
-
 -- | The commit flow with the connection guard already held. The
 -- delta is scrubbed first ('scrubDeltaAuth'): token puts persist
 -- the durable authentication half only, so validation, the
@@ -1314,7 +1258,6 @@ protocolLocked conn db delta0 = do
                 case eStage of
                   Left err -> pure (Left err)
                   Right () -> runAll (map putTokenStmt uniq)
-
 -- | Run the actions in order, stopping at the first 'Left': no
 -- action after a failure executes (its IO never starts), so a
 -- failed statement can never be followed by a later write — in
@@ -1327,7 +1270,6 @@ firstFailure (act : rest) = do
   case e of
     Left err -> pure (Left err)
     Right () -> firstFailure rest
-
 -- | Tokens a delta touches: named tokens plus the home tokens of
 -- named objects and jobs (drop owners resolved from current
 -- state; unknown drops contribute nothing).
@@ -1369,7 +1311,6 @@ tokensForDelta db delta = do
           Just t -> pure (Right (Just (TokenId t)))
           Nothing -> pure (Left (StoreCorrupt "corrupt token_id on dropped job"))
         Right _ -> pure (Left (StoreCorrupt "corrupt job drop-owner row shape"))
-
 -- | Pre-commit validation: limits against a decoded load, then
 -- token references, slot uniqueness, then expected revisions
 -- against the stored revision map. Runs under the connection
@@ -1393,7 +1334,6 @@ validateDelta db limits delta = do
           Nothing -> case checkSlotUnique toks delta of
             Just err -> pure (Left err)
             Nothing -> checkRevisionsDb db delta
-
 -- | The delta as durably applied: requested meta rows replayed
 -- through the backend's own put order (sequential upserts, so
 -- the last put wins, matching 'runBody'), with the requested
@@ -1415,12 +1355,10 @@ effectiveDelta doomed delta =
       | (k, _) <- sdPutMeta delta
       , Just v <- [Map.lookup k covered]
       ]
-
 -- | The first touched token that is quarantined, if any.
 firstQuarantined :: [(TokenId, String)] -> [TokenId] -> Maybe (TokenId, String)
 firstQuarantined q tids =
   listToMaybe [(tid, why) | tid <- tids, Just why <- [lookup tid q]]
-
 -- | Authoritative reload: a clean load clears the quarantine; a
 -- failed load keeps it and reports the error. Reloads never
 -- consult the fault script. A closed handle reports closed
@@ -1445,7 +1383,6 @@ reloadConn conn = withConn conn (pure (Left storeClosed)) $ \db -> do
           modifyMVar_ (sqQuarantine conn) (\_ -> pure []) >> pure (Right ())
         (Left err, _) -> pure (Left err)
         (_, Left err) -> pure (Left err)
-
 -- | Retry the ROLLBACK of a write transaction left open
 -- ('sqOpenTxn'); clear the connection-wide quarantine only when
 -- SQLite reports the transaction ended.
@@ -1461,7 +1398,6 @@ resolveOpenTxn conn db = do
       if endedNow
         then writeIORef (sqOpenTxn conn) Nothing >> pure (Right ())
         else pure (Left (connectionQuarantined (why ++ either (\e -> "; retried ROLLBACK failed: " ++ show e) (const "") eRollback)))
-
 -- | Render every stored record through its canonical bytes (load,
 -- then re-encode, so inspection always shows canonical form). A
 -- failed load reports the error instead of a silent empty
@@ -1491,33 +1427,25 @@ inspectConn db = do
     (Left err, _, _) -> pure (Left err)
     (_, Left err, _) -> pure (Left err)
     (_, _, Left err) -> pure (Left err)
-
 -- ---------------------------------------------------------------------------
 -- Statements
 -- ---------------------------------------------------------------------------
-
 -- ---------------------------------------------------------------------------
 -- SQL helpers
 -- ---------------------------------------------------------------------------
-
 -- ---------------------------------------------------------------------------
 -- Stats
 -- ---------------------------------------------------------------------------
-
 -- ---------------------------------------------------------------------------
 -- Full-width codecs (SQLite domain)
 -- ---------------------------------------------------------------------------
-
 -- Identifier projections ('unTokenId' et al.) come from 'Haskoki.Types'.
-
 -- ---------------------------------------------------------------
 -- Read-only snapshot and owner probe
-
 -- | Device, inode, size and mtime (seconds) of a file.
 data FileIdentity = FileIdentity
   { fiDevice :: !Integer, fiInode :: !Integer, fiSize :: !Integer, fiMtime :: !Integer }
   deriving (Eq, Show)
-
 -- | What a read-only look at a store found. Credential rows are
 -- reduced to their token ids: no PIN byte leaves this function.
 data StoreSnapshot = StoreSnapshot
@@ -1529,31 +1457,26 @@ data StoreSnapshot = StoreSnapshot
   , snapMeta :: ![(String, String)]    -- sorted
   , snapFile :: !FileIdentity
   } deriving (Eq, Show)
-
 -- | Whether some owner holds the store.
 data OwnerState
   = OwnerAbsent        -- ^ no live holder; kernel lock free (sidecar absent or stale but unclaimed)
   | OwnerStale !Int    -- ^ sidecar names a dead pid; kernel lock free (left in place)
   | OwnerLive !String  -- ^ kernel-held, truly unreadable, or unknowable-with-held-lock owner: the reason
   deriving (Eq, Show)
-
 fileIdentity :: FileStatus -> FileIdentity
 fileIdentity st = FileIdentity
   (toInteger (deviceID st)) (toInteger (fileID st)) (toInteger (fileSize st))
   (truncate (toRational (modificationTime st)))
-
 -- | What the rollback journal beside a store is: missing (or empty,
 -- which SQLite ignores, as today), cold (SQLite treats it as not
 -- hot), hot (an interrupted write SQLite would roll back), or
 -- unknown (anything else: fail closed).
 data JournalClass = JournalAbsent | JournalCold | JournalHot | JournalUnknown
   deriving (Eq, Show)
-
 -- | SQLite's rollback-journal magic, the first 8 header bytes of a
 -- hot journal: d9d505f9 20a163d7.
 journalMagic :: ByteString
 journalMagic = BS.pack [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]
-
 -- | Classify the rollback journal beside a store by its size and its
 -- first 8 bytes: hot carries the journal magic, cold is all zero,
 -- anything else -- including a short file or an unreadable one -- is
@@ -1577,13 +1500,11 @@ classifyJournal path = do
             _ -> JournalUnknown)
   where
     journal = path ++ "-journal"
-
 -- | The first 8 bytes of a file (fewer if it is short), read through
 -- a close-on-exec descriptor.
 readFirst8 :: FilePath -> IO ByteString
 readFirst8 p = bracket open hClose (`BS.hGet` 8)
   where open = bracketOnError (openFd p ReadOnly guardFlags) closeFd fdToHandle
-
 -- | A sibling the rollback-journal store never writes itself: a
 -- non-empty @-wal@ or @-shm@ file means foreign tooling — or the
 -- snapshot's own read-only open of a WAL-format database, which
@@ -1603,7 +1524,6 @@ foreignSidecar path = do
       pure (case e of
         Right st | fileSize st > 0 -> Just p
         _ -> Nothing)
-
 -- | A journal or foreign sibling that refuses the snapshot: a
 -- non-empty @-wal@ or @-shm@ file first (a cold journal must never
 -- bypass it), else a hot or unknown journal, else a cold journal
@@ -1622,7 +1542,6 @@ journalBlocked path = do
         JournalAbsent -> Nothing)
   where
     journal = path ++ "-journal"
-
 -- | Like 'journalBlocked' but a cold journal does not block: used
 -- to plan a migration's verdict (before deciding whether the
 -- cold journal may be cleared) and by 'store check''s
@@ -1641,7 +1560,6 @@ journalBlockedAllowCold path = do
         _ -> Nothing)
   where
     journal = path ++ "-journal"
-
 -- | Any @-wal@ or @-shm@ sibling, even zero-byte: a read-write
 -- SQLite connection would act on it (switching journal modes,
 -- checkpointing frames, creating and deleting the peer file), so
@@ -1661,7 +1579,6 @@ anySidecarExists path = do
       pure (case e of
         Right _ -> Just p
         _ -> Nothing)
-
 -- | Resolve a store path once, following every symlink component (a
 -- full realpath over 'readSymbolicLink'): SQLite acts on the real
 -- file's sidecars, so the guards must derive @-journal@, @-wal@,
@@ -1673,7 +1590,6 @@ anySidecarExists path = do
 -- closed). No @filepath@ dependency: the splitting is local.
 resolveStorePath :: FilePath -> IO FilePath
 resolveStorePath p = fst <$> resolveStorePathTracked p
-
 -- | Normalize a store spelling, then resolve it: bare @file:@
 -- URIs decode once up front, so every guard and SQLite itself
 -- act on the same decoded POSIX path. Anything that would let
@@ -1684,7 +1600,6 @@ resolveStorePath p = fst <$> resolveStorePathTracked p
 -- SQLite treats specially while the guards stat it as a file.
 resolveStoreSpelling :: FilePath -> IO (Either SpellingRefusal FilePath)
 resolveStoreSpelling p = fmap fst <$> resolveStoreSpellingTracked p
-
 -- | Like 'resolveStoreSpelling', also reporting whether the
 -- store path's own final component was a symlink (same contract
 -- as 'resolveStorePathTracked', on the effective spelling,
@@ -1697,7 +1612,6 @@ resolveStoreSpellingTracked p = case effectiveStorePath p of
     pure $ case recheckResolved res of
       Left r -> Left r
       Right ok -> Right (ok, saw)
-
 -- | Run a store operation on the normalized spelling: refusal
 -- short-circuits in 'StoreError' before anything touches the
 -- filesystem.
@@ -1707,7 +1621,6 @@ withStoreSpelling path0 act = do
   case ePath of
     Left r -> pure (Left (StoreIO (renderSpellingRefusal r path0)))
     Right path -> act path
-
 -- | Like 'resolveStorePath', also reporting whether the store
 -- path's own final component was a symlink. The serving open
 -- refuses to create a store when the final component is a link and
@@ -1770,7 +1683,6 @@ resolveStorePathTracked p
     joinPath True cs = "/" ++ intercalate "/" cs
     joinPath False [] = "."
     joinPath False cs = intercalate "/" cs
-
 -- | Read a store without writing the database: no ownership, a
 -- read-only connection (never creates the file, never recovers a
 -- journal, never migrates) — but on a WAL-format database the
@@ -1790,7 +1702,6 @@ resolveStorePathTracked p
 -- while read.
 readStoreSnapshot :: FilePath -> IO (Either StoreError StoreSnapshot)
 readStoreSnapshot = readStoreSnapshotWith journalBlocked
-
 -- | Like 'readStoreSnapshot' but a cold journal does not refuse:
 -- used to plan a migration's verdict (before deciding whether
 -- the cold journal may be cleared) and by 'store check''s
@@ -1800,7 +1711,6 @@ readStoreSnapshot = readStoreSnapshotWith journalBlocked
 -- WAL-format database, but changes no database bytes.
 readStoreSnapshotAllowCold :: FilePath -> IO (Either StoreError StoreSnapshot)
 readStoreSnapshotAllowCold = readStoreSnapshotWith journalBlockedAllowCold
-
 readStoreSnapshotWith
   :: (FilePath -> IO (Maybe StoreError)) -> FilePath -> IO (Either StoreError StoreSnapshot)
 readStoreSnapshotWith blockedBy path = do
@@ -1853,7 +1763,6 @@ readStoreSnapshotWith blockedBy path = do
                 meta <- eMeta
                 Right (StoreSnapshot v (map fst toks) (sum (map (length . snd) toks))
                   (length jobs) (sort (map crToken creds)) (sort meta))
-
 -- | Whether some owner holds the store, without taking anything: the
 -- kernel flock is the authority for the same pid, a live pid, an
 -- unknowable pid, an unparsable pid, and an empty file — a free
@@ -1905,7 +1814,6 @@ probeOwner allowEnv path = do
         Left why -> OwnerLive why
         Right True -> OwnerLive reason
         Right False -> OwnerAbsent
-
 -- | Try a SHARED non-blocking flock on a read-only fd and drop it at
 -- once. A missing file has no holder; any other failure to probe is a
 -- 'Left' reason the caller treats as live (fail closed), never as a
@@ -1937,46 +1845,37 @@ kernelLockHeld path = mask_ $ do
     attempt fd n = do
       ok <- (== 0) <$> c_flock (fromIntegral fd) (lockSh .|. lockNb)
       if ok || n >= 4 then pure (not ok) else threadDelay 5000 >> attempt fd (n + 1)
-
 lockSh :: CInt
 lockSh = 1 -- LOCK_SH: shared
-
 -- ---------------------------------------------------------------------------
 -- Owned migration
 -- ---------------------------------------------------------------------------
-
 -- | An existing store held with full single-writer ownership: the
 -- sidecar lock plus the database kernel guard, exactly as the
 -- serving open takes them, without opening the serving store.
 data OwnedStoreFile = OwnedStoreFile { osfPath :: !FilePath, osfDbFd :: !Fd }
-
 ownedPath :: OwnedStoreFile -> FilePath
 ownedPath = osfPath
-
 -- | What a migration does. 'smFrom' is the schema version the plan
 -- saw (1, 2 or 3; 3 only freezes rows and leaves the marker alone).
 data SQLiteMigration = SQLiteMigration
   { smFrom :: !Int
   , smFreeze :: ![CredentialRecord]
   } deriving (Eq, Show)
-
 -- | Test seams: right after BEGIN IMMEDIATE, and after the body but
 -- before COMMIT.
 data MigrationHooks = MigrationHooks
   { mgAfterBegin :: S.Database -> IO ()
   , mgBeforeCommit :: S.Database -> IO ()
   }
-
 noMigrationHooks :: MigrationHooks
 noMigrationHooks = MigrationHooks (\_ -> pure ()) (\_ -> pure ())
-
 -- | Hold full single-writer ownership of an EXISTING store, run the
 -- action, and release on every path. Never creates the database; a
 -- live owner is refused ('StoreSecondWriter'). The sidecar is the
 -- only file created, and it is removed on release.
 withOwnedStoreFile :: Bool -> FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
 withOwnedStoreFile allowEnv = withOwnedRelease allowEnv True
-
 -- | Like 'withOwnedStoreFile', but the post-body release only closes
 -- the sidecar descriptor and never unlinks the sidecar: the body
 -- owns sidecar removal instead. Releases before the body runs still
@@ -1984,7 +1883,6 @@ withOwnedStoreFile allowEnv = withOwnedRelease allowEnv True
 -- where a failed database removal must leave the sidecar in place.
 withOwnedStoreFileKeep :: Bool -> FilePath -> (OwnedStoreFile -> IO a) -> IO (Either StoreError a)
 withOwnedStoreFileKeep allowEnv = withOwnedRelease allowEnv False
-
 -- | 'True' unlinks our sidecar on the post-body release (the body
 -- may already have done so); 'False' only closes it. 'allowEnv' gates
 -- the liveness seam (default-off): without it the takeOwnership
@@ -2026,12 +1924,10 @@ withOwnedRelease allowEnv unlinkOnRelease path act = mask $ \restore -> do
                   r <- restore (act (OwnedStoreFile path dbFd)) `onException` releaseBody
                   releaseBody
                   pure (Right r)
-
 -- | True when the store path still names the guarded database
 -- inode: a removal must only unlink what the guard holds.
 ownedDbMatches :: OwnedStoreFile -> IO Bool
 ownedDbMatches o = sameFile (osfDbFd o) (osfPath o)
-
 -- | Remove a cold rollback journal inside the caller's ownership
 -- window (the sidecar plus the database kernel guard are already
 -- held), only when every guard holds: no @-wal@ or @-shm@ sibling
@@ -2104,7 +2000,6 @@ clearColdJournalOwned onClear path = do
               pure (Left (StoreJournalPresent journal))
     tryBegin :: S.Database -> IO (Either S.SQLError ())
     tryBegin db = try (S.exec db "BEGIN IMMEDIATE")
-
 -- | fsync the directory holding a path, so an unlink in it is durable.
 syncParentDir :: FilePath -> IO ()
 syncParentDir p = bracket (openFd (parentDir p) ReadOnly guardFlags) closeFd fileSynchronise
@@ -2113,7 +2008,6 @@ syncParentDir p = bracket (openFd (parentDir p) ReadOnly guardFlags) closeFd fil
       [] -> "."
       [_] -> "/"
       (_ : rest) -> reverse rest
-
 -- | How a migration transaction failed: setup, begin, or body
 -- failed before committing (a body failure attempts a rollback,
 -- best effort with errors discarded; setup failures never begin
@@ -2131,7 +2025,6 @@ data MigrateTxnError
   = MigrateTxnUnchanged !StoreError
   | MigrateTxnCommitUnknown !StoreError
   deriving (Eq, Show)
-
 -- | Migrate an owned store to 'sqliteSchemaVersion' in ONE
 -- transaction: re-read the marker (it must still be 'smFrom'),
 -- create the credentials table for version 1, INSERT every frozen

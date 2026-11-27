@@ -29,12 +29,12 @@ import Haskoki.Runtime.Storage
   , jobIdCounterKey
   , nextJobReservation
   )
-import Haskoki.Types (TokenId (..))
 import Haskoki.Runtime.Storage.SQLite.Conn
 import Haskoki.Runtime.Storage.SQLite.Records
+import Haskoki.Runtime.Storage.SQLite.Statements
 import Haskoki.Runtime.Storage.SQLite.Stats
 import Haskoki.Runtime.Storage.SQLite.Types
-import Haskoki.Runtime.Storage.SQLite.Statements
+import Haskoki.Types (TokenId (..))
 
 -- | Where a write transaction failed: in its body (no COMMIT was
 -- issued) or at its COMMIT.
