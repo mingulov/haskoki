@@ -2,23 +2,26 @@
 
 Developer preview: entries land per task and finalize at release.
 
-## Fixed — null recall on staged message slots
+## Fixed — null retry on staged message slots
 
-- A NULL query against staged message bytes used to deliver the
-  staged output and drop the slot; it now re-reports the staged
-  length (`CKR_BUFFER_TOO_SMALL`) and keeps both the slot and
-  the outer message context, matching classic retry semantics
-  (`retryMessageStaged` IntentNull arm, Tier-2 follow-up from
-  the 0.6.1 review).
+- Model contract fix (Tier-2 follow-up from the 0.6.1 review):
+  a null-intent `retryMessageStaged` used to deliver, count,
+  and drop the staged bytes; it now re-reports the staged
+  length and keeps them, mirroring the classic `retryStaged`
+  arm while the outer message context survives. C API behavior
+  is unchanged (NULL queries already answered OK plus length);
+  the visible effect is that re-queries pass through the
+  retain path like classic retries.
 
-## Fixed — `file:` URI spelling agreement
+## Tests — `file:` URI spelling agreement
 
 - The decode-once rule (guards and SQLite agree on the decoded
-  file; divergent spellings refuse) is now fully pinned:
-  literal-vs-decoded twins for lock, sidecar, and alias checks
-  across `%2e%2e`, `%00`, query/fragment, nested, authority,
-  and symlinked-parent spellings. Non-UTF-8 spellings that do
-  not round-trip stay explicitly out of scope.
+  file; divergent spellings refuse) is now fully pinned with
+  new lock and alias twin tests (sidecar twins pre-existed),
+  covering `%2e%2e`, `%00`, query/fragment, nested, authority,
+  and symlinked-parent spellings. No behavior change.
+  Non-UTF-8 spellings that do not round-trip stay explicitly
+  out of scope.
 
 ## Fixed — spec validation gate
 
@@ -38,6 +41,6 @@ Developer preview: entries land per task and finalize at release.
 ## Verification
 
 - Full 8-suite Haskell matrix, default and `+usdt` flags, zero
-  warnings; static gate block green including the newly wired
+  warnings; static gate block passing including the newly wired
   `validate-spec.py`; KAT wall compared per shard against the
   34m40s FLUSH_K baseline on the release PR.

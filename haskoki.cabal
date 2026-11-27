@@ -4,7 +4,7 @@ version:            0.6.2.0
 synopsis:           Haskell PKCS#11 soft token (demonstrator)
 description:
   A Haskell soft token that makes the PKCS#11 surface (APIs 2.40, 3.0, 3.1
-  and 3.2) easy to exercise and understand. At 0.6.1.0: a C-loadable
+  and 3.2) easy to exercise and understand. At 0.6.2.0: a C-loadable
   shared module with byte-pinned versioned tables, exact per-function
   error codes, config-gated test seams (env seams inert by
   default), and USDT crypto-auditing observability, proven

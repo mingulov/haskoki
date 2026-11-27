@@ -8,18 +8,26 @@ Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.2.0`.
 
 ### Fixed
 
-- Message-slot null recall re-reports the staged length instead
-  of delivering: a NULL query on staged message bytes returns
-  `CKR_BUFFER_TOO_SMALL` and keeps the slot and outer context,
-  matching classic retry (`retryMessageStaged` IntentNull arm).
-- `file:` URI twin agreement locked down: POSIX lock, sidecar,
-  and alias checks resolve the same decoded spelling SQLite
-  opens; literal-vs-decoded twin pins for `%2e%2e`, `%00`,
-  query/fragment, nested, and symlinked-parent spellings.
+- Model contract: a null-intent retry on a staged message slot
+  re-reports the staged length (`CKR_BUFFER_TOO_SMALL`) and
+  keeps the staged bytes, instead of delivering, counting, and
+  dropping them (`retryMessageStaged` IntentNull arm). C API
+  behavior is unchanged (NULL queries already answered OK plus
+  length); the visible effect is that re-queries now pass
+  through the retain path like classic retries.
 - Spec validation gate repaired and wired into CI: the
   GENERATED-HEADER stub pins (stale since message/async entries
   gained routed implementations) now match the generated
   `abi_stubs.inc`, and `validate-spec.py` runs in static gates.
+
+### Tests
+
+- `file:` URI twin agreement locked down with new pins (lock
+  and alias twins; sidecar twins pre-existed). No behavior
+  change: the decode-once rule already held.
+
+### CI
+
 - KAT lane split into 4 file-balanced shards with a merge job
   (same report artifact); expected wall ~15-20m per shard.
 

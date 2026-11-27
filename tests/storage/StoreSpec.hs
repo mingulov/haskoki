@@ -67,7 +67,6 @@ import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirecto
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
-import System.Posix.Files (createSymbolicLink)
 import System.IO.Error (catchIOError)
 import System.Posix.Files (createSymbolicLink, fileExist, readSymbolicLink)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
@@ -1403,8 +1402,14 @@ caseUriTwinLock =
         twin = "file:" ++ dir ++ "/x/%2e%2e/a.db"
     bracket (either (assertFailure . show) pure =<< openSQLiteStore db) storeClose $ \_ -> do
       eTwin <- openSQLiteStore twin
+      -- Either lock-file verdict proves the twin resolved to the
+      -- same lock identity (a same-process open reads its own pid
+      -- back); the kernel guard or a decode break must not fire.
       case eTwin of
-        Left (StoreSecondWriter _) -> pure ()
+        Left (StoreSecondWriter m)
+          | "store lock is held" `isInfixOf` m -> pure ()
+          | "already open in this process" `isInfixOf` m -> pure ()
+          | otherwise -> assertFailure ("twin refused by the wrong guard: " ++ m)
         Left other -> assertFailure ("twin must refuse by lock, got: " ++ show other)
         Right s -> storeClose s >> assertFailure "twin spelling shadowed the lock"
     eRe <- openSQLiteStore twin
@@ -1426,9 +1431,16 @@ caseUriTwinAlias =
     bracket (either (assertFailure . show) pure =<< openSQLiteStore via) storeClose $ \_ -> do
       eTwin <- openSQLiteStore twin
       case eTwin of
-        Left (StoreSecondWriter _) -> pure ()
+        Left (StoreSecondWriter m)
+          | "store lock is held" `isInfixOf` m -> pure ()
+          | "already open in this process" `isInfixOf` m -> pure ()
+          | otherwise -> assertFailure ("alias twin refused by the wrong guard: " ++ m)
         Left other -> assertFailure ("alias twin must refuse by lock, got: " ++ show other)
         Right s -> storeClose s >> assertFailure "alias twin spelling shadowed the lock"
+    eRe <- openSQLiteStore twin
+    case eRe of
+      Left err -> assertFailure ("alias twin must open after close, got: " ++ show err)
+      Right s -> storeClose s
 
 -- | Undecodable URIs refuse cleanly (never reach SQLite).
 caseUriUndecodable :: IO ()
