@@ -240,13 +240,17 @@ def main():
                 err("ISSUES-VALID", f"issue {i.get('id')}: missing field '{field}'")
 
     # ---- GENERATED-HEADER: generated C header + stubs ----
+    # Stub counts shrink as functions gain routed implementations:
+    # 22/12 at inception, 11 after message tables routed (11292aa9),
+    # 8 after async entries routed (999c3e8f). The FILL-macro wiring
+    # counts below stay put (tables reference routed impls, not stubs).
     GEN_INC = PKG / "cbits" / "abi_stubs.inc"
     if GEN_INC.is_file():
         inc = GEN_INC.read_text(encoding="utf-8")
-        if inc.count("static CK_DECLARE_FUNCTION(CK_RV, x30_") != 22:
-            err("GENERATED-HEADER", "abi_stubs.inc does not define exactly 22 x30_ stubs")
-        if inc.count("static CK_DECLARE_FUNCTION(CK_RV, x32_") != 12:
-            err("GENERATED-HEADER", "abi_stubs.inc does not define exactly 12 x32_ stubs")
+        if inc.count("static CK_DECLARE_FUNCTION(CK_RV, x30_") != 1:
+            err("GENERATED-HEADER", "abi_stubs.inc does not define exactly 1 x30_ stub")
+        if inc.count("static CK_DECLARE_FUNCTION(CK_RV, x32_") != 7:
+            err("GENERATED-HEADER", "abi_stubs.inc does not define exactly 7 x32_ stubs")
         m = re.search(r"#define HASKOKI_FILL_300_NEW.*?\} while \(0\)",
                       inc, re.DOTALL)
         if not m or m.group(0).count("(T)->C_") != 24:
