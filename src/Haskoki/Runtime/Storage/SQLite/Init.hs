@@ -13,16 +13,18 @@ module Haskoki.Runtime.Storage.SQLite.Init
   , verifyExisting
   , schemaStatements
   , createCredentialsTable
+  , openAndInit
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (SomeException, throwIO, try)
 import Control.Monad (when)
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Database.SQLite3 as S
 import System.Environment (lookupEnv)
 import System.IO.Error (tryIOError)
-import System.Posix.Files (fileExist, removeLink, setFileMode)
+import System.Posix.Files (fileExist, fileSize, getFdStatus, removeLink, setFileMode)
 import System.Posix.Types (Fd)
 import Haskoki.Runtime.Storage
   ( StoreError (..)
@@ -237,3 +239,57 @@ schemaStatements =
 createCredentialsTable :: Text
 createCredentialsTable =
   "CREATE TABLE credentials (token_id TEXT PRIMARY KEY NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE, record_json TEXT NOT NULL, format_version INTEGER NOT NULL CHECK (format_version = 1))"
+
+-- ---------------------------------------------------------------------------
+-- Init and verify
+-- ---------------------------------------------------------------------------
+-- | Open the database file, configure it, and initialize or verify
+-- the schema. Runs under the caller's mask (see
+-- 'openSQLiteStoreWith'), whose @restore@ this takes: the only
+-- restored section is 'openInner' work, which the exception path
+-- below protects with handle cleanup (rollback, then close).
+-- Every sync failure is reported as 'Left' with the handle
+-- already closed; success returns the handle masked, so it
+-- transfers to 'SQLiteConn' construction with no async-delivery
+-- window. The caller always holds the database guard
+-- ('ensureDbGuard') before this runs, and freshness is read from
+-- the guarded fd (never the path: no TOCTOU between the check and
+-- SQLite's open). After opening, the path must still name the
+-- guarded inode — otherwise the bytes SQLite would touch are not
+-- the guarded ones and the open aborts. The handle has exactly
+-- one owner: the inner helpers never close it, so no interleaving
+-- can double-close the raw pointer; this function's case analysis
+-- closes once on each failure path and hands the handle off
+-- untouched on success.
+openAndInit
+  :: Bool
+  -> (IO (Either StoreError S.Database) -> IO (Either StoreError S.Database))
+  -> Fd -> FilePath -> Bool -> IO (Either StoreError S.Database)
+openAndInit allowEnv restore guardFd path created = do
+  eSt <- tryStoreIO (getFdStatus guardFd)
+  case eSt of
+    Left err -> pure (Left err)
+    Right st -> do
+      let fresh = fileSize st == 0
+      when created (pauseForFreshCreate allowEnv path)
+      eDb <- trySQLite (S.open (T.pack path))
+      case eDb of
+        Left err -> pure (Left err)
+        Right db -> do
+          same <- sameFile guardFd path
+          if not same
+            then closeQuiet db >> pure (Left (StoreIO ("store database replaced during open: " ++ path)))
+            else do
+              eRes <- try (restore (openInner db path fresh))
+              case eRes of
+                Left (e :: SomeException) -> rollbackQuiet db >> closeQuiet db >> throwIO e
+                Right (Left err) -> closeQuiet db >> pure (Left err)
+                Right (Right ok) -> pure (Right ok)
+  where
+    openInner db dbPath fresh = do
+      eCfg <- configure db
+      case eCfg of
+        Left err -> pure (Left err)
+        Right ()
+          | fresh -> initSchema db guardFd dbPath
+          | otherwise -> verifyExisting db dbPath
