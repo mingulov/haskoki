@@ -274,7 +274,8 @@ testHeldFdsCloexec = do
 -- observe the fork window, so this is a best-effort tripwire that
 -- pins the shape that closes it (it is textual and line-based: it
 -- does not parse block comments or follow indirection). Rules:
---   1. every 'openFd' in the SQLite backend takes @guardFlags@
+--   1. every 'openFd' in the SQLite backend (the shell plus every
+--      Storage\/SQLite\/ module) takes @guardFlags@
 --      (on its own or the next line), and @guardFlags@ sets
 --      @cloexec = True@;
 --   2. no @setFdOption@, @F_SETFD@ or @cloexec = False@ in code
@@ -289,10 +290,14 @@ testHeldFdsCloexec = do
 testOpenFdSourceGate :: IO ()
 testOpenFdSourceGate = do
   root <- findPackageRoot "."
-  let backend = root </> "src/Haskoki/Runtime/Storage/SQLite.hs"
+  let backendDir = root </> "src/Haskoki/Runtime/Storage/SQLite"
       preflight = root </> "src/Haskoki/Runtime/Storage/Preflight.hs"
-  body <- readFile backend
+  modFiles <- filter ((== ".hs") . takeExtension) <$> listDirectory backendDir
+  let fdFiles = (root </> "src/Haskoki/Runtime/Storage/SQLite.hs")
+        : map (backendDir </>) modFiles
+  bodies <- mapM readFile fdFiles
   pbody <- readFile preflight
+  obody <- readFile (backendDir </> "Ownership.hs")
   files <- sourceFilesUnder [root </> "src", root </> "ffi"]
   let stripComment l = go l
         where go ('-' : '-' : _) = ""
@@ -301,7 +306,6 @@ testOpenFdSourceGate = do
       codeLines txt = [(n, stripComment l, l) | (n, l) <- zip [1 :: Int ..] (lines txt)
                       , not ("--" `isPrefixOf` dropWhile isSpace l)
                       , not ("//" `isPrefixOf` dropWhile isSpace l)]
-      code = codeLines body
       callsIn txt = [n | (n, c, _) <- codeLines txt, "openFd " `isInfixOf` c, not ("import " `isPrefixOf` c)]
       unguarded txt =
         let ls = zip [1 :: Int ..] (lines txt)
@@ -310,14 +314,14 @@ testOpenFdSourceGate = do
       handleReads txt = [(n, l) | (n, c, l) <- codeLines txt, not ("import " `isPrefixOf` c)
                         , any (`elem` ["readFile", "BS.readFile", "BC8.readFile"]) (identifiers c)]
       identifiers = words . map (\ch -> if isAlphaNum ch || ch `elem` ("_'." :: String) then ch else ' ')
-  assertBool "rule 1: found the backend's openFd calls (gate may need updating)" (length (callsIn body) >= 4)
-  assertEqual "rule 1: openFd call not using guardFlags (line, text)" [] (unguarded body)
+  assertBool "rule 1: found the backend's openFd calls (gate may need updating)" (sum (map (length . callsIn) bodies) >= 10)
+  mapM_ (\(f, txt) -> assertEqual ("rule 1: openFd call not using guardFlags in " ++ f) [] (unguarded txt)) (zip fdFiles bodies)
   assertBool "rule 3: found the preflight's openFd calls (gate may need updating)" (length (callsIn pbody) >= 2)
   assertEqual "rule 3: preflight openFd call not using guardFlags (line, text)" [] (unguarded pbody)
-  assertEqual "rule 4: backend Handle read (line, text)" [] (handleReads body)
+  mapM_ (\(f, txt) -> assertEqual ("rule 4: Handle read in " ++ f) [] (handleReads txt)) (zip fdFiles bodies)
   assertEqual "rule 4: preflight Handle read (line, text)" [] (handleReads pbody)
   assertBool "rule 1: guardFlags must be defined with cloexec = True on one line"
-    (any (\(_, c, _) -> "guardFlags = " `isInfixOf` c && "cloexec = True" `isInfixOf` c) code)
+    (any (\(_, c, _) -> "guardFlags = " `isInfixOf` c && "cloexec = True" `isInfixOf` c) (codeLines obody))
   forbidden <- fmap concat $ mapM (\f -> do
     txt <- readFile f
     pure [(f, n, l) | (n, c, l) <- codeLines txt

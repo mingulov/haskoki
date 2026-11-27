@@ -20,6 +20,7 @@ module Haskoki.Runtime.Storage.SQLite.Records
   , checkRevisionsDb
   , reconcileMetaReload
   , quarantineTokens
+  , firstFailure
   ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar_)
@@ -305,3 +306,16 @@ quarantineTokens qVar sVar tids why = do
   bumpQuarantines sVar (length tids)
   where
     insertOne tid q = (tid, why) : filter ((/= tid) . fst) q
+
+-- | Run the actions in order, stopping at the first 'Left': no
+-- action after a failure executes (its IO never starts), so a
+-- failed statement can never be followed by a later write — in
+-- particular not by one that SQLite would run in autocommit mode
+-- after rolling the transaction back on its own.
+firstFailure :: [IO (Either StoreError ())] -> IO (Either StoreError ())
+firstFailure [] = pure (Right ())
+firstFailure (act : rest) = do
+  e <- act
+  case e of
+    Left err -> pure (Left err)
+    Right () -> firstFailure rest
