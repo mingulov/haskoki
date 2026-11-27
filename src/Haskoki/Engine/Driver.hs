@@ -1845,6 +1845,1370 @@ isDhMech mech = isJust (dhRecipeFor mech)
 -- 'CryptoBadKey', never fabricated).
 type KeyResolver = ObjectId -> Maybe KeyMaterial
 
+-- ---------------------------------------------------------------------------
+-- runEffect workers (lifted to top level, 0.6.3 prep)
+-- ---------------------------------------------------------------------------
+-- These were the @where@-block of 'runEffect'. Each worker takes
+-- explicitly what it closed over ('BackendEnv' via 'CryptoBackend',
+-- or 'KeyResolver' for 'withKey'); bodies are unchanged apart from
+-- re-indentation and @env@ threading between workers. The next step
+-- splits them per family.
+
+withKey :: KeyResolver -> Maybe ObjectId -> (KeyMaterial -> IO CryptoResult) -> IO CryptoResult
+withKey _ Nothing _ = pure (GotCryptoError (CryptoBadKey "driver" "effect binds no key"))
+withKey resolve (Just oid) k = case resolve oid of
+  Nothing -> pure (GotCryptoError (CryptoBadKey "driver" ("unknown key object: " ++ show oid)))
+  Just mat -> k mat
+
+-- | CMAC sign effects: the SP 800-38B composition over the
+-- backend ECB route, truncated for GENERAL rows. Off-geometry
+-- (mechanism, key length, params) triples are 'CryptoFailed';
+-- a non-bytes key is 'CryptoBadKey'.
+runCmacSign :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+runCmacSign env mech params key input = case key of
+  KeyBytes kb -> case cmacSpecFor mech params (BS.length kb) of
+    Just (spec, trunc) -> do
+      r <- cmacTag env spec key input
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: CMAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "CMAC needs raw symmetric key bytes"))
+-- | CMAC verify effects: recompute, truncate, constant-time
+-- compare. A mismatch is the 'False' verdict, never a
+-- malfunction.
+runCmacVerify :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runCmacVerify env mech params key input tag = case key of
+  KeyBytes kb -> case cmacSpecFor mech params (BS.length kb) of
+    Just (spec, trunc) -> do
+      r <- cmacTag env spec key input
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk full
+          | driverCtEq want tag -> GotValid True
+          | otherwise -> GotValid False
+          where want = maybe full (`BS.take` full) trunc
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: CMAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "CMAC needs raw symmetric key bytes"))
+-- | 3DES-MAC sign effects: CBC-MAC chaining over the backend
+-- ECB route, truncated to the half block (plain) or the
+-- decoded length (GENERAL). Off-geometry (mechanism, key
+-- length, params) triples are 'CryptoFailed'; a non-bytes key
+-- is 'CryptoBadKey'.
+runDes3MacSign :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+runDes3MacSign env mech params key input = case key of
+  KeyBytes kb -> case des3macSpecFor mech params (BS.length kb) of
+    Just (spec, trunc) -> do
+      r <- des3macTag env spec key input
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: 3DES-MAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "3DES-MAC needs raw symmetric key bytes"))
+-- | 3DES-MAC verify effects: recompute, truncate,
+-- constant-time compare. A mismatch is the 'False' verdict,
+-- never a malfunction.
+runDes3MacVerify :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runDes3MacVerify env mech params key input tag = case key of
+  KeyBytes kb -> case des3macSpecFor mech params (BS.length kb) of
+    Just (spec, trunc) -> do
+      r <- des3macTag env spec key input
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk full
+          | driverCtEq want tag -> GotValid True
+          | otherwise -> GotValid False
+          where want = maybe full (`BS.take` full) trunc
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: 3DES-MAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "3DES-MAC needs raw symmetric key bytes"))
+-- | CBC-MAC sign effects: CBC-MAC chaining over the backend
+-- ECB route, truncated to the half block (plain) or the
+-- decoded length (GENERAL). Off-geometry (mechanism, key
+-- length, params) triples are 'CryptoFailed'; a non-bytes key
+-- is 'CryptoBadKey'.
+runCbcMacSign :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+runCbcMacSign env mech params key input = case key of
+  KeyBytes kb -> case cbcmacSpecFor mech params (BS.length kb) of
+    Just (spec, trunc) -> do
+      r <- cbcmacTag env spec key input
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: CBC-MAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "CBC-MAC needs raw symmetric key bytes"))
+-- | CBC-MAC verify effects: recompute, truncate,
+-- constant-time compare. A mismatch is the 'False' verdict,
+-- never a malfunction.
+runCbcMacVerify :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runCbcMacVerify env mech params key input tag = case key of
+  KeyBytes kb -> case cbcmacSpecFor mech params (BS.length kb) of
+    Just (spec, trunc) -> do
+      r <- cbcmacTag env spec key input
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk full
+          | driverCtEq want tag -> GotValid True
+          | otherwise -> GotValid False
+          where want = maybe full (`BS.take` full) trunc
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: CBC-MAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "CBC-MAC needs raw symmetric key bytes"))
+-- | XCBC-MAC sign effects: the RFC 3566 composition over the
+-- backend AES-128-ECB route, truncated for the _96 row.
+-- Off-geometry (mechanism, key length, params) triples are
+-- 'CryptoFailed'; a non-bytes key is 'CryptoBadKey'.
+runXcbcSign :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+runXcbcSign env mech params key input = case key of
+  KeyBytes kb -> case xcbcSpecFor mech params (BS.length kb) of
+    Just (spec, trunc) -> do
+      r <- xcbcTag env spec key input
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: XCBC-MAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "XCBC-MAC needs raw symmetric key bytes"))
+-- | XCBC-MAC verify effects: recompute, truncate,
+-- constant-time compare. A mismatch is the 'False' verdict,
+-- never a malfunction.
+runXcbcVerify :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runXcbcVerify env mech params key input tag = case key of
+  KeyBytes kb -> case xcbcSpecFor mech params (BS.length kb) of
+    Just (spec, trunc) -> do
+      r <- xcbcTag env spec key input
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk full
+          | driverCtEq want tag -> GotValid True
+          | otherwise -> GotValid False
+          where want = maybe full (`BS.take` full) trunc
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: XCBC-MAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "XCBC-MAC needs raw symmetric key bytes"))
+-- | GMAC sign effects: the message travels as GCM AAD with
+-- empty plaintext over the backend AES-GCM route; the tag is
+-- the GCM authentication tag. Off-geometry (mechanism, key
+-- length, params) triples are 'CryptoFailed'; a non-bytes key
+-- is 'CryptoBadKey'.
+runGmacSign :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+runGmacSign env mech params key input = case key of
+  KeyBytes kb -> case gmacSpecFor mech params (BS.length kb) of
+    Just (spec, iv) -> do
+      r <- aeadEncrypt env spec key iv input BS.empty
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk (_, tag) -> GotBytes tag
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: GMAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "GMAC needs raw symmetric key bytes"))
+-- | GMAC verify effects: recompute over the GCM route,
+-- constant-time compare. A mismatch is the 'False' verdict,
+-- never a malfunction.
+runGmacVerify :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runGmacVerify env mech params key input tag = case key of
+  KeyBytes kb -> case gmacSpecFor mech params (BS.length kb) of
+    Just (spec, iv) -> do
+      r <- aeadEncrypt env spec key iv input BS.empty
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk (_, want)
+          | driverCtEq want tag -> GotValid True
+          | otherwise -> GotValid False
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: GMAC (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "GMAC needs raw symmetric key bytes"))
+-- | HOTP sign effects: HMAC-SHA1 over the counter, then RFC
+-- 4226 dynamic truncation to ASCII digits. The input is always
+-- empty (HOTP signs the counter only); anything else is a
+-- 'CryptoFailed' parameter refusal, never silently signed.
+runHotpSign :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
+runHotpSign env mech params key input = case key of
+  KeyBytes _ -> case hotpParamsFor mech params of
+    Just (counter, digits)
+      | BS.null input -> do
+          r <- macSign env (MacHMAC D_SHA1 Nothing) key (encodeHotpCounter counter)
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk mac -> case hotpTruncate mac digits of
+              Just code -> GotBytes code
+              Nothing -> shortMac
+      | otherwise -> pure (GotCryptoError (CryptoFailed
+          "driver: HOTP signs the counter only: input must be empty"))
+    _ -> pure (GotCryptoError (CryptoFailed
+        "driver: HOTP takes hotp-params/1 (counter, 6-8 digits)"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "HOTP needs raw symmetric key bytes"))
+-- | HOTP verify effects: recompute, truncate, constant-time
+-- compare. A mismatch is the 'False' verdict, never a
+-- malfunction.
+runHotpVerify :: CryptoBackend b => BackendEnv b -> MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runHotpVerify env mech params key input want = case key of
+  KeyBytes _ -> case hotpParamsFor mech params of
+    Just (counter, digits)
+      | BS.null input -> do
+          r <- macSign env (MacHMAC D_SHA1 Nothing) key (encodeHotpCounter counter)
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk mac -> case hotpTruncate mac digits of
+              Just code
+                | driverCtEq code want -> GotValid True
+                | otherwise -> GotValid False
+              Nothing -> shortMac
+      | otherwise -> pure (GotCryptoError (CryptoFailed
+          "driver: HOTP signs the counter only: input must be empty"))
+    _ -> pure (GotCryptoError (CryptoFailed
+        "driver: HOTP takes hotp-params/1 (counter, 6-8 digits)"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "HOTP needs raw symmetric key bytes"))
+-- | A backend MAC shorter than HMAC-SHA1's 20 bytes breaks the
+-- backend contract; the truncation cannot run. Both shipped
+-- backends return full-width MACs, so this arm is defensive.
+shortMac :: CryptoResult
+shortMac = GotCryptoError (CryptoFailed
+  "driver: HOTP backend MAC too short to truncate")
+-- | The SP 800-38B tag: subkey doubling (Rb 0x87 for 128-bit
+-- blocks, 0x1B for 64-bit), last-block padding (10*) when
+-- short, CBC-MAC chaining over single-block ECB calls. Full
+-- width; truncation is the caller's call.
+cmacTag :: CryptoBackend b => BackendEnv b -> CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+cmacTag env spec key input = case (cmacBlockOf spec, cmacRbOf spec) of
+  (Just blk, Just rb) -> do
+    lz <- enc (BS.replicate blk 0)
+    case lz of
+      EngineFail err -> pure (EngineFail err)
+      EngineOk lb -> do
+        let k1 = gfDouble rb lb
+            k2 = gfDouble rb k1
+            blks = chunksOf blk input
+            (front, lastM) = case unsnoc blks of
+              Nothing -> ([], padBlock blk BS.empty `xorB` k2)
+              Just (pre, lst)
+                | BS.length lst == blk -> (pre, lst `xorB` k1)
+                | otherwise -> (pre, padBlock blk lst `xorB` k2)
+        chain (BS.replicate blk 0) (front ++ [lastM])
+  _ -> pure (EngineFail (BackendBadParam "cmac"
+    "CMAC needs an AES or 3DES ECB cipher spec"))
+  where
+    enc b = cipherEncrypt env spec key BS.empty b
+    chain x [] = pure (EngineOk x)
+    chain x (m : ms) = do
+      e <- enc (x `xorB` m)
+      case e of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk x' -> chain x' ms
+-- | The 3DES CBC-MAC tag: zero IV, input zero-padded to the
+-- 8-byte block, chaining over single-block ECB calls. Full
+-- width; truncation is the caller's call.
+des3macTag :: CryptoBackend b => BackendEnv b -> CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+des3macTag env spec key input
+  | spec /= C_DES3_ECB = pure (EngineFail (BackendBadParam "des3mac"
+      "3DES-MAC needs the 3DES ECB cipher spec"))
+  | otherwise = chain (BS.replicate blk 0) (zeroPad blk input)
+  where
+    blk = 8
+    enc b = cipherEncrypt env spec key BS.empty b
+    chain x [] = pure (EngineOk x)
+    chain x (m : ms) = do
+      e <- enc (x `xorB` m)
+      case e of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk x' -> chain x' ms
+-- | The CBC-MAC tag over a 128-bit-block cipher: zero IV,
+-- input zero-padded to the 16-byte block, chaining over
+-- single-block ECB calls. Full width; truncation is the
+-- caller's call.
+cbcmacTag :: CryptoBackend b => BackendEnv b -> CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+cbcmacTag env spec key input
+  | spec `notElem` served = pure (EngineFail (BackendBadParam "cbcmac"
+      "CBC-MAC needs an AES, ARIA, or Camellia ECB cipher spec"))
+  | otherwise = chain (BS.replicate blk 0) (zeroPad blk input)
+  where
+    blk = 16
+    served =
+      [ C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
+      , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
+      , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
+      ]
+    enc b = cipherEncrypt env spec key BS.empty b
+    chain x [] = pure (EngineOk x)
+    chain x (m : ms) = do
+      e <- enc (x `xorB` m)
+      case e of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk x' -> chain x' ms
+-- | The RFC 3566 XCBC-MAC tag: subkeys K1\/K2\/K3 from the
+-- 128-bit key over AES-128-ECB, 10* padding when the final
+-- block is short (K3) or K2 when full, chaining under K1 over
+-- single-block ECB calls. Full 16-byte width; truncation is
+-- the caller's call.
+xcbcTag :: CryptoBackend b => BackendEnv b -> CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
+xcbcTag env spec key input
+  | spec /= C_AES128_ECB = pure (EngineFail (BackendBadParam "xcbc"
+      "XCBC-MAC needs the AES-128 ECB cipher spec"))
+  | otherwise = do
+      k1 <- encKey key (BS.replicate blk 0x01)
+      k2 <- encKey key (BS.replicate blk 0x02)
+      k3 <- encKey key (BS.replicate blk 0x03)
+      case (k1, k2, k3) of
+        (EngineOk s1, EngineOk s2, EngineOk s3) ->
+          let blks = chunksOf blk input
+              (front, lastM) = case unsnoc blks of
+                Nothing -> ([], padBlock blk BS.empty `xorB` s3)
+                Just (pre, lst)
+                  | BS.length lst == blk -> (pre, lst `xorB` s2)
+                  | otherwise -> (pre, padBlock blk lst `xorB` s3)
+          in chain (KeyBytes s1) (BS.replicate blk 0) (front ++ [lastM])
+        (EngineFail err, _, _) -> pure (EngineFail err)
+        (_, EngineFail err, _) -> pure (EngineFail err)
+        (_, _, EngineFail err) -> pure (EngineFail err)
+  where
+    blk = 16
+    encKey k b = cipherEncrypt env spec k BS.empty b
+    chain _ x [] = pure (EngineOk x)
+    chain k x (m : ms) = do
+      e <- encKey k (x `xorB` m)
+      case e of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk x' -> chain k x' ms
+runCipher :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runCipher env dir mech key iv input = case key of
+  KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: cipher (mechanism, key length, params) rejected by the recipe"))
+    -- CTR parameters are the canonical image, not the raw
+    -- counter block: split the served 128-bit image (the recipe
+    -- already validated it; a mistimed image fails closed).
+    -- ChaCha20 parameters split the same way into the backend
+    -- (counter, nonce) framing.
+    Just spec -> case cipherImage iv of
+      Nothing -> pure (GotCryptoError (CryptoFailed
+        "driver: cipher parameter image rejected"))
+      Just cb -> case dir of
+        DirEncrypt -> toBytes <$> cipherEncrypt env spec key cb input
+        DirDecrypt -> toBytes <$> cipherDecrypt env spec key cb input
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "block ciphers need raw symmetric key bytes"))
+  where
+    cipherImage params = case ctrRecipeFor mech of
+      Just _ -> case decodeCtrParams params of
+        Just (128, cb) -> Just cb
+        _ -> Nothing
+      Nothing
+        | isChachaStreamMech mech -> case decodeChachaStreamParams params of
+            Just (counter, nonce) -> Just (encodeChachaIv counter nonce)
+            _ -> Nothing
+        -- RC2 parameters are the canonical image, not the raw
+        -- IV: split off the effective-bits word (the recipe
+        -- already validated the range and the row shape; the
+        -- spec carries the bits to the FFI control).
+        | isRc2Mech mech -> case decodeRc2Params params of
+            Just (_, splitIv) -> Just splitIv
+            _ -> Nothing
+        | otherwise -> Just params
+
+-- | AEAD cipher effects: the @gcm-params/1@ image decodes to
+-- (IV, AAD, tag length); the key length selects the AES width.
+-- Encrypt answers ciphertext and tag concatenated; decrypt
+-- splits the input at the tag length. An input shorter than
+-- the tag carries no tag to verify and fails authentication
+-- ('CryptoAuthFailed', never a wrong plaintext).
+runAead :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runAead env dir mech key params input = case key of
+  KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
+    Just (spec, iv, aad)
+      | isCcmMech mech, ccmLengthBad dir params input (aeadTagLen spec) ->
+          pure (GotCryptoError (CryptoFailed
+            "driver: CCM ulDataLen does not match the input length"))
+      | otherwise -> runAeadSealed env dir spec key iv aad input
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "AEAD needs raw symmetric key bytes"))
+-- | AEAD message effects: the parameters decode (IV, tag length)
+-- as above, but the AAD travels on the effect, not in the
+-- parameters.
+runAeadMessage :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
+runAeadMessage env dir mech key params aad input = case key of
+  KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
+    Just (spec, iv, _) -> runAeadSealed env dir spec key iv aad input
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "AEAD needs raw symmetric key bytes"))
+runAeadSealed :: CryptoBackend b => BackendEnv b -> CipherDir -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
+runAeadSealed env dir spec key iv aad input = case dir of
+  DirEncrypt -> toKemPair <$> aeadEncrypt env spec key iv aad input
+  DirDecrypt
+    | BS.length input < aeadTagLen spec -> pure (GotCryptoError (CryptoAuthFailed
+        "driver: AEAD input shorter than the authentication tag"))
+    | otherwise ->
+        let (ct, tag) = BS.splitAt (BS.length input - aeadTagLen spec) input
+        in toBytes <$> aeadDecrypt env spec key iv aad ct tag
+
+-- | RSA-OAEP cipher effects: the effect parameters carry the
+-- @oaep-params\/1@ encoding straight to the asymmetric backend
+-- entry points (encrypt takes the public half, decrypt the
+-- private half; both travel as DER key material).
+runOaep :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runOaep env dir mech key params input =
+  case rsaOaepParamsFor mech params of
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: OAEP mechanism parameters rejected by the recipe"))
+    Just oparams -> case dir of
+      DirEncrypt -> toBytes <$> pkeyEncrypt env (RsaOaep oparams) key input
+      DirDecrypt -> toBytes <$> pkeyDecrypt env (RsaOaep oparams) key input
+
+-- | RSA v1.5 cipher effects (wrap/unwrap only): empty
+-- parameters straight to the asymmetric backend entry points
+-- (encrypt takes the public half, decrypt the private half;
+-- both travel as DER key material).
+runPkcs1 :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runPkcs1 env dir _mech key params input
+  | not (BS.null params) = pure (GotCryptoError (CryptoFailed
+      "driver: v1.5 wrap takes no mechanism parameters"))
+  | otherwise = case dir of
+      DirEncrypt -> toBytes <$> pkeyEncrypt env RsaPkcs1 key input
+      DirDecrypt -> toBytes <$> pkeyDecrypt env RsaPkcs1 key input
+
+-- | RSA-X.509 cipher effects: empty parameters straight to the
+-- asymmetric backend entry points (encrypt takes the public
+-- half, decrypt the private half; both travel as DER key
+-- material). The backends left-pad short inputs to the modulus
+-- width and answer full k-blocks.
+runX509 :: CryptoBackend b => BackendEnv b -> CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runX509 env dir mech key params input =
+  case rsaX509CipherFor mech params of
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: X.509 mechanism parameters rejected by the recipe"))
+    Just cparams -> case dir of
+      DirEncrypt -> toBytes <$> pkeyEncrypt env cparams key input
+      DirDecrypt -> toBytes <$> pkeyDecrypt env cparams key input
+runAuthWrap :: CryptoBackend b => BackendEnv b -> Bool -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
+runAuthWrap env isWrap mech key iv aad input = case key of
+  KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: auth-wrap (mechanism, key length, params) rejected by the recipe"))
+    Just spec -> do
+      macKeyR <- macSign env hmacSpec key authWrapDomain
+      case macKeyR of
+        EngineFail err -> pure (GotCryptoError (toCryptoError err))
+        EngineOk macKey -> run (KeyBytes macKey) spec
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "auth-wrap needs raw symmetric key bytes"))
+  where
+    run macKey spec
+      | isWrap = wrapWith macKey spec
+      | badUnwrapLen = pure (GotCryptoError
+          (CryptoFailed "driver: authenticated blob length"))
+      | otherwise = unwrapWith macKey spec
+    badUnwrapLen = BS.length input < 32
+      || (BS.length input - 32) `mod` 16 /= 0
+    wrapWith macKey spec = do
+      ctR <- cipherEncrypt env spec key iv input
+      case ctR of
+        EngineFail err -> pure (GotCryptoError (toCryptoError err))
+        EngineOk ct -> do
+          tagR <- macSign env hmacSpec macKey (aad <> ct)
+          pure $ case tagR of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk tag -> GotBytes (ct <> tag)
+    unwrapWith macKey spec = do
+      let (ct, tag) = BS.splitAt (BS.length input - 32) input
+      verR <- macVerify env hmacSpec macKey (aad <> ct) tag
+      case verR of
+        EngineFail (BackendAuthFailed _) ->
+          pure (GotCryptoError (CryptoAuthFailed "auth-unwrap"))
+        EngineFail err -> pure (GotCryptoError (toCryptoError err))
+        EngineOk False ->
+          pure (GotCryptoError (CryptoAuthFailed "auth-unwrap"))
+        EngineOk True -> toBytes <$> cipherDecrypt env spec key iv ct
+-- | ECDH agreement effects: the backend agrees the full raw
+-- secret over (base key, peer public key) and the driver
+-- truncates to the planned length. A planned length past the
+-- secret is 'CryptoFailed' (the planner caps honestly, so this
+-- fires only for hand-built effects); backend key-shape
+-- refusals keep their taxonomy.
+runEcdh :: CryptoBackend b => BackendEnv b -> EcdhSpec -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
+runEcdh env spec key peer outLen
+  | outLen < 1 = pure (GotCryptoError (CryptoFailed
+      "driver: derive length out of range"))
+  | otherwise = do
+      r <- ecdhDerive env spec key (KeyDer peer)
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk secret
+          | BS.length secret < outLen -> GotCryptoError (CryptoFailed
+              "driver: derive length exceeds the agreement secret")
+          -- Truncation drops leading bytes (PKCS#11 v3.2 ECDH:
+          -- "removes bytes from the leading end"); full width
+          -- drops nothing.
+          | otherwise -> GotBytes
+              (BS.drop (BS.length secret - outLen) secret)
+-- | Classic DH agreement: the backend proves the full secret,
+-- truncation drops leading bytes (PKCS#11 v3.2 DH derive
+-- "removes bytes from the leading end", matching ECDH).
+runDh :: CryptoBackend b => BackendEnv b -> DhSpec -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
+runDh env spec key peer outLen
+  | outLen < 1 = pure (GotCryptoError (CryptoFailed
+      "driver: derive length out of range"))
+  | otherwise = do
+      r <- dhDerive env spec key (KeyDer peer)
+      pure $ case r of
+        EngineFail err -> GotCryptoError (toCryptoError err)
+        EngineOk secret
+          | BS.length secret < outLen -> GotCryptoError (CryptoFailed
+              "driver: derive length exceeds the agreement secret")
+          | otherwise -> GotBytes
+              (BS.drop (BS.length secret - outLen) secret)
+-- | ECDH-composition wrap: ephemeral transport keygen on
+-- the wrapping (recipient PUBLIC) key's domain, ECDH
+-- agreement of the transport private half against the
+-- wrapping public half, the FIRST agreement bytes as the AES
+-- KEK (NOT the derive truncation, which drops leading bytes),
+-- KWP seal of the target, blob = transport-pub || kwp-blob.
+-- Served primitives only (generateKey, ecdhDerive, the KWP
+-- cipher entry); the ephemeral key never persists. Opaque
+-- doubles transport on a fixed P-256 request (synthetic pairs
+-- are curve-independent opaque halves, so the row's curve
+-- family is immaterial there); real keys always scan.
+runEcdhCompWrap :: CryptoBackend b => BackendEnv b -> WrapCompEcdhRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runEcdhCompWrap env r wrapKey params target = case keyBytesOf wrapKey of
+  Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+    "composition wrapping key has no bytes"))
+  Just wrapB -> case wrapCompAesBytes params of
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: malformed wrap-composition parameters"))
+    Just aesBytes ->
+      let dom = wrapCompDomain wrapB
+      in case wrapCompPubPeer dom wrapB of
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: wrapping public peer rejected"))
+        Just recipPub -> do
+          g <- generateKey env (transportGen dom)
+          case g of
+            EngineFail err -> pure (GotCryptoError (toCryptoError err))
+            EngineOk (KeyDer tpriv, Just (KeyDer tpub)) ->
+              case ( wrapCompTransportPrefix r dom tpub
+                   , wrapCompTransportLen r dom ) of
+                (Just prefix, Just preLen)
+                  | BS.length prefix == preLen -> do
+                      s <- ecdhDerive env (compSpec r) (KeyDer tpriv) (KeyDer recipPub)
+                      case s of
+                        EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                        EngineOk secret
+                          | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
+                              "driver: agreement secret shorter than the KEK"))
+                          | otherwise -> do
+                              sealed <- runCipher env DirEncrypt aesKwpMech
+                                (KeyBytes (BS.take aesBytes secret)) BS.empty target
+                              case sealed of
+                                GotBytes ct -> pure (GotBytes (prefix <> ct))
+                                other -> pure other
+                _ -> pure (GotCryptoError (CryptoFailed
+                  "driver: transport framing failed"))
+            _ -> pure (GotCryptoError (CryptoFailed
+              "driver: transport keygen shape rejected"))
+  where
+    transportGen DomainOpaque = GenEC (EcSpec "P-256" "DER")
+    transportGen (DomainWeierstrass name _) =
+      GenEC (EcSpec (T.unpack name) "DER")
+    transportGen (DomainMontgomery name _) =
+      GenXDHKeypair (BC8.pack (T.unpack name))
+-- | ECDH-composition unwrap: split the transport prefix,
+-- re-derive the KEK against it, KWP-open the tail. KWP-open
+-- failures propagate as authentication faults (fail closed,
+-- never wrong plaintext).
+runEcdhCompUnwrap :: CryptoBackend b => BackendEnv b -> WrapCompEcdhRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runEcdhCompUnwrap env r unwrapKey params blob = case keyBytesOf unwrapKey of
+  Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+    "composition unwrapping key has no bytes"))
+  Just wrapB -> case wrapCompAesBytes params of
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: malformed wrap-composition parameters"))
+    Just aesBytes ->
+      let dom = wrapCompDomain wrapB
+      in case wrapCompSplitBlob r dom blob of
+        Nothing -> pure (GotCryptoError (CryptoFailed
+          "driver: composition blob framing rejected"))
+        Just (prefix, kwpBlob) ->
+          case wrapCompAgreePeer r dom prefix of
+            Nothing -> pure (GotCryptoError (CryptoFailed
+              "driver: composition transport peer rejected"))
+            Just peer -> do
+              s <- ecdhDerive env (compSpec r) unwrapKey (KeyDer peer)
+              case s of
+                EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                EngineOk secret
+                  | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
+                      "driver: agreement secret shorter than the KEK"))
+                  | otherwise ->
+                      runCipher env DirDecrypt aesKwpMech
+                        (KeyBytes (BS.take aesBytes secret)) BS.empty kwpBlob
+-- | The agreement spec for a composition row: cofactor from
+-- the row (COF over EC only; X over Montgomery is plain).
+compSpec :: WrapCompEcdhRecipe -> EcdhSpec
+compSpec r = if wceCofactor r then EcdhCofactor else EcdhPlain
+-- | RSA-composition wrap: mint a random temp KEK at the
+-- requested strength, OAEP-seal it under the recipient
+-- PUBLIC key, KWP-seal the target under the KEK, answer the
+-- modulus-wide OAEP head plus the KWP tail. Served
+-- primitives only (generateKey, pkeyEncrypt, the KWP cipher
+-- entry); the KEK never persists. Tag-sized synthetic seals
+-- frame modulus-wide through the recipe (exact-k real seals
+-- pass through).
+runRsaCompWrap :: CryptoBackend b => BackendEnv b -> WrapCompRsaRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runRsaCompWrap env _ wrapKey params target = case keyBytesOf wrapKey of
+  Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+    "composition wrapping key has no bytes"))
+  Just wrapB ->
+    case (wrapCompRsaModulusBytes wrapB, wrapCompRsaAesBytes params, wrapCompRsaOaep params) of
+      (Just k, Just aesBytes, Just (d, m, label)) -> case (rsaDigest d, rsaDigest m) of
+        (Just dh, Just mh) -> do
+          g <- generateKey env (GenSym "AES" aesBytes)
+          case g of
+            EngineOk (KeyBytes kek, _)
+              | BS.length kek == aesBytes -> do
+                  s <- pkeyEncrypt env (RsaOaep (OaepParams dh mh label)) wrapKey kek
+                  case s of
+                    EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                    EngineOk raw -> case wrapCompRsaFrameHead k (aesBytes + 16) raw of
+                      Nothing -> pure (GotCryptoError (CryptoFailed
+                        "driver: OAEP head escapes the modulus width"))
+                      Just framed -> do
+                        sealed <- runCipher env DirEncrypt aesKwpMech
+                          (KeyBytes kek) BS.empty target
+                        case sealed of
+                          GotBytes ct -> pure (GotBytes (framed <> ct))
+                          other -> pure other
+            EngineOk _ -> pure (GotCryptoError (CryptoFailed
+              "driver: temp KEK keygen shape rejected"))
+            EngineFail err -> pure (GotCryptoError (toCryptoError err))
+        _ -> pure (GotCryptoError (CryptoFailed
+          "driver: OAEP digest stems rejected"))
+      _ -> pure (GotCryptoError (CryptoFailed
+        "driver: malformed wrap-composition parameters"))
+-- | RSA-composition unwrap: split the modulus-wide head,
+-- OAEP-open the KEK with the PRIVATE key (length-tripwired),
+-- KWP-open the tail. Open failures propagate as
+-- authentication faults (fail closed, never wrong
+-- plaintext).
+runRsaCompUnwrap :: CryptoBackend b => BackendEnv b -> WrapCompRsaRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runRsaCompUnwrap env _ unwrapKey params blob = case keyBytesOf unwrapKey of
+  Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+    "composition unwrapping key has no bytes"))
+  Just wrapB ->
+    case (wrapCompRsaModulusBytes wrapB, wrapCompRsaAesBytes params, wrapCompRsaOaep params) of
+      (Just k, Just aesBytes, Just (d, m, label)) ->
+        case wrapCompRsaSplitBlob k blob of
+          Nothing -> pure (GotCryptoError (CryptoFailed
+            "driver: composition blob framing rejected"))
+          Just (framed, kwpBlob) -> case (rsaDigest d, rsaDigest m) of
+            (Just dh, Just mh) -> do
+              let inner = wrapCompRsaUnframeHead k (aesBytes + 16) framed
+              o <- pkeyDecrypt env (RsaOaep (OaepParams dh mh label)) unwrapKey inner
+              case o of
+                EngineFail err -> pure (GotCryptoError (toCryptoError err))
+                EngineOk kek
+                  | BS.length kek == aesBytes ->
+                      runCipher env DirDecrypt aesKwpMech
+                        (KeyBytes kek) BS.empty kwpBlob
+                  | otherwise -> pure (GotCryptoError (CryptoFailed
+                      "driver: opened KEK escapes the requested strength"))
+            _ -> pure (GotCryptoError (CryptoFailed
+              "driver: OAEP digest stems rejected"))
+      _ -> pure (GotCryptoError (CryptoFailed
+        "driver: malformed wrap-composition parameters"))
+-- | Raw bytes out of key material (DER halves and byte seeds;
+-- backend references carry no bytes here).
+keyBytesOf :: KeyMaterial -> Maybe ByteString
+keyBytesOf (KeyBytes b) = Just b
+keyBytesOf (KeyDer b) = Just b
+keyBytesOf _ = Nothing
+-- | SHA key-derivation effects: digest the base value,
+-- truncate to the planned length (capped by the digest width —
+-- the planner caps honestly, so over-width fires only for
+-- hand-built effects).
+runShaKd :: CryptoBackend b => BackendEnv b -> DigestAlg -> KeyMaterial -> Int -> IO CryptoResult
+runShaKd env alg key outLen = case key of
+  KeyBytes kb -> case digestOutLen alg of
+    Just w
+      | outLen >= 1 && outLen <= w -> do
+          r <- digestOneShot env alg kb
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk d -> GotBytes (BS.take outLen d)
+    _ -> pure (GotCryptoError (CryptoFailed
+      "driver: derive length out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+-- | Pub-from-priv extraction: the backend answers the DER
+-- SPKI for the base half (any material shape the backend
+-- resolves); the finisher parses and stamps per key type.
+runPubFromPriv :: CryptoBackend b => BackendEnv b -> KeyMaterial -> IO CryptoResult
+runPubFromPriv env key = do
+  r <- pubFromPriv env key
+  pure $ case r of
+    EngineFail err -> GotCryptoError (toCryptoError err)
+    EngineOk spki -> GotBytes spki
+-- | SHAKE XOF key-derivation effects: XOF output at the planned
+-- length (capped by 'maxXofTotal' — the planner caps honestly,
+-- so over-ceiling fires only for hand-built effects).
+runXofKd :: CryptoBackend b => BackendEnv b -> DigestAlg -> KeyMaterial -> Int -> IO CryptoResult
+runXofKd env alg key outLen = case key of
+  KeyBytes kb
+    | outLen >= 1 && outLen <= maxXofTotal -> do
+        r <- digestXof env alg kb outLen
+        pure $ case r of
+          EngineFail err -> GotCryptoError (toCryptoError err)
+          EngineOk d -> GotBytes d
+    | otherwise -> pure (GotCryptoError (CryptoFailed
+        "driver: XOF derive length out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+-- | Encrypt-data derive: single-shot cipher encryption of the
+-- framed data under the base key, truncated to the planned
+-- length (the planner caps at the data width; an out-of-range
+-- request fails closed here too). Off-geometry triples are
+-- 'CryptoFailed'; a non-bytes key is 'CryptoBadKey'.
+runEncryptData :: CryptoBackend b => BackendEnv b -> MechanismId -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
+runEncryptData env mech key params outLen = case key of
+  KeyBytes kb -> case encryptDataPartsFor mech (BS.length kb) params of
+    Just (spec, iv, dat)
+      | outLen >= 1 && outLen <= BS.length dat -> do
+          r <- cipherEncrypt env spec key iv dat
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk d -> GotBytes (BS.take outLen d)
+      | otherwise -> pure (GotCryptoError (CryptoFailed
+          "driver: derive length out of range"))
+    Nothing -> pure (GotCryptoError (CryptoFailed
+      "driver: encrypt-data (mechanism, key length, params) rejected by the recipe"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "encrypt-data base key is not byte material"))
+-- | PBKDF2 effects: the RFC 8018 iteration over the HMAC PRF,
+-- truncated to the planned length (capped by the shared
+-- ceiling).
+runPbkd2 :: CryptoBackend b => BackendEnv b -> Pbkd2Params -> KeyMaterial -> Int -> IO CryptoResult
+runPbkd2 env (Pbkd2Params prf iters salt) key outLen = case key of
+  KeyBytes _
+    | outLen >= 1 && outLen <= maxDerivedTotal -> do
+        r <- pbkdf2 env prf iters salt key outLen
+        pure $ case r of
+          EngineFail err -> GotCryptoError (toCryptoError err)
+          EngineOk dk -> GotBytes (BS.take outLen dk)
+    | otherwise -> pure (GotCryptoError (CryptoFailed
+        "driver: derive length out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+-- | PBKDF2 proper: T_i = F(password, salt, iters, i) with the
+-- HMAC PRF, concatenated across ceil(outLen\/hLen) blocks.
+pbkdf2 :: CryptoBackend b => BackendEnv b -> DigestAlg -> Int -> ByteString -> KeyMaterial -> Int -> IO (EngineResult ByteString)
+pbkdf2 env prf iters salt pwd outLen = case digestOutLen prf of
+  Nothing -> pure (EngineFail (BackendBadParam "pbkdf2"
+    "PBKDF2 needs a fixed-width PRF"))
+  Just h -> do
+    let n = (outLen + h - 1) `div` h
+    go n 1 []
+  where
+    go 0 _ acc = pure (EngineOk (BS.concat (reverse acc)))
+    go k i acc = do
+      b <- fBlock i
+      case b of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk t -> go (k - 1) (i + 1) (t : acc)
+    fBlock i = do
+      u1 <- prfOf (salt <> word32BE i)
+      case u1 of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk u -> mix (iters - 1) u u
+    mix 0 acc _ = pure (EngineOk acc)
+    mix k acc prev = do
+      u <- prfOf prev
+      case u of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk u' -> mix (k - 1) (acc `xorB` u') u'
+    prfOf msg = macSign env (MacHMAC prf Nothing) pwd msg
+-- | PBE keygen effects: the §6.38 PKCS#12 construction over
+-- SHA-1 (u = 20, v = 64): ID 1 derives the key
+-- (parity-adjusted for the DES rows only), ID 2 the IV.
+-- Digests run through the provider; the B-feedback
+-- addition is pure byte arithmetic. IV rows answer the
+-- framed key\/IV pair; no-IV rows (RC4) answer the lone
+-- key.
+runPbe :: CryptoBackend b => BackendEnv b -> Word64 -> ByteString -> ByteString -> Int -> Bool -> Int -> IO CryptoResult
+runPbe env iters pw salt keyLen parity ivLen = do
+  rK <- pbeDChain 1 keyLen
+  if ivLen > 0
+    then do
+      rV <- pbeDChain 2 ivLen
+      pure $ case (rK, rV) of
+        (EngineOk k, EngineOk v) ->
+          GotBytes (encodeKeyPair (finish k) (Just v))
+        (EngineFail err, _) -> GotCryptoError (toCryptoError err)
+        (_, EngineFail err) -> GotCryptoError (toCryptoError err)
+    else pure $ case rK of
+      EngineOk k -> toKeyPair (EngineOk (KeyBytes (finish k), Nothing))
+      EngineFail err -> GotCryptoError (toCryptoError err)
+  where
+    finish = if parity then pbeDesParity else id
+    pbeDChain :: Word8 -> Int -> IO (EngineResult ByteString)
+    pbeDChain ident n = loop n (expand salt <> expand pw) []
+      where
+        d = BS.replicate 64 ident
+        expand s
+          | BS.null s = BS.empty
+          | otherwise =
+              let target = 64 * ((BS.length s + 63) `div` 64)
+                  copies = target `div` BS.length s + 1
+              in BS.take target (BS.concat (replicate copies s))
+        loop remaining i acc
+          | remaining <= 0 =
+              pure (EngineOk (BS.take n (BS.concat (reverse acc))))
+          | otherwise = do
+              r <- hashTimes (fromIntegral iters) (d <> i)
+              case r of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk a -> loop (remaining - 20) (feedback a i) (a : acc)
+        feedback a i = BS.concat (map (addBlock bInt) (chunks i))
+          where
+            b = BS.take 64 (BS.concat (replicate 4 a))
+            bInt = beInt b
+            chunks x
+              | BS.null x = []
+              | otherwise = let (h, t) = BS.splitAt 64 x in h : chunks t
+            addBlock bi blk =
+              beBytes 64 ((beInt blk + bi + 1) `mod` (2 ^ (512 :: Int)))
+        hashTimes :: Int -> ByteString -> IO (EngineResult ByteString)
+        hashTimes 0 msg = pure (EngineOk msg)
+        hashTimes k msg = do
+          r <- digestOneShot env D_SHA1 msg
+          case r of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk dig -> hashTimes (k - 1) dig
+        beInt :: ByteString -> Integer
+        beInt = BS.foldl' (\a w -> a * 256 + fromIntegral w) 0
+        beBytes :: Int -> Integer -> ByteString
+        beBytes len v =
+          BS.pack [fromIntegral ((v `div` (256 ^ i)) `mod` 256)
+                  | i <- [len - 1, len - 2 .. 0]]
+-- | MD5 D-chain: @D1 = MD5^c(P||S)@ (the provider-PBKDF1
+-- root, byte-exact), @D{i+1} = MD5^c(Di||P||S)@ past the
+-- 16-byte PBKDF1 cap; key = stream[0:keyLen], IV =
+-- stream[keyLen:keyLen+8]. Digests run through the
+-- provider. The answer frames the key\/IV pair.
+runPbkdf1 :: CryptoBackend b => BackendEnv b -> Word64 -> ByteString -> ByteString -> Int -> Bool -> IO CryptoResult
+runPbkdf1 env iters pw salt keyLen parity = do
+  r <- chain (keyLen + 8) BS.empty []
+  pure $ case r of
+    EngineFail err -> GotCryptoError (toCryptoError err)
+    EngineOk stream ->
+      let (k, v) = BS.splitAt keyLen (BS.take (keyLen + 8) stream)
+      in GotBytes (encodeKeyPair (finish k) (Just v))
+  where
+    finish = if parity then pbeDesParity else id
+    chain :: Int -> ByteString -> [ByteString] -> IO (EngineResult ByteString)
+    chain remaining prev acc
+      | remaining <= 0 = pure (EngineOk (BS.concat (reverse acc)))
+      | otherwise = do
+          r <- hashTimes (fromIntegral iters) (prev <> pw <> salt)
+          case r of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk d -> chain (remaining - 16) d (d : acc)
+    hashTimes :: Int -> ByteString -> IO (EngineResult ByteString)
+    hashTimes 0 msg = pure (EngineOk msg)
+    hashTimes k msg = do
+      r <- digestOneShot env D_MD5 msg
+      case r of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk d -> hashTimes (k - 1) d
+-- | SP 800-108 effects: the mode expansion over the HMAC
+-- route, truncated to the planned length (capped by
+-- 'maxSp800Total' with the L-fit check — the planner caps
+-- honestly, so off-range fires only for hand-built
+-- effects). A non-bytes key is 'CryptoBadKey'.
+runSp800 :: CryptoBackend b => BackendEnv b -> Sp800Exec -> KeyMaterial -> Int -> IO CryptoResult
+runSp800 env ex key outLen = case key of
+  KeyBytes kb
+    | outLen >= 1 && outLen <= maxSp800Total
+    , toInteger outLen * 8 < 2 ^ seLengthBits ex
+    , seMode ex /= Sp800Counter
+      || toInteger ((outLen + seHashLen ex - 1) `div` seHashLen ex)
+         <= 2 ^ seCounterBits ex - 1 -> do
+        r <- sp800Expand env ex kb outLen
+        pure $ case r of
+          EngineFail err -> GotCryptoError (toCryptoError err)
+          EngineOk d -> GotBytes (BS.take outLen d)
+    | otherwise -> pure (GotCryptoError (CryptoFailed
+        "driver: SP800-108 length out of range or widths do not fit"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+-- | SP 800-108 expansion (NIST SP 800-108 §5.1\/5.2\/5.3)
+-- over the HMAC route: counter @K(i) = PRF(KI, [i]_r ||
+-- fixed || [L]_l)@, feedback @K(i) = PRF(KI, K(i-1) ||
+-- fixed || [L]_l)@ with @K(0) = IV@, double-pipeline @A(i)
+-- = PRF(KI, A(i-1))@, @K(i) = PRF(KI, A(i) || fixed ||
+-- [L]_l)@ with @A(0) = fixed || [L]_l@. L is the derived
+-- bit-length by construction; counter mode refuses past
+-- @2^r - 1@ iterations (never wraps).
+sp800Expand :: CryptoBackend b => BackendEnv b -> Sp800Exec -> ByteString -> Int -> IO (EngineResult ByteString)
+sp800Expand env ex kb outLen
+  | seMode ex == Sp800Counter
+  , toInteger n > 2 ^ seCounterBits ex - 1 = pure (EngineFail (BackendBadParam "sp800Expand"
+      "iteration count exceeds the counter width"))
+  | otherwise = case seMode ex of
+      Sp800Counter -> goCounter 1 []
+      Sp800Feedback -> goFeedback n (seIv ex) []
+      Sp800DoublePipeline -> goPipeline n suffix []
+  where
+    spec = MacHMAC (seAlg ex) Nothing
+    key = KeyBytes kb
+    h = seHashLen ex
+    n = (outLen + h - 1) `div` h
+    suffix = seFixed ex <> encodeW (seLengthBits ex `div` 8) (outLen * 8)
+    rBytes = seCounterBits ex `div` 8
+    encodeW w v = BS.pack [fromIntegral ((v `div` 256 ^ i) `mod` 256) | i <- [w - 1, w - 2 .. 0]]
+    goCounter i acc
+      | i > n = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
+      | otherwise = do
+          t <- macSign env spec key (encodeW rBytes i <> suffix)
+          case t of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk blk -> goCounter (i + 1) (blk : acc)
+    goFeedback 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
+    goFeedback k prev acc = do
+      t <- macSign env spec key (prev <> suffix)
+      case t of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk blk -> goFeedback (k - 1) blk (blk : acc)
+    goPipeline 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
+    goPipeline k aPrev acc = do
+      aNext <- macSign env spec key aPrev
+      case aNext of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk a -> do
+          p <- macSign env spec key (a <> suffix)
+          case p of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk blk -> goPipeline (k - 1) a (blk : acc)
+-- | TLS-PRF effects: the RFC 2246 expansion over the backend
+-- HMAC-MD5\/SHA-1 routes. Off-range lengths are 'CryptoFailed';
+-- a non-bytes key is 'CryptoBadKey'.
+runTlsPrf :: CryptoBackend b => BackendEnv b -> TlsPrfParams -> KeyMaterial -> Int -> IO CryptoResult
+runTlsPrf env (TlsPrfParams lab seed) key outLen = case key of
+  KeyBytes kb
+    | outLen >= 1 && outLen <= maxTlsPrfOutput -> do
+        r <- tlsPrfExpand env kb (lab <> seed) outLen
+        pure $ case r of
+          EngineFail err -> GotCryptoError (toCryptoError err)
+          EngineOk ok -> GotBytes (BS.take outLen ok)
+    | otherwise -> pure (GotCryptoError (CryptoFailed
+        "driver: derive length out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+-- | TLS-KDF effects: the legacy RFC 2246 expansion or
+-- @P_hash@ over the selected digest, with the RFC 5705
+-- context suffix (2-byte big-endian length plus context)
+-- when present. Off-range lengths are 'CryptoFailed'; a
+-- non-bytes key is 'CryptoBadKey'.
+runTlsKdf :: CryptoBackend b => BackendEnv b -> TlsKdfExec -> KeyMaterial -> Int -> IO CryptoResult
+runTlsKdf env ex key outLen = case key of
+  KeyBytes kb
+    | outLen >= 1 && outLen <= maxTlsKdfOutput -> do
+        let seedFull = teLabel ex <> teSeed ex <> ctxSuffix (teContext ex)
+        r <- case (teLegacy ex, teAlg ex) of
+          (True, _) -> tlsPrfExpand env kb seedFull outLen
+          (False, Just alg) -> pHash env alg (KeyBytes kb) seedFull outLen
+          (False, Nothing) -> pure (EngineFail (BackendBadParam "runTlsKdf"
+            "TLS-KDF hash PRF without a digest"))
+        pure $ case r of
+          EngineFail err -> GotCryptoError (toCryptoError err)
+          EngineOk ok -> GotBytes (BS.take outLen ok)
+    | otherwise -> pure (GotCryptoError (CryptoFailed
+        "driver: derive length out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+-- | Key-material effects: the TLS PRF ("key expansion"
+-- over server ++ client randoms, RFC 2246 §6.3) expanded to
+-- the planned block length — legacy for TLS 1.0, P_hash
+-- over the selected digest for TLS 1.2. The planner sizes
+-- the block (KEY_SAFE excludes IVs); the finisher splits it
+-- into keys + IVs. Off-range lengths are 'CryptoFailed'; a
+-- non-bytes key is 'CryptoBadKey'.
+runKeyMat :: CryptoBackend b => BackendEnv b -> KeyMatExec -> KeyMaterial -> Int -> IO CryptoResult
+runKeyMat env ex key outLen = case key of
+  KeyBytes kb
+    | outLen >= 1 && outLen <= maxTlsKeyMatBlock -> do
+        let seedFull = tlsKeyMatLabel <> kmeSr ex <> kmeCr ex
+        r <- if kmePrf ex == 0
+          then tlsPrfExpand env kb seedFull outLen
+          else case kdfCodeDigest (fromIntegral (kmePrf ex)) >>= rsaDigest of
+            Just alg -> pHash env alg (KeyBytes kb) seedFull outLen
+            Nothing -> pure (EngineFail (BackendBadParam "runKeyMat"
+              "key-material hash PRF without a digest"))
+        pure $ case r of
+          EngineFail err -> GotCryptoError (toCryptoError err)
+          EngineOk ok -> GotBytes (BS.take outLen ok)
+    | otherwise -> pure (GotCryptoError (CryptoFailed
+        "driver: derive length out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+-- | SSL3 derive effects: the RFC 6101 constructions over
+-- provider MD5\/SHA-1. Master rows emit the fixed 48-byte
+-- §6.1 secret; the keymat row emits the §6.2.2 block
+-- (pad bytes @A@..@0xFF@: past round 191 the
+-- construction is undefined, so over-bound blocks fail
+-- typed even when called past the planner).
+runSsl3 :: CryptoBackend b => BackendEnv b -> Ssl3Exec -> KeyMaterial -> Int -> IO CryptoResult
+runSsl3 env ex key outLen = case key of
+  KeyBytes kb
+    | outLen >= 1 && outLen <= maxSsl3KeyBlock -> case ex of
+        Ssl3MasterExec cr sr -> do
+          r <- ssl3Master env kb cr sr
+          pure $ case r of
+            EngineFail err -> GotCryptoError (toCryptoError err)
+            EngineOk ok -> GotBytes (BS.take outLen ok)
+        Ssl3KeyMatExec mac k iv cr sr ->
+          let total = 2 * mac + 2 * k + 2 * iv
+          in if total < 1 || total > maxSsl3KeyBlock
+            then pure (GotCryptoError (CryptoFailed
+              "driver: SSL3 key block past the 191-round construction bound"))
+            else do
+              r <- ssl3Block env kb cr sr total
+              pure $ case r of
+                EngineFail err -> GotCryptoError (toCryptoError err)
+                EngineOk ok -> GotBytes (BS.take outLen ok)
+    | otherwise -> pure (GotCryptoError (CryptoFailed
+        "driver: derive length out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+-- | RFC 6101 §6.1: @MD5(secret + SHA1(pad + secret + CR
+-- + SR))@ over pads @A@, @BB@, @CCC@.
+ssl3Master :: CryptoBackend b => BackendEnv b -> ByteString -> ByteString -> ByteString -> IO (EngineResult ByteString)
+ssl3Master env secret cr sr = go pads []
+  where
+    pads = [BS.singleton 65, BS.pack [66, 66], BS.pack [67, 67, 67]]
+    go [] acc = pure (EngineOk (BS.concat (reverse acc)))
+    go (pad : rest) acc = do
+      rSha <- digestOneShot env D_SHA1 (pad <> secret <> cr <> sr)
+      case rSha of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk sha -> do
+          rMd5 <- digestOneShot env D_MD5 (secret <> sha)
+          case rMd5 of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk d -> go rest (d : acc)
+-- | RFC 6101 §6.2.2: @MD5(secret + SHA1(pad + secret + SR
+-- + CR))@ iterated, pad @i@ is byte @(0x41 + i - 1)@
+-- repeated @i@ times (note server random first).
+ssl3Block :: CryptoBackend b => BackendEnv b -> ByteString -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
+ssl3Block env secret cr sr total = go 1 []
+  where
+    go i acc
+      | length acc * 16 >= total = pure (EngineOk (BS.take total (BS.concat (reverse acc))))
+      | i > 191 = pure (EngineFail (BackendBadParam "ssl3Block"
+          "SSL3 key block past the 191-round construction bound"))
+      | otherwise = do
+          let pad = BS.replicate i (65 + fromIntegral i - 1)
+          rSha <- digestOneShot env D_SHA1 (pad <> secret <> sr <> cr)
+          case rSha of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk sha -> do
+              rMd5 <- digestOneShot env D_MD5 (secret <> sha)
+              case rMd5 of
+                EngineFail err -> pure (EngineFail err)
+                EngineOk d -> go (i + 1) (d : acc)
+-- | SSL3 MAC sign effects: @H(secret + pad2 + H(secret +
+-- pad1 + data))@ truncated to the requested whole-byte
+-- length (pads 48 bytes MD5, 40 bytes SHA-1).
+runSsl3MacSign :: CryptoBackend b => BackendEnv b -> DigestAlg -> Int -> KeyMaterial -> ByteString -> IO CryptoResult
+runSsl3MacSign env alg n key input = case key of
+  KeyBytes kb -> do
+    r <- ssl3Mac env alg kb input
+    pure $ case r of
+      EngineFail err -> GotCryptoError (toCryptoError err)
+      EngineOk full -> GotBytes (BS.take n full)
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "SSL3 MAC needs raw symmetric key bytes"))
+-- | SSL3 MAC verify effects: recompute, truncate,
+-- constant-time compare. A mismatch is the 'False'
+-- verdict, never a malfunction.
+runSsl3MacVerify :: CryptoBackend b => BackendEnv b -> DigestAlg -> Int -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
+runSsl3MacVerify env alg n key input tag = case key of
+  KeyBytes kb -> do
+    r <- ssl3Mac env alg kb input
+    pure $ case r of
+      EngineFail err -> GotCryptoError (toCryptoError err)
+      EngineOk full
+        | driverCtEq (BS.take n full) tag -> GotValid True
+        | otherwise -> GotValid False
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "SSL3 MAC needs raw symmetric key bytes"))
+-- | The RFC 6101 MAC core over the resolved digest.
+ssl3Mac :: CryptoBackend b => BackendEnv b -> DigestAlg -> ByteString -> ByteString -> IO (EngineResult ByteString)
+ssl3Mac env alg secret input = case alg of
+  D_MD5 -> macWith 48
+  D_SHA1 -> macWith 40
+  _ -> pure (EngineFail (BackendBadParam "ssl3Mac"
+    "SSL3 MAC needs MD5 or SHA-1"))
+  where
+    macWith padLen = do
+      let pad1 = BS.replicate padLen 0x36
+          pad2 = BS.replicate padLen 0x5c
+      rInner <- digestOneShot env alg (secret <> pad1 <> input)
+      case rInner of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk inner -> digestOneShot env alg (secret <> pad2 <> inner)
+-- | RFC 5705 context suffix: empty without context, else the
+-- 2-byte big-endian length plus the context.
+ctxSuffix :: ByteString -> ByteString
+ctxSuffix ctx
+  | BS.null ctx = BS.empty
+  | otherwise = BS.pack [fromIntegral (n `div` 256), fromIntegral (n `mod` 256)] <> ctx
+  where n = BS.length ctx
+-- | TLS 1.0\/1.1 PRF: P_MD5 over the first secret half XOR
+-- P_SHA-1 over the second (RFC 2246 §5; the halves share the
+-- middle byte on odd lengths).
+tlsPrfExpand :: CryptoBackend b => BackendEnv b -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
+tlsPrfExpand env secret seedBytes outLen = do
+  m <- pHash env D_MD5 (KeyBytes s1) seedBytes outLen
+  case m of
+    EngineFail err -> pure (EngineFail err)
+    EngineOk mOut -> do
+      s <- pHash env D_SHA1 (KeyBytes s2) seedBytes outLen
+      pure $ case s of
+        EngineFail err -> EngineFail err
+        EngineOk sOut -> EngineOk (BS.take outLen mOut `xorB` BS.take outLen sOut)
+  where
+    (s1, s2) = splitTlsSecret secret
+-- | P_hash: A(0) = seed, A(i) = HMAC(secret, A(i-1)),
+-- P(i) = HMAC(secret, A(i) ++ seed), concatenated.
+pHash :: CryptoBackend b => BackendEnv b -> DigestAlg -> KeyMaterial -> ByteString -> Int -> IO (EngineResult ByteString)
+pHash env alg secret seedBytes outLen = case digestOutLen alg of
+  Nothing -> pure (EngineFail (BackendBadParam "pHash"
+    "TLS-PRF needs a fixed-width HMAC"))
+  Just h -> do
+    let n = (outLen + h - 1) `div` h
+    go n seedBytes []
+  where
+    go 0 _ acc = pure (EngineOk (BS.concat (reverse acc)))
+    go k aPrev acc = do
+      aNext <- macSign env (MacHMAC alg Nothing) secret aPrev
+      case aNext of
+        EngineFail err -> pure (EngineFail err)
+        EngineOk a -> do
+          p <- macSign env (MacHMAC alg Nothing) secret (a <> seedBytes)
+          case p of
+            EngineFail err -> pure (EngineFail err)
+            EngineOk blk -> go (k - 1) a (blk : acc)
+-- | IKE effects over the HMAC route: prf+ iteration,
+-- the single-shot PRF in either role order, the IKEv1
+-- single shot over the aux keygxy input, and the
+-- counter-less extended iteration (truncating the base
+-- when neither aux nor extra is present — the oracle
+-- reference rule). Off-range lengths are 'CryptoFailed';
+-- non-bytes keys are 'CryptoBadKey'.
+runIke :: CryptoBackend b => BackendEnv b -> IkeExec -> KeyMaterial -> Maybe KeyMaterial -> Int -> IO CryptoResult
+runIke env ex key mAux outLen = case key of
+  KeyBytes kb -> case auxOf mAux of
+    Left err -> pure (GotCryptoError err)
+    Right auxB -> case ieKind ex of
+      Ike2PrfPlus
+        | outLen >= 1
+        , Just h <- digestOutLen (ieAlg ex)
+        , (outLen + h - 1) `div` h <= 255 -> do
+            r <- ikePrfPlusExpand env (ieAlg ex) kb (ieBlob1 ex) outLen
+            pure $ case r of
+              EngineFail err -> GotCryptoError (toCryptoError err)
+              EngineOk d -> GotBytes (BS.take outLen d)
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: IKE prf+ length out of range"))
+      IkePrf
+        | outLen >= 1, Just h <- digestOutLen (ieAlg ex), outLen <= h -> do
+            let (kk, msg) = if ieFlags ex == 1
+                  then (ieBlob1 ex <> ieBlob2 ex, kb)
+                  else (kb, ieBlob1 ex <> ieBlob2 ex)
+            r <- macSign env (MacHMAC (ieAlg ex) Nothing) (KeyBytes kk) msg
+            pure $ case r of
+              EngineFail err -> GotCryptoError (toCryptoError err)
+              EngineOk d -> GotBytes (BS.take outLen d)
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: IKE PRF length out of range"))
+      Ike1Prf -> case auxB of
+        -- Unreachable post-dispatch (IKEv1-PRF needs aux);
+        -- typed, never a crash.
+        Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+          "IKEv1-PRF derive binds no keygxy key"))
+        Just gx
+          | outLen >= 1, Just h <- digestOutLen (ieAlg ex), outLen <= h -> do
+              let msg = gx <> ieBlob1 ex <> ieBlob2 ex <> BS.singleton (ieKeyNum ex)
+              r <- macSign env (MacHMAC (ieAlg ex) Nothing) (KeyBytes kb) msg
+              pure $ case r of
+                EngineFail err -> GotCryptoError (toCryptoError err)
+                EngineOk d -> GotBytes (BS.take outLen d)
+          | otherwise -> pure (GotCryptoError (CryptoFailed
+              "driver: IKEv1-PRF length out of range"))
+      Ike1Extended
+        | outLen >= 1 && outLen <= maxIkeOutput
+        , extTruncOk auxB (ieBlob1 ex) (BS.length kb) outLen -> do
+            r <- ikeExtExpand env (ieAlg ex) kb auxB (ieBlob1 ex) outLen
+            pure $ case r of
+              EngineFail err -> GotCryptoError (toCryptoError err)
+              EngineOk d -> GotBytes (BS.take outLen d)
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: IKE extended length out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+  where
+    auxOf Nothing
+      | ikeNeedsAux ex = Left (CryptoBadKey "driver" "IKE derive binds no aux key")
+      | otherwise = Right Nothing
+    auxOf (Just (KeyBytes ab)) = Right (Just ab)
+    auxOf (Just _) = Left (CryptoBadKey "driver" "IKE aux key is not byte material")
+    -- | The truncation rule admits the request: without aux
+    -- input the output must fit the base.
+    extTruncOk Nothing extra kbLen wantLen = not (BS.null extra) || wantLen <= kbLen
+    extTruncOk (Just _) _ _ _ = True
+-- | Byte-op derives: pure byte manipulation over secret
+-- material (no backend crypto — identical on both
+-- backends). Concat rows join base and second input and
+-- truncate to the planned length; XOR folds the first
+-- planned-length bytes of both inputs (at most the shorter
+-- one; the planner refuses a longer length first); EXTRACT
+-- slices whole bytes at the bit offset, bit-exact
+-- (MSB-first) for sub-byte offsets. Off-range lengths are 'CryptoFailed';
+-- non-bytes keys are 'CryptoBadKey'.
+runByteOps :: ByteOpsExec -> KeyMaterial -> Maybe KeyMaterial -> Int -> IO CryptoResult
+runByteOps ex key mAux outLen = case key of
+  KeyBytes kb -> case auxOf mAux of
+    Left err -> pure (GotCryptoError err)
+    Right auxB -> case boeKind ex of
+      ConcatBaseAndKey -> case auxB of
+        -- Unreachable post-dispatch (concat-key needs
+        -- aux); typed, never a crash.
+        Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
+          "concat-key derive binds no second key"))
+        Just sb
+          | outLen >= 1, outLen <= BS.length kb + BS.length sb ->
+              pure (GotBytes (BS.take outLen (kb <> sb)))
+          | otherwise -> pure (GotCryptoError (CryptoFailed
+              "driver: concat-key length out of range"))
+      ConcatBaseAndData
+        | outLen >= 1, outLen <= BS.length kb + BS.length dat ->
+            pure (GotBytes (BS.take outLen (kb <> dat)))
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: concat-data length out of range"))
+      ConcatDataAndBase
+        | outLen >= 1, outLen <= BS.length dat + BS.length kb ->
+            pure (GotBytes (BS.take outLen (dat <> kb)))
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: data-concat length out of range"))
+      XorBaseAndData
+        | outLen >= 1
+        , outLen <= min (BS.length kb) (BS.length dat) ->
+            pure (GotBytes (BS.take outLen (kb `xorB` dat)))
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: XOR length out of range"))
+      ExtractKeyFromKey
+        | outLen >= 1
+        , toInteger off + toInteger outLen * 8 <= toInteger (BS.length kb) * 8 ->
+            pure (GotBytes (extractBits kb (fromIntegral off) outLen))
+        | otherwise -> pure (GotCryptoError (CryptoFailed
+            "driver: EXTRACT window out of range"))
+  _ -> pure (GotCryptoError (CryptoBadKey "driver"
+    "key derivation needs raw secret bytes"))
+  where
+    dat = boeData ex
+    off = boeOff ex
+    auxOf Nothing
+      | byteOpsNeedsAux ex = Left (CryptoBadKey "driver" "byte-op derive binds no aux key")
+      | otherwise = Right Nothing
+    auxOf (Just (KeyBytes ab)) = Right (Just ab)
+    auxOf (Just _) = Left (CryptoBadKey "driver" "byte-op aux key is not byte material")
+-- | Bit-exact slice (MSB-first): @n@ whole bytes starting
+-- at bit @off@ of the input (the caller keeps the window
+-- in range).
+extractBits :: ByteString -> Int -> Int -> ByteString
+extractBits bs off n = BS.pack [byteAt i | i <- [0 .. n - 1]]
+  where
+    byteAt i = foldl setBit 0 [0 .. 7]
+      where
+        setBit acc j
+          | bitAt (off + i * 8 + j) = acc .|. (1 `shiftL` (7 - j))
+          | otherwise = acc
+    bitAt p = testBit (BS.index bs (p `div` 8)) (7 - (p `mod` 8))
+-- | IKEv2 prf+ (RFC 4306 §2.8): @T(i) = PRF(K, T(i-1) |
+-- seed | i)@ with @T(0)@ empty, the counter a single byte
+-- (never wraps: past 255 blocks refuses).
+ikePrfPlusExpand :: CryptoBackend b => BackendEnv b -> DigestAlg -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
+ikePrfPlusExpand env alg kb seed outLen = case digestOutLen alg of
+  Nothing -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
+    "IKE prf+ needs a fixed-width HMAC"))
+  Just h
+    | outLen < 1 -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
+        "IKE prf+ length out of range"))
+    | n > 255 -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
+        "IKE prf+ length exceeds the counter capacity"))
+    | otherwise -> go 1 BS.empty []
+    where
+      n = (outLen + h - 1) `div` h
+      spec = MacHMAC alg Nothing
+      key = KeyBytes kb
+      go i prev acc
+        | i > n = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
+        | otherwise = do
+            t <- macSign env spec key (prev <> seed <> BS.singleton (fromIntegral i))
+            case t of
+              EngineFail err -> pure (EngineFail err)
+              EngineOk blk -> go (i + 1) blk (blk : acc)
+-- | IKEv1 extended expansion: @T(i) = PRF(K, T(i-1) |
+-- keygxy | extra)@ with the first message the bare seed
+-- (@\\x00@ when both inputs are empty); with neither
+-- input and a short output, the base truncates (the
+-- oracle reference rule).
+ikeExtExpand :: CryptoBackend b => BackendEnv b -> DigestAlg -> ByteString -> Maybe ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
+ikeExtExpand env alg kb mGx extra outLen
+  | outLen < 1 = pure (EngineFail (BackendBadParam "ikeExtExpand"
+      "IKE extended length out of range"))
+  | otherwise = case (mGx, BS.null extra) of
+      (Nothing, True)
+        | outLen <= BS.length kb -> pure (EngineOk (BS.take outLen kb))
+        | otherwise -> pure (EngineFail (BackendBadParam "ikeExtExpand"
+            "IKE extended truncation exceeds the base length"))
+      _ -> case digestOutLen alg of
+        Nothing -> pure (EngineFail (BackendBadParam "ikeExtExpand"
+          "IKE extended needs a fixed-width HMAC"))
+        Just h ->
+          let seed = maybe BS.empty id mGx <> extra
+              first = if BS.null seed then BS.singleton 0 else seed
+              n = (outLen + h - 1) `div` h
+              spec = MacHMAC alg Nothing
+              key = KeyBytes kb
+              go 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
+              go k prev acc = do
+                let msg = if k == n then first else prev <> seed
+                t <- macSign env spec key msg
+                case t of
+                  EngineFail err -> pure (EngineFail err)
+                  EngineOk blk -> go (k - 1) blk (blk : acc)
+          in go n first []
+unsupported :: CryptoEffect -> CryptoResult
+unsupported e = GotCryptoError (CryptoUnsupported "driver" (show e))
+
 -- | Answer one planned effect against the backend.
 runEffect :: CryptoBackend b => BackendEnv b -> KeyResolver -> CryptoEffect -> IO CryptoResult
 runEffect env resolve fx = case fx of
@@ -1857,264 +3221,264 @@ runEffect env resolve fx = case fx of
   FxDigestFeed rid input -> toUnit <$> digestUpdate env rid input
   FxDigestConsume rid -> toBytes <$> digestFinal env rid
   FxSign mech mkey params input
-    | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- hmacSpecFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> macSign env spec key input
     | isHmacMech mech -> pure (GotCryptoError (CryptoMechParamInvalid "hmac"
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
-    | isCmacMech mech -> withKey mkey $ \key ->
-        runCmacSign mech params key input
-    | isDes3MacMech mech -> withKey mkey $ \key ->
-        runDes3MacSign mech params key input
-    | isCbcMacMech mech -> withKey mkey $ \key ->
-        runCbcMacSign mech params key input
-    | isXcbcMech mech -> withKey mkey $ \key ->
-        runXcbcSign mech params key input
-    | isGmacMech mech -> withKey mkey $ \key ->
-        runGmacSign mech params key input
-    | isHotpMech mech -> withKey mkey $ \key ->
-        runHotpSign mech params key input
-    | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
+    | isCmacMech mech -> withKey resolve mkey $ \key ->
+        runCmacSign env mech params key input
+    | isDes3MacMech mech -> withKey resolve mkey $ \key ->
+        runDes3MacSign env mech params key input
+    | isCbcMacMech mech -> withKey resolve mkey $ \key ->
+        runCbcMacSign env mech params key input
+    | isXcbcMech mech -> withKey resolve mkey $ \key ->
+        runXcbcSign env mech params key input
+    | isGmacMech mech -> withKey resolve mkey $ \key ->
+        runGmacSign env mech params key input
+    | isHotpMech mech -> withKey resolve mkey $ \key ->
+        runHotpSign env mech params key input
+    | Just spec <- poly1305MacFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> macSign env spec key input
     | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
         "Poly1305 takes empty mechanism parameters"))
-    | Just (alg, n) <- ssl3MacSpecFor mech params -> withKey mkey $ \key ->
-        runSsl3MacSign alg n key input
+    | Just (alg, n) <- ssl3MacSpecFor mech params -> withKey resolve mkey $ \key ->
+        runSsl3MacSign env alg n key input
     | isSsl3MacMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: SSL3 MAC takes a whole-byte bit length within the hash width"))
-    | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaPkcs1SpecFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaPkcs1Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA v1.5 takes empty mechanism parameters"))
-    | Just spec <- rsaPssSpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaPssSpecFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaPssMech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-PSS takes pss-params/1 (hash, MGF1 hash, salt 0..64)"))
-    | Just spec <- rsaX509SigFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaX509SigFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X.509 takes empty mechanism parameters"))
-    | Just spec <- rsaX931SigFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaX931SigFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaX931Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X9.31 takes empty mechanism parameters"))
-    | isEcdsaMech mech -> withKey mkey $ \key ->
+    | isEcdsaMech mech -> withKey resolve mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure ecdsaRefusal
-    | isDsaMech mech -> withKey mkey $ \key ->
+    | isDsaMech mech -> withKey resolve mkey $ \key ->
         case dsaSpecFor mech params of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure dsaRefusal
-    | isEddsaMech mech -> withKey mkey $ \key ->
+    | isEddsaMech mech -> withKey resolve mkey $ \key ->
         case eddsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure eddsaRefusal
-    | isMldsaMech mech -> withKey mkey $ \key ->
+    | isMldsaMech mech -> withKey resolve mkey $ \key ->
         case mldsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure mldsaRefusal
-    | isSlhdsaMech mech -> withKey mkey $ \key ->
+    | isSlhdsaMech mech -> withKey resolve mkey $ \key ->
         case slhdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure slhdsaRefusal
     | otherwise -> pure (unsupported fx)
   FxVerify mech mkey params input sig
-    | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- hmacSpecFor mech params -> withKey resolve mkey $ \key ->
         toVerifyBool <$> macVerify env spec key input sig
     | isHmacMech mech -> pure (GotCryptoError (CryptoMechParamInvalid "hmac"
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
-    | isCmacMech mech -> withKey mkey $ \key ->
-        runCmacVerify mech params key input sig
-    | isDes3MacMech mech -> withKey mkey $ \key ->
-        runDes3MacVerify mech params key input sig
-    | isCbcMacMech mech -> withKey mkey $ \key ->
-        runCbcMacVerify mech params key input sig
-    | isXcbcMech mech -> withKey mkey $ \key ->
-        runXcbcVerify mech params key input sig
-    | isGmacMech mech -> withKey mkey $ \key ->
-        runGmacVerify mech params key input sig
-    | isHotpMech mech -> withKey mkey $ \key ->
-        runHotpVerify mech params key input sig
-    | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
+    | isCmacMech mech -> withKey resolve mkey $ \key ->
+        runCmacVerify env mech params key input sig
+    | isDes3MacMech mech -> withKey resolve mkey $ \key ->
+        runDes3MacVerify env mech params key input sig
+    | isCbcMacMech mech -> withKey resolve mkey $ \key ->
+        runCbcMacVerify env mech params key input sig
+    | isXcbcMech mech -> withKey resolve mkey $ \key ->
+        runXcbcVerify env mech params key input sig
+    | isGmacMech mech -> withKey resolve mkey $ \key ->
+        runGmacVerify env mech params key input sig
+    | isHotpMech mech -> withKey resolve mkey $ \key ->
+        runHotpVerify env mech params key input sig
+    | Just spec <- poly1305MacFor mech params -> withKey resolve mkey $ \key ->
         toVerifyBool <$> macVerify env spec key input sig
     | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
         "Poly1305 takes empty mechanism parameters"))
-    | Just (alg, n) <- ssl3MacSpecFor mech params -> withKey mkey $ \key ->
-        runSsl3MacVerify alg n key input sig
+    | Just (alg, n) <- ssl3MacSpecFor mech params -> withKey resolve mkey $ \key ->
+        runSsl3MacVerify env alg n key input sig
     | isSsl3MacMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: SSL3 MAC takes a whole-byte bit length within the hash width"))
-    | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaPkcs1SpecFor mech params -> withKey resolve mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaPkcs1Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA v1.5 takes empty mechanism parameters"))
-    | Just spec <- rsaPssSpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaPssSpecFor mech params -> withKey resolve mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaPssMech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-PSS takes pss-params/1 (hash, MGF1 hash, salt 0..64)"))
-    | Just spec <- rsaX509SigFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaX509SigFor mech params -> withKey resolve mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X.509 takes empty mechanism parameters"))
-    | Just spec <- rsaX931SigFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaX931SigFor mech params -> withKey resolve mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaX931Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X9.31 takes empty mechanism parameters"))
-    | isEcdsaMech mech -> withKey mkey $ \key ->
+    | isEcdsaMech mech -> withKey resolve mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure ecdsaRefusal
-    | isDsaMech mech -> withKey mkey $ \key ->
+    | isDsaMech mech -> withKey resolve mkey $ \key ->
         case dsaSpecFor mech params of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure dsaRefusal
-    | isEddsaMech mech -> withKey mkey $ \key ->
+    | isEddsaMech mech -> withKey resolve mkey $ \key ->
         case eddsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure eddsaRefusal
-    | isMldsaMech mech -> withKey mkey $ \key ->
+    | isMldsaMech mech -> withKey resolve mkey $ \key ->
         case mldsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure mldsaRefusal
-    | isSlhdsaMech mech -> withKey mkey $ \key ->
+    | isSlhdsaMech mech -> withKey resolve mkey $ \key ->
         case slhdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure slhdsaRefusal
     | otherwise -> pure (unsupported fx)
   FxCipher dir mech mkey params input
-    | isCipherMech mech -> withKey mkey $ \key ->
-        runCipher dir mech key params input
-    | isGcmMech mech -> withKey mkey $ \key ->
-        runAead dir mech key params input
-    | isCcmMech mech -> withKey mkey $ \key ->
-        runAead dir mech key params input
-    | isChachaPolyMech mech -> withKey mkey $ \key ->
-        runAead dir mech key params input
-    | isRsaOaepMech mech -> withKey mkey $ \key ->
-        runOaep dir mech key params input
-    | isRsaX509Mech mech -> withKey mkey $ \key ->
-        runX509 dir mech key params input
+    | isCipherMech mech -> withKey resolve mkey $ \key ->
+        runCipher env dir mech key params input
+    | isGcmMech mech -> withKey resolve mkey $ \key ->
+        runAead env dir mech key params input
+    | isCcmMech mech -> withKey resolve mkey $ \key ->
+        runAead env dir mech key params input
+    | isChachaPolyMech mech -> withKey resolve mkey $ \key ->
+        runAead env dir mech key params input
+    | isRsaOaepMech mech -> withKey resolve mkey $ \key ->
+        runOaep env dir mech key params input
+    | isRsaX509Mech mech -> withKey resolve mkey $ \key ->
+        runX509 env dir mech key params input
     | otherwise -> pure (unsupported fx)
   FxMessageCipher dir mech mkey params aad input
-    | isGcmMech mech -> withKey mkey $ \key ->
-        runAeadMessage dir mech key params aad input
+    | isGcmMech mech -> withKey resolve mkey $ \key ->
+        runAeadMessage env dir mech key params aad input
     | not (isCipherMech mech) && not (isRsaOaepMech mech) && not (isRsaX509Mech mech) ->
         pure (unsupported fx)
     | not (BS.null aad) -> pure (GotCryptoError (CryptoUnsupported "driver"
         "non-AEAD backend takes no AAD"))
-    | isRsaOaepMech mech -> withKey mkey $ \key ->
-        runOaep dir mech key params input
-    | isRsaX509Mech mech -> withKey mkey $ \key ->
-        runX509 dir mech key params input
-    | otherwise -> withKey mkey $ \key ->
-        runCipher dir mech key params input
+    | isRsaOaepMech mech -> withKey resolve mkey $ \key ->
+        runOaep env dir mech key params input
+    | isRsaX509Mech mech -> withKey resolve mkey $ \key ->
+        runX509 env dir mech key params input
+    | otherwise -> withKey resolve mkey $ \key ->
+        runCipher env dir mech key params input
   FxMessageSign mech mkey params input
-    | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- hmacSpecFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> macSign env spec key input
     | isHmacMech mech -> pure (GotCryptoError (CryptoMechParamInvalid "hmac"
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
-    | isCmacMech mech -> withKey mkey $ \key ->
-        runCmacSign mech params key input
-    | isDes3MacMech mech -> withKey mkey $ \key ->
-        runDes3MacSign mech params key input
-    | isCbcMacMech mech -> withKey mkey $ \key ->
-        runCbcMacSign mech params key input
-    | isXcbcMech mech -> withKey mkey $ \key ->
-        runXcbcSign mech params key input
-    | isGmacMech mech -> withKey mkey $ \key ->
-        runGmacSign mech params key input
-    | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
+    | isCmacMech mech -> withKey resolve mkey $ \key ->
+        runCmacSign env mech params key input
+    | isDes3MacMech mech -> withKey resolve mkey $ \key ->
+        runDes3MacSign env mech params key input
+    | isCbcMacMech mech -> withKey resolve mkey $ \key ->
+        runCbcMacSign env mech params key input
+    | isXcbcMech mech -> withKey resolve mkey $ \key ->
+        runXcbcSign env mech params key input
+    | isGmacMech mech -> withKey resolve mkey $ \key ->
+        runGmacSign env mech params key input
+    | Just spec <- poly1305MacFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> macSign env spec key input
     | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
         "Poly1305 takes empty mechanism parameters"))
-    | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaPkcs1SpecFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaPkcs1Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA v1.5 takes empty mechanism parameters"))
-    | Just spec <- rsaPssSpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaPssSpecFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaPssMech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-PSS takes pss-params/1 (hash, MGF1 hash, salt 0..64)"))
-    | Just spec <- rsaX509SigFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaX509SigFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X.509 takes empty mechanism parameters"))
-    | Just spec <- rsaX931SigFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaX931SigFor mech params -> withKey resolve mkey $ \key ->
         toBytes <$> sign env spec key input
     | isRsaX931Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X9.31 takes empty mechanism parameters"))
-    | isEcdsaMech mech -> withKey mkey $ \key ->
+    | isEcdsaMech mech -> withKey resolve mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure ecdsaRefusal
-    | isDsaMech mech -> withKey mkey $ \key ->
+    | isDsaMech mech -> withKey resolve mkey $ \key ->
         case dsaSpecFor mech params of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure dsaRefusal
-    | isEddsaMech mech -> withKey mkey $ \key ->
+    | isEddsaMech mech -> withKey resolve mkey $ \key ->
         case eddsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure eddsaRefusal
-    | isMldsaMech mech -> withKey mkey $ \key ->
+    | isMldsaMech mech -> withKey resolve mkey $ \key ->
         case mldsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure mldsaRefusal
-    | isSlhdsaMech mech -> withKey mkey $ \key ->
+    | isSlhdsaMech mech -> withKey resolve mkey $ \key ->
         case slhdsaSpecFor mech params key of
           Just spec -> toBytes <$> sign env spec key input
           Nothing -> pure slhdsaRefusal
     | otherwise -> pure (unsupported fx)
   FxMessageVerify mech mkey params input sig
-    | Just spec <- hmacSpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- hmacSpecFor mech params -> withKey resolve mkey $ \key ->
         toVerifyBool <$> macVerify env spec key input sig
     | isHmacMech mech -> pure (GotCryptoError (CryptoMechParamInvalid "hmac"
         "HMAC: plain takes empty params, GENERAL takes the 8-byte tag length"))
-    | isCmacMech mech -> withKey mkey $ \key ->
-        runCmacVerify mech params key input sig
-    | isDes3MacMech mech -> withKey mkey $ \key ->
-        runDes3MacVerify mech params key input sig
-    | isCbcMacMech mech -> withKey mkey $ \key ->
-        runCbcMacVerify mech params key input sig
-    | isXcbcMech mech -> withKey mkey $ \key ->
-        runXcbcVerify mech params key input sig
-    | isGmacMech mech -> withKey mkey $ \key ->
-        runGmacVerify mech params key input sig
-    | Just spec <- poly1305MacFor mech params -> withKey mkey $ \key ->
+    | isCmacMech mech -> withKey resolve mkey $ \key ->
+        runCmacVerify env mech params key input sig
+    | isDes3MacMech mech -> withKey resolve mkey $ \key ->
+        runDes3MacVerify env mech params key input sig
+    | isCbcMacMech mech -> withKey resolve mkey $ \key ->
+        runCbcMacVerify env mech params key input sig
+    | isXcbcMech mech -> withKey resolve mkey $ \key ->
+        runXcbcVerify env mech params key input sig
+    | isGmacMech mech -> withKey resolve mkey $ \key ->
+        runGmacVerify env mech params key input sig
+    | Just spec <- poly1305MacFor mech params -> withKey resolve mkey $ \key ->
         toVerifyBool <$> macVerify env spec key input sig
     | isPoly1305Mech mech -> pure (GotCryptoError (CryptoFailed
         "Poly1305 takes empty mechanism parameters"))
-    | Just spec <- rsaPkcs1SpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaPkcs1SpecFor mech params -> withKey resolve mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaPkcs1Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA v1.5 takes empty mechanism parameters"))
-    | Just spec <- rsaPssSpecFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaPssSpecFor mech params -> withKey resolve mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaPssMech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-PSS takes pss-params/1 (hash, MGF1 hash, salt 0..64)"))
-    | Just spec <- rsaX509SigFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaX509SigFor mech params -> withKey resolve mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaX509Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X.509 takes empty mechanism parameters"))
-    | Just spec <- rsaX931SigFor mech params -> withKey mkey $ \key ->
+    | Just spec <- rsaX931SigFor mech params -> withKey resolve mkey $ \key ->
         toVerifyUnit <$> verify env spec key input sig
     | isRsaX931Mech mech -> pure (GotCryptoError (CryptoFailed
         "RSA-X9.31 takes empty mechanism parameters"))
-    | isEcdsaMech mech -> withKey mkey $ \key ->
+    | isEcdsaMech mech -> withKey resolve mkey $ \key ->
         case ecdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure ecdsaRefusal
-    | isDsaMech mech -> withKey mkey $ \key ->
+    | isDsaMech mech -> withKey resolve mkey $ \key ->
         case dsaSpecFor mech params of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure dsaRefusal
-    | isEddsaMech mech -> withKey mkey $ \key ->
+    | isEddsaMech mech -> withKey resolve mkey $ \key ->
         case eddsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure eddsaRefusal
-    | isMldsaMech mech -> withKey mkey $ \key ->
+    | isMldsaMech mech -> withKey resolve mkey $ \key ->
         case mldsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure mldsaRefusal
-    | isSlhdsaMech mech -> withKey mkey $ \key ->
+    | isSlhdsaMech mech -> withKey resolve mkey $ \key ->
         case slhdsaSpecFor mech params key of
           Just spec -> toVerifyUnit <$> verify env spec key input sig
           Nothing -> pure slhdsaRefusal
@@ -2127,7 +3491,7 @@ runEffect env resolve fx = case fx of
   -- block-type-1 first (the tag width is the modulus width,
   -- fixed at init).
   FxSignRecover mech mkey params input tagLen
-    | Just cparams <- rsaRecoverCipherFor mech params -> withKey mkey $ \key ->
+    | Just cparams <- rsaRecoverCipherFor mech params -> withKey resolve mkey $ \key ->
         if mech == MechanismId ckm_RSA_PKCS
           then case recoverType1Pad tagLen input of
             -- Defense in depth: the planner gate pre-refuses PKCS
@@ -2149,7 +3513,7 @@ runEffect env resolve fx = case fx of
   -- block-type-1, reporting a framing deviation as a mismatch
   -- verdict.
   FxVerifyRecover mech mkey params block _tagLen
-    | Just cparams <- rsaRecoverCipherFor mech params -> withKey mkey $ \key -> do
+    | Just cparams <- rsaRecoverCipherFor mech params -> withKey resolve mkey $ \key -> do
         out <- pkeyEncrypt env cparams key block
         pure $ case out of
           EngineOk raw
@@ -2214,7 +3578,7 @@ runEffect env resolve fx = case fx of
               Just (stem, iters, salt, pwd) -> case rsaDigest stem of
                 Just alg
                   | n >= 1 && n <= pbkd2KeygenMaxBytes -> do
-                      r <- pbkdf2 alg iters salt (KeyBytes pwd) n
+                      r <- pbkdf2 env alg iters salt (KeyBytes pwd) n
                       pure $ case r of
                         EngineFail err -> GotCryptoError (toCryptoError err)
                         EngineOk dk -> toKeyPair
@@ -2238,9 +3602,9 @@ runEffect env resolve fx = case fx of
                     | iters >= 1 && iters <= fromIntegral maxPbeIters
                     , n == pbeKeyLen (pbeKind r) ->
                         case pbeKdf (pbeKind r) of
-                          PbePkcs12Sha1 -> runPbe iters pw salt n
+                          PbePkcs12Sha1 -> runPbe env iters pw salt n
                             (pbeNeedsParity (pbeKind r)) (pbeIvLen (pbeKind r))
-                          PbePbkdf1Md5 -> runPbkdf1 iters pw salt n
+                          PbePbkdf1Md5 -> runPbkdf1 env iters pw salt n
                             (pbeNeedsParity (pbeKind r))
                     | otherwise -> pure (GotCryptoError (CryptoFailed
                         "driver: PBE iterations or length out of range"))
@@ -2301,61 +3665,61 @@ runEffect env resolve fx = case fx of
     | otherwise -> case kemAlgFromName params of
         Nothing -> pure (GotCryptoError (CryptoFailed
           "driver: unknown KEM parameter name"))
-        Just alg -> withKey mkey $ \key ->
+        Just alg -> withKey resolve mkey $ \key ->
           toKemPair <$> kemEncapsulate env (KemSpec (toPqcKem alg)) key
   FxKemDecaps mech mkey params input
     | mech /= mlKemMech -> pure (unsupported fx)
     | otherwise -> case kemAlgFromName params of
         Nothing -> pure (GotCryptoError (CryptoFailed
           "driver: unknown KEM parameter name"))
-        Just alg -> withKey mkey $ \key ->
+        Just alg -> withKey resolve mkey $ \key ->
           toBytes <$> kemDecapsulate env (KemSpec (toPqcKem alg)) key input
   FxWrap _mech mkey params input
-    | _mech == aesCbcMech -> withKey mkey $ \key ->
-        runCipher DirEncrypt _mech key params input
-    | isAesKwWrapMech _mech -> withKey mkey $ \key ->
-        runCipher DirEncrypt _mech key params input
-    | isRsaOaepMech _mech -> withKey mkey $ \key ->
-        runOaep DirEncrypt _mech key params input
-    | isRsaPkcsWrapMech _mech -> withKey mkey $ \key ->
-        runPkcs1 DirEncrypt _mech key params input
-    | isRsaX509Mech _mech -> withKey mkey $ \key ->
-        runX509 DirEncrypt _mech key params input
-    | Just r <- wrapCompEcdhRecipeFor _mech -> withKey mkey $ \key ->
-        runEcdhCompWrap r key params input
-    | Just r <- wrapCompRsaRecipeFor _mech -> withKey mkey $ \key ->
-        runRsaCompWrap r key params input
+    | _mech == aesCbcMech -> withKey resolve mkey $ \key ->
+        runCipher env DirEncrypt _mech key params input
+    | isAesKwWrapMech _mech -> withKey resolve mkey $ \key ->
+        runCipher env DirEncrypt _mech key params input
+    | isRsaOaepMech _mech -> withKey resolve mkey $ \key ->
+        runOaep env DirEncrypt _mech key params input
+    | isRsaPkcsWrapMech _mech -> withKey resolve mkey $ \key ->
+        runPkcs1 env DirEncrypt _mech key params input
+    | isRsaX509Mech _mech -> withKey resolve mkey $ \key ->
+        runX509 env DirEncrypt _mech key params input
+    | Just r <- wrapCompEcdhRecipeFor _mech -> withKey resolve mkey $ \key ->
+        runEcdhCompWrap env r key params input
+    | Just r <- wrapCompRsaRecipeFor _mech -> withKey resolve mkey $ \key ->
+        runRsaCompWrap env r key params input
     | otherwise -> pure (unsupported fx)
   FxUnwrap _mech mkey params input
-    | _mech == aesCbcMech -> withKey mkey $ \key ->
-        runCipher DirDecrypt _mech key params input
-    | isAesKwWrapMech _mech -> withKey mkey $ \key ->
-        runCipher DirDecrypt _mech key params input
-    | isRsaOaepMech _mech -> withKey mkey $ \key ->
-        runOaep DirDecrypt _mech key params input
-    | isRsaPkcsWrapMech _mech -> withKey mkey $ \key ->
-        runPkcs1 DirDecrypt _mech key params input
-    | isRsaX509Mech _mech -> withKey mkey $ \key ->
-        runX509 DirDecrypt _mech key params input
-    | Just r <- wrapCompEcdhRecipeFor _mech -> withKey mkey $ \key ->
-        runEcdhCompUnwrap r key params input
-    | Just r <- wrapCompRsaRecipeFor _mech -> withKey mkey $ \key ->
-        runRsaCompUnwrap r key params input
+    | _mech == aesCbcMech -> withKey resolve mkey $ \key ->
+        runCipher env DirDecrypt _mech key params input
+    | isAesKwWrapMech _mech -> withKey resolve mkey $ \key ->
+        runCipher env DirDecrypt _mech key params input
+    | isRsaOaepMech _mech -> withKey resolve mkey $ \key ->
+        runOaep env DirDecrypt _mech key params input
+    | isRsaPkcsWrapMech _mech -> withKey resolve mkey $ \key ->
+        runPkcs1 env DirDecrypt _mech key params input
+    | isRsaX509Mech _mech -> withKey resolve mkey $ \key ->
+        runX509 env DirDecrypt _mech key params input
+    | Just r <- wrapCompEcdhRecipeFor _mech -> withKey resolve mkey $ \key ->
+        runEcdhCompUnwrap env r key params input
+    | Just r <- wrapCompRsaRecipeFor _mech -> withKey resolve mkey $ \key ->
+        runRsaCompUnwrap env r key params input
     | otherwise -> pure (unsupported fx)
   FxAuthWrap _mech mkey params input
     | _mech /= aesCbcMech -> pure (unsupported fx)
     | otherwise -> case decodeWrapParams params of
         Nothing -> pure (GotCryptoError (CryptoFailed
           "driver: malformed auth-wrap params"))
-        Just (iv, aad) -> withKey mkey $ \key ->
-          runAuthWrap True _mech key iv aad input
+        Just (iv, aad) -> withKey resolve mkey $ \key ->
+          runAuthWrap env True _mech key iv aad input
   FxAuthUnwrap _mech mkey params input
     | _mech /= aesCbcMech -> pure (unsupported fx)
     | otherwise -> case decodeWrapParams params of
         Nothing -> pure (GotCryptoError (CryptoFailed
           "driver: malformed auth-wrap params"))
-        Just (iv, aad) -> withKey mkey $ \key ->
-          runAuthWrap False _mech key iv aad input
+        Just (iv, aad) -> withKey resolve mkey $ \key ->
+          runAuthWrap env False _mech key iv aad input
   FxDerive mech mkey mkey2 params info outLen
     -- HKDF-DATA executes the same KDF as HKDF-DERIVE (the planner
     -- owns the output-class difference); the effect carries the
@@ -2366,7 +3730,7 @@ runEffect env resolve fx = case fx of
         Just (alg, hashLen, mode, salt)
           | outLen < 1 || outLen > 255 * hashLen -> pure (GotCryptoError (CryptoFailed
               "driver: derive length out of range"))
-          | otherwise -> withKey mkey $ \key -> case key of
+          | otherwise -> withKey resolve mkey $ \key -> case key of
               KeyBytes ikm
                 | mode == 0x02 -> toBytes <$> hkdfExpand env spec key info outLen
                 | otherwise -> toBytes <$> hkdfExtractExpand env spec hashLen ikm salt info outLen
@@ -2376,100 +3740,100 @@ runEffect env resolve fx = case fx of
     | isEcdhMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: ECDH derive takes no info string"))
-    | Just (spec, peer) <- ecdhParamsFor mech params -> withKey mkey $ \key ->
-        runEcdh spec key peer outLen
+    | Just (spec, peer) <- ecdhParamsFor mech params -> withKey resolve mkey $ \key ->
+        runEcdh env spec key peer outLen
     | isEcdhMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: ECDH mechanism parameters rejected by the recipe"))
     | isDhMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: DH derive takes no info string"))
-    | Just (spec, peer) <- dhParamsFor mech params -> withKey mkey $ \key ->
-        runDh spec key peer outLen
+    | Just (spec, peer) <- dhParamsFor mech params -> withKey resolve mkey $ \key ->
+        runDh env spec key peer outLen
     | isDhMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: DH mechanism parameters rejected by the recipe"))
     | mech == pubPrivMech
     , not (BS.null params) || not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: pub-from-priv takes empty params and info"))
-    | mech == pubPrivMech -> withKey mkey runPubFromPriv
+    | mech == pubPrivMech -> withKey resolve mkey (runPubFromPriv env)
     | isKdfShaMech mech
     , not (BS.null params) || not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: SHA key derivation takes empty params and info"))
-    | Just alg <- kdfShaFor mech -> withKey mkey $ \key ->
-        runShaKd alg key outLen
+    | Just alg <- kdfShaFor mech -> withKey resolve mkey $ \key ->
+        runShaKd env alg key outLen
     | isKdfXofMech mech
     , not (BS.null params) || not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: SHAKE key derivation takes empty params and info"))
-    | Just alg <- kdfXofFor mech -> withKey mkey $ \key ->
-        runXofKd alg key outLen
+    | Just alg <- kdfXofFor mech -> withKey resolve mkey $ \key ->
+        runXofKd env alg key outLen
     | Just pp <- pbkd2ParamsFor mech params
-    , BS.null info -> withKey mkey $ \key ->
-        runPbkd2 pp key outLen
+    , BS.null info -> withKey resolve mkey $ \key ->
+        runPbkd2 env pp key outLen
     | isPbkd2Mech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: PBKDF2 derive takes no info string"))
     | isPbkd2Mech mech -> pure (GotCryptoError (CryptoFailed
         "driver: PBKDF2 mechanism parameters rejected by the recipe"))
     | Just ex <- sp800ParamsFor mech params
-    , BS.null info -> withKey mkey $ \key ->
-        runSp800 ex key outLen
+    , BS.null info -> withKey resolve mkey $ \key ->
+        runSp800 env ex key outLen
     | isSp800Mech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: SP800-108 derive takes no info string"))
     | isSp800Mech mech -> pure (GotCryptoError (CryptoFailed
         "driver: SP800-108 mechanism parameters rejected by the recipe"))
     | Just ex <- tlsKdfParamsFor mech params
-    , BS.null info -> withKey mkey $ \key ->
-        runTlsKdf ex key outLen
+    , BS.null info -> withKey resolve mkey $ \key ->
+        runTlsKdf env ex key outLen
     | isTlsKdfMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: TLS-KDF derive takes no info string"))
     | isTlsKdfMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: TLS-KDF mechanism parameters rejected by the recipe"))
     | Just ex <- ikeParamsFor mech params
-    , BS.null info -> withKey mkey $ \key -> case (ikeNeedsAux ex, mkey2) of
+    , BS.null info -> withKey resolve mkey $ \key -> case (ikeNeedsAux ex, mkey2) of
         -- Unreachable post-plan (the planner resolves the aux
         -- handle); typed, never a crash.
         (True, Nothing) -> pure (GotCryptoError (CryptoBadKey "driver"
           "IKE derive binds no aux key"))
-        (_, Nothing) -> runIke ex key Nothing outLen
-        (_, Just _) -> withKey mkey2 $ \aux -> runIke ex key (Just aux) outLen
+        (_, Nothing) -> runIke env ex key Nothing outLen
+        (_, Just _) -> withKey resolve mkey2 $ \aux -> runIke env ex key (Just aux) outLen
     | isIkeMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: IKE derive takes no info string"))
     | isIkeMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: IKE mechanism parameters rejected by the recipe"))
     | Just ex <- byteOpsParamsFor mech params
-    , BS.null info -> withKey mkey $ \key -> case (byteOpsNeedsAux ex, mkey2) of
+    , BS.null info -> withKey resolve mkey $ \key -> case (byteOpsNeedsAux ex, mkey2) of
         -- Unreachable post-plan (the planner resolves the
         -- second handle); typed, never a crash.
         (True, Nothing) -> pure (GotCryptoError (CryptoBadKey "driver"
           "byte-op derive binds no aux key"))
         (_, Nothing) -> runByteOps ex key Nothing outLen
-        (_, Just _) -> withKey mkey2 $ \aux -> runByteOps ex key (Just aux) outLen
+        (_, Just _) -> withKey resolve mkey2 $ \aux -> runByteOps ex key (Just aux) outLen
     | isByteOpsMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: byte-op derive takes no info string"))
     | isByteOpsMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: byte-op mechanism parameters rejected by the recipe"))
     | Just ex <- keyMatParamsFor mech params
-    , BS.null info -> withKey mkey $ \key ->
-        runKeyMat ex key outLen
+    , BS.null info -> withKey resolve mkey $ \key ->
+        runKeyMat env ex key outLen
     | isKeyMatMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: key-material derive takes no info string"))
     | isKeyMatMech mech -> pure (GotCryptoError (CryptoFailed
         "driver: key-material mechanism parameters rejected by the recipe"))
     | Just ex <- ssl3ParamsFor mech params
-    , BS.null info -> withKey mkey $ \key ->
-        runSsl3 ex key outLen
+    , BS.null info -> withKey resolve mkey $ \key ->
+        runSsl3 env ex key outLen
     | isSsl3Mech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: SSL3 derive takes no info string"))
     | isSsl3Mech mech -> pure (GotCryptoError (CryptoFailed
         "driver: SSL3 mechanism parameters rejected by the recipe"))
     | Just prf <- tlsPrfParamsFor mech params
-    , BS.null info -> withKey mkey $ \key ->
-        runTlsPrf prf key outLen
+    , BS.null info -> withKey resolve mkey $ \key ->
+        runTlsPrf env prf key outLen
     | isTlsPrfMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: TLS-PRF derive takes no info string"))
@@ -2478,1364 +3842,9 @@ runEffect env resolve fx = case fx of
     | isEncryptDataMech mech
     , not (BS.null info) -> pure (GotCryptoError (CryptoFailed
         "driver: encrypt-data derive takes no info string"))
-    | isEncryptDataMech mech -> withKey mkey $ \key ->
-        runEncryptData mech key params outLen
+    | isEncryptDataMech mech -> withKey resolve mkey $ \key ->
+        runEncryptData env mech key params outLen
     | otherwise -> pure (unsupported fx)
-  where
-    withKey :: Maybe ObjectId -> (KeyMaterial -> IO CryptoResult) -> IO CryptoResult
-    withKey Nothing _ = pure (GotCryptoError (CryptoBadKey "driver" "effect binds no key"))
-    withKey (Just oid) k = case resolve oid of
-      Nothing -> pure (GotCryptoError (CryptoBadKey "driver" ("unknown key object: " ++ show oid)))
-      Just mat -> k mat
-    -- | CMAC sign effects: the SP 800-38B composition over the
-    -- backend ECB route, truncated for GENERAL rows. Off-geometry
-    -- (mechanism, key length, params) triples are 'CryptoFailed';
-    -- a non-bytes key is 'CryptoBadKey'.
-    runCmacSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
-    runCmacSign mech params key input = case key of
-      KeyBytes kb -> case cmacSpecFor mech params (BS.length kb) of
-        Just (spec, trunc) -> do
-          r <- cmacTag spec key input
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: CMAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "CMAC needs raw symmetric key bytes"))
-    -- | CMAC verify effects: recompute, truncate, constant-time
-    -- compare. A mismatch is the 'False' verdict, never a
-    -- malfunction.
-    runCmacVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runCmacVerify mech params key input tag = case key of
-      KeyBytes kb -> case cmacSpecFor mech params (BS.length kb) of
-        Just (spec, trunc) -> do
-          r <- cmacTag spec key input
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk full
-              | driverCtEq want tag -> GotValid True
-              | otherwise -> GotValid False
-              where want = maybe full (`BS.take` full) trunc
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: CMAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "CMAC needs raw symmetric key bytes"))
-    -- | 3DES-MAC sign effects: CBC-MAC chaining over the backend
-    -- ECB route, truncated to the half block (plain) or the
-    -- decoded length (GENERAL). Off-geometry (mechanism, key
-    -- length, params) triples are 'CryptoFailed'; a non-bytes key
-    -- is 'CryptoBadKey'.
-    runDes3MacSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
-    runDes3MacSign mech params key input = case key of
-      KeyBytes kb -> case des3macSpecFor mech params (BS.length kb) of
-        Just (spec, trunc) -> do
-          r <- des3macTag spec key input
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: 3DES-MAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "3DES-MAC needs raw symmetric key bytes"))
-    -- | 3DES-MAC verify effects: recompute, truncate,
-    -- constant-time compare. A mismatch is the 'False' verdict,
-    -- never a malfunction.
-    runDes3MacVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runDes3MacVerify mech params key input tag = case key of
-      KeyBytes kb -> case des3macSpecFor mech params (BS.length kb) of
-        Just (spec, trunc) -> do
-          r <- des3macTag spec key input
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk full
-              | driverCtEq want tag -> GotValid True
-              | otherwise -> GotValid False
-              where want = maybe full (`BS.take` full) trunc
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: 3DES-MAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "3DES-MAC needs raw symmetric key bytes"))
-    -- | CBC-MAC sign effects: CBC-MAC chaining over the backend
-    -- ECB route, truncated to the half block (plain) or the
-    -- decoded length (GENERAL). Off-geometry (mechanism, key
-    -- length, params) triples are 'CryptoFailed'; a non-bytes key
-    -- is 'CryptoBadKey'.
-    runCbcMacSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
-    runCbcMacSign mech params key input = case key of
-      KeyBytes kb -> case cbcmacSpecFor mech params (BS.length kb) of
-        Just (spec, trunc) -> do
-          r <- cbcmacTag spec key input
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: CBC-MAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "CBC-MAC needs raw symmetric key bytes"))
-    -- | CBC-MAC verify effects: recompute, truncate,
-    -- constant-time compare. A mismatch is the 'False' verdict,
-    -- never a malfunction.
-    runCbcMacVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runCbcMacVerify mech params key input tag = case key of
-      KeyBytes kb -> case cbcmacSpecFor mech params (BS.length kb) of
-        Just (spec, trunc) -> do
-          r <- cbcmacTag spec key input
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk full
-              | driverCtEq want tag -> GotValid True
-              | otherwise -> GotValid False
-              where want = maybe full (`BS.take` full) trunc
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: CBC-MAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "CBC-MAC needs raw symmetric key bytes"))
-    -- | XCBC-MAC sign effects: the RFC 3566 composition over the
-    -- backend AES-128-ECB route, truncated for the _96 row.
-    -- Off-geometry (mechanism, key length, params) triples are
-    -- 'CryptoFailed'; a non-bytes key is 'CryptoBadKey'.
-    runXcbcSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
-    runXcbcSign mech params key input = case key of
-      KeyBytes kb -> case xcbcSpecFor mech params (BS.length kb) of
-        Just (spec, trunc) -> do
-          r <- xcbcTag spec key input
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk tag -> GotBytes (maybe tag (`BS.take` tag) trunc)
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: XCBC-MAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "XCBC-MAC needs raw symmetric key bytes"))
-    -- | XCBC-MAC verify effects: recompute, truncate,
-    -- constant-time compare. A mismatch is the 'False' verdict,
-    -- never a malfunction.
-    runXcbcVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runXcbcVerify mech params key input tag = case key of
-      KeyBytes kb -> case xcbcSpecFor mech params (BS.length kb) of
-        Just (spec, trunc) -> do
-          r <- xcbcTag spec key input
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk full
-              | driverCtEq want tag -> GotValid True
-              | otherwise -> GotValid False
-              where want = maybe full (`BS.take` full) trunc
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: XCBC-MAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "XCBC-MAC needs raw symmetric key bytes"))
-    -- | GMAC sign effects: the message travels as GCM AAD with
-    -- empty plaintext over the backend AES-GCM route; the tag is
-    -- the GCM authentication tag. Off-geometry (mechanism, key
-    -- length, params) triples are 'CryptoFailed'; a non-bytes key
-    -- is 'CryptoBadKey'.
-    runGmacSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
-    runGmacSign mech params key input = case key of
-      KeyBytes kb -> case gmacSpecFor mech params (BS.length kb) of
-        Just (spec, iv) -> do
-          r <- aeadEncrypt env spec key iv input BS.empty
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk (_, tag) -> GotBytes tag
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: GMAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "GMAC needs raw symmetric key bytes"))
-    -- | GMAC verify effects: recompute over the GCM route,
-    -- constant-time compare. A mismatch is the 'False' verdict,
-    -- never a malfunction.
-    runGmacVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runGmacVerify mech params key input tag = case key of
-      KeyBytes kb -> case gmacSpecFor mech params (BS.length kb) of
-        Just (spec, iv) -> do
-          r <- aeadEncrypt env spec key iv input BS.empty
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk (_, want)
-              | driverCtEq want tag -> GotValid True
-              | otherwise -> GotValid False
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: GMAC (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "GMAC needs raw symmetric key bytes"))
-    -- | HOTP sign effects: HMAC-SHA1 over the counter, then RFC
-    -- 4226 dynamic truncation to ASCII digits. The input is always
-    -- empty (HOTP signs the counter only); anything else is a
-    -- 'CryptoFailed' parameter refusal, never silently signed.
-    runHotpSign :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> IO CryptoResult
-    runHotpSign mech params key input = case key of
-      KeyBytes _ -> case hotpParamsFor mech params of
-        Just (counter, digits)
-          | BS.null input -> do
-              r <- macSign env (MacHMAC D_SHA1 Nothing) key (encodeHotpCounter counter)
-              pure $ case r of
-                EngineFail err -> GotCryptoError (toCryptoError err)
-                EngineOk mac -> case hotpTruncate mac digits of
-                  Just code -> GotBytes code
-                  Nothing -> shortMac
-          | otherwise -> pure (GotCryptoError (CryptoFailed
-              "driver: HOTP signs the counter only: input must be empty"))
-        _ -> pure (GotCryptoError (CryptoFailed
-            "driver: HOTP takes hotp-params/1 (counter, 6-8 digits)"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "HOTP needs raw symmetric key bytes"))
-    -- | HOTP verify effects: recompute, truncate, constant-time
-    -- compare. A mismatch is the 'False' verdict, never a
-    -- malfunction.
-    runHotpVerify :: MechanismId -> ByteString -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runHotpVerify mech params key input want = case key of
-      KeyBytes _ -> case hotpParamsFor mech params of
-        Just (counter, digits)
-          | BS.null input -> do
-              r <- macSign env (MacHMAC D_SHA1 Nothing) key (encodeHotpCounter counter)
-              pure $ case r of
-                EngineFail err -> GotCryptoError (toCryptoError err)
-                EngineOk mac -> case hotpTruncate mac digits of
-                  Just code
-                    | driverCtEq code want -> GotValid True
-                    | otherwise -> GotValid False
-                  Nothing -> shortMac
-          | otherwise -> pure (GotCryptoError (CryptoFailed
-              "driver: HOTP signs the counter only: input must be empty"))
-        _ -> pure (GotCryptoError (CryptoFailed
-            "driver: HOTP takes hotp-params/1 (counter, 6-8 digits)"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "HOTP needs raw symmetric key bytes"))
-    -- | A backend MAC shorter than HMAC-SHA1's 20 bytes breaks the
-    -- backend contract; the truncation cannot run. Both shipped
-    -- backends return full-width MACs, so this arm is defensive.
-    shortMac :: CryptoResult
-    shortMac = GotCryptoError (CryptoFailed
-      "driver: HOTP backend MAC too short to truncate")
-    -- | The SP 800-38B tag: subkey doubling (Rb 0x87 for 128-bit
-    -- blocks, 0x1B for 64-bit), last-block padding (10*) when
-    -- short, CBC-MAC chaining over single-block ECB calls. Full
-    -- width; truncation is the caller's call.
-    cmacTag :: CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
-    cmacTag spec key input = case (cmacBlockOf spec, cmacRbOf spec) of
-      (Just blk, Just rb) -> do
-        lz <- enc (BS.replicate blk 0)
-        case lz of
-          EngineFail err -> pure (EngineFail err)
-          EngineOk lb -> do
-            let k1 = gfDouble rb lb
-                k2 = gfDouble rb k1
-                blks = chunksOf blk input
-                (front, lastM) = case unsnoc blks of
-                  Nothing -> ([], padBlock blk BS.empty `xorB` k2)
-                  Just (pre, lst)
-                    | BS.length lst == blk -> (pre, lst `xorB` k1)
-                    | otherwise -> (pre, padBlock blk lst `xorB` k2)
-            chain (BS.replicate blk 0) (front ++ [lastM])
-      _ -> pure (EngineFail (BackendBadParam "cmac"
-        "CMAC needs an AES or 3DES ECB cipher spec"))
-      where
-        enc b = cipherEncrypt env spec key BS.empty b
-        chain x [] = pure (EngineOk x)
-        chain x (m : ms) = do
-          e <- enc (x `xorB` m)
-          case e of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk x' -> chain x' ms
-    -- | The 3DES CBC-MAC tag: zero IV, input zero-padded to the
-    -- 8-byte block, chaining over single-block ECB calls. Full
-    -- width; truncation is the caller's call.
-    des3macTag :: CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
-    des3macTag spec key input
-      | spec /= C_DES3_ECB = pure (EngineFail (BackendBadParam "des3mac"
-          "3DES-MAC needs the 3DES ECB cipher spec"))
-      | otherwise = chain (BS.replicate blk 0) (zeroPad blk input)
-      where
-        blk = 8
-        enc b = cipherEncrypt env spec key BS.empty b
-        chain x [] = pure (EngineOk x)
-        chain x (m : ms) = do
-          e <- enc (x `xorB` m)
-          case e of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk x' -> chain x' ms
-    -- | The CBC-MAC tag over a 128-bit-block cipher: zero IV,
-    -- input zero-padded to the 16-byte block, chaining over
-    -- single-block ECB calls. Full width; truncation is the
-    -- caller's call.
-    cbcmacTag :: CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
-    cbcmacTag spec key input
-      | spec `notElem` served = pure (EngineFail (BackendBadParam "cbcmac"
-          "CBC-MAC needs an AES, ARIA, or Camellia ECB cipher spec"))
-      | otherwise = chain (BS.replicate blk 0) (zeroPad blk input)
-      where
-        blk = 16
-        served =
-          [ C_AES128_ECB, C_AES192_ECB, C_AES256_ECB
-          , C_ARIA128_ECB, C_ARIA192_ECB, C_ARIA256_ECB
-          , C_CAMELLIA128_ECB, C_CAMELLIA192_ECB, C_CAMELLIA256_ECB
-          ]
-        enc b = cipherEncrypt env spec key BS.empty b
-        chain x [] = pure (EngineOk x)
-        chain x (m : ms) = do
-          e <- enc (x `xorB` m)
-          case e of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk x' -> chain x' ms
-    -- | The RFC 3566 XCBC-MAC tag: subkeys K1\/K2\/K3 from the
-    -- 128-bit key over AES-128-ECB, 10* padding when the final
-    -- block is short (K3) or K2 when full, chaining under K1 over
-    -- single-block ECB calls. Full 16-byte width; truncation is
-    -- the caller's call.
-    xcbcTag :: CipherSpec -> KeyMaterial -> ByteString -> IO (EngineResult ByteString)
-    xcbcTag spec key input
-      | spec /= C_AES128_ECB = pure (EngineFail (BackendBadParam "xcbc"
-          "XCBC-MAC needs the AES-128 ECB cipher spec"))
-      | otherwise = do
-          k1 <- encKey key (BS.replicate blk 0x01)
-          k2 <- encKey key (BS.replicate blk 0x02)
-          k3 <- encKey key (BS.replicate blk 0x03)
-          case (k1, k2, k3) of
-            (EngineOk s1, EngineOk s2, EngineOk s3) ->
-              let blks = chunksOf blk input
-                  (front, lastM) = case unsnoc blks of
-                    Nothing -> ([], padBlock blk BS.empty `xorB` s3)
-                    Just (pre, lst)
-                      | BS.length lst == blk -> (pre, lst `xorB` s2)
-                      | otherwise -> (pre, padBlock blk lst `xorB` s3)
-              in chain (KeyBytes s1) (BS.replicate blk 0) (front ++ [lastM])
-            (EngineFail err, _, _) -> pure (EngineFail err)
-            (_, EngineFail err, _) -> pure (EngineFail err)
-            (_, _, EngineFail err) -> pure (EngineFail err)
-      where
-        blk = 16
-        encKey k b = cipherEncrypt env spec k BS.empty b
-        chain _ x [] = pure (EngineOk x)
-        chain k x (m : ms) = do
-          e <- encKey k (x `xorB` m)
-          case e of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk x' -> chain k x' ms
-    runCipher :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runCipher dir mech key iv input = case key of
-      KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: cipher (mechanism, key length, params) rejected by the recipe"))
-        -- CTR parameters are the canonical image, not the raw
-        -- counter block: split the served 128-bit image (the recipe
-        -- already validated it; a mistimed image fails closed).
-        -- ChaCha20 parameters split the same way into the backend
-        -- (counter, nonce) framing.
-        Just spec -> case cipherImage iv of
-          Nothing -> pure (GotCryptoError (CryptoFailed
-            "driver: cipher parameter image rejected"))
-          Just cb -> case dir of
-            DirEncrypt -> toBytes <$> cipherEncrypt env spec key cb input
-            DirDecrypt -> toBytes <$> cipherDecrypt env spec key cb input
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "block ciphers need raw symmetric key bytes"))
-      where
-        cipherImage params = case ctrRecipeFor mech of
-          Just _ -> case decodeCtrParams params of
-            Just (128, cb) -> Just cb
-            _ -> Nothing
-          Nothing
-            | isChachaStreamMech mech -> case decodeChachaStreamParams params of
-                Just (counter, nonce) -> Just (encodeChachaIv counter nonce)
-                _ -> Nothing
-            -- RC2 parameters are the canonical image, not the raw
-            -- IV: split off the effective-bits word (the recipe
-            -- already validated the range and the row shape; the
-            -- spec carries the bits to the FFI control).
-            | isRc2Mech mech -> case decodeRc2Params params of
-                Just (_, splitIv) -> Just splitIv
-                _ -> Nothing
-            | otherwise -> Just params
-
-    -- | AEAD cipher effects: the @gcm-params/1@ image decodes to
-    -- (IV, AAD, tag length); the key length selects the AES width.
-    -- Encrypt answers ciphertext and tag concatenated; decrypt
-    -- splits the input at the tag length. An input shorter than
-    -- the tag carries no tag to verify and fails authentication
-    -- ('CryptoAuthFailed', never a wrong plaintext).
-    runAead :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runAead dir mech key params input = case key of
-      KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
-        Just (spec, iv, aad)
-          | isCcmMech mech, ccmLengthBad dir params input (aeadTagLen spec) ->
-              pure (GotCryptoError (CryptoFailed
-                "driver: CCM ulDataLen does not match the input length"))
-          | otherwise -> runAeadSealed dir spec key iv aad input
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "AEAD needs raw symmetric key bytes"))
-    -- | AEAD message effects: the parameters decode (IV, tag length)
-    -- as above, but the AAD travels on the effect, not in the
-    -- parameters.
-    runAeadMessage :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
-    runAeadMessage dir mech key params aad input = case key of
-      KeyBytes kb -> case aeadPartsFor mech (BS.length kb) params of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: AEAD (mechanism, key length, params) rejected by the recipe"))
-        Just (spec, iv, _) -> runAeadSealed dir spec key iv aad input
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "AEAD needs raw symmetric key bytes"))
-    runAeadSealed :: CipherDir -> AeadSpec -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
-    runAeadSealed dir spec key iv aad input = case dir of
-      DirEncrypt -> toKemPair <$> aeadEncrypt env spec key iv aad input
-      DirDecrypt
-        | BS.length input < aeadTagLen spec -> pure (GotCryptoError (CryptoAuthFailed
-            "driver: AEAD input shorter than the authentication tag"))
-        | otherwise ->
-            let (ct, tag) = BS.splitAt (BS.length input - aeadTagLen spec) input
-            in toBytes <$> aeadDecrypt env spec key iv aad ct tag
-
-    -- | RSA-OAEP cipher effects: the effect parameters carry the
-    -- @oaep-params\/1@ encoding straight to the asymmetric backend
-    -- entry points (encrypt takes the public half, decrypt the
-    -- private half; both travel as DER key material).
-    runOaep :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runOaep dir mech key params input =
-      case rsaOaepParamsFor mech params of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: OAEP mechanism parameters rejected by the recipe"))
-        Just oparams -> case dir of
-          DirEncrypt -> toBytes <$> pkeyEncrypt env (RsaOaep oparams) key input
-          DirDecrypt -> toBytes <$> pkeyDecrypt env (RsaOaep oparams) key input
-
-    -- | RSA v1.5 cipher effects (wrap/unwrap only): empty
-    -- parameters straight to the asymmetric backend entry points
-    -- (encrypt takes the public half, decrypt the private half;
-    -- both travel as DER key material).
-    runPkcs1 :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runPkcs1 dir _mech key params input
-      | not (BS.null params) = pure (GotCryptoError (CryptoFailed
-          "driver: v1.5 wrap takes no mechanism parameters"))
-      | otherwise = case dir of
-          DirEncrypt -> toBytes <$> pkeyEncrypt env RsaPkcs1 key input
-          DirDecrypt -> toBytes <$> pkeyDecrypt env RsaPkcs1 key input
-
-    -- | RSA-X.509 cipher effects: empty parameters straight to the
-    -- asymmetric backend entry points (encrypt takes the public
-    -- half, decrypt the private half; both travel as DER key
-    -- material). The backends left-pad short inputs to the modulus
-    -- width and answer full k-blocks.
-    runX509 :: CipherDir -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runX509 dir mech key params input =
-      case rsaX509CipherFor mech params of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: X.509 mechanism parameters rejected by the recipe"))
-        Just cparams -> case dir of
-          DirEncrypt -> toBytes <$> pkeyEncrypt env cparams key input
-          DirDecrypt -> toBytes <$> pkeyDecrypt env cparams key input
-    runAuthWrap :: Bool -> MechanismId -> KeyMaterial -> ByteString -> ByteString -> ByteString -> IO CryptoResult
-    runAuthWrap isWrap mech key iv aad input = case key of
-      KeyBytes kb -> case cipherSpecFor mech (BS.length kb) iv of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: auth-wrap (mechanism, key length, params) rejected by the recipe"))
-        Just spec -> do
-          macKeyR <- macSign env hmacSpec key authWrapDomain
-          case macKeyR of
-            EngineFail err -> pure (GotCryptoError (toCryptoError err))
-            EngineOk macKey -> run (KeyBytes macKey) spec
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "auth-wrap needs raw symmetric key bytes"))
-      where
-        run macKey spec
-          | isWrap = wrapWith macKey spec
-          | badUnwrapLen = pure (GotCryptoError
-              (CryptoFailed "driver: authenticated blob length"))
-          | otherwise = unwrapWith macKey spec
-        badUnwrapLen = BS.length input < 32
-          || (BS.length input - 32) `mod` 16 /= 0
-        wrapWith macKey spec = do
-          ctR <- cipherEncrypt env spec key iv input
-          case ctR of
-            EngineFail err -> pure (GotCryptoError (toCryptoError err))
-            EngineOk ct -> do
-              tagR <- macSign env hmacSpec macKey (aad <> ct)
-              pure $ case tagR of
-                EngineFail err -> GotCryptoError (toCryptoError err)
-                EngineOk tag -> GotBytes (ct <> tag)
-        unwrapWith macKey spec = do
-          let (ct, tag) = BS.splitAt (BS.length input - 32) input
-          verR <- macVerify env hmacSpec macKey (aad <> ct) tag
-          case verR of
-            EngineFail (BackendAuthFailed _) ->
-              pure (GotCryptoError (CryptoAuthFailed "auth-unwrap"))
-            EngineFail err -> pure (GotCryptoError (toCryptoError err))
-            EngineOk False ->
-              pure (GotCryptoError (CryptoAuthFailed "auth-unwrap"))
-            EngineOk True -> toBytes <$> cipherDecrypt env spec key iv ct
-    -- | ECDH agreement effects: the backend agrees the full raw
-    -- secret over (base key, peer public key) and the driver
-    -- truncates to the planned length. A planned length past the
-    -- secret is 'CryptoFailed' (the planner caps honestly, so this
-    -- fires only for hand-built effects); backend key-shape
-    -- refusals keep their taxonomy.
-    runEcdh :: EcdhSpec -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
-    runEcdh spec key peer outLen
-      | outLen < 1 = pure (GotCryptoError (CryptoFailed
-          "driver: derive length out of range"))
-      | otherwise = do
-          r <- ecdhDerive env spec key (KeyDer peer)
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk secret
-              | BS.length secret < outLen -> GotCryptoError (CryptoFailed
-                  "driver: derive length exceeds the agreement secret")
-              -- Truncation drops leading bytes (PKCS#11 v3.2 ECDH:
-              -- "removes bytes from the leading end"); full width
-              -- drops nothing.
-              | otherwise -> GotBytes
-                  (BS.drop (BS.length secret - outLen) secret)
-    -- | Classic DH agreement: the backend proves the full secret,
-    -- truncation drops leading bytes (PKCS#11 v3.2 DH derive
-    -- "removes bytes from the leading end", matching ECDH).
-    runDh :: DhSpec -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
-    runDh spec key peer outLen
-      | outLen < 1 = pure (GotCryptoError (CryptoFailed
-          "driver: derive length out of range"))
-      | otherwise = do
-          r <- dhDerive env spec key (KeyDer peer)
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk secret
-              | BS.length secret < outLen -> GotCryptoError (CryptoFailed
-                  "driver: derive length exceeds the agreement secret")
-              | otherwise -> GotBytes
-                  (BS.drop (BS.length secret - outLen) secret)
-    -- | ECDH-composition wrap: ephemeral transport keygen on
-    -- the wrapping (recipient PUBLIC) key's domain, ECDH
-    -- agreement of the transport private half against the
-    -- wrapping public half, the FIRST agreement bytes as the AES
-    -- KEK (NOT the derive truncation, which drops leading bytes),
-    -- KWP seal of the target, blob = transport-pub || kwp-blob.
-    -- Served primitives only (generateKey, ecdhDerive, the KWP
-    -- cipher entry); the ephemeral key never persists. Opaque
-    -- doubles transport on a fixed P-256 request (synthetic pairs
-    -- are curve-independent opaque halves, so the row's curve
-    -- family is immaterial there); real keys always scan.
-    runEcdhCompWrap :: WrapCompEcdhRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runEcdhCompWrap r wrapKey params target = case keyBytesOf wrapKey of
-      Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-        "composition wrapping key has no bytes"))
-      Just wrapB -> case wrapCompAesBytes params of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: malformed wrap-composition parameters"))
-        Just aesBytes ->
-          let dom = wrapCompDomain wrapB
-          in case wrapCompPubPeer dom wrapB of
-            Nothing -> pure (GotCryptoError (CryptoFailed
-              "driver: wrapping public peer rejected"))
-            Just recipPub -> do
-              g <- generateKey env (transportGen dom)
-              case g of
-                EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                EngineOk (KeyDer tpriv, Just (KeyDer tpub)) ->
-                  case ( wrapCompTransportPrefix r dom tpub
-                       , wrapCompTransportLen r dom ) of
-                    (Just prefix, Just preLen)
-                      | BS.length prefix == preLen -> do
-                          s <- ecdhDerive env (compSpec r) (KeyDer tpriv) (KeyDer recipPub)
-                          case s of
-                            EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                            EngineOk secret
-                              | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
-                                  "driver: agreement secret shorter than the KEK"))
-                              | otherwise -> do
-                                  sealed <- runCipher DirEncrypt aesKwpMech
-                                    (KeyBytes (BS.take aesBytes secret)) BS.empty target
-                                  case sealed of
-                                    GotBytes ct -> pure (GotBytes (prefix <> ct))
-                                    other -> pure other
-                    _ -> pure (GotCryptoError (CryptoFailed
-                      "driver: transport framing failed"))
-                _ -> pure (GotCryptoError (CryptoFailed
-                  "driver: transport keygen shape rejected"))
-      where
-        transportGen DomainOpaque = GenEC (EcSpec "P-256" "DER")
-        transportGen (DomainWeierstrass name _) =
-          GenEC (EcSpec (T.unpack name) "DER")
-        transportGen (DomainMontgomery name _) =
-          GenXDHKeypair (BC8.pack (T.unpack name))
-    -- | ECDH-composition unwrap: split the transport prefix,
-    -- re-derive the KEK against it, KWP-open the tail. KWP-open
-    -- failures propagate as authentication faults (fail closed,
-    -- never wrong plaintext).
-    runEcdhCompUnwrap :: WrapCompEcdhRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runEcdhCompUnwrap r unwrapKey params blob = case keyBytesOf unwrapKey of
-      Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-        "composition unwrapping key has no bytes"))
-      Just wrapB -> case wrapCompAesBytes params of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: malformed wrap-composition parameters"))
-        Just aesBytes ->
-          let dom = wrapCompDomain wrapB
-          in case wrapCompSplitBlob r dom blob of
-            Nothing -> pure (GotCryptoError (CryptoFailed
-              "driver: composition blob framing rejected"))
-            Just (prefix, kwpBlob) ->
-              case wrapCompAgreePeer r dom prefix of
-                Nothing -> pure (GotCryptoError (CryptoFailed
-                  "driver: composition transport peer rejected"))
-                Just peer -> do
-                  s <- ecdhDerive env (compSpec r) unwrapKey (KeyDer peer)
-                  case s of
-                    EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                    EngineOk secret
-                      | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
-                          "driver: agreement secret shorter than the KEK"))
-                      | otherwise ->
-                          runCipher DirDecrypt aesKwpMech
-                            (KeyBytes (BS.take aesBytes secret)) BS.empty kwpBlob
-    -- | The agreement spec for a composition row: cofactor from
-    -- the row (COF over EC only; X over Montgomery is plain).
-    compSpec :: WrapCompEcdhRecipe -> EcdhSpec
-    compSpec r = if wceCofactor r then EcdhCofactor else EcdhPlain
-    -- | RSA-composition wrap: mint a random temp KEK at the
-    -- requested strength, OAEP-seal it under the recipient
-    -- PUBLIC key, KWP-seal the target under the KEK, answer the
-    -- modulus-wide OAEP head plus the KWP tail. Served
-    -- primitives only (generateKey, pkeyEncrypt, the KWP cipher
-    -- entry); the KEK never persists. Tag-sized synthetic seals
-    -- frame modulus-wide through the recipe (exact-k real seals
-    -- pass through).
-    runRsaCompWrap :: WrapCompRsaRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runRsaCompWrap _ wrapKey params target = case keyBytesOf wrapKey of
-      Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-        "composition wrapping key has no bytes"))
-      Just wrapB ->
-        case (wrapCompRsaModulusBytes wrapB, wrapCompRsaAesBytes params, wrapCompRsaOaep params) of
-          (Just k, Just aesBytes, Just (d, m, label)) -> case (rsaDigest d, rsaDigest m) of
-            (Just dh, Just mh) -> do
-              g <- generateKey env (GenSym "AES" aesBytes)
-              case g of
-                EngineOk (KeyBytes kek, _)
-                  | BS.length kek == aesBytes -> do
-                      s <- pkeyEncrypt env (RsaOaep (OaepParams dh mh label)) wrapKey kek
-                      case s of
-                        EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                        EngineOk raw -> case wrapCompRsaFrameHead k (aesBytes + 16) raw of
-                          Nothing -> pure (GotCryptoError (CryptoFailed
-                            "driver: OAEP head escapes the modulus width"))
-                          Just framed -> do
-                            sealed <- runCipher DirEncrypt aesKwpMech
-                              (KeyBytes kek) BS.empty target
-                            case sealed of
-                              GotBytes ct -> pure (GotBytes (framed <> ct))
-                              other -> pure other
-                EngineOk _ -> pure (GotCryptoError (CryptoFailed
-                  "driver: temp KEK keygen shape rejected"))
-                EngineFail err -> pure (GotCryptoError (toCryptoError err))
-            _ -> pure (GotCryptoError (CryptoFailed
-              "driver: OAEP digest stems rejected"))
-          _ -> pure (GotCryptoError (CryptoFailed
-            "driver: malformed wrap-composition parameters"))
-    -- | RSA-composition unwrap: split the modulus-wide head,
-    -- OAEP-open the KEK with the PRIVATE key (length-tripwired),
-    -- KWP-open the tail. Open failures propagate as
-    -- authentication faults (fail closed, never wrong
-    -- plaintext).
-    runRsaCompUnwrap :: WrapCompRsaRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runRsaCompUnwrap _ unwrapKey params blob = case keyBytesOf unwrapKey of
-      Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-        "composition unwrapping key has no bytes"))
-      Just wrapB ->
-        case (wrapCompRsaModulusBytes wrapB, wrapCompRsaAesBytes params, wrapCompRsaOaep params) of
-          (Just k, Just aesBytes, Just (d, m, label)) ->
-            case wrapCompRsaSplitBlob k blob of
-              Nothing -> pure (GotCryptoError (CryptoFailed
-                "driver: composition blob framing rejected"))
-              Just (framed, kwpBlob) -> case (rsaDigest d, rsaDigest m) of
-                (Just dh, Just mh) -> do
-                  let inner = wrapCompRsaUnframeHead k (aesBytes + 16) framed
-                  o <- pkeyDecrypt env (RsaOaep (OaepParams dh mh label)) unwrapKey inner
-                  case o of
-                    EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                    EngineOk kek
-                      | BS.length kek == aesBytes ->
-                          runCipher DirDecrypt aesKwpMech
-                            (KeyBytes kek) BS.empty kwpBlob
-                      | otherwise -> pure (GotCryptoError (CryptoFailed
-                          "driver: opened KEK escapes the requested strength"))
-                _ -> pure (GotCryptoError (CryptoFailed
-                  "driver: OAEP digest stems rejected"))
-          _ -> pure (GotCryptoError (CryptoFailed
-            "driver: malformed wrap-composition parameters"))
-    -- | Raw bytes out of key material (DER halves and byte seeds;
-    -- backend references carry no bytes here).
-    keyBytesOf :: KeyMaterial -> Maybe ByteString
-    keyBytesOf (KeyBytes b) = Just b
-    keyBytesOf (KeyDer b) = Just b
-    keyBytesOf _ = Nothing
-    -- | SHA key-derivation effects: digest the base value,
-    -- truncate to the planned length (capped by the digest width —
-    -- the planner caps honestly, so over-width fires only for
-    -- hand-built effects).
-    runShaKd :: DigestAlg -> KeyMaterial -> Int -> IO CryptoResult
-    runShaKd alg key outLen = case key of
-      KeyBytes kb -> case digestOutLen alg of
-        Just w
-          | outLen >= 1 && outLen <= w -> do
-              r <- digestOneShot env alg kb
-              pure $ case r of
-                EngineFail err -> GotCryptoError (toCryptoError err)
-                EngineOk d -> GotBytes (BS.take outLen d)
-        _ -> pure (GotCryptoError (CryptoFailed
-          "driver: derive length out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-    -- | Pub-from-priv extraction: the backend answers the DER
-    -- SPKI for the base half (any material shape the backend
-    -- resolves); the finisher parses and stamps per key type.
-    runPubFromPriv :: KeyMaterial -> IO CryptoResult
-    runPubFromPriv key = do
-      r <- pubFromPriv env key
-      pure $ case r of
-        EngineFail err -> GotCryptoError (toCryptoError err)
-        EngineOk spki -> GotBytes spki
-    -- | SHAKE XOF key-derivation effects: XOF output at the planned
-    -- length (capped by 'maxXofTotal' — the planner caps honestly,
-    -- so over-ceiling fires only for hand-built effects).
-    runXofKd :: DigestAlg -> KeyMaterial -> Int -> IO CryptoResult
-    runXofKd alg key outLen = case key of
-      KeyBytes kb
-        | outLen >= 1 && outLen <= maxXofTotal -> do
-            r <- digestXof env alg kb outLen
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk d -> GotBytes d
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: XOF derive length out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-    -- | Encrypt-data derive: single-shot cipher encryption of the
-    -- framed data under the base key, truncated to the planned
-    -- length (the planner caps at the data width; an out-of-range
-    -- request fails closed here too). Off-geometry triples are
-    -- 'CryptoFailed'; a non-bytes key is 'CryptoBadKey'.
-    runEncryptData :: MechanismId -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
-    runEncryptData mech key params outLen = case key of
-      KeyBytes kb -> case encryptDataPartsFor mech (BS.length kb) params of
-        Just (spec, iv, dat)
-          | outLen >= 1 && outLen <= BS.length dat -> do
-              r <- cipherEncrypt env spec key iv dat
-              pure $ case r of
-                EngineFail err -> GotCryptoError (toCryptoError err)
-                EngineOk d -> GotBytes (BS.take outLen d)
-          | otherwise -> pure (GotCryptoError (CryptoFailed
-              "driver: derive length out of range"))
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: encrypt-data (mechanism, key length, params) rejected by the recipe"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "encrypt-data base key is not byte material"))
-    -- | PBKDF2 effects: the RFC 8018 iteration over the HMAC PRF,
-    -- truncated to the planned length (capped by the shared
-    -- ceiling).
-    runPbkd2 :: Pbkd2Params -> KeyMaterial -> Int -> IO CryptoResult
-    runPbkd2 (Pbkd2Params prf iters salt) key outLen = case key of
-      KeyBytes _
-        | outLen >= 1 && outLen <= maxDerivedTotal -> do
-            r <- pbkdf2 prf iters salt key outLen
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk dk -> GotBytes (BS.take outLen dk)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: derive length out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-    -- | PBKDF2 proper: T_i = F(password, salt, iters, i) with the
-    -- HMAC PRF, concatenated across ceil(outLen\/hLen) blocks.
-    pbkdf2 :: DigestAlg -> Int -> ByteString -> KeyMaterial -> Int -> IO (EngineResult ByteString)
-    pbkdf2 prf iters salt pwd outLen = case digestOutLen prf of
-      Nothing -> pure (EngineFail (BackendBadParam "pbkdf2"
-        "PBKDF2 needs a fixed-width PRF"))
-      Just h -> do
-        let n = (outLen + h - 1) `div` h
-        go n 1 []
-      where
-        go 0 _ acc = pure (EngineOk (BS.concat (reverse acc)))
-        go k i acc = do
-          b <- fBlock i
-          case b of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk t -> go (k - 1) (i + 1) (t : acc)
-        fBlock i = do
-          u1 <- prfOf (salt <> word32BE i)
-          case u1 of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk u -> mix (iters - 1) u u
-        mix 0 acc _ = pure (EngineOk acc)
-        mix k acc prev = do
-          u <- prfOf prev
-          case u of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk u' -> mix (k - 1) (acc `xorB` u') u'
-        prfOf msg = macSign env (MacHMAC prf Nothing) pwd msg
-    -- | PBE keygen effects: the §6.38 PKCS#12 construction over
-    -- SHA-1 (u = 20, v = 64): ID 1 derives the key
-    -- (parity-adjusted for the DES rows only), ID 2 the IV.
-    -- Digests run through the provider; the B-feedback
-    -- addition is pure byte arithmetic. IV rows answer the
-    -- framed key\/IV pair; no-IV rows (RC4) answer the lone
-    -- key.
-    runPbe :: Word64 -> ByteString -> ByteString -> Int -> Bool -> Int -> IO CryptoResult
-    runPbe iters pw salt keyLen parity ivLen = do
-      rK <- pbeDChain 1 keyLen
-      if ivLen > 0
-        then do
-          rV <- pbeDChain 2 ivLen
-          pure $ case (rK, rV) of
-            (EngineOk k, EngineOk v) ->
-              GotBytes (encodeKeyPair (finish k) (Just v))
-            (EngineFail err, _) -> GotCryptoError (toCryptoError err)
-            (_, EngineFail err) -> GotCryptoError (toCryptoError err)
-        else pure $ case rK of
-          EngineOk k -> toKeyPair (EngineOk (KeyBytes (finish k), Nothing))
-          EngineFail err -> GotCryptoError (toCryptoError err)
-      where
-        finish = if parity then pbeDesParity else id
-        pbeDChain :: Word8 -> Int -> IO (EngineResult ByteString)
-        pbeDChain ident n = loop n (expand salt <> expand pw) []
-          where
-            d = BS.replicate 64 ident
-            expand s
-              | BS.null s = BS.empty
-              | otherwise =
-                  let target = 64 * ((BS.length s + 63) `div` 64)
-                      copies = target `div` BS.length s + 1
-                  in BS.take target (BS.concat (replicate copies s))
-            loop remaining i acc
-              | remaining <= 0 =
-                  pure (EngineOk (BS.take n (BS.concat (reverse acc))))
-              | otherwise = do
-                  r <- hashTimes (fromIntegral iters) (d <> i)
-                  case r of
-                    EngineFail err -> pure (EngineFail err)
-                    EngineOk a -> loop (remaining - 20) (feedback a i) (a : acc)
-            feedback a i = BS.concat (map (addBlock bInt) (chunks i))
-              where
-                b = BS.take 64 (BS.concat (replicate 4 a))
-                bInt = beInt b
-                chunks x
-                  | BS.null x = []
-                  | otherwise = let (h, t) = BS.splitAt 64 x in h : chunks t
-                addBlock bi blk =
-                  beBytes 64 ((beInt blk + bi + 1) `mod` (2 ^ (512 :: Int)))
-            hashTimes :: Int -> ByteString -> IO (EngineResult ByteString)
-            hashTimes 0 msg = pure (EngineOk msg)
-            hashTimes k msg = do
-              r <- digestOneShot env D_SHA1 msg
-              case r of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk dig -> hashTimes (k - 1) dig
-            beInt :: ByteString -> Integer
-            beInt = BS.foldl' (\a w -> a * 256 + fromIntegral w) 0
-            beBytes :: Int -> Integer -> ByteString
-            beBytes len v =
-              BS.pack [fromIntegral ((v `div` (256 ^ i)) `mod` 256)
-                      | i <- [len - 1, len - 2 .. 0]]
-    -- | MD5 D-chain: @D1 = MD5^c(P||S)@ (the provider-PBKDF1
-    -- root, byte-exact), @D{i+1} = MD5^c(Di||P||S)@ past the
-    -- 16-byte PBKDF1 cap; key = stream[0:keyLen], IV =
-    -- stream[keyLen:keyLen+8]. Digests run through the
-    -- provider. The answer frames the key\/IV pair.
-    runPbkdf1 :: Word64 -> ByteString -> ByteString -> Int -> Bool -> IO CryptoResult
-    runPbkdf1 iters pw salt keyLen parity = do
-      r <- chain (keyLen + 8) BS.empty []
-      pure $ case r of
-        EngineFail err -> GotCryptoError (toCryptoError err)
-        EngineOk stream ->
-          let (k, v) = BS.splitAt keyLen (BS.take (keyLen + 8) stream)
-          in GotBytes (encodeKeyPair (finish k) (Just v))
-      where
-        finish = if parity then pbeDesParity else id
-        chain :: Int -> ByteString -> [ByteString] -> IO (EngineResult ByteString)
-        chain remaining prev acc
-          | remaining <= 0 = pure (EngineOk (BS.concat (reverse acc)))
-          | otherwise = do
-              r <- hashTimes (fromIntegral iters) (prev <> pw <> salt)
-              case r of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk d -> chain (remaining - 16) d (d : acc)
-        hashTimes :: Int -> ByteString -> IO (EngineResult ByteString)
-        hashTimes 0 msg = pure (EngineOk msg)
-        hashTimes k msg = do
-          r <- digestOneShot env D_MD5 msg
-          case r of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk d -> hashTimes (k - 1) d
-    -- | SP 800-108 effects: the mode expansion over the HMAC
-    -- route, truncated to the planned length (capped by
-    -- 'maxSp800Total' with the L-fit check — the planner caps
-    -- honestly, so off-range fires only for hand-built
-    -- effects). A non-bytes key is 'CryptoBadKey'.
-    runSp800 :: Sp800Exec -> KeyMaterial -> Int -> IO CryptoResult
-    runSp800 ex key outLen = case key of
-      KeyBytes kb
-        | outLen >= 1 && outLen <= maxSp800Total
-        , toInteger outLen * 8 < 2 ^ seLengthBits ex
-        , seMode ex /= Sp800Counter
-          || toInteger ((outLen + seHashLen ex - 1) `div` seHashLen ex)
-             <= 2 ^ seCounterBits ex - 1 -> do
-            r <- sp800Expand ex kb outLen
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk d -> GotBytes (BS.take outLen d)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: SP800-108 length out of range or widths do not fit"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-    -- | SP 800-108 expansion (NIST SP 800-108 §5.1\/5.2\/5.3)
-    -- over the HMAC route: counter @K(i) = PRF(KI, [i]_r ||
-    -- fixed || [L]_l)@, feedback @K(i) = PRF(KI, K(i-1) ||
-    -- fixed || [L]_l)@ with @K(0) = IV@, double-pipeline @A(i)
-    -- = PRF(KI, A(i-1))@, @K(i) = PRF(KI, A(i) || fixed ||
-    -- [L]_l)@ with @A(0) = fixed || [L]_l@. L is the derived
-    -- bit-length by construction; counter mode refuses past
-    -- @2^r - 1@ iterations (never wraps).
-    sp800Expand :: Sp800Exec -> ByteString -> Int -> IO (EngineResult ByteString)
-    sp800Expand ex kb outLen
-      | seMode ex == Sp800Counter
-      , toInteger n > 2 ^ seCounterBits ex - 1 = pure (EngineFail (BackendBadParam "sp800Expand"
-          "iteration count exceeds the counter width"))
-      | otherwise = case seMode ex of
-          Sp800Counter -> goCounter 1 []
-          Sp800Feedback -> goFeedback n (seIv ex) []
-          Sp800DoublePipeline -> goPipeline n suffix []
-      where
-        spec = MacHMAC (seAlg ex) Nothing
-        key = KeyBytes kb
-        h = seHashLen ex
-        n = (outLen + h - 1) `div` h
-        suffix = seFixed ex <> encodeW (seLengthBits ex `div` 8) (outLen * 8)
-        rBytes = seCounterBits ex `div` 8
-        encodeW w v = BS.pack [fromIntegral ((v `div` 256 ^ i) `mod` 256) | i <- [w - 1, w - 2 .. 0]]
-        goCounter i acc
-          | i > n = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-          | otherwise = do
-              t <- macSign env spec key (encodeW rBytes i <> suffix)
-              case t of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk blk -> goCounter (i + 1) (blk : acc)
-        goFeedback 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-        goFeedback k prev acc = do
-          t <- macSign env spec key (prev <> suffix)
-          case t of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk blk -> goFeedback (k - 1) blk (blk : acc)
-        goPipeline 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-        goPipeline k aPrev acc = do
-          aNext <- macSign env spec key aPrev
-          case aNext of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk a -> do
-              p <- macSign env spec key (a <> suffix)
-              case p of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk blk -> goPipeline (k - 1) a (blk : acc)
-    -- | TLS-PRF effects: the RFC 2246 expansion over the backend
-    -- HMAC-MD5\/SHA-1 routes. Off-range lengths are 'CryptoFailed';
-    -- a non-bytes key is 'CryptoBadKey'.
-    runTlsPrf :: TlsPrfParams -> KeyMaterial -> Int -> IO CryptoResult
-    runTlsPrf (TlsPrfParams lab seed) key outLen = case key of
-      KeyBytes kb
-        | outLen >= 1 && outLen <= maxTlsPrfOutput -> do
-            r <- tlsPrfExpand kb (lab <> seed) outLen
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk ok -> GotBytes (BS.take outLen ok)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: derive length out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-    -- | TLS-KDF effects: the legacy RFC 2246 expansion or
-    -- @P_hash@ over the selected digest, with the RFC 5705
-    -- context suffix (2-byte big-endian length plus context)
-    -- when present. Off-range lengths are 'CryptoFailed'; a
-    -- non-bytes key is 'CryptoBadKey'.
-    runTlsKdf :: TlsKdfExec -> KeyMaterial -> Int -> IO CryptoResult
-    runTlsKdf ex key outLen = case key of
-      KeyBytes kb
-        | outLen >= 1 && outLen <= maxTlsKdfOutput -> do
-            let seedFull = teLabel ex <> teSeed ex <> ctxSuffix (teContext ex)
-            r <- case (teLegacy ex, teAlg ex) of
-              (True, _) -> tlsPrfExpand kb seedFull outLen
-              (False, Just alg) -> pHash alg (KeyBytes kb) seedFull outLen
-              (False, Nothing) -> pure (EngineFail (BackendBadParam "runTlsKdf"
-                "TLS-KDF hash PRF without a digest"))
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk ok -> GotBytes (BS.take outLen ok)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: derive length out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-    -- | Key-material effects: the TLS PRF ("key expansion"
-    -- over server ++ client randoms, RFC 2246 §6.3) expanded to
-    -- the planned block length — legacy for TLS 1.0, P_hash
-    -- over the selected digest for TLS 1.2. The planner sizes
-    -- the block (KEY_SAFE excludes IVs); the finisher splits it
-    -- into keys + IVs. Off-range lengths are 'CryptoFailed'; a
-    -- non-bytes key is 'CryptoBadKey'.
-    runKeyMat :: KeyMatExec -> KeyMaterial -> Int -> IO CryptoResult
-    runKeyMat ex key outLen = case key of
-      KeyBytes kb
-        | outLen >= 1 && outLen <= maxTlsKeyMatBlock -> do
-            let seedFull = tlsKeyMatLabel <> kmeSr ex <> kmeCr ex
-            r <- if kmePrf ex == 0
-              then tlsPrfExpand kb seedFull outLen
-              else case kdfCodeDigest (fromIntegral (kmePrf ex)) >>= rsaDigest of
-                Just alg -> pHash alg (KeyBytes kb) seedFull outLen
-                Nothing -> pure (EngineFail (BackendBadParam "runKeyMat"
-                  "key-material hash PRF without a digest"))
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk ok -> GotBytes (BS.take outLen ok)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: derive length out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-    -- | SSL3 derive effects: the RFC 6101 constructions over
-    -- provider MD5\/SHA-1. Master rows emit the fixed 48-byte
-    -- §6.1 secret; the keymat row emits the §6.2.2 block
-    -- (pad bytes @A@..@0xFF@: past round 191 the
-    -- construction is undefined, so over-bound blocks fail
-    -- typed even when called past the planner).
-    runSsl3 :: Ssl3Exec -> KeyMaterial -> Int -> IO CryptoResult
-    runSsl3 ex key outLen = case key of
-      KeyBytes kb
-        | outLen >= 1 && outLen <= maxSsl3KeyBlock -> case ex of
-            Ssl3MasterExec cr sr -> do
-              r <- ssl3Master kb cr sr
-              pure $ case r of
-                EngineFail err -> GotCryptoError (toCryptoError err)
-                EngineOk ok -> GotBytes (BS.take outLen ok)
-            Ssl3KeyMatExec mac k iv cr sr ->
-              let total = 2 * mac + 2 * k + 2 * iv
-              in if total < 1 || total > maxSsl3KeyBlock
-                then pure (GotCryptoError (CryptoFailed
-                  "driver: SSL3 key block past the 191-round construction bound"))
-                else do
-                  r <- ssl3Block kb cr sr total
-                  pure $ case r of
-                    EngineFail err -> GotCryptoError (toCryptoError err)
-                    EngineOk ok -> GotBytes (BS.take outLen ok)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: derive length out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-    -- | RFC 6101 §6.1: @MD5(secret + SHA1(pad + secret + CR
-    -- + SR))@ over pads @A@, @BB@, @CCC@.
-    ssl3Master :: ByteString -> ByteString -> ByteString -> IO (EngineResult ByteString)
-    ssl3Master secret cr sr = go pads []
-      where
-        pads = [BS.singleton 65, BS.pack [66, 66], BS.pack [67, 67, 67]]
-        go [] acc = pure (EngineOk (BS.concat (reverse acc)))
-        go (pad : rest) acc = do
-          rSha <- digestOneShot env D_SHA1 (pad <> secret <> cr <> sr)
-          case rSha of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk sha -> do
-              rMd5 <- digestOneShot env D_MD5 (secret <> sha)
-              case rMd5 of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk d -> go rest (d : acc)
-    -- | RFC 6101 §6.2.2: @MD5(secret + SHA1(pad + secret + SR
-    -- + CR))@ iterated, pad @i@ is byte @(0x41 + i - 1)@
-    -- repeated @i@ times (note server random first).
-    ssl3Block :: ByteString -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
-    ssl3Block secret cr sr total = go 1 []
-      where
-        go i acc
-          | length acc * 16 >= total = pure (EngineOk (BS.take total (BS.concat (reverse acc))))
-          | i > 191 = pure (EngineFail (BackendBadParam "ssl3Block"
-              "SSL3 key block past the 191-round construction bound"))
-          | otherwise = do
-              let pad = BS.replicate i (65 + fromIntegral i - 1)
-              rSha <- digestOneShot env D_SHA1 (pad <> secret <> sr <> cr)
-              case rSha of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk sha -> do
-                  rMd5 <- digestOneShot env D_MD5 (secret <> sha)
-                  case rMd5 of
-                    EngineFail err -> pure (EngineFail err)
-                    EngineOk d -> go (i + 1) (d : acc)
-    -- | SSL3 MAC sign effects: @H(secret + pad2 + H(secret +
-    -- pad1 + data))@ truncated to the requested whole-byte
-    -- length (pads 48 bytes MD5, 40 bytes SHA-1).
-    runSsl3MacSign :: DigestAlg -> Int -> KeyMaterial -> ByteString -> IO CryptoResult
-    runSsl3MacSign alg n key input = case key of
-      KeyBytes kb -> do
-        r <- ssl3Mac alg kb input
-        pure $ case r of
-          EngineFail err -> GotCryptoError (toCryptoError err)
-          EngineOk full -> GotBytes (BS.take n full)
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "SSL3 MAC needs raw symmetric key bytes"))
-    -- | SSL3 MAC verify effects: recompute, truncate,
-    -- constant-time compare. A mismatch is the 'False'
-    -- verdict, never a malfunction.
-    runSsl3MacVerify :: DigestAlg -> Int -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-    runSsl3MacVerify alg n key input tag = case key of
-      KeyBytes kb -> do
-        r <- ssl3Mac alg kb input
-        pure $ case r of
-          EngineFail err -> GotCryptoError (toCryptoError err)
-          EngineOk full
-            | driverCtEq (BS.take n full) tag -> GotValid True
-            | otherwise -> GotValid False
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "SSL3 MAC needs raw symmetric key bytes"))
-    -- | The RFC 6101 MAC core over the resolved digest.
-    ssl3Mac :: DigestAlg -> ByteString -> ByteString -> IO (EngineResult ByteString)
-    ssl3Mac alg secret input = case alg of
-      D_MD5 -> macWith 48
-      D_SHA1 -> macWith 40
-      _ -> pure (EngineFail (BackendBadParam "ssl3Mac"
-        "SSL3 MAC needs MD5 or SHA-1"))
-      where
-        macWith padLen = do
-          let pad1 = BS.replicate padLen 0x36
-              pad2 = BS.replicate padLen 0x5c
-          rInner <- digestOneShot env alg (secret <> pad1 <> input)
-          case rInner of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk inner -> digestOneShot env alg (secret <> pad2 <> inner)
-    -- | RFC 5705 context suffix: empty without context, else the
-    -- 2-byte big-endian length plus the context.
-    ctxSuffix :: ByteString -> ByteString
-    ctxSuffix ctx
-      | BS.null ctx = BS.empty
-      | otherwise = BS.pack [fromIntegral (n `div` 256), fromIntegral (n `mod` 256)] <> ctx
-      where n = BS.length ctx
-    -- | TLS 1.0\/1.1 PRF: P_MD5 over the first secret half XOR
-    -- P_SHA-1 over the second (RFC 2246 §5; the halves share the
-    -- middle byte on odd lengths).
-    tlsPrfExpand :: ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
-    tlsPrfExpand secret seedBytes outLen = do
-      m <- pHash D_MD5 (KeyBytes s1) seedBytes outLen
-      case m of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk mOut -> do
-          s <- pHash D_SHA1 (KeyBytes s2) seedBytes outLen
-          pure $ case s of
-            EngineFail err -> EngineFail err
-            EngineOk sOut -> EngineOk (BS.take outLen mOut `xorB` BS.take outLen sOut)
-      where
-        (s1, s2) = splitTlsSecret secret
-    -- | P_hash: A(0) = seed, A(i) = HMAC(secret, A(i-1)),
-    -- P(i) = HMAC(secret, A(i) ++ seed), concatenated.
-    pHash :: DigestAlg -> KeyMaterial -> ByteString -> Int -> IO (EngineResult ByteString)
-    pHash alg secret seedBytes outLen = case digestOutLen alg of
-      Nothing -> pure (EngineFail (BackendBadParam "pHash"
-        "TLS-PRF needs a fixed-width HMAC"))
-      Just h -> do
-        let n = (outLen + h - 1) `div` h
-        go n seedBytes []
-      where
-        go 0 _ acc = pure (EngineOk (BS.concat (reverse acc)))
-        go k aPrev acc = do
-          aNext <- macSign env (MacHMAC alg Nothing) secret aPrev
-          case aNext of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk a -> do
-              p <- macSign env (MacHMAC alg Nothing) secret (a <> seedBytes)
-              case p of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk blk -> go (k - 1) a (blk : acc)
-    -- | IKE effects over the HMAC route: prf+ iteration,
-    -- the single-shot PRF in either role order, the IKEv1
-    -- single shot over the aux keygxy input, and the
-    -- counter-less extended iteration (truncating the base
-    -- when neither aux nor extra is present — the oracle
-    -- reference rule). Off-range lengths are 'CryptoFailed';
-    -- non-bytes keys are 'CryptoBadKey'.
-    runIke :: IkeExec -> KeyMaterial -> Maybe KeyMaterial -> Int -> IO CryptoResult
-    runIke ex key mAux outLen = case key of
-      KeyBytes kb -> case auxOf mAux of
-        Left err -> pure (GotCryptoError err)
-        Right auxB -> case ieKind ex of
-          Ike2PrfPlus
-            | outLen >= 1
-            , Just h <- digestOutLen (ieAlg ex)
-            , (outLen + h - 1) `div` h <= 255 -> do
-                r <- ikePrfPlusExpand (ieAlg ex) kb (ieBlob1 ex) outLen
-                pure $ case r of
-                  EngineFail err -> GotCryptoError (toCryptoError err)
-                  EngineOk d -> GotBytes (BS.take outLen d)
-            | otherwise -> pure (GotCryptoError (CryptoFailed
-                "driver: IKE prf+ length out of range"))
-          IkePrf
-            | outLen >= 1, Just h <- digestOutLen (ieAlg ex), outLen <= h -> do
-                let (kk, msg) = if ieFlags ex == 1
-                      then (ieBlob1 ex <> ieBlob2 ex, kb)
-                      else (kb, ieBlob1 ex <> ieBlob2 ex)
-                r <- macSign env (MacHMAC (ieAlg ex) Nothing) (KeyBytes kk) msg
-                pure $ case r of
-                  EngineFail err -> GotCryptoError (toCryptoError err)
-                  EngineOk d -> GotBytes (BS.take outLen d)
-            | otherwise -> pure (GotCryptoError (CryptoFailed
-                "driver: IKE PRF length out of range"))
-          Ike1Prf -> case auxB of
-            -- Unreachable post-dispatch (IKEv1-PRF needs aux);
-            -- typed, never a crash.
-            Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-              "IKEv1-PRF derive binds no keygxy key"))
-            Just gx
-              | outLen >= 1, Just h <- digestOutLen (ieAlg ex), outLen <= h -> do
-                  let msg = gx <> ieBlob1 ex <> ieBlob2 ex <> BS.singleton (ieKeyNum ex)
-                  r <- macSign env (MacHMAC (ieAlg ex) Nothing) (KeyBytes kb) msg
-                  pure $ case r of
-                    EngineFail err -> GotCryptoError (toCryptoError err)
-                    EngineOk d -> GotBytes (BS.take outLen d)
-              | otherwise -> pure (GotCryptoError (CryptoFailed
-                  "driver: IKEv1-PRF length out of range"))
-          Ike1Extended
-            | outLen >= 1 && outLen <= maxIkeOutput
-            , extTruncOk auxB (ieBlob1 ex) (BS.length kb) outLen -> do
-                r <- ikeExtExpand (ieAlg ex) kb auxB (ieBlob1 ex) outLen
-                pure $ case r of
-                  EngineFail err -> GotCryptoError (toCryptoError err)
-                  EngineOk d -> GotBytes (BS.take outLen d)
-            | otherwise -> pure (GotCryptoError (CryptoFailed
-                "driver: IKE extended length out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-      where
-        auxOf Nothing
-          | ikeNeedsAux ex = Left (CryptoBadKey "driver" "IKE derive binds no aux key")
-          | otherwise = Right Nothing
-        auxOf (Just (KeyBytes ab)) = Right (Just ab)
-        auxOf (Just _) = Left (CryptoBadKey "driver" "IKE aux key is not byte material")
-        -- | The truncation rule admits the request: without aux
-        -- input the output must fit the base.
-        extTruncOk Nothing extra kbLen wantLen = not (BS.null extra) || wantLen <= kbLen
-        extTruncOk (Just _) _ _ _ = True
-    -- | Byte-op derives: pure byte manipulation over secret
-    -- material (no backend crypto — identical on both
-    -- backends). Concat rows join base and second input and
-    -- truncate to the planned length; XOR folds the first
-    -- planned-length bytes of both inputs (at most the shorter
-    -- one; the planner refuses a longer length first); EXTRACT
-    -- slices whole bytes at the bit offset, bit-exact
-    -- (MSB-first) for sub-byte offsets. Off-range lengths are 'CryptoFailed';
-    -- non-bytes keys are 'CryptoBadKey'.
-    runByteOps :: ByteOpsExec -> KeyMaterial -> Maybe KeyMaterial -> Int -> IO CryptoResult
-    runByteOps ex key mAux outLen = case key of
-      KeyBytes kb -> case auxOf mAux of
-        Left err -> pure (GotCryptoError err)
-        Right auxB -> case boeKind ex of
-          ConcatBaseAndKey -> case auxB of
-            -- Unreachable post-dispatch (concat-key needs
-            -- aux); typed, never a crash.
-            Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-              "concat-key derive binds no second key"))
-            Just sb
-              | outLen >= 1, outLen <= BS.length kb + BS.length sb ->
-                  pure (GotBytes (BS.take outLen (kb <> sb)))
-              | otherwise -> pure (GotCryptoError (CryptoFailed
-                  "driver: concat-key length out of range"))
-          ConcatBaseAndData
-            | outLen >= 1, outLen <= BS.length kb + BS.length dat ->
-                pure (GotBytes (BS.take outLen (kb <> dat)))
-            | otherwise -> pure (GotCryptoError (CryptoFailed
-                "driver: concat-data length out of range"))
-          ConcatDataAndBase
-            | outLen >= 1, outLen <= BS.length dat + BS.length kb ->
-                pure (GotBytes (BS.take outLen (dat <> kb)))
-            | otherwise -> pure (GotCryptoError (CryptoFailed
-                "driver: data-concat length out of range"))
-          XorBaseAndData
-            | outLen >= 1
-            , outLen <= min (BS.length kb) (BS.length dat) ->
-                pure (GotBytes (BS.take outLen (kb `xorB` dat)))
-            | otherwise -> pure (GotCryptoError (CryptoFailed
-                "driver: XOR length out of range"))
-          ExtractKeyFromKey
-            | outLen >= 1
-            , toInteger off + toInteger outLen * 8 <= toInteger (BS.length kb) * 8 ->
-                pure (GotBytes (extractBits kb (fromIntegral off) outLen))
-            | otherwise -> pure (GotCryptoError (CryptoFailed
-                "driver: EXTRACT window out of range"))
-      _ -> pure (GotCryptoError (CryptoBadKey "driver"
-        "key derivation needs raw secret bytes"))
-      where
-        dat = boeData ex
-        off = boeOff ex
-        auxOf Nothing
-          | byteOpsNeedsAux ex = Left (CryptoBadKey "driver" "byte-op derive binds no aux key")
-          | otherwise = Right Nothing
-        auxOf (Just (KeyBytes ab)) = Right (Just ab)
-        auxOf (Just _) = Left (CryptoBadKey "driver" "byte-op aux key is not byte material")
-    -- | Bit-exact slice (MSB-first): @n@ whole bytes starting
-    -- at bit @off@ of the input (the caller keeps the window
-    -- in range).
-    extractBits :: ByteString -> Int -> Int -> ByteString
-    extractBits bs off n = BS.pack [byteAt i | i <- [0 .. n - 1]]
-      where
-        byteAt i = foldl setBit 0 [0 .. 7]
-          where
-            setBit acc j
-              | bitAt (off + i * 8 + j) = acc .|. (1 `shiftL` (7 - j))
-              | otherwise = acc
-        bitAt p = testBit (BS.index bs (p `div` 8)) (7 - (p `mod` 8))
-    -- | IKEv2 prf+ (RFC 4306 §2.8): @T(i) = PRF(K, T(i-1) |
-    -- seed | i)@ with @T(0)@ empty, the counter a single byte
-    -- (never wraps: past 255 blocks refuses).
-    ikePrfPlusExpand :: DigestAlg -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
-    ikePrfPlusExpand alg kb seed outLen = case digestOutLen alg of
-      Nothing -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
-        "IKE prf+ needs a fixed-width HMAC"))
-      Just h
-        | outLen < 1 -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
-            "IKE prf+ length out of range"))
-        | n > 255 -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
-            "IKE prf+ length exceeds the counter capacity"))
-        | otherwise -> go 1 BS.empty []
-        where
-          n = (outLen + h - 1) `div` h
-          spec = MacHMAC alg Nothing
-          key = KeyBytes kb
-          go i prev acc
-            | i > n = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-            | otherwise = do
-                t <- macSign env spec key (prev <> seed <> BS.singleton (fromIntegral i))
-                case t of
-                  EngineFail err -> pure (EngineFail err)
-                  EngineOk blk -> go (i + 1) blk (blk : acc)
-    -- | IKEv1 extended expansion: @T(i) = PRF(K, T(i-1) |
-    -- keygxy | extra)@ with the first message the bare seed
-    -- (@\\x00@ when both inputs are empty); with neither
-    -- input and a short output, the base truncates (the
-    -- oracle reference rule).
-    ikeExtExpand :: DigestAlg -> ByteString -> Maybe ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
-    ikeExtExpand alg kb mGx extra outLen
-      | outLen < 1 = pure (EngineFail (BackendBadParam "ikeExtExpand"
-          "IKE extended length out of range"))
-      | otherwise = case (mGx, BS.null extra) of
-          (Nothing, True)
-            | outLen <= BS.length kb -> pure (EngineOk (BS.take outLen kb))
-            | otherwise -> pure (EngineFail (BackendBadParam "ikeExtExpand"
-                "IKE extended truncation exceeds the base length"))
-          _ -> case digestOutLen alg of
-            Nothing -> pure (EngineFail (BackendBadParam "ikeExtExpand"
-              "IKE extended needs a fixed-width HMAC"))
-            Just h ->
-              let seed = maybe BS.empty id mGx <> extra
-                  first = if BS.null seed then BS.singleton 0 else seed
-                  n = (outLen + h - 1) `div` h
-                  spec = MacHMAC alg Nothing
-                  key = KeyBytes kb
-                  go 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-                  go k prev acc = do
-                    let msg = if k == n then first else prev <> seed
-                    t <- macSign env spec key msg
-                    case t of
-                      EngineFail err -> pure (EngineFail err)
-                      EngineOk blk -> go (k - 1) blk (blk : acc)
-              in go n first []
-    unsupported :: CryptoEffect -> CryptoResult
-    unsupported e = GotCryptoError (CryptoUnsupported "driver" (show e))
-
 -- | ECDSA dispatch refusal: 'ecdsaSpecFor' only fails on
 -- malformed parameters (same message as the OpenSSL driver), so the
 -- refusal is unconditionally a 'CryptoFailed' parameter refusal.
