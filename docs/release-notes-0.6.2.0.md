@@ -19,7 +19,8 @@ Developer preview: entries land per task and finalize at release.
   file; divergent spellings refuse) is now fully pinned: new
   lock and alias twin tests over `%2e%2e` spellings (plus a
   symlinked parent for alias) join the pre-existing sidecar,
-  undecodable, query/fragment, nested, and authority twins.
+  undecodable, query (plus a new fragment case), nested,
+  and authority twins.
   No behavior change. Non-UTF-8 spellings that do not
   round-trip stay explicitly out of scope.
 
