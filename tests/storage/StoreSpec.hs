@@ -1403,8 +1403,10 @@ caseUriTwinLock =
     bracket (either (assertFailure . show) pure =<< openSQLiteStore db) storeClose $ \_ -> do
       eTwin <- openSQLiteStore twin
       -- Either lock-file verdict proves the twin resolved to the
-      -- same lock identity (a same-process open reads its own pid
-      -- back); the kernel guard or a decode break must not fire.
+      -- same lock identity; the kernel guard or a decode break
+      -- must not fire. In-test both opens share a pid, so the
+      -- exercised arm is the same-pid read-back; the held-lock
+      -- arm documents the dead-owner-with-held-lock verdict.
       case eTwin of
         Left (StoreSecondWriter m)
           | "store lock is held" `isInfixOf` m -> pure ()

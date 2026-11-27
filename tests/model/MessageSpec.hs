@@ -335,9 +335,22 @@ caseNullRecallReReports = do
       assertEqual "null recall keeps outer slot" [SlotEncrypt] (activeSlots opsQ)
       -- A follow-up buffered retry must still deliver: an unstaged
       -- slot would answer NOT_INITIALIZED, so CKR_OK proves the
-      -- staged bytes survived the re-query.
+      -- staged bytes survived the re-query. Byte-identity comes
+      -- from a twin one-shot delivered immediately (no retry
+      -- involved): both must produce the same payload.
       let (_, follow) = retryMessageStaged MsgEncrypt opsQ SlotEncrypt (IntentBuffer 64)
       assertEqual "staged bytes survive the re-query" CKR_OK (soCode follow)
+      let (opsT0, _) =
+            initMessageOperation MsgEncrypt testEnv emptySessionOps testSession encryptArgs
+          (opsT1, _, oT) = planMessageOneShot opsT0 testSession MsgEncrypt "ct" one
+      case soEffects oT of
+        [fxT] -> do
+          let (_, direct) = finishMessage F_EncryptMessage MsgEncrypt opsT1 SlotEncrypt "ct"
+                (runMessageEffect fxT) (IntentBuffer 64)
+          assertEqual "twin delivers directly" CKR_OK (soCode direct)
+          assertEqual "re-query preserves staged bytes"
+            (stagedPayload direct) (stagedPayload follow)
+        otherT -> assertFailure ("expected one one-shot effect, got " ++ show otherT)
     other -> assertFailure ("expected one one-shot effect, got " ++ show other)
 
 -- ---------------------------------------------------------------------------

@@ -16,9 +16,10 @@ Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.2.0`.
   length); the visible effect is that re-queries now pass
   through the retain path like classic retries.
 - Spec validation gate repaired and wired into CI: the
-  GENERATED-HEADER stub pins (stale since message/async entries
-  gained routed implementations) now match the generated
-  `abi_stubs.inc`, and `validate-spec.py` runs in static gates.
+  GENERATED-HEADER stub pins (stale since the crypto slices
+  began routing stubs, then message and async routing) now
+  match the generated `abi_stubs.inc`, and `validate-spec.py`
+  runs in static gates.
 
 ### Tests
 
