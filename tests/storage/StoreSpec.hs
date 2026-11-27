@@ -67,6 +67,7 @@ import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirecto
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
+import System.Posix.Files (createSymbolicLink)
 import System.IO.Error (catchIOError)
 import System.Posix.Files (createSymbolicLink, fileExist, readSymbolicLink)
 import System.Posix.IO (OpenMode (..), closeFd, defaultFileFlags, openFd)
@@ -363,6 +364,8 @@ spec mkScope = testGroup "store contract"
       , testCase "version-1 database refuses without writing" testV1RefusesWithoutWriting
       , testCase "version-2 database refuses without writing" testV2RefusesWithoutWriting
       , testCase "URI twin sees the same sidecars" caseUriTwinSidecar
+      , testCase "URI twin sees the same lock" caseUriTwinLock
+      , testCase "alias plus URI twin sees the same lock" caseUriTwinAlias
       , testCase "undecodable URI refuses cleanly" caseUriUndecodable
       , testCase "URI with query refuses" caseUriQuery
       , testCase "nested file: URI refuses" caseUriNested
@@ -1389,6 +1392,43 @@ caseUriTwinSidecar =
       Left (StoreForeignSidecar p) -> assertEqual "twin sidecar path" (db ++ "-wal") p
       Left other -> assertFailure ("twin must refuse by sidecar, got: " ++ show other)
       Right s -> storeClose s >> assertFailure "twin spelling missed the sidecar"
+
+-- | URI twin sees the same lock: a POSIX open holds the lock,
+-- so the %2e%2e twin must refuse StoreSecondWriter (same
+-- identity, not a shadow open); after close the twin opens fine.
+caseUriTwinLock :: IO ()
+caseUriTwinLock =
+  bracket (makeTempDir "haskoki-storage-uri-lock") removeDirectoryRecursive $ \dir -> do
+    let db = dir </> "a.db"
+        twin = "file:" ++ dir ++ "/x/%2e%2e/a.db"
+    bracket (either (assertFailure . show) pure =<< openSQLiteStore db) storeClose $ \_ -> do
+      eTwin <- openSQLiteStore twin
+      case eTwin of
+        Left (StoreSecondWriter _) -> pure ()
+        Left other -> assertFailure ("twin must refuse by lock, got: " ++ show other)
+        Right s -> storeClose s >> assertFailure "twin spelling shadowed the lock"
+    eRe <- openSQLiteStore twin
+    case eRe of
+      Left err -> assertFailure ("twin must open after close, got: " ++ show err)
+      Right s -> storeClose s
+
+-- | Alias (symlink) plus URI decoding agree: a store under a
+-- symlinked directory, opened through the link, holds the lock
+-- on the real file; a %2e%2e twin traversing the same link must
+-- refuse StoreSecondWriter (same identity).
+caseUriTwinAlias :: IO ()
+caseUriTwinAlias =
+  bracket (makeTempDir "haskoki-storage-uri-alias") removeDirectoryRecursive $ \dir -> do
+    createDirectoryIfMissing True (dir </> "real")
+    createSymbolicLink (dir </> "real") (dir </> "link")
+    let via = dir </> "link" </> "a.db"
+        twin = "file:" ++ dir ++ "/link/x/%2e%2e/a.db"
+    bracket (either (assertFailure . show) pure =<< openSQLiteStore via) storeClose $ \_ -> do
+      eTwin <- openSQLiteStore twin
+      case eTwin of
+        Left (StoreSecondWriter _) -> pure ()
+        Left other -> assertFailure ("alias twin must refuse by lock, got: " ++ show other)
+        Right s -> storeClose s >> assertFailure "alias twin spelling shadowed the lock"
 
 -- | Undecodable URIs refuse cleanly (never reach SQLite).
 caseUriUndecodable :: IO ()
