@@ -95,8 +95,8 @@ module Haskoki.Runtime.Storage.SQLite
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, putMVar, readMVar, takeMVar)
-import Control.Exception (SomeException, bracket, bracketOnError, bracket_, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
+import Control.Exception (SomeException, bracket, bracketOnError, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (when)
 import Data.Bits ((.|.))
 import qualified Data.ByteString as BS
@@ -105,7 +105,7 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (intercalate, nub, sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
 import Data.Text (Text)
 import Data.Word (Word64)
@@ -141,15 +141,15 @@ import Haskoki.Runtime.Storage
   , StoreStats (..)
   , StoredDoc (..)
   , TokenRecord (..)
-  , checkExpectedRevisions
+  
   , checkLimits
   , checkSlotUnique
   , checkTokenRefs
   , coverDeletedJobIds
-  , decodeAttrsDoc
-  , decodeCredentialRecord
+  
+  
   , decodeHex16
-  , decodeJobRecord
+  
   , decodeTokenRecord
   , defaultLimits
   , encodeCredentialRecord
@@ -158,10 +158,10 @@ import Haskoki.Runtime.Storage
   , encodeJobRecord
   , encodeObjectRecord
   , encodeTokenRecord
-  , execStateName
+  
   , jobIdCounterKey
-  , knownMaterialEncodings
-  , nextJobReservation
+  
+  
   , noFaults
   , reconcileCredentialsReload
   , reconcileJobsReload
@@ -173,8 +173,11 @@ import Haskoki.Runtime.Storage
 import Haskoki.Runtime.Storage.SQLite.Stats
 import Haskoki.Runtime.Storage.SQLite.Statements
 import Haskoki.Runtime.Storage.SQLite.Types
+import Haskoki.Runtime.Storage.SQLite.Conn
+import Haskoki.Runtime.Storage.SQLite.Records
+import Haskoki.Runtime.Storage.SQLite.Txn
 import Haskoki.Runtime.Trace (SpellingRefusal (..), effectiveStorePath, recheckResolved, renderSpellingRefusal)
-import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), SlotId (..), TokenId (..))
+import Haskoki.Types (Generation (..), ObjectId (..), SlotId (..), TokenId (..))
 
 -- ---------------------------------------------------------------------------
 -- Open
@@ -674,24 +677,6 @@ confirmTakeoverWithReason dbPath lockPath procRoot pid attempts heldMsg = do
                     tryIOError (fdWrite fd (show pid ++ "\n"))) `onException` closeQuietFd fd
                   pure (Right fd)
 
--- | True when the open fd and the path name the same file (the
--- unlink race: a closer may have removed the path after we opened
--- it, in which case the fd names an orphan, not the lock).
-sameFile :: Fd -> FilePath -> IO Bool
-sameFile fd path = do
-  eSt <- tryIOError (getFdStatus fd)
-  ePath <- tryIOError (getFileStatus path)
-  pure (case (eSt, ePath) of
-    (Right a, Right b) -> deviceID a == deviceID b && fileID a == fileID b
-    _ -> False)
-
--- | Close an fd best-effort (failure-path cleanup; errors
--- ignored).
-closeQuietFd :: Fd -> IO ()
-closeQuietFd fd = do
-  _ <- tryIOError (closeFd fd)
-  pure ()
-
 -- | Take the database-anchored kernel guard on an open database
 -- fd: an exclusive non-blocking @flock(2)@ held for the store's
 -- lifetime. A replacement sidecar lock is a different inode whose
@@ -772,22 +757,6 @@ tryFlock fd = go (0 :: Int)
       if ok || n >= 9
         then pure ok
         else threadDelay 5000 >> go (n + 1)
-
--- | Release ownership best-effort (close path; errors ignored).
--- The path is unlinked only while it still names OUR lock inode —
--- a live owner's close must never delete a replacement lock
--- planted after the path was deleted. The unlink happens while the
--- kernel lock is still held, so no takeover can confirm on the
--- stale inode mid-release; the fd close then drops the kernel
--- lock.
-releaseQuiet :: Fd -> FilePath -> IO ()
-releaseQuiet fd lockPath = do
-  owned <- sameFile fd lockPath
-  when owned $ do
-    _ <- tryIOError (removeLink lockPath)
-    pure ()
-  _ <- tryIOError (closeFd fd)
-  pure ()
 
 -- ---------------------------------------------------------------------------
 -- Init and verify
@@ -1077,85 +1046,6 @@ mkStore conn = Store
   , storeClaims = sqClaims conn
   }
 
--- | Run one connection use under the guard lock (async-safe
--- take\/release pairing), reporting the non-open handle via the
--- default (a close-failed handle refuses exactly like a closed
--- one). The state check runs under the guard, and the close
--- takes the same guard before marking the state, so a use either
--- runs fully before the close or reports closed — the close can
--- never shut the handle beneath an in-flight use.
-withConn :: SQLiteConn -> IO a -> (S.Database -> IO a) -> IO a
-withConn conn onClosed f =
-  bracket_ (takeMVar (sqLock conn)) (putMVar (sqLock conn) ()) $ do
-    st <- readMVar (sqClosed conn)
-    if st == HandleOpen then f (sqDb conn) else onClosed
-
--- | 'withConn' for every use that reads or writes through the
--- connection: a closed handle refuses with 'storeClosed', and a
--- connection still holding a write transaction it could not roll
--- back ('sqOpenTxn') refuses with 'connectionQuarantined' —
--- anything read there would observe, and anything written would
--- join, the unresolved transaction. Only 'reloadConn' (which
--- resolves it) and 'closeConn' (whose native close rolls it back)
--- pass.
-withLive :: SQLiteConn -> (StoreError -> a) -> (S.Database -> IO a) -> IO a
-withLive conn refuse f = withConn conn (pure (refuse storeClosed)) $ \db -> do
-  openTxn <- readIORef (sqOpenTxn conn)
-  case openTxn of
-    Just why -> pure (refuse (connectionQuarantined why))
-    Nothing -> f db
-
--- | The refusal of a connection-wide quarantine.
-connectionQuarantined :: String -> StoreError
-connectionQuarantined why =
-  StoreIO ("connection quarantined until a reload rolls back or the store reopens: " ++ why)
-
--- | Idempotent close under the connection guard: the close waits
--- for any in-flight use, then either retires (the database
--- handle closes and the lock — path plus both held kernel
--- guards — is released exactly once) or, when the close cannot
--- complete, poisons the handle. A close that cannot complete —
--- an injected 'FaultClose' (which skips the real close
--- entirely) or a SQLite close error (which leaves the
--- connection open per @sqlite3_close@) — retains the handle,
--- the lock path, and both kernel guards, refuses new operations
--- exactly like a closed handle, reports the failure by throwing
--- it, and a later close retries for real. A failed close never
--- half-releases, and the next owner can never enter around the
--- surviving connection. The state cell is only ever emptied
--- across non-blocking updates: the state read, the fault probe,
--- and the real close all precede the take, so an exception or a
--- kill during the arbitrary 'fiFire' IO cannot strand the cell
--- empty (this close holds the connection guard throughout, so no
--- other writer can interleave). The retire tail itself runs
--- uninterruptibly, so a kill cannot strand a half-released
--- guard set behind a handle already marked closed (whose
--- retries would no-op); the tail performs only fast local
--- releases, never blocking operations.
-closeConn :: SQLiteConn -> IO ()
-closeConn conn = mask_ $
-  bracket_ (takeMVar (sqLock conn)) (putMVar (sqLock conn) ()) $ do
-    st <- readMVar (sqClosed conn)
-    case st of
-      HandleClosed -> pure ()
-      _ -> do
-        injected <- fiFire (sqInjector conn) FaultClose
-        eClosed <-
-          if injected
-            then pure (Left (StoreIO "sqlite store close failed (injected FaultClose)"))
-            else trySQLite (S.close (sqDb conn))
-        case eClosed of
-          Left err -> do
-            _ <- takeMVar (sqClosed conn)
-            putMVar (sqClosed conn) HandleCloseFailed
-            throwIO err
-          Right () -> uninterruptibleMask_ $ do
-            _ <- takeMVar (sqClosed conn)
-            putMVar (sqClosed conn) HandleClosed
-            releaseQuiet (sqLockFd conn) (sqLockPath conn)
-            _ <- tryIOError (closeFd (sqDbFd conn))
-            pure ()
-
 -- | The commit protocol: closed-handle refusal, quarantine
 -- refusal, pre-commit validation (limits, expected revisions),
 -- pre-commit fault rollback, then the masked durable section (one
@@ -1229,317 +1119,6 @@ resetEffectiveDb db tid wantGen replacement = do
     parseOid _ = Nothing
     parsePid [S.SQLBlob b] = decodeBlobW64 b
     parsePid _ = Nothing
-
--- | Read the job-id counter row ('Nothing' = the key is
--- absent, as in a hand-built database: reservation treats it
--- as 1 and reconciles with the stored maximum).
-readCounterDb :: S.Database -> IO (Either StoreError (Maybe String))
-readCounterDb db = do
-  eRows <- queryRows db "SELECT value FROM store_meta WHERE key = ?"
-    [S.SQLText (T.pack jobIdCounterKey)]
-  case eRows of
-    Left err -> pure (Left err)
-    Right [] -> pure (Right Nothing)
-    Right [[S.SQLText v]] -> pure (Right (Just (T.unpack v)))
-    Right _ -> pure (Left (StoreCorrupt "corrupt store_meta counter row shape"))
-
--- | Read the maximum stored persistent job id, if any. The
--- fixed-width big-endian blob keys order numerically, so one
--- descending row suffices.
-readMaxJobDb :: S.Database -> IO (Either StoreError (Maybe Word64))
-readMaxJobDb db = do
-  eRows <- queryRows db
-    "SELECT persistent_id_key FROM detached_jobs ORDER BY persistent_id_key DESC LIMIT 1" []
-  case eRows of
-    Left err -> pure (Left err)
-    Right [] -> pure (Right Nothing)
-    Right [[S.SQLBlob b]] -> case decodeBlobW64 b of
-      Just w -> pure (Right (Just w))
-      Nothing -> pure (Left (StoreCorrupt "corrupt persistent_id_key on max job"))
-    Right _ -> pure (Left (StoreCorrupt "corrupt max-job row shape"))
-
--- | Pids whose records a delta deletes, read inside the
--- deleting transaction before the drops run: stored jobs
--- named by an explicit drop or owned by a dropped token,
--- minus same-delta job puts (a drop\/put pair replaces, so
--- the id survives). Drops naming unknown pids cover nothing,
--- matching the memory backend exactly.
-readDoomedPids :: S.Database -> StoreDelta -> IO (Either StoreError [Word64])
-readDoomedPids db d
-  | null (sdDropJobs d) && null (sdDropTokens d) = pure (Right [])
-  | otherwise = do
-      eJobs <- loadJobs db
-      pure (fmap doomedOf eJobs)
-  where
-    doomedOf jobs =
-      [ jrPersistentId j
-      | j <- jobs
-      , jrToken j `elem` sdDropTokens d || jrPersistentId j `elem` sdDropJobs d
-      , jrPersistentId j `notElem` map jrPersistentId (sdPutJobs d)
-      ]
-
--- | Fold deleted pids into the job-id mark (same transaction,
--- after the caller's own meta puts): reset/drop keeps
--- coverage of legacy ids even when the mark never advanced
--- before. An empty doomed set writes nothing.
-coverDeletedMeta :: S.Database -> [Word64] -> IO (Either StoreError ())
-coverDeletedMeta _ [] = pure (Right ())
-coverDeletedMeta db doomed = do
-  eMark <- readCounterDb db
-  case eMark of
-    Left err -> pure (Left err)
-    Right old -> case coverDeletedJobIds old doomed of
-      Nothing -> pure (Right ())
-      Just v -> let (sql, params) = putMetaStmt (jobIdCounterKey, v)
-                in execParams db sql params
-
--- | Reserve one store-wide persistent job id: closed-handle
--- refusal, then the commit-protocol shape (a pre-commit fault,
--- one masked @BEGIN IMMEDIATE@ mark-advance transaction,
--- ambiguous verification) under the connection guard. The
--- guard plus single-writer ownership serializes every
--- reservation store-wide, so two contexts on one handle never
--- share an id. Reservation never consults quarantine: every
--- call re-reads the durable mark under the guard, so a
--- quarantined handle still cannot mint a duplicate. A
--- successful reservation counts as a durable commit; the
--- observation hooks fire with the commit analogue of the
--- outcome. On a version-1 database the reservation writes only
--- the @store_meta@ mark, which version 1 already has, so it does
--- not migrate (the next commit does).
-reserveJobIdConn :: SQLiteConn -> IO (Either StoreError Word64)
-reserveJobIdConn conn =
-  withLive conn Left (reserveLocked conn)
-
--- | The reservation flow with the connection guard already held.
-reserveLocked :: SQLiteConn -> S.Database -> IO (Either StoreError Word64)
-reserveLocked conn db = do
-  let inj = sqInjector conn
-      sVar = sqStats conn
-  preFailed <- fiFire inj FaultBeforeCommit
-  if preFailed
-    then pure (Left (StoreIO "injected pre-commit failure"))
-    else mask_ $ do
-      fiOnMasked inj
-      fullDisk <- fiFire inj FaultFullDisk
-      eTxn <-
-        if fullDisk
-          then pure (Left (TxnRolledBack (StoreFull "disk full (injected)")))
-          else runReserveTxn db
-      (classification, ePid) <- case eTxn of
-        -- A store-wide reservation names no token: an unresolved
-        -- outcome quarantines every token (the
-        -- 'resolveAmbiguousReserve' precedent). A reservation
-        -- that fails returns no id either way, so an advance that
-        -- did land only leaves a gap, never a reuse.
-        Left failure -> do
-          classification <- settleTxnFailure conn db Nothing failure
-          pure (classification, Left (txnFailureError failure))
-        Right (pid, advanced, old) -> do
-          ambiguous <- fiFire inj FaultAmbiguousCommit
-          if ambiguous
-            then resolveAmbiguousReserve conn db pid advanced old
-            else do
-              bumpCommits sVar
-              pure (Committed, Right pid)
-      fiOnResult inj classification
-      pure ePid
-  where
-    -- One transaction; a failure ends it by the native state
-    -- ('endFailedTxn').
-    runReserveTxn :: S.Database -> IO (Either TxnFailure (Word64, String, Maybe String))
-    runReserveTxn d = do
-      sthBeforeBegin (sqHooks conn) d
-      eBegin <- trySQLite (S.exec d "BEGIN IMMEDIATE")
-      case eBegin of
-        Left err -> pure (Left (TxnRolledBack err))
-        Right () -> do
-          eBody <- runReserveBody d
-          case eBody of
-            Left err -> Left <$> endFailedTxn conn d AtBody err
-            Right triple@(_, advanced, _) -> do
-              let (sql, params) = putMetaStmt (jobIdCounterKey, advanced)
-              ePut <- execParams d sql params
-              case ePut of
-                Left err -> Left <$> endFailedTxn conn d AtBody err
-                Right () -> do
-                  eCommit <- trySQLite (S.exec d "COMMIT")
-                  case eCommit of
-                    Left err -> Left <$> endFailedTxn conn d AtCommit err
-                    Right () -> pure (Right triple)
-    -- Read the mark and the stored maximum inside the
-    -- transaction and compute the pure reservation step.
-    runReserveBody :: S.Database -> IO (Either StoreError (Word64, String, Maybe String))
-    runReserveBody d = do
-      eCounter <- readCounterDb d
-      case eCounter of
-        Left err -> pure (Left err)
-        Right old -> do
-          eMax <- readMaxJobDb d
-          case eMax of
-            Left err -> pure (Left err)
-            Right mMax ->
-              let pids = maybe [] (: []) mMax
-              in pure (fmap (\(pid, advanced) -> (pid, advanced, old))
-                (nextJobReservation old pids))
-
--- | Reconcile an ambiguous mark-advance against a fresh
--- reload: the reloaded mark is either the advanced value
--- (durable: return the id) or the pre-call value (nothing
--- written: fail clean). A failed reload — or any third
--- value, unreachable under the single-writer guard —
--- quarantines every token and fails: never a shared id.
-resolveAmbiguousReserve
-  :: SQLiteConn -> S.Database -> Word64 -> String -> Maybe String
-  -> IO (CommitResult, Either StoreError Word64)
-resolveAmbiguousReserve conn db pid advanced old = do
-  let inj = sqInjector conn
-      sVar = sqStats conn
-  bumpVerifyReloads sVar
-  verifyFailed <- fiFire inj FaultVerifyReload
-  if verifyFailed
-    then do
-      quarantineAllTokensConn conn db "job-id reservation verification failed"
-      let err = StoreIO "injected verification failure"
-      pure (CommitUnknown err, Left err)
-    else do
-      eCounter <- readCounterDb db
-      case eCounter of
-        Left err -> do
-          quarantineAllTokensConn conn db ("reload failed: " ++ show err)
-          pure (CommitUnknown err, Left err)
-        Right now
-          | now == Just advanced -> do
-              bumpCommits sVar
-              pure (Committed, Right pid)
-          | now == old ->
-              let err = StoreIO "ambiguous reservation resolved: advance absent"
-              in pure (NotCommitted err, Left err)
-          | otherwise -> do
-              quarantineAllTokensConn conn db "job-id counter diverged during reservation"
-              let err = StoreCorrupt "job-id counter diverged during reservation"
-              pure (CommitUnknown err, Left err)
-
--- | Quarantine every token in the database: an unresolved
--- store-wide reservation names no affected token, so the
--- whole handle view is suspect until an authoritative reload.
--- Best-effort: when the token list itself is unreadable the
--- caller still fails closed.
-quarantineAllTokensConn :: SQLiteConn -> S.Database -> String -> IO ()
-quarantineAllTokensConn conn db why = do
-  tids <- allTokenIds db
-  if null tids then pure () else quarantineTokens (sqQuarantine conn) (sqStats conn) tids why
-
--- | Every stored token id, best-effort ('[]' when the list is
--- unreadable: callers fail closed regardless).
-allTokenIds :: S.Database -> IO [TokenId]
-allTokenIds db = do
-  eRows <- queryRows db "SELECT token_id FROM tokens" []
-  pure (case eRows of
-    Left _ -> []
-    Right rows -> fromMaybe [] (mapM parseTid rows))
-  where
-    parseTid [S.SQLText tidT] = TokenId <$> decodeHex16 (T.unpack tidT)
-    parseTid _ = Nothing
-
--- | Where a write transaction failed: in its body (no COMMIT was
--- issued) or at its COMMIT.
-data TxnStep = AtBody | AtCommit
-
--- | How a failed write transaction ended, judged from the native
--- connection state alone ('getAutoCommit' before and after any
--- cleanup) — never from a reload, and never by reissuing anything.
-data TxnFailure
-  = TxnRolledBack !StoreError
-    -- ^ provably not committed: SQLite rolled the whole
-    -- transaction back before any COMMIT was issued, or the
-    -- transaction was still active after the failure (so no
-    -- COMMIT took effect) and the explicit ROLLBACK succeeded
-  | TxnOutcomeUnknown !StoreError
-    -- ^ the transaction is over but its outcome is not
-    -- established: a COMMIT failed after SQLite had ended the
-    -- transaction (it may have landed or rolled back), or a
-    -- ROLLBACK reported an error; the connection itself is clean
-  | TxnStillOpen !StoreError
-    -- ^ the ROLLBACK did not run (or did not end the
-    -- transaction), so a write transaction is still open on the
-    -- connection: nothing it holds is durable yet, but every
-    -- later use of the connection would read or commit it
-
--- | The error a transaction failure reports.
-txnFailureError :: TxnFailure -> StoreError
-txnFailureError f = case f of
-  TxnRolledBack err -> err
-  TxnOutcomeUnknown err -> err
-  TxnStillOpen err -> err
-
--- | End a failed write transaction from the native state the
--- failure left. The step's test hook fires first, before any
--- cleanup. If SQLite has already ended the transaction, no
--- statement runs (any statement would run, and commit, in
--- autocommit mode): after a body failure that is SQLite's own
--- whole rollback ('TxnRolledBack'); after a failed COMMIT the
--- outcome is unknown. Otherwise the transaction is still active
--- — so a failed COMMIT did not take effect — and the explicit
--- ROLLBACK decides: success is a proven rollback, an error is
--- surfaced (never discarded) as unknown, or as still open when
--- the transaction survived it.
---
--- A failed ROLLBACK that nonetheless ended the transaction is
--- classified unknown, not 'TxnRolledBack': conservatively, an I/O
--- error on ROLLBACK signals storage trouble, and quarantine plus
--- reload re-establishes the durable truth. AC-01 notes that a
--- rollback error alone is not proof of corruption, so this is a
--- deliberate availability trade-off for v0.4, to be revisited in
--- v0.5.
-endFailedTxn :: SQLiteConn -> S.Database -> TxnStep -> StoreError -> IO TxnFailure
-endFailedTxn conn db step err = do
-  case step of
-    AtBody -> sthAfterBodyFailure (sqHooks conn) db
-    AtCommit -> sthAfterCommitFailure (sqHooks conn) db
-  ended <- getAutoCommit db
-  if ended
-    then pure (case step of
-      AtBody -> TxnRolledBack err
-      AtCommit -> TxnOutcomeUnknown err)
-    else do
-      eRollback <- trySQLite (S.exec db "ROLLBACK")
-      either (\_ -> sthAfterRollbackFailure (sqHooks conn) db) pure eRollback
-      endedNow <- getAutoCommit db
-      pure (case (eRollback, endedNow) of
-        (Right (), True) -> TxnRolledBack err
-        (Right (), False) -> TxnStillOpen err
-        (Left rbErr, True) -> TxnOutcomeUnknown (withCleanupError err rbErr)
-        (Left rbErr, False) -> TxnStillOpen (withCleanupError err rbErr))
-
--- | The original failure plus the cleanup failure, both reported.
-withCleanupError :: StoreError -> StoreError -> StoreError
-withCleanupError err rbErr =
-  StoreIO (show err ++ "; cleanup ROLLBACK failed: " ++ show rbErr)
-
--- | Classify a transaction failure and apply its ownership
--- consequence. A proven rollback is a clean 'NotCommitted'. An
--- unknown outcome is 'CommitUnknown' with the affected tokens
--- quarantined ('Nothing' = store-wide: every token) until an
--- authoritative reload. A still-open transaction is
--- 'CommitUnknown' with the whole connection quarantined
--- ('sqOpenTxn', every token listed) until a reload that rolls it
--- back or a close (SQLite rolls an open transaction back when the
--- connection closes).
-settleTxnFailure :: SQLiteConn -> S.Database -> Maybe [TokenId] -> TxnFailure -> IO CommitResult
-settleTxnFailure conn db scope failure = case failure of
-  TxnRolledBack err -> pure (NotCommitted err)
-  TxnOutcomeUnknown err -> do
-    tids <- maybe (allTokenIds db) pure scope
-    quarantineTokens (sqQuarantine conn) (sqStats conn) tids
-      ("commit outcome unknown: " ++ show err)
-    pure (CommitUnknown err)
-  TxnStillOpen err -> do
-    let why = "write transaction still open: " ++ show err
-    writeIORef (sqOpenTxn conn) (Just why)
-    others <- allTokenIds db
-    quarantineTokens (sqQuarantine conn) (sqStats conn) (nub (fromMaybe [] scope ++ others)) why
-    pure (CommitUnknown err)
 
 -- | The commit flow with the connection guard already held. The
 -- delta is scrubbed first ('scrubDeltaAuth'): token puts persist
@@ -1815,36 +1394,6 @@ validateDelta db limits delta = do
             Just err -> pure (Left err)
             Nothing -> checkRevisionsDb db delta
 
--- | Enforce expected revisions from one revision-map scan,
--- reusing the shared pure guard.
-checkRevisionsDb :: S.Database -> StoreDelta -> IO (Either StoreError ())
-checkRevisionsDb db delta
-  | null [() | ObjectPut (Just _) _ <- sdPutObjects delta] = pure (Right ())
-  | otherwise = do
-      eRows <- queryRows db "SELECT object_id, revision FROM objects" []
-      case eRows of
-        Left err -> pure (Left err)
-        Right rows -> case mapM parseRev rows of
-          Nothing -> pure (Left (StoreCorrupt "corrupt revision row"))
-          Just pairs -> pure (maybe (Right ()) Left
-            (checkExpectedRevisions (`Map.lookup` Map.fromList pairs) delta))
-  where
-    parseRev :: [S.SQLData] -> Maybe (ObjectId, Revision)
-    parseRev [S.SQLText oidT, S.SQLInteger n] = do
-      oid <- decodeHex16 (T.unpack oidT)
-      rev <- decodeRevision n
-      pure (ObjectId oid, Revision rev)
-    parseRev _ = Nothing
-
--- | Compare a delta's expected meta rows against reloaded meta
--- with full key/value equality. Every expected row must be
--- present; extra loaded rows (schema bookkeeping) are fine. A
--- metadata-only delta reconciles against meta alone.
-reconcileMetaReload :: StoreDelta -> [(String, String)] -> Reconcile
-reconcileMetaReload delta loaded
-  | all (\(k, v) -> lookup k loaded == Just v) (sdPutMeta delta) = ReconciledPresent
-  | otherwise = ReconciledAbsent
-
 -- | The delta as durably applied: requested meta rows replayed
 -- through the backend's own put order (sequential upserts, so
 -- the last put wins, matching 'runBody'), with the requested
@@ -1871,14 +1420,6 @@ effectiveDelta doomed delta =
 firstQuarantined :: [(TokenId, String)] -> [TokenId] -> Maybe (TokenId, String)
 firstQuarantined q tids =
   listToMaybe [(tid, why) | tid <- tids, Just why <- [lookup tid q]]
-
--- | Quarantine tokens with a reason, counting one event per token.
-quarantineTokens :: MVar [(TokenId, String)] -> IORef StoreStats -> [TokenId] -> String -> IO ()
-quarantineTokens qVar sVar tids why = do
-  modifyMVar_ qVar (\q -> pure (foldr insertOne q tids))
-  bumpQuarantines sVar (length tids)
-  where
-    insertOne tid q = (tid, why) : filter ((/= tid) . fst) q
 
 -- | Authoritative reload: a clean load clears the quarantine; a
 -- failed load keeps it and reports the error. Reloads never
@@ -1920,145 +1461,6 @@ resolveOpenTxn conn db = do
       if endedNow
         then writeIORef (sqOpenTxn conn) Nothing >> pure (Right ())
         else pure (Left (connectionQuarantined (why ++ either (\e -> "; retried ROLLBACK failed: " ++ show e) (const "") eRollback)))
-
--- | Load every token with its home objects, token-id ascending,
--- object-id ascending within each token.
-loadTokens :: S.Database -> IO (Either StoreError [(TokenRecord, [ObjectRecord])])
-loadTokens db = do
-  eToks <- queryRows db "SELECT token_id, record_json FROM tokens ORDER BY token_id" []
-  case eToks of
-    Left err -> pure (Left err)
-    Right rows -> do
-      rs <- mapM loadOne rows
-      pure (sequence rs)
-  where
-    loadOne :: [S.SQLData] -> IO (Either StoreError (TokenRecord, [ObjectRecord]))
-    loadOne [S.SQLText tid, S.SQLText doc] = case decodeTokenRecord (T.unpack doc) of
-      Nothing -> pure (Left (StoreCorrupt ("corrupt token record: " ++ T.unpack tid)))
-      Just tok -> do
-        eObjs <- queryRows db
-          "SELECT object_id, token_id, class_key, key_type_key, attributes_json, material_encoding, material_blob, revision FROM objects WHERE token_id = ? ORDER BY object_id"
-          [S.SQLText tid]
-        case eObjs of
-          Left err -> pure (Left err)
-          Right orows -> pure (mapM decodeObjectRow orows >>= \objs -> Right (tok, objs))
-    loadOne _ = pure (Left (StoreCorrupt "corrupt token row shape"))
-
--- | Decode one object row; every quantity range-checks (no blind
--- casts from the SQLite domain into 'Int').
-decodeObjectRow :: [S.SQLData] -> Either StoreError ObjectRecord
-decodeObjectRow [S.SQLText oidT, S.SQLText tidT, S.SQLBlob clsB, ktyD, S.SQLText attrT, S.SQLText mencT, matD, S.SQLInteger revN] = do
-  oid <- note "object_id" (decodeHex16 (T.unpack oidT))
-  tid <- note "token_id" (decodeHex16 (T.unpack tidT))
-  cls <- note "class_key" (decodeBlobW64 clsB)
-  kty <- case ktyD of
-    S.SQLNull -> Right Nothing
-    S.SQLBlob b -> Just <$> note "key_type_key" (decodeBlobW64 b)
-    _ -> Left (StoreCorrupt "corrupt key_type_key shape")
-  attrs <- note "attributes_json" (decodeAttrsDoc (T.unpack attrT))
-  let menc = T.unpack mencT
-  _ <- if menc `elem` knownMaterialEncodings
-    then Right ()
-    else Left (StoreCorrupt ("corrupt object record: unknown material encoding " ++ menc))
-  mat <- case matD of
-    S.SQLNull -> Right Nothing
-    S.SQLBlob b -> Right (Just b)
-    _ -> Left (StoreCorrupt "corrupt material_blob shape")
-  rev <- note "revision" (decodeRevision revN)
-  Right ObjectRecord
-    { orId = ObjectId oid
-    , orToken = TokenId tid
-    , orClass = cls
-    , orKeyType = kty
-    , orAttrs = attrs
-    , orMaterialEncoding = menc
-    , orMaterial = mat
-    , orRevision = Revision rev
-    }
-decodeObjectRow _ = Left (StoreCorrupt "corrupt object row shape")
-
--- | Tag a 'Maybe' decode with its column for the diagnosis.
-note :: String -> Maybe a -> Either StoreError a
-note col = maybe (Left (StoreCorrupt ("corrupt object record: bad " ++ col))) Right
-
--- | Load every detached job, persistent-id ascending. The full
--- document decodes the record; the key columns cross-check it.
-loadJobs :: S.Database -> IO (Either StoreError [JobRecord])
-loadJobs db = do
-  eRows <- queryRows db
-    "SELECT persistent_id_key, token_id, token_generation_key, function_name, execution_state, record_json FROM detached_jobs ORDER BY persistent_id_key" []
-  case eRows of
-    Left err -> pure (Left err)
-    Right rows -> pure (mapM decodeJobRow rows)
-
--- | Decode one job row: the document first, then the redundant
--- key columns must agree with it (any mismatch is corruption).
-decodeJobRow :: [S.SQLData] -> Either StoreError JobRecord
-decodeJobRow [S.SQLBlob pidB, S.SQLText tidT, S.SQLBlob genB, S.SQLText funT, S.SQLText stT, S.SQLText doc] = do
-  pid <- noteJob "persistent_id_key" (decodeBlobW64 pidB)
-  tid <- noteJob "token_id" (decodeHex16 (T.unpack tidT))
-  gen <- noteJob "token_generation_key" (decodeBlob8 genB)
-  rec <- noteJob "record_json" (decodeJobRecord (T.unpack doc))
-  _ <- if jrPersistentId rec == pid
-    then Right ()
-    else Left (StoreCorrupt "corrupt job record: key/doc id mismatch")
-  _ <- if jrToken rec == TokenId tid
-    then Right ()
-    else Left (StoreCorrupt "corrupt job record: key/doc token mismatch")
-  _ <- if jrTokenGeneration rec == Generation gen
-    then Right ()
-    else Left (StoreCorrupt "corrupt job record: key/doc generation mismatch")
-  _ <- if jrFunction rec == T.unpack funT
-    then Right ()
-    else Left (StoreCorrupt "corrupt job record: key/doc function mismatch")
-  _ <- if execStateName (jrState rec) == T.unpack stT
-    then Right ()
-    else Left (StoreCorrupt "corrupt job record: key/doc state mismatch")
-  Right rec
-decodeJobRow _ = Left (StoreCorrupt "corrupt job row shape")
-
--- | Tag a 'Maybe' job decode with its column.
-noteJob :: String -> Maybe a -> Either StoreError a
-noteJob col = maybe (Left (StoreCorrupt ("corrupt job record: bad " ++ col))) Right
-
--- | Load every provisioned credential, home-token ascending. The
--- full document decodes the record; the key column cross-checks
--- it (the job-row precedent).
-loadCredentials :: S.Database -> IO (Either StoreError [CredentialRecord])
-loadCredentials db = do
-  eRows <- queryRows db
-    "SELECT token_id, record_json FROM credentials ORDER BY token_id" []
-  case eRows of
-    Left err -> pure (Left err)
-    Right rows -> pure (mapM decodeCredentialRow rows)
-
--- | Decode one credential row: the document first, then the
--- redundant key column must agree with it (any mismatch is
--- corruption).
-decodeCredentialRow :: [S.SQLData] -> Either StoreError CredentialRecord
-decodeCredentialRow [S.SQLText tidT, S.SQLText doc] = do
-  tid <- noteCred "token_id" (decodeHex16 (T.unpack tidT))
-  rec <- noteCred "record_json" (decodeCredentialRecord (T.unpack doc))
-  _ <- if crToken rec == TokenId tid
-    then Right ()
-    else Left (StoreCorrupt "corrupt credential record: key/doc token mismatch")
-  Right rec
-decodeCredentialRow _ = Left (StoreCorrupt "corrupt credential row shape")
-
--- | Tag a 'Maybe' credential decode with its column.
-noteCred :: String -> Maybe a -> Either StoreError a
-noteCred col = maybe (Left (StoreCorrupt ("corrupt credential record: bad " ++ col))) Right
-
--- | Load every @store_meta@ row as key/value pairs.
-loadMeta :: S.Database -> IO (Either StoreError [(String, String)])
-loadMeta db = do
-  eRows <- queryRows db "SELECT key, value FROM store_meta" []
-  case eRows of
-    Left err -> pure (Left err)
-    Right rows -> pure (mapM decodeMetaRow rows)
-  where
-    decodeMetaRow [S.SQLText k, S.SQLText v] = Right (T.unpack k, T.unpack v)
-    decodeMetaRow _ = Left (StoreCorrupt "corrupt store_meta row shape")
 
 -- | Render every stored record through its canonical bytes (load,
 -- then re-encode, so inspection always shows canonical form). A
