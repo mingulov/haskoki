@@ -348,6 +348,7 @@ caseNullRecallReReports = do
           let (_, direct) = finishMessage F_EncryptMessage MsgEncrypt opsT1 SlotEncrypt "ct"
                 (runMessageEffect fxT) (IntentBuffer 64)
           assertEqual "twin delivers directly" CKR_OK (soCode direct)
+          assertBool "direct twin stages bytes" (stagedPayload direct /= Nothing)
           assertEqual "re-query preserves staged bytes"
             (stagedPayload direct) (stagedPayload follow)
         otherT -> assertFailure ("expected one one-shot effect, got " ++ show otherT)
