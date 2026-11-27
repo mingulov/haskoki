@@ -367,6 +367,7 @@ spec mkScope = testGroup "store contract"
       , testCase "alias plus URI twin sees the same lock" caseUriTwinAlias
       , testCase "undecodable URI refuses cleanly" caseUriUndecodable
       , testCase "URI with query refuses" caseUriQuery
+      , testCase "URI with fragment refuses" caseUriFragment
       , testCase "nested file: URI refuses" caseUriNested
       , testCase "a spelling resolving to a URI refuses" caseUriAfterResolve
       , testCase ":memory: refuses at resolve and at open" caseMemoryRefuses
@@ -1475,6 +1476,18 @@ caseUriQuery =
         ("file: URI with query/fragment refused (bare paths only): " ++ q) msg
       Left other -> assertFailure ("query URI must refuse by spelling, got: " ++ show other)
       Right st -> storeClose st >> assertFailure "query URI opened"
+
+-- | URIs with fragments refuse (same invisibility as query).
+caseUriFragment :: IO ()
+caseUriFragment =
+  bracket (makeTempDir "haskoki-storage-uri-fragment") removeDirectoryRecursive $ \dir -> do
+    let f = "file:" ++ dir ++ "/missing.db#frag"
+    eF <- openSQLiteStore f
+    case eF of
+      Left (StoreIO msg) -> assertEqual "exact refusal"
+        ("file: URI with query/fragment refused (bare paths only): " ++ f) msg
+      Left other -> assertFailure ("fragment URI must refuse by spelling, got: " ++ show other)
+      Right st -> storeClose st >> assertFailure "fragment URI opened"
 
 -- | A nested file: URI refuses (decoding it would re-enter
 -- URI interpretation in SQLite).
