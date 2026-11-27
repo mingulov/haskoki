@@ -1118,11 +1118,13 @@ def self_test() -> int:
         # 41 -> 43: preflight checkout and immutable signed-assets checkpoint.
         # 52 -> 56: the haskell-usdt matrix leg (checkout, two cache
         # restores, log upload).
-        count_ok = ("all 56 third-party" in out) if name == "real-ci-yml" else True
+        # 56 -> 63: the pkcs11-kat-merge job (two checkouts, four
+        # shard downloads, merged report upload).
+        count_ok = ("all 63 third-party" in out) if name == "real-ci-yml" else True
         ok = (rc == expect) and count_ok
         print(f"{'ok' if ok else 'FAIL'}: selftest-{name}: "
               f"rc={rc} (want {expect})"
-              + ("" if name != "real-ci-yml" else " + 56/56 count"))
+              + ("" if name != "real-ci-yml" else " + 63/63 count"))
         if not ok:
             bad += 1
             print(out)
