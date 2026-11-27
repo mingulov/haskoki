@@ -1,6 +1,29 @@
 # Changelog
 
-## [0.6.1.0] - unreleased
+## [0.6.2.0] - unreleased
+
+Cleanup release. The per-change detail is in
+[docs/release-notes-0.6.2.0.md](docs/release-notes-0.6.2.0.md).
+Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.2.0`.
+
+### Fixed
+
+- Message-slot null recall re-reports the staged length instead
+  of delivering: a NULL query on staged message bytes returns
+  `CKR_BUFFER_TOO_SMALL` and keeps the slot and outer context,
+  matching classic retry (`retryMessageStaged` IntentNull arm).
+- `file:` URI twin agreement locked down: POSIX lock, sidecar,
+  and alias checks resolve the same decoded spelling SQLite
+  opens; literal-vs-decoded twin pins for `%2e%2e`, `%00`,
+  query/fragment, nested, and symlinked-parent spellings.
+- Spec validation gate repaired and wired into CI: the
+  GENERATED-HEADER stub pins (stale since message/async entries
+  gained routed implementations) now match the generated
+  `abi_stubs.inc`, and `validate-spec.py` runs in static gates.
+- KAT lane split into 4 file-balanced shards with a merge job
+  (same report artifact); expected wall ~15-20m per shard.
+
+## [0.6.1.0] - 2026-11-27
 
 USDT observability release. The per-change detail is in
 [docs/release-notes-0.6.1.0.md](docs/release-notes-0.6.1.0.md).

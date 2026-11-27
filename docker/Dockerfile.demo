@@ -41,7 +41,7 @@
 # The image never contains its own final digest. CREATED is the commit
 # time of REVISION (reproducible, not the build's wall clock); without it
 # the runtime stage would inherit the base image's own created label.
-ARG VERSION=0.6.1.0
+ARG VERSION=0.6.2.0
 ARG REVISION=unknown
 ARG CREATED=unknown
 ARG SOURCE=https://github.com/mingulov/haskoki
