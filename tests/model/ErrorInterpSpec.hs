@@ -306,12 +306,21 @@ caseFunnel = do
         , "core/Haskoki/Operation/Message.hs"
         , "core/Haskoki/Operation/Signature.hs"
         , "core/Haskoki/Operation/KeyManagement/Currency.hs"
-        , "src/Haskoki/Runtime/Async.hs"
+        , "src/Haskoki/Runtime/Async/Operations.hs"
+        , "src/Haskoki/Runtime/Async/Snapshot.hs"
         ]
       unrouted =
         [ "core/Haskoki/Transition.hs"
         , "src/Haskoki/Engine/Driver.hs"
         , "core/Haskoki/Operation/KeyManagement.hs"
+        , "src/Haskoki/Runtime/Async.hs"
+        , "src/Haskoki/Runtime/Async/Close.hs"
+        , "src/Haskoki/Runtime/Async/Completion.hs"
+        , "src/Haskoki/Runtime/Async/Jobs.hs"
+        , "src/Haskoki/Runtime/Async/Lease.hs"
+        , "src/Haskoki/Runtime/Async/Outcomes.hs"
+        , "src/Haskoki/Runtime/Async/Sim.hs"
+        , "src/Haskoki/Runtime/Async/Table.hs"
         ]
   routedBodies <- mapM (readFile . (root </>)) routed
   unroutedBodies <- mapM (readFile . (root </>)) unrouted

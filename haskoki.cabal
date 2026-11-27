@@ -259,6 +259,15 @@ library haskoki-internal
     Haskoki.FFI.Instance
     Haskoki.Runtime
     Haskoki.Runtime.Async
+    Haskoki.Runtime.Async.Close
+    Haskoki.Runtime.Async.Completion
+    Haskoki.Runtime.Async.Jobs
+    Haskoki.Runtime.Async.Lease
+    Haskoki.Runtime.Async.Operations
+    Haskoki.Runtime.Async.Outcomes
+    Haskoki.Runtime.Async.Sim
+    Haskoki.Runtime.Async.Snapshot
+    Haskoki.Runtime.Async.Table
     Haskoki.Runtime.Config
     Haskoki.Runtime.Control
     Haskoki.Runtime.Detached
@@ -407,6 +416,15 @@ foreign-library haskoki
     Haskoki.FFI.Instance
     Haskoki.FFI.Types
     Haskoki.Runtime.Async
+    Haskoki.Runtime.Async.Close
+    Haskoki.Runtime.Async.Completion
+    Haskoki.Runtime.Async.Jobs
+    Haskoki.Runtime.Async.Lease
+    Haskoki.Runtime.Async.Operations
+    Haskoki.Runtime.Async.Outcomes
+    Haskoki.Runtime.Async.Sim
+    Haskoki.Runtime.Async.Snapshot
+    Haskoki.Runtime.Async.Table
     Haskoki.Runtime.Attach
     Haskoki.Runtime.Config
     Haskoki.Runtime.Control
