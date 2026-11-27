@@ -210,14 +210,21 @@ library haskoki-internal
     Haskoki.Engine.Driver.Cmac
     Haskoki.Engine.Driver.Common
     Haskoki.Engine.Driver.Des3Mac
+    Haskoki.Engine.Driver.Dh
     Haskoki.Engine.Driver.Digest
+    Haskoki.Engine.Driver.Dsa
+    Haskoki.Engine.Driver.Ecdh
+    Haskoki.Engine.Driver.Ecdsa
+    Haskoki.Engine.Driver.Eddsa
     Haskoki.Engine.Driver.Gmac
     Haskoki.Engine.Driver.Hmac
     Haskoki.Engine.Driver.Hotp
     Haskoki.Engine.Driver.KeyGen
+    Haskoki.Engine.Driver.MlDsa
     Haskoki.Engine.Driver.Poly1305
     Haskoki.Engine.Driver.Result
     Haskoki.Engine.Driver.Rsa
+    Haskoki.Engine.Driver.SlhDsa
     Haskoki.Engine.Driver.Xcbc
     Haskoki.Engine.OpenSSL4
     Haskoki.Engine.Synthetic
@@ -334,14 +341,21 @@ foreign-library haskoki
     Haskoki.Engine.Driver.Cmac
     Haskoki.Engine.Driver.Common
     Haskoki.Engine.Driver.Des3Mac
+    Haskoki.Engine.Driver.Dh
     Haskoki.Engine.Driver.Digest
+    Haskoki.Engine.Driver.Dsa
+    Haskoki.Engine.Driver.Ecdh
+    Haskoki.Engine.Driver.Ecdsa
+    Haskoki.Engine.Driver.Eddsa
     Haskoki.Engine.Driver.Gmac
     Haskoki.Engine.Driver.Hmac
     Haskoki.Engine.Driver.Hotp
     Haskoki.Engine.Driver.KeyGen
+    Haskoki.Engine.Driver.MlDsa
     Haskoki.Engine.Driver.Poly1305
     Haskoki.Engine.Driver.Result
     Haskoki.Engine.Driver.Rsa
+    Haskoki.Engine.Driver.SlhDsa
     Haskoki.Engine.Driver.Xcbc
     Haskoki.Engine.OpenSSL4
     Haskoki.FFI.Async

@@ -193,7 +193,7 @@ import qualified Data.ByteString.Char8 as BC8
 import Control.Monad (guard)
 import Data.Bits ((.&.), (.|.), shiftL, shiftR, testBit)
 import Data.Word (Word64, Word8)
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
 
 import Haskoki.Engine.Backend
@@ -201,8 +201,6 @@ import Haskoki.Engine.Backend
   , CipherSpec (..)
   , CryptoBackend (..)
   , DigestAlg (..)
-  , EcdhSpec (..)
-  , DhSpec (..)
   , EcSpec (..)
   , EngineResult (..)
   , digestOutLen
@@ -211,9 +209,7 @@ import Haskoki.Engine.Backend
   , KeyMaterial (..)
   , MacSpec (..)
   , OaepParams (..)
-  , PqcSigAlg (..)
   , RsaCipherParams (..)
-  , SigSpec (..)
   )
 import Haskoki.Engine.Driver.Aead
   ( aeadSpecFor
@@ -247,7 +243,6 @@ import Haskoki.Engine.Driver.Common
   , compSpec
   , driverCtEq
   , keyBytesOf
-  , levelOfName
   , rsaDigest
   , runPubFromPriv
   , unsupported
@@ -261,6 +256,21 @@ import Haskoki.Engine.Driver.Des3Mac
   , runDes3MacVerify
   )
 import Haskoki.Engine.Driver.Digest (digestAlgFor)
+import Haskoki.Engine.Driver.Dh (dhParamsFor, isDhMech, runDh)
+import Haskoki.Engine.Driver.Dsa (dsaRefusal, dsaSpecFor, isDsaMech)
+import Haskoki.Engine.Driver.Ecdh (ecdhParamsFor, isEcdhMech, runEcdh)
+import Haskoki.Engine.Driver.Ecdsa
+  ( ecCurveOfKey
+  , ecdsaRefusal
+  , ecdsaSpecFor
+  , isEcdsaMech
+  )
+import Haskoki.Engine.Driver.Eddsa
+  ( eddsaCurveOfKey
+  , eddsaRefusal
+  , eddsaSpecFor
+  , isEddsaMech
+  )
 import Haskoki.Engine.Driver.Gmac
   ( gmacSpecFor
   , isGmacMech
@@ -274,7 +284,19 @@ import Haskoki.Engine.Driver.Hotp
   , runHotpSign
   , runHotpVerify
   )
+import Haskoki.Engine.Driver.MlDsa
+  ( isMldsaMech
+  , mldsaLevelOfKey
+  , mldsaRefusal
+  , mldsaSpecFor
+  )
 import Haskoki.Engine.Driver.Poly1305 (isPoly1305Mech, poly1305MacFor)
+import Haskoki.Engine.Driver.SlhDsa
+  ( isSlhdsaMech
+  , slhdsaLevelOfKey
+  , slhdsaRefusal
+  , slhdsaSpecFor
+  )
 import Haskoki.Engine.Driver.Rsa
   ( isRsaOaepMech
   , isRsaPkcs1Mech
@@ -326,17 +348,6 @@ import Haskoki.Engine.Driver.Result
   )
 import Haskoki.Operation.Derive (hkdfDataMech, hkdfDeriveMech, maxDerivedTotal, maxXofTotal, pubPrivMech)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
-import Haskoki.Recipe.Dh
-  ( decodeDhParams
-  , dhParamsValid
-  , dhRecipeFor
-  )
-import Haskoki.Recipe.Ecdh
-  ( EcdhRecipe (..)
-  , decodeEcdhParams
-  , ecdhParamsValid
-  , ecdhRecipeFor
-  )
 import Haskoki.Recipe.WrapComp
   ( WrapCompDomain (..)
   , WrapCompEcdhRecipe (..)
@@ -348,38 +359,6 @@ import Haskoki.Recipe.WrapComp
   , wrapCompSplitBlob
   , wrapCompTransportLen
   , wrapCompTransportPrefix
-  )
-import Haskoki.Recipe.Ecdsa
-  ( EcdsaRecipe (..)
-  , ecdsaCurveOfDer
-  , ecdsaEncodingOf
-  , ecdsaParamsValid
-  , ecdsaRecipeFor
-  )
-import Haskoki.Recipe.Dsa
-  ( DsaRecipe (..)
-  , dsaEncodingOf
-  , dsaParamsValid
-  , dsaRecipeFor
-  )
-import Haskoki.Recipe.Eddsa
-  ( eddsaCurveOfDer
-  , eddsaParamsValid
-  , eddsaRecipeFor
-  )
-import Haskoki.Recipe.MlDsa
-  ( MldsaHedge (..)
-  , decodeMldsaParams
-  , mldsaLevelOfDer
-  , mldsaParamsValid
-  , mldsaRecipeFor
-  )
-import Haskoki.Recipe.SlhDsa
-  ( SlhdsaHedge (..)
-  , decodeSlhdsaParams
-  , slhdsaLevelOfDer
-  , slhdsaParamsValid
-  , slhdsaRecipeFor
   )
 import Haskoki.Recipe.ByteOps
   ( ByteOpsKind (..)
@@ -881,223 +860,6 @@ isAesKwWrapMech :: MechanismId -> Bool
 isAesKwWrapMech mech =
   mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech || mech == aesKwp7Mech
 
--- | ECDSA dispatch: covered (mechanism, params, key) triples to
--- backend specs (pinned against
--- 'Haskoki.Recipe.Ecdsa' by RecipeEcdsaSpec). The recipe binds the
--- digest and validates the encoding selection; the curve label is
--- a dispatch hint from the DER key ('ecCurveOfKey'), defaulting to
--- P-256 when the key is unscannable (the backends execute against
--- the key's actual material and refuse bad keys themselves — the
--- driver never refuses a key). 'Nothing' means uncovered
--- (non-ECDSA mechanism) or malformed parameters.
-ecdsaSpecFor :: MechanismId -> ByteString -> KeyMaterial -> Maybe SigSpec
-ecdsaSpecFor mech params key = do
-  r <- ecdsaRecipeFor mech
-  guard (ecdsaParamsValid r params)
-  enc <- ecdsaEncodingOf params
-  alg <- case reDigestStem r of
-    Nothing -> pure Nothing
-    Just stem -> Just <$> rsaDigest stem
-  let curve = fromMaybe "P-256" (ecCurveOfKey key)
-  pure (SigECDSA (EcSpec (T.unpack curve) (T.unpack enc)) alg)
-
--- | An ECDSA mechanism regardless of parameter validity (drives the
--- parameter-refusal branch: malformed ECDSA params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isEcdsaMech :: MechanismId -> Bool
-isEcdsaMech mech = isJust (ecdsaRecipeFor mech)
-
--- | DSA dispatch: covered (mechanism, params) pairs to backend
--- specs (pinned against 'Haskoki.Recipe.Dsa' by RecipeDsaSpec).
--- The recipe binds the digest and validates the encoding
--- selection; there is no curve label to hint (the DSA key carries
--- its own domain parameters) and key shape is the backend's call
--- (the driver never refuses a key). 'Nothing' means uncovered
--- (non-DSA mechanism) or malformed parameters.
-dsaSpecFor :: MechanismId -> ByteString -> Maybe SigSpec
-dsaSpecFor mech params = do
-  r <- dsaRecipeFor mech
-  guard (dsaParamsValid r params)
-  enc <- dsaEncodingOf params
-  alg <- case rdDigestStem r of
-    Nothing -> pure Nothing
-    Just stem -> Just <$> rsaDigest stem
-  pure (SigDSA (T.unpack enc) alg)
-
--- | A DSA mechanism regardless of parameter validity (drives the
--- parameter-refusal branch: malformed DSA params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isDsaMech :: MechanismId -> Bool
-isDsaMech mech = isJust (dsaRecipeFor mech)
-
--- | EdDSA dispatch: the covered (mechanism, params, key) triple
--- to its backend spec (pinned against 'Haskoki.Recipe.Eddsa' by
--- RecipeEddsaSpec). The recipe validates pure parameters; the
--- curve label is a dispatch hint from the DER key
--- ('eddsaCurveOfKey'), defaulting to Ed25519 when the key is
--- unscannable (the backends execute against the key's actual
--- material and refuse bad keys themselves — the driver never
--- refuses a key). 'Nothing' means uncovered (non-EdDSA mechanism)
--- or non-pure parameters (missing parameters decode to pure).
-eddsaSpecFor :: MechanismId -> ByteString -> KeyMaterial -> Maybe SigSpec
-eddsaSpecFor mech params key = do
-  r <- eddsaRecipeFor mech
-  guard (eddsaParamsValid r params)
-  let curve = fromMaybe "Ed25519" (eddsaCurveOfKey key)
-  pure (SigEdDSA (EcSpec (T.unpack curve) "RAW") BS.empty)
-
--- | An EdDSA mechanism regardless of parameter validity (drives
--- the parameter-refusal branch: non-pure EdDSA params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isEddsaMech :: MechanismId -> Bool
-isEddsaMech mech = isJust (eddsaRecipeFor mech)
-
--- | ML-DSA dispatch: the covered (mechanism, params, key) triple
--- to its backend spec (pinned against 'Haskoki.Recipe.MlDsa' by
--- RecipeMlDsaSpec). The recipe validates the hedge/context
--- parameters (empty defaults to preferred, empty context); the
--- level label is a dispatch hint from the DER key
--- ('mldsaLevelOfKey'), defaulting to ML-DSA-44 when the key is
--- unscannable (the backends execute against the key's actual
--- material and refuse bad keys themselves — the driver never
--- refuses a key). Deterministic hedge clears the hedged flag;
--- external-mu mode never dispatches (out of scope). 'Nothing'
--- means uncovered (non-ML-DSA mechanism) or refused parameters.
-mldsaSpecFor :: MechanismId -> ByteString -> KeyMaterial -> Maybe SigSpec
-mldsaSpecFor mech params key = do
-  r <- mldsaRecipeFor mech
-  guard (mldsaParamsValid r params)
-  (hedge, ctx) <- decodeMldsaParams params
-  let alg = fromMaybe ML_DSA_44 (mldsaLevelOfKey key)
-      hedged = hedge /= HedgeDeterministic
-  pure (SigMLDSA alg False ctx hedged)
-
--- | An ML-DSA mechanism regardless of parameter validity (drives
--- the parameter-refusal branch: refused ML-DSA params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isMldsaMech :: MechanismId -> Bool
-isMldsaMech mech = isJust (mldsaRecipeFor mech)
-
--- | The ML-DSA level named by a key's algorithm OID, via the
--- recipe's 'mldsaLevelOfDer'. Both constructors sniff: production
--- resolves every stored key as 'KeyBytes' ('stdResolver'), so a
--- 'KeyDer'-only sniff would miss every production key and
--- misdispatch it as ML-DSA-44 (the shim's type-name check then
--- refuses with BADKEY). 'Nothing' for references, symmetric
--- bytes, RSA, garbage, or a foreign curve. The marker is
--- advisory for dispatch only: 'mldsaSpecFor' defaults it to
--- ML-DSA-44 and the backends always execute against the key's
--- actual material, so a miss can refuse downstream but never
--- mis-sign.
-mldsaLevelOfKey :: KeyMaterial -> Maybe PqcSigAlg
-mldsaLevelOfKey (KeyDer der) = mldsaLevelOfDer der >>= levelOfName
-mldsaLevelOfKey (KeyBytes bs) = mldsaLevelOfDer bs >>= levelOfName
-mldsaLevelOfKey _ = Nothing
-
--- | SLH-DSA dispatch: the covered (mechanism, params, key) triple
--- to its backend spec (pinned against 'Haskoki.Recipe.SlhDsa' by
--- RecipeSlhDsaSpec). The recipe validates the hedge/context
--- parameters (empty defaults to preferred, empty context); the
--- set label is a dispatch hint from the DER key
--- ('slhdsaLevelOfKey'), defaulting to SLH-DSA-SHA2-128s when the
--- key is unscannable (the backends execute against the key's
--- actual material and refuse bad keys themselves — the driver
--- never refuses a key). Deterministic hedge clears the hedged
--- flag. 'Nothing' means uncovered (non-SLH-DSA mechanism) or
--- refused parameters.
-slhdsaSpecFor :: MechanismId -> ByteString -> KeyMaterial -> Maybe SigSpec
-slhdsaSpecFor mech params key = do
-  r <- slhdsaRecipeFor mech
-  guard (slhdsaParamsValid r params)
-  (hedge, ctx) <- decodeSlhdsaParams params
-  let alg = fromMaybe SLH_DSA_SHA2_128s (slhdsaLevelOfKey key)
-      hedged = hedge /= SlhDeterministic
-  pure (SigSLHDSA alg ctx hedged)
-
--- | An SLH-DSA mechanism regardless of parameter validity (drives
--- the parameter-refusal branch: refused SLH-DSA params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isSlhdsaMech :: MechanismId -> Bool
-isSlhdsaMech mech = isJust (slhdsaRecipeFor mech)
-
--- | The SLH-DSA set named by a key's algorithm OID, via the
--- recipe's 'slhdsaLevelOfDer'. Both constructors sniff: production
--- resolves every stored key as 'KeyBytes' ('stdResolver'), so a
--- 'KeyDer'-only sniff would miss every production key and
--- misdispatch it as SLH-DSA-SHA2-128s (the shim's type-name check
--- then refuses with BADKEY). 'Nothing' for references, symmetric
--- bytes, RSA, garbage, or a foreign curve. The marker is
--- advisory for dispatch only: 'slhdsaSpecFor' defaults it to
--- SLH-DSA-SHA2-128s and the backends always execute against the
--- key's actual material, so a miss can refuse downstream but never
--- mis-sign.
-slhdsaLevelOfKey :: KeyMaterial -> Maybe PqcSigAlg
-slhdsaLevelOfKey (KeyDer der) = slhdsaLevelOfDer der >>= levelOfName
-slhdsaLevelOfKey (KeyBytes bs) = slhdsaLevelOfDer bs >>= levelOfName
-slhdsaLevelOfKey _ = Nothing
-
--- | The Edwards curve named by a key's curve OID, via the
--- recipe's 'eddsaCurveOfDer'. Both constructors sniff: production
--- resolves every stored key as 'KeyBytes' ('stdResolver'), so a
--- 'KeyDer'-only sniff would miss every production Ed448 key and
--- misdispatch it as Ed25519 (the shim's base-id check then
--- refuses with BADKEY). 'Nothing' for references, symmetric
--- bytes, RSA, garbage, or a Weierstrass curve. The marker is
--- advisory for dispatch only: 'eddsaSpecFor' defaults it to
--- Ed25519 and the backends always execute against the key's
--- actual material, so a miss can refuse downstream but never
--- mis-sign.
-eddsaCurveOfKey :: KeyMaterial -> Maybe T.Text
-eddsaCurveOfKey (KeyDer der) = eddsaCurveOfDer der
-eddsaCurveOfKey (KeyBytes bs) = eddsaCurveOfDer bs
-eddsaCurveOfKey _ = Nothing
-
--- | The curve named by a DER key's curve OID, via the recipe's
--- 'ecdsaCurveOfDer' ('Nothing' for raw bytes, references, RSA,
--- garbage, or an off-set curve). The marker is advisory for
--- dispatch only: 'ecdsaSpecFor' defaults it to P-256 and the
--- backends always execute against the key's actual material, so a
--- miss can refuse downstream but never mis-sign.
-ecCurveOfKey :: KeyMaterial -> Maybe T.Text
-ecCurveOfKey (KeyDer der) = ecdsaCurveOfDer der
-ecCurveOfKey _ = Nothing
-
--- | ECDH dispatch: the covered (mechanism, params) pair to the
--- backend agreement shape plus the peer public key (pinned
--- against 'Haskoki.Recipe.Ecdh' by RecipeEcdhSpec). The cofactor
--- flag comes from the mechanism row. 'Nothing' means uncovered
--- (non-ECDH mechanism) or malformed parameters (a KDF selector
--- included — the recipe serves the null KDF only).
-ecdhParamsFor :: MechanismId -> ByteString -> Maybe (EcdhSpec, ByteString)
-ecdhParamsFor mech params = do
-  r <- ecdhRecipeFor mech
-  guard (ecdhParamsValid r params)
-  (_, _, peer) <- decodeEcdhParams params
-  pure (if rhCofactor r then EcdhCofactor else EcdhPlain, peer)
-
--- | An ECDH mechanism regardless of parameter validity (drives the
--- parameter-refusal branch: malformed ECDH params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isEcdhMech :: MechanismId -> Bool
-isEcdhMech mech = isJust (ecdhRecipeFor mech)
-
--- | DH agreement parameters for one covered (mechanism, params)
--- pair: the backend spec plus the peer public value. 'Nothing'
--- means uncovered (non-DH mechanism) or malformed parameters (a
--- KDF selector included — the recipe serves the null KDF only).
-dhParamsFor :: MechanismId -> ByteString -> Maybe (DhSpec, ByteString)
-dhParamsFor mech params = do
-  r <- dhRecipeFor mech
-  guard (dhParamsValid r params)
-  (_, peer) <- decodeDhParams params
-  pure (DhPlain, peer)
-
--- | A DH mechanism regardless of parameter validity (drives the
--- parameter-refusal branch: malformed DH params are
--- 'CryptoFailed', never 'CryptoUnsupported').
-isDhMech :: MechanismId -> Bool
-isDhMech mech = isJust (dhRecipeFor mech)
-
 -- ---------------------------------------------------------------------------
 -- runEffect workers (lifted to top level, 0.6.3 prep)
 -- ---------------------------------------------------------------------------
@@ -1107,44 +869,6 @@ isDhMech mech = isJust (dhRecipeFor mech)
 -- re-indentation and @env@ threading between workers. The next step
 -- splits them per family.
 
--- | ECDH agreement effects: the backend agrees the full raw
--- secret over (base key, peer public key) and the driver
--- truncates to the planned length. A planned length past the
--- secret is 'CryptoFailed' (the planner caps honestly, so this
--- fires only for hand-built effects); backend key-shape
--- refusals keep their taxonomy.
-runEcdh :: CryptoBackend b => BackendEnv b -> EcdhSpec -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
-runEcdh env spec key peer outLen
-  | outLen < 1 = pure (GotCryptoError (CryptoFailed
-      "driver: derive length out of range"))
-  | otherwise = do
-      r <- ecdhDerive env spec key (KeyDer peer)
-      pure $ case r of
-        EngineFail err -> GotCryptoError (toCryptoError err)
-        EngineOk secret
-          | BS.length secret < outLen -> GotCryptoError (CryptoFailed
-              "driver: derive length exceeds the agreement secret")
-          -- Truncation drops leading bytes (PKCS#11 v3.2 ECDH:
-          -- "removes bytes from the leading end"); full width
-          -- drops nothing.
-          | otherwise -> GotBytes
-              (BS.drop (BS.length secret - outLen) secret)
--- | Classic DH agreement: the backend proves the full secret,
--- truncation drops leading bytes (PKCS#11 v3.2 DH derive
--- "removes bytes from the leading end", matching ECDH).
-runDh :: CryptoBackend b => BackendEnv b -> DhSpec -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
-runDh env spec key peer outLen
-  | outLen < 1 = pure (GotCryptoError (CryptoFailed
-      "driver: derive length out of range"))
-  | otherwise = do
-      r <- dhDerive env spec key (KeyDer peer)
-      pure $ case r of
-        EngineFail err -> GotCryptoError (toCryptoError err)
-        EngineOk secret
-          | BS.length secret < outLen -> GotCryptoError (CryptoFailed
-              "driver: derive length exceeds the agreement secret")
-          | otherwise -> GotBytes
-              (BS.drop (BS.length secret - outLen) secret)
 -- | ECDH-composition wrap: ephemeral transport keygen on
 -- the wrapping (recipient PUBLIC) key's domain, ECDH
 -- agreement of the transport private half against the
@@ -2593,32 +2317,6 @@ runEffect env resolve fx = case fx of
     | isEncryptDataMech mech -> withKey resolve mkey $ \key ->
         runEncryptData env mech key params outLen
     | otherwise -> pure (unsupported fx)
--- | ECDSA dispatch refusal: 'ecdsaSpecFor' only fails on
--- malformed parameters (same message as the OpenSSL driver), so the
--- refusal is unconditionally a 'CryptoFailed' parameter refusal.
-ecdsaRefusal :: CryptoResult
-ecdsaRefusal = GotCryptoError (CryptoFailed "ECDSA: params must be RAW, DER, or empty")
-
--- | DSA dispatch refusal: 'dsaSpecFor' only fails on malformed
--- parameters, so the refusal is unconditionally a 'CryptoFailed'
--- parameter refusal.
-dsaRefusal :: CryptoResult
-dsaRefusal = GotCryptoError (CryptoFailed "DSA: params must be RAW, DER, or empty")
-
--- | EdDSA dispatch refusal: 'eddsaSpecFor' only fails on
--- non-pure parameters, so the refusal is unconditionally a
--- 'CryptoFailed' parameter refusal.
-eddsaRefusal :: CryptoResult
-eddsaRefusal = GotCryptoError (CryptoFailed "EdDSA: params must be pure (phFlag clear, empty context) or empty")
-
--- | ML-DSA dispatch refusal: 'mldsaSpecFor' only fails on
--- refused parameters, so the refusal is unconditionally a
--- 'CryptoFailed' parameter refusal.
-mldsaRefusal :: CryptoResult
-mldsaRefusal = GotCryptoError (CryptoFailed "ML-DSA: params must be mldsa-params/1 (hedge 0..2, context 0..255 bytes) or empty")
-slhdsaRefusal :: CryptoResult
-slhdsaRefusal = GotCryptoError (CryptoFailed "SLH-DSA: params must be slhdsa-params/1 (hedge 0..2, context 0..255 bytes) or empty")
-
 -- | Four-byte big-endian word (PBKDF2 block index).
 word32BE :: Int -> ByteString
 word32BE n = BS.pack
