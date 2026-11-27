@@ -102,6 +102,7 @@
         "CertificateEngineSpec",
         "CryptoExportSpec",
         "DetachedEngineSpec",
+        "DriverGoldenSpec",
         "EnvLock",
         "OwnershipCounters",
         "FfiAcquireSpec",
@@ -158,6 +159,9 @@
         ],
         "DetachedEngineSpec": [
           "Detached engine"
+        ],
+        "DriverGoldenSpec": [
+          "driver golden sweep"
         ],
         "EnvLock": [],
         "OwnershipCounters": [],

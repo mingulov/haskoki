@@ -18,6 +18,7 @@ cabal.project.local~
 *~
 __pycache__/
 *.pyc
+tests/engine/golden/*.new
 .DS_Store
 dist-release/
 dist-release-evidence/

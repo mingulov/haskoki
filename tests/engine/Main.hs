@@ -8,6 +8,7 @@ import qualified AsyncEngineSpec
 import qualified CertificateEngineSpec
 import qualified CryptoExportSpec
 import qualified DetachedEngineSpec
+import qualified DriverGoldenSpec
 import qualified FfiAcquireSpec
 import qualified InitDiagnosticSpec
 import qualified LeaseWedgeDenseSpec
@@ -59,6 +60,7 @@ main = do
     , NativeParamsSpec.spec
     , NotificationsEngineSpec.spec envLock
     , CertificateEngineSpec.spec envLock
+    , DriverGoldenSpec.spec
     ]
 
 -- | GHC #27272 warm-up MITIGATION (not a fix): one seat-token
