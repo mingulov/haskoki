@@ -1,21 +1,10 @@
 {- | Async job lifecycle operations.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Runtime.Async.Operations
   ( startJob
   , startSeededJob
   , startFixtureJob
-  , startJobChecked
-  , callWorkAdmissible
-  , jobFunctionCoherent
-  , pairRefusal
-  , driveJob
-  , emitDriveCause
-  , deliveryNeed
-  , heldBytesLike
-  , isBytesLike
   , callCompletion
-  , keyCompletion
   , cancelJob
   , ReapEligibility (..)
   , reapEligibility

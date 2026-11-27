@@ -1,6 +1,5 @@
 {- | Async detach snapshots.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Runtime.Async.Snapshot
   ( JobSnapState (..)
   , JobSnapshot
@@ -12,7 +11,6 @@ module Haskoki.Runtime.Async.Snapshot
   , jobSnapshotSession
   , jobSnapshotEpoch
   , snapshotJob
-  , toSnapshot
   , DetachLease
   , beginDetach
   , leaseSnapshot
@@ -230,7 +228,7 @@ commitDetachRevoke :: DetachLease -> IO ()
 commitDetachRevoke dl = uninterruptibleMask_ $ do
   mJob <- atomically $ do
     jobs <- readTVar (atJobs (dlTable dl))
-    -- Forced: see the forcing invariant on 'commitStep'.
+    -- Forced: see the forcing invariant on @commitStep@.
     let jobs' = Map.delete (dlJob dl) jobs
     jobs' `seq` writeTVar (atJobs (dlTable dl)) jobs'
     pure (Map.lookup (dlJob dl) jobs)

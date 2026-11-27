@@ -1,6 +1,5 @@
 {- | Async close admission and teardown.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Runtime.Async.Close
   ( enterTableUse
   , exitTableUse

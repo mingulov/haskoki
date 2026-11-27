@@ -1,9 +1,7 @@
 {- | Async jobs and functions.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Runtime.Async.Jobs
   ( JobFunction (..)
-  , jobFunctionToFid
   , jobExactFid
   , AsyncWork (..)
   , workEffect
@@ -129,13 +127,13 @@ data StartDeny
 
 -- | Whether an effect can produce an answer the job can hold:
 -- the work/result compatibility rule. Every completion
--- gates on bytes-like holdings ('isBytesLike'), so only
+-- gates on bytes-like holdings (@isBytesLike@), so only
 -- bytes- and unit-producing effects hold; resource-producing
 -- allocation ('FxDigestInit') and verdict-producing verification
 -- ('FxVerify', 'FxMessageVerify') never can. Recovery effects
 -- hold by their natural bytes shape (a driver that cannot run
 -- them refuses loudly at drive time — defense in depth,
--- unchanged). 'startJobChecked' refuses unholdable work at submit.
+-- unchanged). @startJobChecked@ refuses unholdable work at submit.
 effectHoldable :: CryptoEffect -> Bool
 -- Exhaustive, not fail-open — every constructor has an
 -- explicit arm (no wildcard). A new effect fails validation via

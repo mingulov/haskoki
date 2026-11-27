@@ -1,6 +1,5 @@
 {- | Async poll/complete/cancel/reap outcomes.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Runtime.Async.Outcomes
   ( PollOutcome (..)
   , CompleteOutcome (..)

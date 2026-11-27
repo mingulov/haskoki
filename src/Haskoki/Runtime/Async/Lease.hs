@@ -1,24 +1,9 @@
 {- | Async lease helpers and retention.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Runtime.Async.Lease
   ( maxRetainedTombstones
   , maxRetainedBytes
-  , isTerminalState
   , retainedBytes
-  , perTombstoneOverhead
-  , tombstoneBytes
-  , workBytes
-  , effectBytes
-  , reservationBytes
-  , stepBytes
-  , pendingWorkBytes
-  , pendingObjectBytes
-  , attrValueBytes
-  , stateBytes
-  , terminalBytes
-  , completionBytes
-  , enforceRetention
   , commitStep
   , withJobLock
   ) where

@@ -1,10 +1,8 @@
 {- | Async the job table and closed transitions.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 module Haskoki.Runtime.Async.Table
-  ( jobFunctionFunc
-  , usdtJobPhase
+  ( usdtJobPhase
   , usdtAsyncEnd
   , usdtSeededReady
   , JobEvent (..)
@@ -15,7 +13,6 @@ module Haskoki.Runtime.Async.Table
   , stepJob
   , TableIdExhausted
   , tableSaltFor
-  , mintTableId
   , AsyncTable
   , newAsyncTable
   , tryNewAsyncTable
@@ -25,8 +22,6 @@ module Haskoki.Runtime.Async.Table
   , atNext
   , atMax
   , atAsync
-  , atId
-  , atSalt
   , atGate
   , enableAsyncSession
   , disableAsyncSession
@@ -159,7 +154,7 @@ data JobReject = JobReject !JobEvent !JobState
 -- | A committable transition verdict. The constructor is private:
 -- only 'stepJob' builds verdicts, so no site can forge a state
 -- change. Verdicts are readable ('stepState', 'stepEpoch') and
--- committable ('commitStep').
+-- committable (@commitStep@).
 newtype JobStep = JobStep (JobState, Word64)
   deriving (Eq, Show)
 
