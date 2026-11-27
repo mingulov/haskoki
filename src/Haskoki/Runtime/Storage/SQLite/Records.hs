@@ -50,9 +50,9 @@ import Haskoki.Runtime.Storage
   , jobIdCounterKey
   , knownMaterialEncodings
   )
-import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), TokenId (..))
 import Haskoki.Runtime.Storage.SQLite.Statements
 import Haskoki.Runtime.Storage.SQLite.Stats
+import Haskoki.Types (Generation (..), ObjectId (..), Revision (..), TokenId (..))
 
 -- | Read the job-id counter row ('Nothing' = the key is
 -- absent, as in a hand-built database: reservation treats it
