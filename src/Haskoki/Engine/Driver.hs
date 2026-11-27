@@ -192,7 +192,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
 import Control.Applicative ((<|>))
 import Control.Monad (guard)
-import Data.Bits ((.&.), (.|.), popCount, shiftL, shiftR, testBit, xor)
+import Data.Bits ((.&.), (.|.), shiftL, shiftR, testBit, xor)
 import Data.List (unsnoc)
 import Data.Word (Word64, Word8)
 import Data.Maybe (fromMaybe, isJust, isNothing)
@@ -214,11 +214,44 @@ import Haskoki.Engine.Backend
   , KeyMaterial (..)
   , MacSpec (..)
   , OaepParams (..)
-  , PqcKemAlg (..)
   , PqcSigAlg (..)
   , RsaCipherParams (..)
   , PssParams (..)
   , SigSpec (..)
+  )
+import Haskoki.Engine.Driver.Common
+  ( KeyResolver
+  , compSpec
+  , keyBytesOf
+  , levelOfName
+  , rsaDigest
+  , runPubFromPriv
+  , unsupported
+  , withKey
+  )
+import Haskoki.Engine.Driver.KeyGen
+  ( mlDsaAlg
+  , mlKemAlg
+  , slhDsaAlg
+  , symKeygenLabels
+  , toKeyPair
+  , toParityPair
+  , toPqcKem
+  , toPrefixedPair
+  )
+import Haskoki.Engine.Driver.Result
+  ( cryptoToCore
+  , drainReleases
+  , encodeResult
+  , fromCoreFailure
+  , toBytes
+  , toCoreFailure
+  , toCryptoError
+  , toKemPair
+  , toResource
+  , toUnit
+  , toVerifyBool
+  , toVerifyUnit
   )
 import Haskoki.Operation.Derive (hkdfDataMech, hkdfDeriveMech, maxDerivedTotal, maxXofTotal, pubPrivMech)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
@@ -348,7 +381,7 @@ import Haskoki.Recipe.RsaPss
   , rsaPssParamsValid
   , rsaPssRecipeFor
   )
-import Haskoki.Operation.Kem (KemAlg (..), kemAlgFromName, mlKemKeyPairGenMech, mlKemMech)
+import Haskoki.Operation.Kem (kemAlgFromName, mlKemKeyPairGenMech, mlKemMech)
 import Haskoki.Operation.KeyManagement
   ( GenArgs (..)
   , aesCbcMech
@@ -379,44 +412,6 @@ import Haskoki.Operation.KeyManagement
   , genericSecretKeyGenMech
   , hotpKeyGenMech
   , rsaKeyPairGenMech
-  , desKeyGenMech
-  , des2KeyGenMech
-  , cdmfKeyGenMech
-  , castKeyGenMech
-  , cast3KeyGenMech
-  , cast128KeyGenMech
-  , rc2KeyGenMech
-  , rc4KeyGenMech
-  , rc5KeyGenMech
-  , ideaKeyGenMech
-  , skipjackKeyGenMech
-  , batonKeyGenMech
-  , juniperKeyGenMech
-  , blowfishKeyGenMech
-  , twofishKeyGenMech
-  , gost28147KeyGenMech
-  , seedKeyGenMech
-  , ariaKeyGenMech
-  , camelliaKeyGenMech
-  , salsa20KeyGenMech
-  , poly1305KeyGenMech
-  , aesXtsKeyGenMech
-  , hkdfKeyGenMech
-  , sha1KeyGenMech
-  , sha224KeyGenMech
-  , sha256KeyGenMech
-  , sha384KeyGenMech
-  , sha512KeyGenMech
-  , sha512_224KeyGenMech
-  , sha512_256KeyGenMech
-  , sha512TKeyGenMech
-  , sha3_224KeyGenMech
-  , sha3_256KeyGenMech
-  , sha3_384KeyGenMech
-  , sha3_512KeyGenMech
-  , blake2b160KeyGenMech
-  , blake2b256KeyGenMech
-  , blake2b384KeyGenMech
   , ssl3PremasterKeyGenMech
   , tlsPremasterKeyGenMech
   , wtlsPremasterKeyGenMech
@@ -536,8 +531,6 @@ import Haskoki.Registry.Generated
   , ckm_SHA512_256
   , ckm_SHA_1
   )
-import Haskoki.Types (EngineResourceId, ObjectId)
-import qualified Haskoki.Outcome as O
 
 -- | Digest dispatch: covered mechanism to backend algorithm (pinned
 -- pinned against 'Haskoki.Recipe.Digest' by RecipeDigestSpec, so the
@@ -1449,28 +1442,6 @@ isAesKwWrapMech :: MechanismId -> Bool
 isAesKwWrapMech mech =
   mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech || mech == aesKwp7Mech
 
--- | Recipe digest stem onto the backend digest.
-rsaDigest :: T.Text -> Maybe DigestAlg
-rsaDigest stem
-  | stem == "BLAKE2B_512" = Just D_BLAKE2B512
-  | stem == "BLAKE2B_160" = Just D_BLAKE2B160
-  | stem == "BLAKE2B_256" = Just D_BLAKE2B256
-  | stem == "BLAKE2B_384" = Just D_BLAKE2B384
-  | stem == "MD5" = Just D_MD5
-  | stem == "RIPEMD160" = Just D_RIPEMD160
-  | stem == "SHA_1" = Just D_SHA1
-  | stem == "SHA224" = Just D_SHA224
-  | stem == "SHA256" = Just D_SHA256
-  | stem == "SHA384" = Just D_SHA384
-  | stem == "SHA512" = Just D_SHA512
-  | stem == "SHA512_224" = Just D_SHA512_224
-  | stem == "SHA512_256" = Just D_SHA512_256
-  | stem == "SHA3_224" = Just D_SHA3_224
-  | stem == "SHA3_256" = Just D_SHA3_256
-  | stem == "SHA3_384" = Just D_SHA3_384
-  | stem == "SHA3_512" = Just D_SHA3_512
-  | otherwise = Nothing
-
 -- | RSA-PSS dispatch: covered (mechanism, params) pairs to
 -- backend specs (pinned against
 -- 'Haskoki.Recipe.RsaPss' by RecipePssSpec). The recipe validates
@@ -1758,26 +1729,6 @@ slhdsaLevelOfKey (KeyDer der) = slhdsaLevelOfDer der >>= levelOfName
 slhdsaLevelOfKey (KeyBytes bs) = slhdsaLevelOfDer bs >>= levelOfName
 slhdsaLevelOfKey _ = Nothing
 
--- | Engine level names onto backend algorithms.
-levelOfName :: T.Text -> Maybe PqcSigAlg
-levelOfName name = case T.unpack name of
-  "ML-DSA-44" -> Just ML_DSA_44
-  "ML-DSA-65" -> Just ML_DSA_65
-  "ML-DSA-87" -> Just ML_DSA_87
-  "SLH-DSA-SHA2-128s" -> Just SLH_DSA_SHA2_128s
-  "SLH-DSA-SHA2-128f" -> Just SLH_DSA_SHA2_128f
-  "SLH-DSA-SHA2-192s" -> Just SLH_DSA_SHA2_192s
-  "SLH-DSA-SHA2-192f" -> Just SLH_DSA_SHA2_192f
-  "SLH-DSA-SHA2-256s" -> Just SLH_DSA_SHA2_256s
-  "SLH-DSA-SHA2-256f" -> Just SLH_DSA_SHA2_256f
-  "SLH-DSA-SHAKE-128s" -> Just SLH_DSA_SHAKE_128s
-  "SLH-DSA-SHAKE-128f" -> Just SLH_DSA_SHAKE_128f
-  "SLH-DSA-SHAKE-192s" -> Just SLH_DSA_SHAKE_192s
-  "SLH-DSA-SHAKE-192f" -> Just SLH_DSA_SHAKE_192f
-  "SLH-DSA-SHAKE-256s" -> Just SLH_DSA_SHAKE_256s
-  "SLH-DSA-SHAKE-256f" -> Just SLH_DSA_SHAKE_256f
-  _ -> Nothing
-
 -- | The Edwards curve named by a key's curve OID, via the
 -- recipe's 'eddsaCurveOfDer'. Both constructors sniff: production
 -- resolves every stored key as 'KeyBytes' ('stdResolver'), so a
@@ -1840,11 +1791,6 @@ dhParamsFor mech params = do
 isDhMech :: MechanismId -> Bool
 isDhMech mech = isJust (dhRecipeFor mech)
 
--- | Resolve a bound key object to backend key material. 'Nothing'
--- means the object is unknown to the caller (reported as
--- 'CryptoBadKey', never fabricated).
-type KeyResolver = ObjectId -> Maybe KeyMaterial
-
 -- ---------------------------------------------------------------------------
 -- runEffect workers (lifted to top level, 0.6.3 prep)
 -- ---------------------------------------------------------------------------
@@ -1853,12 +1799,6 @@ type KeyResolver = ObjectId -> Maybe KeyMaterial
 -- or 'KeyResolver' for 'withKey'); bodies are unchanged apart from
 -- re-indentation and @env@ threading between workers. The next step
 -- splits them per family.
-
-withKey :: KeyResolver -> Maybe ObjectId -> (KeyMaterial -> IO CryptoResult) -> IO CryptoResult
-withKey _ Nothing _ = pure (GotCryptoError (CryptoBadKey "driver" "effect binds no key"))
-withKey resolve (Just oid) k = case resolve oid of
-  Nothing -> pure (GotCryptoError (CryptoBadKey "driver" ("unknown key object: " ++ show oid)))
-  Just mat -> k mat
 
 -- | CMAC sign effects: the SP 800-38B composition over the
 -- backend ECB route, truncated for GENERAL rows. Off-geometry
@@ -2459,10 +2399,6 @@ runEcdhCompUnwrap env r unwrapKey params blob = case keyBytesOf unwrapKey of
                   | otherwise ->
                       runCipher env DirDecrypt aesKwpMech
                         (KeyBytes (BS.take aesBytes secret)) BS.empty kwpBlob
--- | The agreement spec for a composition row: cofactor from
--- the row (COF over EC only; X over Montgomery is plain).
-compSpec :: WrapCompEcdhRecipe -> EcdhSpec
-compSpec r = if wceCofactor r then EcdhCofactor else EcdhPlain
 -- | RSA-composition wrap: mint a random temp KEK at the
 -- requested strength, OAEP-seal it under the recipient
 -- PUBLIC key, KWP-seal the target under the KEK, answer the
@@ -2533,12 +2469,6 @@ runRsaCompUnwrap env _ unwrapKey params blob = case keyBytesOf unwrapKey of
               "driver: OAEP digest stems rejected"))
       _ -> pure (GotCryptoError (CryptoFailed
         "driver: malformed wrap-composition parameters"))
--- | Raw bytes out of key material (DER halves and byte seeds;
--- backend references carry no bytes here).
-keyBytesOf :: KeyMaterial -> Maybe ByteString
-keyBytesOf (KeyBytes b) = Just b
-keyBytesOf (KeyDer b) = Just b
-keyBytesOf _ = Nothing
 -- | SHA key-derivation effects: digest the base value,
 -- truncate to the planned length (capped by the digest width —
 -- the planner caps honestly, so over-width fires only for
@@ -2556,15 +2486,6 @@ runShaKd env alg key outLen = case key of
       "driver: derive length out of range"))
   _ -> pure (GotCryptoError (CryptoBadKey "driver"
     "key derivation needs raw secret bytes"))
--- | Pub-from-priv extraction: the backend answers the DER
--- SPKI for the base half (any material shape the backend
--- resolves); the finisher parses and stamps per key type.
-runPubFromPriv :: CryptoBackend b => BackendEnv b -> KeyMaterial -> IO CryptoResult
-runPubFromPriv env key = do
-  r <- pubFromPriv env key
-  pure $ case r of
-    EngineFail err -> GotCryptoError (toCryptoError err)
-    EngineOk spki -> GotBytes spki
 -- | SHAKE XOF key-derivation effects: XOF output at the planned
 -- length (capped by 'maxXofTotal' — the planner caps honestly,
 -- so over-ceiling fires only for hand-built effects).
@@ -3206,9 +3127,6 @@ ikeExtExpand env alg kb mGx extra outLen
                   EngineFail err -> pure (EngineFail err)
                   EngineOk blk -> go (k - 1) blk (blk : acc)
           in go n first []
-unsupported :: CryptoEffect -> CryptoResult
-unsupported e = GotCryptoError (CryptoUnsupported "driver" (show e))
-
 -- | Answer one planned effect against the backend.
 runEffect :: CryptoBackend b => BackendEnv b -> KeyResolver -> CryptoEffect -> IO CryptoResult
 runEffect env resolve fx = case fx of
@@ -3947,222 +3865,6 @@ driverCtEq a b =
   BS.length a == BS.length b
     && foldl' (\acc (x, y) -> acc .|. (x `xor` y)) 0 (BS.zip a b) == 0
 
--- | Bytes-shaped answers: backend failures map onto the typed
--- crypto errors.
-toBytes :: EngineResult ByteString -> CryptoResult
-toBytes (EngineOk b) = GotBytes b
-toBytes (EngineFail err) = GotCryptoError (toCryptoError err)
-
--- | Allocation answers: the resource id crosses to the finisher,
--- which records it on the slot.
-toResource :: EngineResult EngineResourceId -> CryptoResult
-toResource (EngineOk rid) = GotResource rid
-toResource (EngineFail err) = GotCryptoError (toCryptoError err)
-
--- | Feed answers: success carries no bytes, and the unit shape is
--- preserved as 'GotUnit' — distinct from empty bytes —
--- through the driver helpers until 'encodeResult'.
-toUnit :: EngineResult () -> CryptoResult
-toUnit (EngineOk ()) = GotUnit
-toUnit (EngineFail err) = GotCryptoError (toCryptoError err)
-
--- | Backend failures onto crypto errors: total and
--- category-preserving. Each backend error maps to its mirror
--- crypto error with fields intact; a bytes-shaped authentication
--- failure stays 'CryptoAuthFailed'. Every case keeps the code its
--- collapse produced.
-toCryptoError :: BackendError -> CryptoError
-toCryptoError err = case err of
-  BackendUnsupported o w -> CryptoUnsupported o w
-  BackendBadParam o w -> CryptoBadParam o w
-  BackendBadKey o w -> CryptoBadKey o w
-  BackendMechParamInvalid o w -> CryptoMechParamInvalid o w
-  BackendAuthFailed o -> CryptoAuthFailed o
-  BackendSigLenRange o -> CryptoSigLenRange o
-  BackendInvalidState o w -> CryptoInvalidState o w
-  BackendNative o c w -> CryptoNative o c w
-  BackendResourceGone o r -> CryptoResourceGone o r
-
--- | Backend errors onto core failures: the exact
--- constructor-for-constructor mirror. Total both ways with
--- 'fromCoreFailure' (see the round-trip pins).
-toCoreFailure :: BackendError -> O.BackendFailure
-toCoreFailure err = case err of
-  BackendUnsupported o w -> O.BackendUnsupported o w
-  BackendBadParam o w -> O.BackendBadParam o w
-  BackendBadKey o w -> O.BackendBadKey o w
-  BackendMechParamInvalid o w -> O.BackendMechParamInvalid o w
-  BackendAuthFailed o -> O.BackendAuthFailed o
-  BackendSigLenRange o -> O.BackendSigLenRange o
-  BackendInvalidState o w -> O.BackendInvalidState o w
-  BackendNative o c w -> O.BackendNative o c w
-  BackendResourceGone o r -> O.BackendResourceGone o r
-
--- | Core failures back onto backend errors: the exact inverse of
--- 'toCoreFailure' over all nine constructors.
-fromCoreFailure :: O.BackendFailure -> BackendError
-fromCoreFailure f = case f of
-  O.BackendUnsupported o w -> BackendUnsupported o w
-  O.BackendBadParam o w -> BackendBadParam o w
-  O.BackendBadKey o w -> BackendBadKey o w
-  O.BackendMechParamInvalid o w -> BackendMechParamInvalid o w
-  O.BackendAuthFailed o -> BackendAuthFailed o
-  O.BackendSigLenRange o -> BackendSigLenRange o
-  O.BackendInvalidState o w -> BackendInvalidState o w
-  O.BackendNative o c w -> BackendNative o c w
-  O.BackendResourceGone o r -> BackendResourceGone o r
-
--- | Crypto failures back onto core failures: the exact
--- inverse of 'toCryptoError' on the nine shared categories. The
--- unclassified 'CryptoFailed' bucket has no backend counterpart and
--- lands on a native failure (pinned one-way mapping, code unchanged).
-cryptoToCore :: CryptoError -> O.BackendFailure
-cryptoToCore err = case err of
-  CryptoUnsupported o w -> O.BackendUnsupported o w
-  CryptoBadParam o w -> O.BackendBadParam o w
-  CryptoBadKey o w -> O.BackendBadKey o w
-  CryptoMechParamInvalid o w -> O.BackendMechParamInvalid o w
-  CryptoAuthFailed o -> O.BackendAuthFailed o
-  CryptoSigLenRange o -> O.BackendSigLenRange o
-  CryptoInvalidState o w -> O.BackendInvalidState o w
-  CryptoNative o c w -> O.BackendNative o c w
-  CryptoResourceGone o r -> O.BackendResourceGone o r
-  CryptoFailed s -> O.BackendNative "driver" (-1) s
-
--- | Keygen answers: the framed private half plus the optional public
--- half. A backend reference (rather than owned material) cannot
--- cross to the object store and fails loudly.
---
--- | Sweep keygens onto backend 'GenSym' labels (slice 11a): the
--- planner admits lengths, the label only selects the backend's
--- domain separation and bound mirror.
-symKeygenLabels :: [(MechanismId, String)]
-symKeygenLabels =
-  [ (desKeyGenMech, "DES")
-  , (des2KeyGenMech, "DES2")
-  , (cdmfKeyGenMech, "CDMF")
-  , (castKeyGenMech, "CAST")
-  , (cast3KeyGenMech, "CAST3")
-  , (cast128KeyGenMech, "CAST128")
-  , (rc2KeyGenMech, "RC2")
-  , (rc4KeyGenMech, "RC4")
-  , (rc5KeyGenMech, "RC5")
-  , (ideaKeyGenMech, "IDEA")
-  , (skipjackKeyGenMech, "SKIPJACK")
-  , (batonKeyGenMech, "BATON")
-  , (juniperKeyGenMech, "JUNIPER")
-  , (blowfishKeyGenMech, "BLOWFISH")
-  , (twofishKeyGenMech, "TWOFISH")
-  , (gost28147KeyGenMech, "GOST28147")
-  , (seedKeyGenMech, "SEED")
-  , (ariaKeyGenMech, "ARIA")
-  , (camelliaKeyGenMech, "CAMELLIA")
-  , (salsa20KeyGenMech, "SALSA20")
-  , (poly1305KeyGenMech, "POLY1305")
-  , (aesXtsKeyGenMech, "AES-XTS")
-  , (hkdfKeyGenMech, "HKDF")
-  , (sha1KeyGenMech, "SHA-1-HMAC")
-  , (sha224KeyGenMech, "SHA224-HMAC")
-  , (sha256KeyGenMech, "SHA256-HMAC")
-  , (sha384KeyGenMech, "SHA384-HMAC")
-  , (sha512KeyGenMech, "SHA512-HMAC")
-  , (sha512_224KeyGenMech, "SHA512-224-HMAC")
-  , (sha512_256KeyGenMech, "SHA512-256-HMAC")
-  , (sha512TKeyGenMech, "SHA512-T-HMAC")
-  , (sha3_224KeyGenMech, "SHA3-224-HMAC")
-  , (sha3_256KeyGenMech, "SHA3-256-HMAC")
-  , (sha3_384KeyGenMech, "SHA3-384-HMAC")
-  , (sha3_512KeyGenMech, "SHA3-512-HMAC")
-  , (blake2b160KeyGenMech, "BLAKE2B-160-HMAC")
-  , (blake2b256KeyGenMech, "BLAKE2B-256-HMAC")
-  , (blake2b384KeyGenMech, "BLAKE2B-384-HMAC")
-  ]
-
--- | Parity keygen answers: the backend mints random bytes and the
--- driver sets odd DES parity on the private half (FIPS 46-3),
--- so both backends share one parity home.
-toParityPair :: EngineResult (KeyMaterial, Maybe KeyMaterial) -> CryptoResult
-toParityPair (EngineOk (priv, mPub)) = toKeyPair (EngineOk (parityMat priv, mPub))
-  where
-    parityMat (KeyBytes bs) = KeyBytes (setOddParity bs)
-    parityMat other = other
-toParityPair (EngineFail err) = GotCryptoError (toCryptoError err)
-
--- | Set odd parity on every byte (DES key material).
-setOddParity :: ByteString -> ByteString
-setOddParity = BS.map setByte
-  where
-    setByte b
-      | odd (popCount b) = b
-      | otherwise = b `xor` 1
-
--- | Prefixed keygen answers: the version bytes lead the
--- backend-minted random tail (TLS/SSL3/WTLS pre-master).
-toPrefixedPair :: ByteString -> EngineResult (KeyMaterial, Maybe KeyMaterial) -> CryptoResult
-toPrefixedPair prefix (EngineOk (priv, mPub)) = toKeyPair (EngineOk (prefixMat priv, mPub))
-  where
-    prefixMat (KeyBytes bs) = KeyBytes (prefix <> bs)
-    prefixMat other = other
-toPrefixedPair _ (EngineFail err) = GotCryptoError (toCryptoError err)
-toKeyPair :: EngineResult (KeyMaterial, Maybe KeyMaterial) -> CryptoResult
-toKeyPair (EngineOk (priv, mPub)) = case (keyBytes priv, traverse keyBytes mPub) of
-  (Just p, Just q) -> GotBytes (encodeKeyPair p q)
-  _ -> GotCryptoError (CryptoFailed "driver: keygen returned an unexportable reference")
-  where
-    keyBytes :: KeyMaterial -> Maybe ByteString
-    keyBytes (KeyBytes bs) = Just bs
-    keyBytes (KeyDer bs) = Just bs
-    keyBytes (KeyRefMaterial _) = Nothing
-toKeyPair (EngineFail err) = GotCryptoError (toCryptoError err)
-
--- | Encapsulation answers: @ciphertext || secret@ for the finisher
--- to split at the mechanism's ciphertext length.
-toKemPair :: EngineResult (ByteString, ByteString) -> CryptoResult
-toKemPair (EngineOk (ct, ss)) = GotBytes (ct <> ss)
-toKemPair (EngineFail err) = GotCryptoError (toCryptoError err)
-
--- | ML-KEM parameter-set numbers onto backend algorithms.
-mlKemAlg :: Int -> Maybe PqcKemAlg
-mlKemAlg n = case n of
-  512 -> Just ML_KEM_512
-  768 -> Just ML_KEM_768
-  1024 -> Just ML_KEM_1024
-  _ -> Nothing
-
--- | ML-DSA parameter-set ids (@CKP_ML_DSA_44\/65\/87@) onto
--- backend algorithms.
-mlDsaAlg :: Int -> Maybe PqcSigAlg
-mlDsaAlg n = case n of
-  1 -> Just ML_DSA_44
-  2 -> Just ML_DSA_65
-  3 -> Just ML_DSA_87
-  _ -> Nothing
-
--- | SLH-DSA parameter-set ids (@CKP_SLH_DSA_*@) onto backend
--- algorithms.
-slhDsaAlg :: Int -> Maybe PqcSigAlg
-slhDsaAlg n = case n of
-  1 -> Just SLH_DSA_SHA2_128s
-  2 -> Just SLH_DSA_SHAKE_128s
-  3 -> Just SLH_DSA_SHA2_128f
-  4 -> Just SLH_DSA_SHAKE_128f
-  5 -> Just SLH_DSA_SHA2_192s
-  6 -> Just SLH_DSA_SHAKE_192s
-  7 -> Just SLH_DSA_SHA2_192f
-  8 -> Just SLH_DSA_SHAKE_192f
-  9 -> Just SLH_DSA_SHA2_256s
-  10 -> Just SLH_DSA_SHAKE_256s
-  11 -> Just SLH_DSA_SHA2_256f
-  12 -> Just SLH_DSA_SHAKE_256f
-  _ -> Nothing
-
--- | Planner KEM sets onto backend algorithms.
-toPqcKem :: KemAlg -> PqcKemAlg
-toPqcKem alg = case alg of
-  KemMl512 -> ML_KEM_512
-  KemMl768 -> ML_KEM_768
-  KemMl1024 -> ML_KEM_1024
-
 -- | The fixed HMAC-SHA-256 spec behind derivation and
 -- authenticated wrapping.
 hmacSpec :: MacSpec
@@ -4225,44 +3927,3 @@ hkdfExtractExpand env spec hashLen ikm salt info outLen = do
     EngineFail err -> pure (EngineFail err)
     EngineOk prk -> hkdfExpand env spec (KeyBytes prk) info outLen
 
--- | Verify-shaped answers: an authentication failure is a verdict,
--- never a malfunction; any other backend failure keeps its
--- category through 'toCryptoError' (categories survive
--- every adapter). Mismatch stays 'False'; most preserved
--- categories still interpret to 'CKR_GENERAL_ERROR', except
--- 'BackendSigLenRange', which interprets to
--- 'CKR_SIGNATURE_LEN_RANGE', and 'BackendUnsupported', which is
--- unreachable here — the mechanism was validated at plan time;
--- should it ever arrive, classifying beats collapsing.
-toVerifyBool :: EngineResult Bool -> CryptoResult
-toVerifyBool (EngineOk v) = GotValid v
-toVerifyBool (EngineFail (BackendAuthFailed _)) = GotValid False
-toVerifyBool (EngineFail err) = GotCryptoError (toCryptoError err)
-
-toVerifyUnit :: EngineResult () -> CryptoResult
-toVerifyUnit (EngineOk ()) = GotValid True
-toVerifyUnit (EngineFail (BackendAuthFailed _)) = GotValid False
-toVerifyUnit (EngineFail err) = GotCryptoError (toCryptoError err)
-
--- | Drain committed releases through the backend: every
--- 'O.ReleaseEngineResource' runs 'releaseResource', so a commit
--- that frees a multipart context cannot leak it. The fold over an
--- empty list is a no-op for the release-free commits.
-drainReleases :: CryptoBackend b => BackendEnv b -> [O.ResourceRelease] -> IO ()
-drainReleases be = mapM_ drain
-  where
-    drain (O.ReleaseEngineResource rid) = releaseResource be rid
-
--- | Adapt a crypto answer onto the 'finishEffect' contract. Verdicts
--- keep their shape ('O.EngineOkValid'); failures keep their
--- taxonomy one-to-one through 'cryptoToCore', so an
--- authentication failure arrives typed instead of collapsing onto
--- native. This is the ONLY collapse point — the unit feed
--- shape ('GotUnit') lands here as empty bytes, byte-identical to
--- the pre-change collapse.
-encodeResult :: CryptoResult -> O.EngineResult
-encodeResult (GotBytes b) = O.EngineOkBytes b
-encodeResult (GotValid v) = O.EngineOkValid v
-encodeResult (GotResource rid) = O.EngineOkResource rid
-encodeResult GotUnit = O.EngineOkBytes BS.empty
-encodeResult (GotCryptoError err) = O.EngineFail (cryptoToCore err)
