@@ -58,12 +58,12 @@ def read_constants(root):
     else:
         consts["binary"] = m.group(1)
     try:
-        sqlite = (root / "src/Haskoki/Runtime/Storage/SQLite.hs").read_text()
+        sqlite = (root / "src/Haskoki/Runtime/Storage/SQLite/Types.hs").read_text()
     except (OSError, ValueError) as exc:
-        return None, ["cannot read Storage/SQLite.hs: %s" % exc]
+        return None, ["cannot read Storage/SQLite/Types.hs: %s" % exc]
     m = re.search(r"^sqliteSchemaVersion = (\d+)$", sqlite, re.M)
     if not m:
-        errors.append("SQLite.hs lacks a one-line 'sqliteSchemaVersion = N'")
+        errors.append("SQLite/Types.hs lacks a one-line 'sqliteSchemaVersion = N'")
     else:
         consts["store"] = m.group(1)
     try:
@@ -189,7 +189,7 @@ def check_idempotent(root):
         return ["cannot read docs/compatibility.md: %s" % exc]
     with tempfile.TemporaryDirectory(prefix="compat-gate-") as tmp:
         tmp = Path(tmp)
-        for rel in ("haskoki.cabal", "src/Haskoki/Runtime/Storage/SQLite.hs",
+        for rel in ("haskoki.cabal", "src/Haskoki/Runtime/Storage/SQLite/Types.hs",
                     "src/Haskoki/Runtime/Config.hs", "docs/compatibility.md"):
             dst = tmp / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -334,8 +334,8 @@ def write_fixture(tmp, cabal=FIX_CABAL, sqlite=FIX_SQLITE, config=FIX_CONFIG,
     tmp = Path(tmp)
     tmp.mkdir(parents=True, exist_ok=True)
     (tmp / "haskoki.cabal").write_text(cabal)
-    (tmp / "src/Haskoki/Runtime/Storage").mkdir(parents=True, exist_ok=True)
-    (tmp / "src/Haskoki/Runtime/Storage/SQLite.hs").write_text(sqlite)
+    (tmp / "src/Haskoki/Runtime/Storage/SQLite").mkdir(parents=True, exist_ok=True)
+    (tmp / "src/Haskoki/Runtime/Storage/SQLite/Types.hs").write_text(sqlite)
     (tmp / "src/Haskoki/Runtime/Config.hs").write_text(config)
     (tmp / "spec").mkdir(parents=True, exist_ok=True)
     (tmp / "spec/abi-inventory.json").write_text(abi)

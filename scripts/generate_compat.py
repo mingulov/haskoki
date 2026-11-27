@@ -5,7 +5,7 @@ Reads four pinned one-line shapes textually (no Haskell lexer: the
 shapes are documented at their definitions and the gate fails closed
 when any is absent):
   - binary:        haskoki.cabal  `version: X.Y.Z.W`
-  - store schema:  sqliteSchemaVersion = N   (Storage/SQLite.hs)
+  - store schema:  sqliteSchemaVersion = N   (Storage/SQLite/Types.hs)
   - config schema: configSchemaVersion = N   (Runtime/Config.hs)
   - interfaces:    supportedInterfaces = [...] (Runtime/Config.hs)
 
@@ -31,10 +31,10 @@ def read_constants(root):
     if not m:
         raise SystemExit("generate_compat: haskoki.cabal carries no X.Y.Z.W version")
     binary = m.group(1)
-    sqlite = (root / "src/Haskoki/Runtime/Storage/SQLite.hs").read_text()
+    sqlite = (root / "src/Haskoki/Runtime/Storage/SQLite/Types.hs").read_text()
     m = re.search(r"^sqliteSchemaVersion = (\d+)$", sqlite, re.M)
     if not m:
-        raise SystemExit("generate_compat: SQLite.hs lacks 'sqliteSchemaVersion = N'")
+        raise SystemExit("generate_compat: SQLite/Types.hs lacks 'sqliteSchemaVersion = N'")
     store = m.group(1)
     config = (root / "src/Haskoki/Runtime/Config.hs").read_text()
     m = re.search(r"^configSchemaVersion = (\d+)$", config, re.M)
