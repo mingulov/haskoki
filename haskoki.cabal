@@ -271,8 +271,11 @@ library haskoki-internal
     Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Storage.SQLite.Stats
+    Haskoki.Runtime.Storage.SQLite.Conn
     Haskoki.Runtime.Storage.SQLite.Statements
+    Haskoki.Runtime.Storage.SQLite.Records
     Haskoki.Runtime.Storage.SQLite.Types
+    Haskoki.Runtime.Storage.SQLite.Txn
     Haskoki.Runtime.Trace
     Haskoki.Runtime.Usdt
   -- Private provider-only OpenSSL 4 raw bindings (not a public API),
@@ -411,8 +414,11 @@ foreign-library haskoki
     Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
     Haskoki.Runtime.Storage.SQLite.Stats
+    Haskoki.Runtime.Storage.SQLite.Conn
     Haskoki.Runtime.Storage.SQLite.Statements
+    Haskoki.Runtime.Storage.SQLite.Records
     Haskoki.Runtime.Storage.SQLite.Types
+    Haskoki.Runtime.Storage.SQLite.Txn
     Haskoki.Runtime.Trace
     Haskoki.Runtime.Usdt
   c-sources:
