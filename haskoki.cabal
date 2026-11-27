@@ -148,6 +148,8 @@ library haskoki-core
     Haskoki.Operation.KeyManagement.MechIds
     Haskoki.Operation.KeyManagement.Template
     Haskoki.Operation.KeyManagement.Types
+    Haskoki.Operation.KeyManagement.Wrap
+    Haskoki.Operation.KeyManagement.WrapComp
     Haskoki.Operation.Message
     Haskoki.Operation.Signature
     Haskoki.Operation.State
