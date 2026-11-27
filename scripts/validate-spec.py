@@ -241,9 +241,10 @@ def main():
 
     # ---- GENERATED-HEADER: generated C header + stubs ----
     # Stub counts shrink as functions gain routed implementations:
-    # 22/12 at inception, 11 after message tables routed (11292aa9),
-    # 8 after async entries routed (999c3e8f). The FILL-macro wiring
-    # counts below stay put (tables reference routed impls, not stubs).
+    # 34 at inception, 31 across the crypto slices, 11 after message
+    # tables routed (11292aa9), 8 after async entries routed
+    # (999c3e8f). The FILL-macro wiring counts below stay put
+    # (tables reference routed impls, not stubs).
     GEN_INC = PKG / "cbits" / "abi_stubs.inc"
     if GEN_INC.is_file():
         inc = GEN_INC.read_text(encoding="utf-8")

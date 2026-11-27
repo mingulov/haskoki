@@ -333,6 +333,11 @@ caseNullRecallReReports = do
       let (opsQ, requ) = retryMessageStaged MsgEncrypt opsS SlotEncrypt IntentNull
       assertEqual "null recall re-reports" CKR_BUFFER_TOO_SMALL (soCode requ)
       assertEqual "null recall keeps outer slot" [SlotEncrypt] (activeSlots opsQ)
+      -- A follow-up buffered retry must still deliver: an unstaged
+      -- slot would answer NOT_INITIALIZED, so CKR_OK proves the
+      -- staged bytes survived the re-query.
+      let (_, follow) = retryMessageStaged MsgEncrypt opsQ SlotEncrypt (IntentBuffer 64)
+      assertEqual "staged bytes survive the re-query" CKR_OK (soCode follow)
     other -> assertFailure ("expected one one-shot effect, got " ++ show other)
 
 -- ---------------------------------------------------------------------------
