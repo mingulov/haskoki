@@ -203,7 +203,7 @@ workBytes (WorkKey res pw fx) =
 
 -- | Exact payload bytes of an effect: the summed length of every
 -- 'ByteString' field of every constructor. Arms marked [H] are
--- holdable — the only effects a table can hold ('startJobChecked'
+-- holdable — the only effects a table can hold (@startJobChecked@
 -- refuses the rest); arms marked [U] are unholdable and priced
 -- defensively for totality. Exhaustive (no wildcard): a new
 -- effect fails the build via @-Werror=incomplete-patterns@

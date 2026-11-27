@@ -48,7 +48,7 @@ inspection would also be a type error; this gate is the textual
 backstop.
 
 Non-vacuity: the gate fails when either scan sees zero files,
-and gate 1 additionally requires its two known definition files
+and gate 1 additionally requires its three known definition files
 to be among the scanned set, so an empty or misrooted checkout
 cannot pass by seeing nothing.
 
