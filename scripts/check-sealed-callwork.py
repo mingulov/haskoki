@@ -11,9 +11,11 @@ their own definitions and Haddock references. Shipped sources are
 every production hs-source-dir: core, src, ffi, app, tools,
 examples, bench, client; scanned extensions are .hs, .hsc, .lhs
 and .hs-boot. Test trees (tests/, test/) may use both names
-freely and are never scanned. In the two definition files
-(core/Haskoki/CallWork.hs, src/Haskoki/Runtime/Async.hs) a line
-is excused only when it is one of:
+freely and are never scanned. In the three definition files
+(core/Haskoki/CallWork.hs, src/Haskoki/Runtime/Async.hs,
+src/Haskoki/Runtime/Async/Operations.hs) a line is excused only
+when it is one of (the Async shell holds the re-export entry;
+Operations holds the signature and column-0 definition):
   * an export-list entry:   `, mkFixtureCallWork`
   * a type signature:       `startFixtureJob :: ...`
   * a column-0 definition:  `mkFixtureCallWork sid res eff = ...`
@@ -38,7 +40,7 @@ wildcard `WorkCall _)`: it binds nothing and cannot inspect the
 triple, and the two outer-function refusal arms over key
 functions use exactly that form
 (`jobFunctionCoherent JobGenKey[Pair] (WorkCall _) = False` in
-src/Haskoki/Runtime/Async.hs). The pattern encodes this by
+src/Haskoki/Runtime/Async/Operations.hs). The pattern encodes this by
 matching a wildcard only when followed by a space
 (`WorkCall _ `), so the closed form never matches while every
 inspecting form does. Since `CallWork` is abstract, raw-pair
@@ -83,6 +85,7 @@ FIXTURE_NAMES = ("mkFixtureCallWork", "startFixtureJob")
 REQUIRED_FILES = (
     "core/Haskoki/CallWork.hs",
     "src/Haskoki/Runtime/Async.hs",
+    "src/Haskoki/Runtime/Async/Operations.hs",
 )
 
 EXPORT_RE = re.compile(r"^\s*, (mkFixtureCallWork|startFixtureJob)\s*$")
@@ -247,6 +250,9 @@ def self_test():
               "mkFixtureCallWork sid res eff = CallWork sid res eff\n")
         write(root, "src/Haskoki/Runtime/Async.hs",
               "module Haskoki.Runtime.Async\n  ( startJob\n  , startFixtureJob\n  ) where\n"
+              "-- | The fixture entrypoint ('Haskoki.Runtime.Async.startFixtureJob').\n")
+        write(root, "src/Haskoki/Runtime/Async/Operations.hs",
+              "module Haskoki.Runtime.Async.Operations\n  ( startJob\n  , startFixtureJob\n  ) where\n"
               "-- | The fixture entrypoint ('Haskoki.Runtime.Async.startFixtureJob').\n"
               "startFixtureJob :: AsyncTable -> JobRequest -> IO (Either StartDeny JobId)\n"
               "startFixtureJob table req =\n  startJobChecked table req initial False\n"

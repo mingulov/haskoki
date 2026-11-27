@@ -119,7 +119,6 @@ funnels: Standard\/Async\/Exports 'publishCommit' \/
   no-drain-on-fault shape; test-only, out of this contract.
 
 -}
-{-# LANGUAGE ForeignFunctionInterface #-}
 module Haskoki.Runtime.Async
   ( -- * Jobs and functions
     JobFunction (..)

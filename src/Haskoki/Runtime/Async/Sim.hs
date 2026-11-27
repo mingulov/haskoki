@@ -1,13 +1,7 @@
 {- | Async simulation bridge.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Runtime.Async.Sim
   ( advanceTicks
-  , applyTicks
-  , scheduleBoost
-  , effectMech
-  , funcTag
-  , mechNameOf
   ) where
 
 import Control.Concurrent.STM
@@ -41,7 +35,7 @@ advanceTicks :: AsyncTable -> Int -> [(String, Int)] -> IO (Int, Int)
 advanceTicks table base sched = atomically $ do
   jobs <- readTVar (atJobs table)
   let (counts, jobs') = Map.mapAccum step (0, 0) jobs
-  -- Forced: see the forcing invariant on 'commitStep'.
+  -- Forced: see the forcing invariant on @commitStep@.
   jobs' `seq` writeTVar (atJobs table) jobs'
   pure counts
   where

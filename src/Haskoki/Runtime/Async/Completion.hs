@@ -1,12 +1,9 @@
 {- | Async completion records and codecs.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Runtime.Async.Completion
   ( Completion (..)
   , encodeCompletion
   , decodeCompletion
-  , foldBE
-  , u32be
   ) where
 
 import Data.Bits (shiftR, (.&.))
