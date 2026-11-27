@@ -205,6 +205,7 @@ library haskoki-internal
     Haskoki.Engine.Driver
     Haskoki.Engine.Driver.Aead
     Haskoki.Engine.Driver.AuthWrap
+    Haskoki.Engine.Driver.ByteOps
     Haskoki.Engine.Driver.CbcMac
     Haskoki.Engine.Driver.Cipher
     Haskoki.Engine.Driver.Cmac
@@ -219,12 +220,19 @@ library haskoki-internal
     Haskoki.Engine.Driver.Gmac
     Haskoki.Engine.Driver.Hmac
     Haskoki.Engine.Driver.Hotp
+    Haskoki.Engine.Driver.Ike
+    Haskoki.Engine.Driver.Kdf
     Haskoki.Engine.Driver.KeyGen
     Haskoki.Engine.Driver.MlDsa
+    Haskoki.Engine.Driver.Pbe
     Haskoki.Engine.Driver.Poly1305
     Haskoki.Engine.Driver.Result
     Haskoki.Engine.Driver.Rsa
     Haskoki.Engine.Driver.SlhDsa
+    Haskoki.Engine.Driver.Sp800
+    Haskoki.Engine.Driver.Ssl3
+    Haskoki.Engine.Driver.Tls
+    Haskoki.Engine.Driver.Wrap
     Haskoki.Engine.Driver.Xcbc
     Haskoki.Engine.OpenSSL4
     Haskoki.Engine.Synthetic
@@ -336,6 +344,7 @@ foreign-library haskoki
     Haskoki.Engine.Driver
     Haskoki.Engine.Driver.Aead
     Haskoki.Engine.Driver.AuthWrap
+    Haskoki.Engine.Driver.ByteOps
     Haskoki.Engine.Driver.CbcMac
     Haskoki.Engine.Driver.Cipher
     Haskoki.Engine.Driver.Cmac
@@ -350,12 +359,19 @@ foreign-library haskoki
     Haskoki.Engine.Driver.Gmac
     Haskoki.Engine.Driver.Hmac
     Haskoki.Engine.Driver.Hotp
+    Haskoki.Engine.Driver.Ike
+    Haskoki.Engine.Driver.Kdf
     Haskoki.Engine.Driver.KeyGen
     Haskoki.Engine.Driver.MlDsa
+    Haskoki.Engine.Driver.Pbe
     Haskoki.Engine.Driver.Poly1305
     Haskoki.Engine.Driver.Result
     Haskoki.Engine.Driver.Rsa
     Haskoki.Engine.Driver.SlhDsa
+    Haskoki.Engine.Driver.Sp800
+    Haskoki.Engine.Driver.Ssl3
+    Haskoki.Engine.Driver.Tls
+    Haskoki.Engine.Driver.Wrap
     Haskoki.Engine.Driver.Xcbc
     Haskoki.Engine.OpenSSL4
     Haskoki.FFI.Async

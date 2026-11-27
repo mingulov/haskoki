@@ -188,28 +188,16 @@ module Haskoki.Engine.Driver
   ) where
 
 import qualified Data.ByteString as BS
-import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
-import Control.Monad (guard)
-import Data.Bits ((.&.), (.|.), shiftL, shiftR, testBit)
-import Data.Word (Word64, Word8)
-import Data.Maybe (isJust, isNothing)
-import qualified Data.Text as T
 
 import Haskoki.Engine.Backend
-  ( BackendError (..)
-  , CipherSpec (..)
-  , CryptoBackend (..)
-  , DigestAlg (..)
+  ( CryptoBackend (..)
   , EcSpec (..)
   , EngineResult (..)
-  , digestOutLen
   , KemSpec (..)
   , KeyGenSpec (..)
   , KeyMaterial (..)
   , MacSpec (..)
-  , OaepParams (..)
-  , RsaCipherParams (..)
   )
 import Haskoki.Engine.Driver.Aead
   ( aeadSpecFor
@@ -220,6 +208,13 @@ import Haskoki.Engine.Driver.Aead
   , runAeadMessage
   )
 import Haskoki.Engine.Driver.AuthWrap (runAuthWrap)
+import Haskoki.Engine.Driver.ByteOps
+  ( ByteOpsExec (..)
+  , byteOpsNeedsAux
+  , byteOpsParamsFor
+  , isByteOpsMech
+  , runByteOps
+  )
 import Haskoki.Engine.Driver.CbcMac
   ( cbcmacSpecFor
   , isCbcMacMech
@@ -227,8 +222,7 @@ import Haskoki.Engine.Driver.CbcMac
   , runCbcMacVerify
   )
 import Haskoki.Engine.Driver.Cipher
-  ( cipherCtor
-  , cipherSpecFor
+  ( cipherSpecFor
   , isCipherMech
   , runCipher
   )
@@ -240,14 +234,10 @@ import Haskoki.Engine.Driver.Cmac
   )
 import Haskoki.Engine.Driver.Common
   ( KeyResolver
-  , compSpec
-  , driverCtEq
-  , keyBytesOf
   , rsaDigest
   , runPubFromPriv
   , unsupported
   , withKey
-  , xorB
   )
 import Haskoki.Engine.Driver.Des3Mac
   ( des3macSpecFor
@@ -284,19 +274,40 @@ import Haskoki.Engine.Driver.Hotp
   , runHotpSign
   , runHotpVerify
   )
+import Haskoki.Engine.Driver.Ike
+  ( IkeExec (..)
+  , ikeNeedsAux
+  , ikeParamsFor
+  , isIkeMech
+  , runIke
+  )
+import Haskoki.Engine.Driver.Kdf
+  ( Pbkd2Params (..)
+  , encryptDataPartsFor
+  , hkdfExpand
+  , hkdfExtractExpand
+  , hkdfParamsFor
+  , isEncryptDataMech
+  , isKdfShaMech
+  , isKdfXofMech
+  , isPbkd2Mech
+  , kdfShaFor
+  , kdfXofFor
+  , pbkd2ParamsFor
+  , pbkdf2
+  , runEncryptData
+  , runPbkd2
+  , runShaKd
+  , runXofKd
+  )
 import Haskoki.Engine.Driver.MlDsa
   ( isMldsaMech
   , mldsaLevelOfKey
   , mldsaRefusal
   , mldsaSpecFor
   )
+import Haskoki.Engine.Driver.Pbe (runPbe, runPbkdf1)
 import Haskoki.Engine.Driver.Poly1305 (isPoly1305Mech, poly1305MacFor)
-import Haskoki.Engine.Driver.SlhDsa
-  ( isSlhdsaMech
-  , slhdsaLevelOfKey
-  , slhdsaRefusal
-  , slhdsaSpecFor
-  )
 import Haskoki.Engine.Driver.Rsa
   ( isRsaOaepMech
   , isRsaPkcs1Mech
@@ -315,6 +326,49 @@ import Haskoki.Engine.Driver.Rsa
   , runOaep
   , runPkcs1
   , runX509
+  )
+import Haskoki.Engine.Driver.SlhDsa
+  ( isSlhdsaMech
+  , slhdsaLevelOfKey
+  , slhdsaRefusal
+  , slhdsaSpecFor
+  )
+import Haskoki.Engine.Driver.Sp800
+  ( Sp800Exec (..)
+  , isSp800Mech
+  , runSp800
+  , sp800ParamsFor
+  )
+import Haskoki.Engine.Driver.Ssl3
+  ( isSsl3MacMech
+  , isSsl3Mech
+  , runSsl3
+  , runSsl3MacSign
+  , runSsl3MacVerify
+  , ssl3MacSpecFor
+  , ssl3ParamsFor
+  )
+import Haskoki.Engine.Driver.Tls
+  ( KeyMatExec (..)
+  , TlsKdfExec (..)
+  , TlsPrfParams (..)
+  , isKeyMatMech
+  , isTlsKdfMech
+  , isTlsPrfMech
+  , keyMatParamsFor
+  , runKeyMat
+  , runTlsKdf
+  , runTlsPrf
+  , tlsKdfParamsFor
+  , tlsPrfParamsFor
+  )
+import Haskoki.Engine.Driver.Wrap
+  ( isAesKwWrapMech
+  , isRsaPkcsWrapMech
+  , runEcdhCompUnwrap
+  , runEcdhCompWrap
+  , runRsaCompUnwrap
+  , runRsaCompWrap
   )
 import Haskoki.Engine.Driver.Xcbc
   ( isXcbcMech
@@ -346,69 +400,20 @@ import Haskoki.Engine.Driver.Result
   , toVerifyBool
   , toVerifyUnit
   )
-import Haskoki.Operation.Derive (hkdfDataMech, hkdfDeriveMech, maxDerivedTotal, maxXofTotal, pubPrivMech)
+import Haskoki.Operation.Derive (hkdfDataMech, hkdfDeriveMech, pubPrivMech)
 import Haskoki.Operation.Effect (CryptoEffect (..), CryptoError (..), CryptoResult (..))
-import Haskoki.Recipe.WrapComp
-  ( WrapCompDomain (..)
-  , WrapCompEcdhRecipe (..)
-  , wrapCompAesBytes
-  , wrapCompAgreePeer
-  , wrapCompDomain
-  , wrapCompEcdhRecipeFor
-  , wrapCompPubPeer
-  , wrapCompSplitBlob
-  , wrapCompTransportLen
-  , wrapCompTransportPrefix
-  )
-import Haskoki.Recipe.ByteOps
-  ( ByteOpsKind (..)
-  , ByteOpsRecipe (..)
-  , byteOpsParamsValid
-  , byteOpsRecipeFor
-  , decodeByteOpsParams
-  )
-import Haskoki.Recipe.TlsKeyMat
-  ( TlsKeyMatKind (..)
-  , TlsKeyMatRecipe (tkmKind)
-  , decodeTlsKeyMatParams
-  , maxTlsKeyMatBlock
-  , tlsKeyMatLabel
-  , tlsKeyMatParamsValid
-  , tlsKeyMatRecipeFor
-  )
-import Haskoki.Recipe.Pbe (PbeKdf (..), PbeRecipe (pbeKind), decodePbeParams, maxPbeIters, pbeDesParity, pbeIvLen, pbeKdf, pbeKeyLen, pbeNeedsParity, pbeRecipeFor)
-import Haskoki.Recipe.Ssl3
-  ( Ssl3Kind (..)
-  , Ssl3Recipe (ssl3Kind)
-  , decodeSsl3KeyMatParams
-  , decodeSsl3MasterParams
-  , maxSsl3KeyBlock
-  , ssl3ParamsValid
-  , ssl3RecipeFor
-  )
-import Haskoki.Recipe.WrapCompRsa
-  ( WrapCompRsaRecipe (..)
-  , wrapCompRsaAesBytes
-  , wrapCompRsaFrameHead
-  , wrapCompRsaModulusBytes
-  , wrapCompRsaOaep
-  , wrapCompRsaRecipeFor
-  , wrapCompRsaSplitBlob
-  , wrapCompRsaUnframeHead
-  )
+import Haskoki.Recipe.WrapComp (wrapCompEcdhRecipeFor)
+import Haskoki.Recipe.Pbe (PbeKdf (..), PbeRecipe (pbeKind), decodePbeParams, maxPbeIters, pbeIvLen, pbeKdf, pbeKeyLen, pbeNeedsParity, pbeRecipeFor)
+import Haskoki.Recipe.WrapCompRsa (wrapCompRsaRecipeFor)
 import Haskoki.Recipe.RsaX509 (x509PadBlock)
 import Haskoki.Operation.Kem (kemAlgFromName, mlKemKeyPairGenMech, mlKemMech)
 import Haskoki.Operation.KeyManagement
   ( GenArgs (..)
   , aesCbcMech
   , aesKeyGenMech
-  , aesKwMech
-  , aesKwPadMech
   , blake2b512KeyGenMech
   , chacha20KeyGenMech
   , des3KeyGenMech
-  , aesKwpMech
-  , aesKwp7Mech
   , decodeGenArgs
   , decodeWrapParams
   , dhKeyPairGenMech
@@ -423,8 +428,6 @@ import Haskoki.Operation.KeyManagement
   , slhdsaKeyPairGenMech
   , x9_42DhKeyPairGenMech
   , x9_42DhParameterGenMech
-  , rsaPkcsMech
-  , encodeKeyPair
   , genericSecretKeyGenMech
   , hotpKeyGenMech
   , rsaKeyPairGenMech
@@ -446,419 +449,11 @@ import Haskoki.Operation.KeyManagement
   , pbkd2KeygenMaxBytes
   )
 import Haskoki.Operation.State (CipherDir (..))
-import Haskoki.Recipe.Hmac (decodeMacGeneral)
-import Haskoki.Recipe.Kdf
-  ( KdfRecipe (..)
-  , decodePbkd2Params
-  , kdfCodeDigest
-  , kdfParamsValid
-  , kdfRecipeFor
-  , kdfXofStem
-  )
-import Haskoki.Recipe.EncryptData
-  ( EncryptDataRecipe (..)
-  , decodeEncryptDataParams
-  , encryptDataKeyLenValid
-  , encryptDataParamsValid
-  , encryptDataRecipeFor
-  )
-import Haskoki.Recipe.Sp800108
-  ( Sp800Mode (..)
-  , Sp800Params (..)
-  , Sp800Recipe (..)
-  , decodeSp800Params
-  , maxSp800Total
-  , sp800ParamsValid
-  , sp800RecipeFor
-  )
-import Haskoki.Recipe.Ike
-  ( IkeKind (..)
-  , IkeRecipe (..)
-  , decodeIkeParams
-  , ikeParamsValid
-  , ikeRecipeFor
-  , maxIkeOutput
-  )
-import Haskoki.Recipe.TlsKdf
-  ( TlsKdfKind (..)
-  , TlsKdfRecipe (..)
-  , decodeTlsKdfParams
-  , maxTlsKdfOutput
-  , tlsKdfParamsValid
-  , tlsKdfRecipeFor
-  )
-import Haskoki.Recipe.TlsPrf
-  ( decodeTlsPrfParams
-  , maxTlsPrfOutput
-  , tlsPrfParamsValid
-  , tlsPrfRecipeFor
-  )
+import Haskoki.Recipe.Kdf (decodePbkd2Params)
 import Haskoki.Registry (MechanismId (..))
 import Haskoki.Registry.Generated
   ( ckm_RSA_PKCS
   )
-
--- | SSL3-MAC dispatch: covered (mechanism, params) pairs to the
--- digest plus the whole-byte tag length (pinned against
--- 'Haskoki.Recipe.Ssl3' by RecipeSsl3Spec). 'Nothing' means
--- uncovered (non-SSL3-MAC mechanism) or malformed parameters.
-ssl3MacSpecFor :: MechanismId -> ByteString -> Maybe (DigestAlg, Int)
-ssl3MacSpecFor mech params = do
-  r <- ssl3RecipeFor mech
-  alg <- case ssl3Kind r of
-    Ssl3Md5Mac -> Just D_MD5
-    Ssl3Sha1Mac -> Just D_SHA1
-    _ -> Nothing
-  guard (ssl3ParamsValid r params)
-  n <- decodeMacGeneral params
-  pure (alg, n `div` 8)
-
--- | An SSL3-MAC mechanism regardless of parameter validity
--- (drives the parameter-refusal branch).
-isSsl3MacMech :: MechanismId -> Bool
-isSsl3MacMech mech = case ssl3RecipeFor mech of
-  Just r -> case ssl3Kind r of
-    Ssl3Md5Mac -> True
-    Ssl3Sha1Mac -> True
-    _ -> False
-  Nothing -> False
-
--- | Decoded PBKD2 parameters: the PRF digest, the iteration count,
--- and the salt.
-data Pbkd2Params = Pbkd2Params
-  { ppPrf :: !DigestAlg
-  , ppIters :: !Int
-  , ppSalt :: !ByteString
-  } deriving (Eq, Show)
-
--- | KDF dispatch, SHA rows: covered mechanisms to digests (pinned
--- pinned against 'Haskoki.Recipe.Kdf' by RecipeKdfSpec). 'Nothing'
--- means uncovered (non-SHA-KD mechanism, PBKD2 included).
-kdfShaFor :: MechanismId -> Maybe DigestAlg
-kdfShaFor mech = do
-  r <- kdfRecipeFor mech
-  guard (not (rkPbkd2 r))
-  stem <- rkDigestStem r
-  rsaDigest stem
-
--- | SHAKE-KD dispatch: covered XOF mechanisms to the backend
--- digest algorithm (pinned against 'kdfXofStem' by
--- RecipeKdfSpec). The output length rides the 'FxDerive' total.
-kdfXofFor :: MechanismId -> Maybe DigestAlg
-kdfXofFor mech = do
-  r <- kdfRecipeFor mech
-  stem <- kdfXofStem r
-  case stem of
-    "SHAKE_128" -> Just D_SHAKE128
-    "SHAKE_256" -> Just D_SHAKE256
-    _ -> Nothing
-
--- | KDF dispatch, PBKD2: the covered (mechanism, params) pair to
--- decoded parameters (pinned by RecipeKdfSpec). The PRF
--- stem must map to a servable digest. 'Nothing' means uncovered
--- (non-PBKD2 mechanism) or malformed parameters.
-pbkd2ParamsFor :: MechanismId -> ByteString -> Maybe Pbkd2Params
-pbkd2ParamsFor mech params = do
-  r <- kdfRecipeFor mech
-  guard (rkPbkd2 r && kdfParamsValid r params)
-  (stem, iters, salt, _) <- decodePbkd2Params params
-  alg <- rsaDigest stem
-  pure (Pbkd2Params alg iters salt)
-
--- | Encrypt-data dispatch: the covered (mechanism, base-key
--- length, canonical frame) triple to its backend cipher spec plus
--- the split IV and data (empty IV for ECB rows). The row name
--- strips to its cipher row (@CKM_AES_CBC_ENCRYPT_DATA@ onto
--- @CKM_AES_CBC@), so width selection and the Triple-DES collapse
--- reuse 'cipherCtor' (pinned by RecipeEncryptDataSpec).
-encryptDataPartsFor :: MechanismId -> Int -> ByteString -> Maybe (CipherSpec, ByteString, ByteString)
-encryptDataPartsFor mech keyLen params = do
-  r <- encryptDataRecipeFor mech
-  guard (encryptDataParamsValid r params)
-  guard (encryptDataKeyLenValid r keyLen)
-  base <- T.stripSuffix "_ENCRYPT_DATA" (erName r)
-  spec <- cipherCtor base keyLen
-  (iv, dat) <- decodeEncryptDataParams r params
-  pure (spec, iv, dat)
-
--- | An encrypt-data mechanism regardless of triple validity
--- (drives the derive parameter-refusal branch: rejected triples
--- are 'CryptoFailed', never 'CryptoUnsupported').
-isEncryptDataMech :: MechanismId -> Bool
-isEncryptDataMech mech = isJust (encryptDataRecipeFor mech)
-
--- | A fixed-width SHA key-derivation mechanism (drives the
--- parameter-refusal branch; XOF rows answer through
--- 'isKdfXofMech' instead).
-isKdfShaMech :: MechanismId -> Bool
-isKdfShaMech mech = case kdfRecipeFor mech of
-  Just r -> not (rkPbkd2 r) && isNothing (kdfXofStem r)
-  Nothing -> False
-
--- | A SHAKE XOF key-derivation mechanism (drives the
--- parameter-refusal branch).
-isKdfXofMech :: MechanismId -> Bool
-isKdfXofMech mech = case kdfRecipeFor mech of
-  Just r -> isJust (kdfXofStem r)
-  Nothing -> False
-
--- | The PBKD2 mechanism (drives the parameter-refusal branch).
-isPbkd2Mech :: MechanismId -> Bool
-isPbkd2Mech mech = case kdfRecipeFor mech of
-  Just r -> rkPbkd2 r
-  Nothing -> False
-
--- | TLS-PRF inputs: the label plus the seed (RFC 2246 §5).
-data TlsPrfParams = TlsPrfParams
-  { tpLabel :: !ByteString
-  , tpSeed :: !ByteString
-  } deriving (Eq, Show)
-
--- | TLS-PRF dispatch: the covered (mechanism, params) pair to its
--- decoded label + seed (pinned by RecipeTlsPrfSpec). 'Nothing'
--- means uncovered (non-TLS-PRF mechanism) or malformed parameters.
-tlsPrfParamsFor :: MechanismId -> ByteString -> Maybe TlsPrfParams
-tlsPrfParamsFor mech params = do
-  r <- tlsPrfRecipeFor mech
-  guard (tlsPrfParamsValid r params)
-  (lab, seed) <- decodeTlsPrfParams params
-  pure (TlsPrfParams lab seed)
-
--- | SP 800-108 execution tuple: the mode, the HMAC digest plus
--- its width, the counter and length widths, the IV, and the
--- flattened fixed input.
-data Sp800Exec = Sp800Exec
-  { seMode :: !Sp800Mode
-  , seAlg :: !DigestAlg
-  , seHashLen :: !Int
-  , seCounterBits :: !Int
-  , seLengthBits :: !Int
-  , seIv :: !ByteString
-  , seFixed :: !ByteString
-  } deriving (Eq, Show)
-
--- | SP 800-108 dispatch: the covered (mechanism, params) pair to
--- its execution tuple (pinned by RecipeSp800108Spec).
--- 'Nothing' means uncovered (non-SP-800-108 mechanism) or
--- malformed parameters.
-sp800ParamsFor :: MechanismId -> ByteString -> Maybe Sp800Exec
-sp800ParamsFor mech params = do
-  r <- sp800RecipeFor mech
-  guard (sp800ParamsValid r params)
-  p <- decodeSp800Params params
-  stem <- kdfCodeDigest (fromIntegral (spPrf p))
-  alg <- rsaDigest stem
-  hashLen <- digestOutLen alg
-  pure (Sp800Exec (rsMode r) alg hashLen
-    (spCounterBits p) (spLengthBits p) (spIv p) (spFixed p))
-
--- | An SP 800-108 mechanism (drives the parameter-refusal
--- branches).
-isSp800Mech :: MechanismId -> Bool
-isSp800Mech mech = case sp800RecipeFor mech of
-  Just _ -> True
-  Nothing -> False
-
--- | TLS-KDF execution tuple: the row kind, the legacy flag
--- (the TLS 1.0 construction when set, @P_hash@ over the
--- digest otherwise), the label, the seed, and the RFC 5705
--- context (free rows only).
-data TlsKdfExec = TlsKdfExec
-  { teKind :: !TlsKdfKind
-  , teLegacy :: !Bool
-  , teAlg :: !(Maybe DigestAlg)
-  , teLabel :: !ByteString
-  , teSeed :: !ByteString
-  , teContext :: !ByteString
-  } deriving (Eq, Show)
-
--- | TLS-KDF dispatch: the covered (mechanism, params) pair to
--- its execution tuple (pinned by RecipeTlsKdfSpec).
--- 'Nothing' means uncovered (non-TLS-KDF mechanism) or
--- malformed parameters.
-tlsKdfParamsFor :: MechanismId -> ByteString -> Maybe TlsKdfExec
-tlsKdfParamsFor mech params = do
-  r <- tlsKdfRecipeFor mech
-  guard (tlsKdfParamsValid r params)
-  (prf, lab, seed, ctx) <- decodeTlsKdfParams params
-  if prf == 0
-    then pure (TlsKdfExec (tkKind r) True Nothing lab seed ctx)
-    else do
-      stem <- kdfCodeDigest (fromIntegral prf)
-      alg <- rsaDigest stem
-      pure (TlsKdfExec (tkKind r) False (Just alg) lab seed ctx)
-
--- | A TLS-KDF mechanism (drives the parameter-refusal
--- branches).
-isTlsKdfMech :: MechanismId -> Bool
-isTlsKdfMech mech = case tlsKdfRecipeFor mech of
-  Just _ -> True
-  Nothing -> False
-
--- | One IKE execution: the kind, the PRF digest, and the
--- frame inputs (the aux keygxy material resolves separately
--- through 'fxKey2'; the runner interprets flags, key number,
--- and blobs per kind).
-data IkeExec = IkeExec
-  { ieKind :: !IkeKind
-  , ieAlg :: !DigestAlg
-  , ieFlags :: !Word8
-  , ieKeyNum :: !Word8
-  , ieBlob1 :: !ByteString
-  , ieBlob2 :: !ByteString
-  } deriving (Eq, Show)
-
--- | IKE dispatch: the covered (mechanism, params) pair to
--- its execution tuple (pinned by RecipeIkeSpec).
--- 'Nothing' means uncovered (non-IKE mechanism), malformed
--- parameters, or the reserved unmapped-PRF code (the planner
--- denies that one; the driver never sees it).
-ikeParamsFor :: MechanismId -> ByteString -> Maybe IkeExec
-ikeParamsFor mech params = do
-  r <- ikeRecipeFor mech
-  guard (ikeParamsValid r params)
-  (prf, flags, keynum, _aux, b1, b2) <- decodeIkeParams params
-  guard (prf /= 0)
-  stem <- kdfCodeDigest (fromIntegral prf)
-  alg <- rsaDigest stem
-  pure (IkeExec (ikKind r) alg flags keynum b1 b2)
-
--- | An IKE mechanism (drives the parameter-refusal
--- branches).
-isIkeMech :: MechanismId -> Bool
-isIkeMech mech = case ikeRecipeFor mech of
-  Just _ -> True
-  Nothing -> False
-
--- | The IKE rows needing an aux key: IKEv1-PRF takes the
--- keygxy input (the planner resolves it onto 'fxKey2'); the
--- extended row takes it optionally, the others never.
-ikeNeedsAux :: IkeExec -> Bool
-ikeNeedsAux ex = ieKind ex == Ike1Prf
-
--- | A byte-op mechanism (drives the parameter-refusal
--- branches).
-isByteOpsMech :: MechanismId -> Bool
-isByteOpsMech mech = case byteOpsRecipeFor mech of
-  Just _ -> True
-  Nothing -> False
-
--- | The byte-op rows needing an aux key: only
--- BASE_AND_KEY takes the second input (the planner
--- resolves it onto 'fxKey2').
-byteOpsNeedsAux :: ByteOpsExec -> Bool
-byteOpsNeedsAux ex = boeKind ex == ConcatBaseAndKey
-
--- | One decoded byte-op execution: the row kind, the second
--- handle (BASE_AND_KEY), the bit offset (EXTRACT), and the
--- string data (the three data rows).
-data ByteOpsExec = ByteOpsExec
-  { boeKind :: !ByteOpsKind
-  , boeAux :: !Word64
-  , boeOff :: !Word64
-  , boeData :: !ByteString
-  } deriving (Eq, Show)
-
--- | Byte-op dispatch: the covered (mechanism, params) pair to
--- its execution tuple (pinned by RecipeByteOpsSpec).
-byteOpsParamsFor :: MechanismId -> ByteString -> Maybe ByteOpsExec
-byteOpsParamsFor mech params = do
-  r <- byteOpsRecipeFor mech
-  guard (byteOpsParamsValid r params)
-  (aux, off, blob) <- decodeByteOpsParams params
-  pure (ByteOpsExec (boKind r) aux off blob)
-
--- | One decoded key-material execution: the row kind, the PRF
--- code, the MAC\/key\/IV byte sizes, and the two randoms.
-data KeyMatExec = KeyMatExec
-  { kmeKind :: !TlsKeyMatKind
-  , kmePrf :: !Word8
-  , kmeMac :: !Int
-  , kmeKey :: !Int
-  , kmeIv :: !Int
-  , kmeCr :: !ByteString
-  , kmeSr :: !ByteString
-  } deriving (Eq, Show)
-
--- | Key-material dispatch: the covered (mechanism, params)
--- pair to its execution tuple (pinned by
--- RecipeTlsKeyMatSpec).
-keyMatParamsFor :: MechanismId -> ByteString -> Maybe KeyMatExec
-keyMatParamsFor mech params = do
-  r <- tlsKeyMatRecipeFor mech
-  guard (tlsKeyMatParamsValid r params)
-  (prf, mac, key, iv, cr, sr) <- decodeTlsKeyMatParams params
-  pure (KeyMatExec (tkmKind r) prf mac key iv cr sr)
-
--- | A key-material mechanism (drives the parameter-refusal
--- branches).
-isKeyMatMech :: MechanismId -> Bool
-isKeyMatMech mech = case tlsKeyMatRecipeFor mech of
-  Just _ -> True
-  Nothing -> False
-
--- | One decoded SSL3-derive execution: master rows carry the
--- two randoms; the keymat row carries the MAC\/key\/IV byte
--- sizes plus the two randoms.
-data Ssl3Exec
-  = Ssl3MasterExec !ByteString !ByteString
-  | Ssl3KeyMatExec !Int !Int !Int !ByteString !ByteString
-  deriving (Eq, Show)
-
--- | SSL3-derive dispatch: the covered (mechanism, params)
--- pair to its execution tuple (pinned by RecipeSsl3Spec).
--- MAC rows never resolve here (they execute on the sign
--- path).
-ssl3ParamsFor :: MechanismId -> ByteString -> Maybe Ssl3Exec
-ssl3ParamsFor mech params = do
-  r <- ssl3RecipeFor mech
-  guard (ssl3ParamsValid r params)
-  case ssl3Kind r of
-    Ssl3Master -> uncurry Ssl3MasterExec <$> decodeSsl3MasterParams params
-    Ssl3MasterDh -> uncurry Ssl3MasterExec <$> decodeSsl3MasterParams params
-    Ssl3KeyMat -> do
-      (mac, key, iv, cr, sr) <- decodeSsl3KeyMatParams params
-      pure (Ssl3KeyMatExec mac key iv cr sr)
-    _ -> Nothing
-
--- | An SSL3-derive mechanism regardless of parameter
--- validity (drives the parameter-refusal branch).
-isSsl3Mech :: MechanismId -> Bool
-isSsl3Mech mech = case ssl3RecipeFor mech of
-  Just r -> case ssl3Kind r of
-    Ssl3Master -> True
-    Ssl3MasterDh -> True
-    Ssl3KeyMat -> True
-    _ -> False
-  Nothing -> False
-
--- | TLS-PRF secret split (RFC 2246 §5): the first
--- @ceiling(len\/2)@ bytes and the last @ceiling(len\/2)@ bytes; the
--- middle byte is shared on odd lengths.
-splitTlsSecret :: ByteString -> (ByteString, ByteString)
-splitTlsSecret secret = (BS.take half secret, BS.drop (len - half) secret)
-  where
-    len = BS.length secret
-    half = (len + 1) `div` 2
-
--- | The TLS-PRF mechanism (drives the parameter-refusal branch).
-isTlsPrfMech :: MechanismId -> Bool
-isTlsPrfMech mech = case tlsPrfRecipeFor mech of
-  Just _ -> True
-  Nothing -> False
-
--- | The raw RSA v1.5 row: the only v1.5 mechanism that wraps
--- (the digest rows are signature-only).
-isRsaPkcsWrapMech :: MechanismId -> Bool
-isRsaPkcsWrapMech mech = mech == rsaPkcsMech
-
--- | The AES key-wrap rows (KW plus the two KWP names, plus
--- KW-PKCS7 whose planner pads first): the planner frames the
--- payload (raw, or PKCS#7-padded for PKCS7) and 'runCipher'
--- executes the wrap backend spec selected by 'cipherCtor'.
-isAesKwWrapMech :: MechanismId -> Bool
-isAesKwWrapMech mech =
-  mech == aesKwMech || mech == aesKwPadMech || mech == aesKwpMech || mech == aesKwp7Mech
 
 -- ---------------------------------------------------------------------------
 -- runEffect workers (lifted to top level, 0.6.3 prep)
@@ -869,818 +464,6 @@ isAesKwWrapMech mech =
 -- re-indentation and @env@ threading between workers. The next step
 -- splits them per family.
 
--- | ECDH-composition wrap: ephemeral transport keygen on
--- the wrapping (recipient PUBLIC) key's domain, ECDH
--- agreement of the transport private half against the
--- wrapping public half, the FIRST agreement bytes as the AES
--- KEK (NOT the derive truncation, which drops leading bytes),
--- KWP seal of the target, blob = transport-pub || kwp-blob.
--- Served primitives only (generateKey, ecdhDerive, the KWP
--- cipher entry); the ephemeral key never persists. Opaque
--- doubles transport on a fixed P-256 request (synthetic pairs
--- are curve-independent opaque halves, so the row's curve
--- family is immaterial there); real keys always scan.
-runEcdhCompWrap :: CryptoBackend b => BackendEnv b -> WrapCompEcdhRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runEcdhCompWrap env r wrapKey params target = case keyBytesOf wrapKey of
-  Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-    "composition wrapping key has no bytes"))
-  Just wrapB -> case wrapCompAesBytes params of
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: malformed wrap-composition parameters"))
-    Just aesBytes ->
-      let dom = wrapCompDomain wrapB
-      in case wrapCompPubPeer dom wrapB of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: wrapping public peer rejected"))
-        Just recipPub -> do
-          g <- generateKey env (transportGen dom)
-          case g of
-            EngineFail err -> pure (GotCryptoError (toCryptoError err))
-            EngineOk (KeyDer tpriv, Just (KeyDer tpub)) ->
-              case ( wrapCompTransportPrefix r dom tpub
-                   , wrapCompTransportLen r dom ) of
-                (Just prefix, Just preLen)
-                  | BS.length prefix == preLen -> do
-                      s <- ecdhDerive env (compSpec r) (KeyDer tpriv) (KeyDer recipPub)
-                      case s of
-                        EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                        EngineOk secret
-                          | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
-                              "driver: agreement secret shorter than the KEK"))
-                          | otherwise -> do
-                              sealed <- runCipher env DirEncrypt aesKwpMech
-                                (KeyBytes (BS.take aesBytes secret)) BS.empty target
-                              case sealed of
-                                GotBytes ct -> pure (GotBytes (prefix <> ct))
-                                other -> pure other
-                _ -> pure (GotCryptoError (CryptoFailed
-                  "driver: transport framing failed"))
-            _ -> pure (GotCryptoError (CryptoFailed
-              "driver: transport keygen shape rejected"))
-  where
-    transportGen DomainOpaque = GenEC (EcSpec "P-256" "DER")
-    transportGen (DomainWeierstrass name _) =
-      GenEC (EcSpec (T.unpack name) "DER")
-    transportGen (DomainMontgomery name _) =
-      GenXDHKeypair (BC8.pack (T.unpack name))
--- | ECDH-composition unwrap: split the transport prefix,
--- re-derive the KEK against it, KWP-open the tail. KWP-open
--- failures propagate as authentication faults (fail closed,
--- never wrong plaintext).
-runEcdhCompUnwrap :: CryptoBackend b => BackendEnv b -> WrapCompEcdhRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runEcdhCompUnwrap env r unwrapKey params blob = case keyBytesOf unwrapKey of
-  Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-    "composition unwrapping key has no bytes"))
-  Just wrapB -> case wrapCompAesBytes params of
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: malformed wrap-composition parameters"))
-    Just aesBytes ->
-      let dom = wrapCompDomain wrapB
-      in case wrapCompSplitBlob r dom blob of
-        Nothing -> pure (GotCryptoError (CryptoFailed
-          "driver: composition blob framing rejected"))
-        Just (prefix, kwpBlob) ->
-          case wrapCompAgreePeer r dom prefix of
-            Nothing -> pure (GotCryptoError (CryptoFailed
-              "driver: composition transport peer rejected"))
-            Just peer -> do
-              s <- ecdhDerive env (compSpec r) unwrapKey (KeyDer peer)
-              case s of
-                EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                EngineOk secret
-                  | BS.length secret < aesBytes -> pure (GotCryptoError (CryptoFailed
-                      "driver: agreement secret shorter than the KEK"))
-                  | otherwise ->
-                      runCipher env DirDecrypt aesKwpMech
-                        (KeyBytes (BS.take aesBytes secret)) BS.empty kwpBlob
--- | RSA-composition wrap: mint a random temp KEK at the
--- requested strength, OAEP-seal it under the recipient
--- PUBLIC key, KWP-seal the target under the KEK, answer the
--- modulus-wide OAEP head plus the KWP tail. Served
--- primitives only (generateKey, pkeyEncrypt, the KWP cipher
--- entry); the KEK never persists. Tag-sized synthetic seals
--- frame modulus-wide through the recipe (exact-k real seals
--- pass through).
-runRsaCompWrap :: CryptoBackend b => BackendEnv b -> WrapCompRsaRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runRsaCompWrap env _ wrapKey params target = case keyBytesOf wrapKey of
-  Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-    "composition wrapping key has no bytes"))
-  Just wrapB ->
-    case (wrapCompRsaModulusBytes wrapB, wrapCompRsaAesBytes params, wrapCompRsaOaep params) of
-      (Just k, Just aesBytes, Just (d, m, label)) -> case (rsaDigest d, rsaDigest m) of
-        (Just dh, Just mh) -> do
-          g <- generateKey env (GenSym "AES" aesBytes)
-          case g of
-            EngineOk (KeyBytes kek, _)
-              | BS.length kek == aesBytes -> do
-                  s <- pkeyEncrypt env (RsaOaep (OaepParams dh mh label)) wrapKey kek
-                  case s of
-                    EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                    EngineOk raw -> case wrapCompRsaFrameHead k (aesBytes + 16) raw of
-                      Nothing -> pure (GotCryptoError (CryptoFailed
-                        "driver: OAEP head escapes the modulus width"))
-                      Just framed -> do
-                        sealed <- runCipher env DirEncrypt aesKwpMech
-                          (KeyBytes kek) BS.empty target
-                        case sealed of
-                          GotBytes ct -> pure (GotBytes (framed <> ct))
-                          other -> pure other
-            EngineOk _ -> pure (GotCryptoError (CryptoFailed
-              "driver: temp KEK keygen shape rejected"))
-            EngineFail err -> pure (GotCryptoError (toCryptoError err))
-        _ -> pure (GotCryptoError (CryptoFailed
-          "driver: OAEP digest stems rejected"))
-      _ -> pure (GotCryptoError (CryptoFailed
-        "driver: malformed wrap-composition parameters"))
--- | RSA-composition unwrap: split the modulus-wide head,
--- OAEP-open the KEK with the PRIVATE key (length-tripwired),
--- KWP-open the tail. Open failures propagate as
--- authentication faults (fail closed, never wrong
--- plaintext).
-runRsaCompUnwrap :: CryptoBackend b => BackendEnv b -> WrapCompRsaRecipe -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runRsaCompUnwrap env _ unwrapKey params blob = case keyBytesOf unwrapKey of
-  Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-    "composition unwrapping key has no bytes"))
-  Just wrapB ->
-    case (wrapCompRsaModulusBytes wrapB, wrapCompRsaAesBytes params, wrapCompRsaOaep params) of
-      (Just k, Just aesBytes, Just (d, m, label)) ->
-        case wrapCompRsaSplitBlob k blob of
-          Nothing -> pure (GotCryptoError (CryptoFailed
-            "driver: composition blob framing rejected"))
-          Just (framed, kwpBlob) -> case (rsaDigest d, rsaDigest m) of
-            (Just dh, Just mh) -> do
-              let inner = wrapCompRsaUnframeHead k (aesBytes + 16) framed
-              o <- pkeyDecrypt env (RsaOaep (OaepParams dh mh label)) unwrapKey inner
-              case o of
-                EngineFail err -> pure (GotCryptoError (toCryptoError err))
-                EngineOk kek
-                  | BS.length kek == aesBytes ->
-                      runCipher env DirDecrypt aesKwpMech
-                        (KeyBytes kek) BS.empty kwpBlob
-                  | otherwise -> pure (GotCryptoError (CryptoFailed
-                      "driver: opened KEK escapes the requested strength"))
-            _ -> pure (GotCryptoError (CryptoFailed
-              "driver: OAEP digest stems rejected"))
-      _ -> pure (GotCryptoError (CryptoFailed
-        "driver: malformed wrap-composition parameters"))
--- | SHA key-derivation effects: digest the base value,
--- truncate to the planned length (capped by the digest width —
--- the planner caps honestly, so over-width fires only for
--- hand-built effects).
-runShaKd :: CryptoBackend b => BackendEnv b -> DigestAlg -> KeyMaterial -> Int -> IO CryptoResult
-runShaKd env alg key outLen = case key of
-  KeyBytes kb -> case digestOutLen alg of
-    Just w
-      | outLen >= 1 && outLen <= w -> do
-          r <- digestOneShot env alg kb
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk d -> GotBytes (BS.take outLen d)
-    _ -> pure (GotCryptoError (CryptoFailed
-      "driver: derive length out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
--- | SHAKE XOF key-derivation effects: XOF output at the planned
--- length (capped by 'maxXofTotal' — the planner caps honestly,
--- so over-ceiling fires only for hand-built effects).
-runXofKd :: CryptoBackend b => BackendEnv b -> DigestAlg -> KeyMaterial -> Int -> IO CryptoResult
-runXofKd env alg key outLen = case key of
-  KeyBytes kb
-    | outLen >= 1 && outLen <= maxXofTotal -> do
-        r <- digestXof env alg kb outLen
-        pure $ case r of
-          EngineFail err -> GotCryptoError (toCryptoError err)
-          EngineOk d -> GotBytes d
-    | otherwise -> pure (GotCryptoError (CryptoFailed
-        "driver: XOF derive length out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
--- | Encrypt-data derive: single-shot cipher encryption of the
--- framed data under the base key, truncated to the planned
--- length (the planner caps at the data width; an out-of-range
--- request fails closed here too). Off-geometry triples are
--- 'CryptoFailed'; a non-bytes key is 'CryptoBadKey'.
-runEncryptData :: CryptoBackend b => BackendEnv b -> MechanismId -> KeyMaterial -> ByteString -> Int -> IO CryptoResult
-runEncryptData env mech key params outLen = case key of
-  KeyBytes kb -> case encryptDataPartsFor mech (BS.length kb) params of
-    Just (spec, iv, dat)
-      | outLen >= 1 && outLen <= BS.length dat -> do
-          r <- cipherEncrypt env spec key iv dat
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk d -> GotBytes (BS.take outLen d)
-      | otherwise -> pure (GotCryptoError (CryptoFailed
-          "driver: derive length out of range"))
-    Nothing -> pure (GotCryptoError (CryptoFailed
-      "driver: encrypt-data (mechanism, key length, params) rejected by the recipe"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "encrypt-data base key is not byte material"))
--- | PBKDF2 effects: the RFC 8018 iteration over the HMAC PRF,
--- truncated to the planned length (capped by the shared
--- ceiling).
-runPbkd2 :: CryptoBackend b => BackendEnv b -> Pbkd2Params -> KeyMaterial -> Int -> IO CryptoResult
-runPbkd2 env (Pbkd2Params prf iters salt) key outLen = case key of
-  KeyBytes _
-    | outLen >= 1 && outLen <= maxDerivedTotal -> do
-        r <- pbkdf2 env prf iters salt key outLen
-        pure $ case r of
-          EngineFail err -> GotCryptoError (toCryptoError err)
-          EngineOk dk -> GotBytes (BS.take outLen dk)
-    | otherwise -> pure (GotCryptoError (CryptoFailed
-        "driver: derive length out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
--- | PBKDF2 proper: T_i = F(password, salt, iters, i) with the
--- HMAC PRF, concatenated across ceil(outLen\/hLen) blocks.
-pbkdf2 :: CryptoBackend b => BackendEnv b -> DigestAlg -> Int -> ByteString -> KeyMaterial -> Int -> IO (EngineResult ByteString)
-pbkdf2 env prf iters salt pwd outLen = case digestOutLen prf of
-  Nothing -> pure (EngineFail (BackendBadParam "pbkdf2"
-    "PBKDF2 needs a fixed-width PRF"))
-  Just h -> do
-    let n = (outLen + h - 1) `div` h
-    go n 1 []
-  where
-    go 0 _ acc = pure (EngineOk (BS.concat (reverse acc)))
-    go k i acc = do
-      b <- fBlock i
-      case b of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk t -> go (k - 1) (i + 1) (t : acc)
-    fBlock i = do
-      u1 <- prfOf (salt <> word32BE i)
-      case u1 of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk u -> mix (iters - 1) u u
-    mix 0 acc _ = pure (EngineOk acc)
-    mix k acc prev = do
-      u <- prfOf prev
-      case u of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk u' -> mix (k - 1) (acc `xorB` u') u'
-    prfOf msg = macSign env (MacHMAC prf Nothing) pwd msg
--- | PBE keygen effects: the §6.38 PKCS#12 construction over
--- SHA-1 (u = 20, v = 64): ID 1 derives the key
--- (parity-adjusted for the DES rows only), ID 2 the IV.
--- Digests run through the provider; the B-feedback
--- addition is pure byte arithmetic. IV rows answer the
--- framed key\/IV pair; no-IV rows (RC4) answer the lone
--- key.
-runPbe :: CryptoBackend b => BackendEnv b -> Word64 -> ByteString -> ByteString -> Int -> Bool -> Int -> IO CryptoResult
-runPbe env iters pw salt keyLen parity ivLen = do
-  rK <- pbeDChain 1 keyLen
-  if ivLen > 0
-    then do
-      rV <- pbeDChain 2 ivLen
-      pure $ case (rK, rV) of
-        (EngineOk k, EngineOk v) ->
-          GotBytes (encodeKeyPair (finish k) (Just v))
-        (EngineFail err, _) -> GotCryptoError (toCryptoError err)
-        (_, EngineFail err) -> GotCryptoError (toCryptoError err)
-    else pure $ case rK of
-      EngineOk k -> toKeyPair (EngineOk (KeyBytes (finish k), Nothing))
-      EngineFail err -> GotCryptoError (toCryptoError err)
-  where
-    finish = if parity then pbeDesParity else id
-    pbeDChain :: Word8 -> Int -> IO (EngineResult ByteString)
-    pbeDChain ident n = loop n (expand salt <> expand pw) []
-      where
-        d = BS.replicate 64 ident
-        expand s
-          | BS.null s = BS.empty
-          | otherwise =
-              let target = 64 * ((BS.length s + 63) `div` 64)
-                  copies = target `div` BS.length s + 1
-              in BS.take target (BS.concat (replicate copies s))
-        loop remaining i acc
-          | remaining <= 0 =
-              pure (EngineOk (BS.take n (BS.concat (reverse acc))))
-          | otherwise = do
-              r <- hashTimes (fromIntegral iters) (d <> i)
-              case r of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk a -> loop (remaining - 20) (feedback a i) (a : acc)
-        feedback a i = BS.concat (map (addBlock bInt) (chunks i))
-          where
-            b = BS.take 64 (BS.concat (replicate 4 a))
-            bInt = beInt b
-            chunks x
-              | BS.null x = []
-              | otherwise = let (h, t) = BS.splitAt 64 x in h : chunks t
-            addBlock bi blk =
-              beBytes 64 ((beInt blk + bi + 1) `mod` (2 ^ (512 :: Int)))
-        hashTimes :: Int -> ByteString -> IO (EngineResult ByteString)
-        hashTimes 0 msg = pure (EngineOk msg)
-        hashTimes k msg = do
-          r <- digestOneShot env D_SHA1 msg
-          case r of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk dig -> hashTimes (k - 1) dig
-        beInt :: ByteString -> Integer
-        beInt = BS.foldl' (\a w -> a * 256 + fromIntegral w) 0
-        beBytes :: Int -> Integer -> ByteString
-        beBytes len v =
-          BS.pack [fromIntegral ((v `div` (256 ^ i)) `mod` 256)
-                  | i <- [len - 1, len - 2 .. 0]]
--- | MD5 D-chain: @D1 = MD5^c(P||S)@ (the provider-PBKDF1
--- root, byte-exact), @D{i+1} = MD5^c(Di||P||S)@ past the
--- 16-byte PBKDF1 cap; key = stream[0:keyLen], IV =
--- stream[keyLen:keyLen+8]. Digests run through the
--- provider. The answer frames the key\/IV pair.
-runPbkdf1 :: CryptoBackend b => BackendEnv b -> Word64 -> ByteString -> ByteString -> Int -> Bool -> IO CryptoResult
-runPbkdf1 env iters pw salt keyLen parity = do
-  r <- chain (keyLen + 8) BS.empty []
-  pure $ case r of
-    EngineFail err -> GotCryptoError (toCryptoError err)
-    EngineOk stream ->
-      let (k, v) = BS.splitAt keyLen (BS.take (keyLen + 8) stream)
-      in GotBytes (encodeKeyPair (finish k) (Just v))
-  where
-    finish = if parity then pbeDesParity else id
-    chain :: Int -> ByteString -> [ByteString] -> IO (EngineResult ByteString)
-    chain remaining prev acc
-      | remaining <= 0 = pure (EngineOk (BS.concat (reverse acc)))
-      | otherwise = do
-          r <- hashTimes (fromIntegral iters) (prev <> pw <> salt)
-          case r of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk d -> chain (remaining - 16) d (d : acc)
-    hashTimes :: Int -> ByteString -> IO (EngineResult ByteString)
-    hashTimes 0 msg = pure (EngineOk msg)
-    hashTimes k msg = do
-      r <- digestOneShot env D_MD5 msg
-      case r of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk d -> hashTimes (k - 1) d
--- | SP 800-108 effects: the mode expansion over the HMAC
--- route, truncated to the planned length (capped by
--- 'maxSp800Total' with the L-fit check — the planner caps
--- honestly, so off-range fires only for hand-built
--- effects). A non-bytes key is 'CryptoBadKey'.
-runSp800 :: CryptoBackend b => BackendEnv b -> Sp800Exec -> KeyMaterial -> Int -> IO CryptoResult
-runSp800 env ex key outLen = case key of
-  KeyBytes kb
-    | outLen >= 1 && outLen <= maxSp800Total
-    , toInteger outLen * 8 < 2 ^ seLengthBits ex
-    , seMode ex /= Sp800Counter
-      || toInteger ((outLen + seHashLen ex - 1) `div` seHashLen ex)
-         <= 2 ^ seCounterBits ex - 1 -> do
-        r <- sp800Expand env ex kb outLen
-        pure $ case r of
-          EngineFail err -> GotCryptoError (toCryptoError err)
-          EngineOk d -> GotBytes (BS.take outLen d)
-    | otherwise -> pure (GotCryptoError (CryptoFailed
-        "driver: SP800-108 length out of range or widths do not fit"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
--- | SP 800-108 expansion (NIST SP 800-108 §5.1\/5.2\/5.3)
--- over the HMAC route: counter @K(i) = PRF(KI, [i]_r ||
--- fixed || [L]_l)@, feedback @K(i) = PRF(KI, K(i-1) ||
--- fixed || [L]_l)@ with @K(0) = IV@, double-pipeline @A(i)
--- = PRF(KI, A(i-1))@, @K(i) = PRF(KI, A(i) || fixed ||
--- [L]_l)@ with @A(0) = fixed || [L]_l@. L is the derived
--- bit-length by construction; counter mode refuses past
--- @2^r - 1@ iterations (never wraps).
-sp800Expand :: CryptoBackend b => BackendEnv b -> Sp800Exec -> ByteString -> Int -> IO (EngineResult ByteString)
-sp800Expand env ex kb outLen
-  | seMode ex == Sp800Counter
-  , toInteger n > 2 ^ seCounterBits ex - 1 = pure (EngineFail (BackendBadParam "sp800Expand"
-      "iteration count exceeds the counter width"))
-  | otherwise = case seMode ex of
-      Sp800Counter -> goCounter 1 []
-      Sp800Feedback -> goFeedback n (seIv ex) []
-      Sp800DoublePipeline -> goPipeline n suffix []
-  where
-    spec = MacHMAC (seAlg ex) Nothing
-    key = KeyBytes kb
-    h = seHashLen ex
-    n = (outLen + h - 1) `div` h
-    suffix = seFixed ex <> encodeW (seLengthBits ex `div` 8) (outLen * 8)
-    rBytes = seCounterBits ex `div` 8
-    encodeW w v = BS.pack [fromIntegral ((v `div` 256 ^ i) `mod` 256) | i <- [w - 1, w - 2 .. 0]]
-    goCounter i acc
-      | i > n = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-      | otherwise = do
-          t <- macSign env spec key (encodeW rBytes i <> suffix)
-          case t of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk blk -> goCounter (i + 1) (blk : acc)
-    goFeedback 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-    goFeedback k prev acc = do
-      t <- macSign env spec key (prev <> suffix)
-      case t of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk blk -> goFeedback (k - 1) blk (blk : acc)
-    goPipeline 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-    goPipeline k aPrev acc = do
-      aNext <- macSign env spec key aPrev
-      case aNext of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk a -> do
-          p <- macSign env spec key (a <> suffix)
-          case p of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk blk -> goPipeline (k - 1) a (blk : acc)
--- | TLS-PRF effects: the RFC 2246 expansion over the backend
--- HMAC-MD5\/SHA-1 routes. Off-range lengths are 'CryptoFailed';
--- a non-bytes key is 'CryptoBadKey'.
-runTlsPrf :: CryptoBackend b => BackendEnv b -> TlsPrfParams -> KeyMaterial -> Int -> IO CryptoResult
-runTlsPrf env (TlsPrfParams lab seed) key outLen = case key of
-  KeyBytes kb
-    | outLen >= 1 && outLen <= maxTlsPrfOutput -> do
-        r <- tlsPrfExpand env kb (lab <> seed) outLen
-        pure $ case r of
-          EngineFail err -> GotCryptoError (toCryptoError err)
-          EngineOk ok -> GotBytes (BS.take outLen ok)
-    | otherwise -> pure (GotCryptoError (CryptoFailed
-        "driver: derive length out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
--- | TLS-KDF effects: the legacy RFC 2246 expansion or
--- @P_hash@ over the selected digest, with the RFC 5705
--- context suffix (2-byte big-endian length plus context)
--- when present. Off-range lengths are 'CryptoFailed'; a
--- non-bytes key is 'CryptoBadKey'.
-runTlsKdf :: CryptoBackend b => BackendEnv b -> TlsKdfExec -> KeyMaterial -> Int -> IO CryptoResult
-runTlsKdf env ex key outLen = case key of
-  KeyBytes kb
-    | outLen >= 1 && outLen <= maxTlsKdfOutput -> do
-        let seedFull = teLabel ex <> teSeed ex <> ctxSuffix (teContext ex)
-        r <- case (teLegacy ex, teAlg ex) of
-          (True, _) -> tlsPrfExpand env kb seedFull outLen
-          (False, Just alg) -> pHash env alg (KeyBytes kb) seedFull outLen
-          (False, Nothing) -> pure (EngineFail (BackendBadParam "runTlsKdf"
-            "TLS-KDF hash PRF without a digest"))
-        pure $ case r of
-          EngineFail err -> GotCryptoError (toCryptoError err)
-          EngineOk ok -> GotBytes (BS.take outLen ok)
-    | otherwise -> pure (GotCryptoError (CryptoFailed
-        "driver: derive length out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
--- | Key-material effects: the TLS PRF ("key expansion"
--- over server ++ client randoms, RFC 2246 §6.3) expanded to
--- the planned block length — legacy for TLS 1.0, P_hash
--- over the selected digest for TLS 1.2. The planner sizes
--- the block (KEY_SAFE excludes IVs); the finisher splits it
--- into keys + IVs. Off-range lengths are 'CryptoFailed'; a
--- non-bytes key is 'CryptoBadKey'.
-runKeyMat :: CryptoBackend b => BackendEnv b -> KeyMatExec -> KeyMaterial -> Int -> IO CryptoResult
-runKeyMat env ex key outLen = case key of
-  KeyBytes kb
-    | outLen >= 1 && outLen <= maxTlsKeyMatBlock -> do
-        let seedFull = tlsKeyMatLabel <> kmeSr ex <> kmeCr ex
-        r <- if kmePrf ex == 0
-          then tlsPrfExpand env kb seedFull outLen
-          else case kdfCodeDigest (fromIntegral (kmePrf ex)) >>= rsaDigest of
-            Just alg -> pHash env alg (KeyBytes kb) seedFull outLen
-            Nothing -> pure (EngineFail (BackendBadParam "runKeyMat"
-              "key-material hash PRF without a digest"))
-        pure $ case r of
-          EngineFail err -> GotCryptoError (toCryptoError err)
-          EngineOk ok -> GotBytes (BS.take outLen ok)
-    | otherwise -> pure (GotCryptoError (CryptoFailed
-        "driver: derive length out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
--- | SSL3 derive effects: the RFC 6101 constructions over
--- provider MD5\/SHA-1. Master rows emit the fixed 48-byte
--- §6.1 secret; the keymat row emits the §6.2.2 block
--- (pad bytes @A@..@0xFF@: past round 191 the
--- construction is undefined, so over-bound blocks fail
--- typed even when called past the planner).
-runSsl3 :: CryptoBackend b => BackendEnv b -> Ssl3Exec -> KeyMaterial -> Int -> IO CryptoResult
-runSsl3 env ex key outLen = case key of
-  KeyBytes kb
-    | outLen >= 1 && outLen <= maxSsl3KeyBlock -> case ex of
-        Ssl3MasterExec cr sr -> do
-          r <- ssl3Master env kb cr sr
-          pure $ case r of
-            EngineFail err -> GotCryptoError (toCryptoError err)
-            EngineOk ok -> GotBytes (BS.take outLen ok)
-        Ssl3KeyMatExec mac k iv cr sr ->
-          let total = 2 * mac + 2 * k + 2 * iv
-          in if total < 1 || total > maxSsl3KeyBlock
-            then pure (GotCryptoError (CryptoFailed
-              "driver: SSL3 key block past the 191-round construction bound"))
-            else do
-              r <- ssl3Block env kb cr sr total
-              pure $ case r of
-                EngineFail err -> GotCryptoError (toCryptoError err)
-                EngineOk ok -> GotBytes (BS.take outLen ok)
-    | otherwise -> pure (GotCryptoError (CryptoFailed
-        "driver: derive length out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
--- | RFC 6101 §6.1: @MD5(secret + SHA1(pad + secret + CR
--- + SR))@ over pads @A@, @BB@, @CCC@.
-ssl3Master :: CryptoBackend b => BackendEnv b -> ByteString -> ByteString -> ByteString -> IO (EngineResult ByteString)
-ssl3Master env secret cr sr = go pads []
-  where
-    pads = [BS.singleton 65, BS.pack [66, 66], BS.pack [67, 67, 67]]
-    go [] acc = pure (EngineOk (BS.concat (reverse acc)))
-    go (pad : rest) acc = do
-      rSha <- digestOneShot env D_SHA1 (pad <> secret <> cr <> sr)
-      case rSha of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk sha -> do
-          rMd5 <- digestOneShot env D_MD5 (secret <> sha)
-          case rMd5 of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk d -> go rest (d : acc)
--- | RFC 6101 §6.2.2: @MD5(secret + SHA1(pad + secret + SR
--- + CR))@ iterated, pad @i@ is byte @(0x41 + i - 1)@
--- repeated @i@ times (note server random first).
-ssl3Block :: CryptoBackend b => BackendEnv b -> ByteString -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
-ssl3Block env secret cr sr total = go 1 []
-  where
-    go i acc
-      | length acc * 16 >= total = pure (EngineOk (BS.take total (BS.concat (reverse acc))))
-      | i > 191 = pure (EngineFail (BackendBadParam "ssl3Block"
-          "SSL3 key block past the 191-round construction bound"))
-      | otherwise = do
-          let pad = BS.replicate i (65 + fromIntegral i - 1)
-          rSha <- digestOneShot env D_SHA1 (pad <> secret <> sr <> cr)
-          case rSha of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk sha -> do
-              rMd5 <- digestOneShot env D_MD5 (secret <> sha)
-              case rMd5 of
-                EngineFail err -> pure (EngineFail err)
-                EngineOk d -> go (i + 1) (d : acc)
--- | SSL3 MAC sign effects: @H(secret + pad2 + H(secret +
--- pad1 + data))@ truncated to the requested whole-byte
--- length (pads 48 bytes MD5, 40 bytes SHA-1).
-runSsl3MacSign :: CryptoBackend b => BackendEnv b -> DigestAlg -> Int -> KeyMaterial -> ByteString -> IO CryptoResult
-runSsl3MacSign env alg n key input = case key of
-  KeyBytes kb -> do
-    r <- ssl3Mac env alg kb input
-    pure $ case r of
-      EngineFail err -> GotCryptoError (toCryptoError err)
-      EngineOk full -> GotBytes (BS.take n full)
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "SSL3 MAC needs raw symmetric key bytes"))
--- | SSL3 MAC verify effects: recompute, truncate,
--- constant-time compare. A mismatch is the 'False'
--- verdict, never a malfunction.
-runSsl3MacVerify :: CryptoBackend b => BackendEnv b -> DigestAlg -> Int -> KeyMaterial -> ByteString -> ByteString -> IO CryptoResult
-runSsl3MacVerify env alg n key input tag = case key of
-  KeyBytes kb -> do
-    r <- ssl3Mac env alg kb input
-    pure $ case r of
-      EngineFail err -> GotCryptoError (toCryptoError err)
-      EngineOk full
-        | driverCtEq (BS.take n full) tag -> GotValid True
-        | otherwise -> GotValid False
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "SSL3 MAC needs raw symmetric key bytes"))
--- | The RFC 6101 MAC core over the resolved digest.
-ssl3Mac :: CryptoBackend b => BackendEnv b -> DigestAlg -> ByteString -> ByteString -> IO (EngineResult ByteString)
-ssl3Mac env alg secret input = case alg of
-  D_MD5 -> macWith 48
-  D_SHA1 -> macWith 40
-  _ -> pure (EngineFail (BackendBadParam "ssl3Mac"
-    "SSL3 MAC needs MD5 or SHA-1"))
-  where
-    macWith padLen = do
-      let pad1 = BS.replicate padLen 0x36
-          pad2 = BS.replicate padLen 0x5c
-      rInner <- digestOneShot env alg (secret <> pad1 <> input)
-      case rInner of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk inner -> digestOneShot env alg (secret <> pad2 <> inner)
--- | RFC 5705 context suffix: empty without context, else the
--- 2-byte big-endian length plus the context.
-ctxSuffix :: ByteString -> ByteString
-ctxSuffix ctx
-  | BS.null ctx = BS.empty
-  | otherwise = BS.pack [fromIntegral (n `div` 256), fromIntegral (n `mod` 256)] <> ctx
-  where n = BS.length ctx
--- | TLS 1.0\/1.1 PRF: P_MD5 over the first secret half XOR
--- P_SHA-1 over the second (RFC 2246 §5; the halves share the
--- middle byte on odd lengths).
-tlsPrfExpand :: CryptoBackend b => BackendEnv b -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
-tlsPrfExpand env secret seedBytes outLen = do
-  m <- pHash env D_MD5 (KeyBytes s1) seedBytes outLen
-  case m of
-    EngineFail err -> pure (EngineFail err)
-    EngineOk mOut -> do
-      s <- pHash env D_SHA1 (KeyBytes s2) seedBytes outLen
-      pure $ case s of
-        EngineFail err -> EngineFail err
-        EngineOk sOut -> EngineOk (BS.take outLen mOut `xorB` BS.take outLen sOut)
-  where
-    (s1, s2) = splitTlsSecret secret
--- | P_hash: A(0) = seed, A(i) = HMAC(secret, A(i-1)),
--- P(i) = HMAC(secret, A(i) ++ seed), concatenated.
-pHash :: CryptoBackend b => BackendEnv b -> DigestAlg -> KeyMaterial -> ByteString -> Int -> IO (EngineResult ByteString)
-pHash env alg secret seedBytes outLen = case digestOutLen alg of
-  Nothing -> pure (EngineFail (BackendBadParam "pHash"
-    "TLS-PRF needs a fixed-width HMAC"))
-  Just h -> do
-    let n = (outLen + h - 1) `div` h
-    go n seedBytes []
-  where
-    go 0 _ acc = pure (EngineOk (BS.concat (reverse acc)))
-    go k aPrev acc = do
-      aNext <- macSign env (MacHMAC alg Nothing) secret aPrev
-      case aNext of
-        EngineFail err -> pure (EngineFail err)
-        EngineOk a -> do
-          p <- macSign env (MacHMAC alg Nothing) secret (a <> seedBytes)
-          case p of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk blk -> go (k - 1) a (blk : acc)
--- | IKE effects over the HMAC route: prf+ iteration,
--- the single-shot PRF in either role order, the IKEv1
--- single shot over the aux keygxy input, and the
--- counter-less extended iteration (truncating the base
--- when neither aux nor extra is present — the oracle
--- reference rule). Off-range lengths are 'CryptoFailed';
--- non-bytes keys are 'CryptoBadKey'.
-runIke :: CryptoBackend b => BackendEnv b -> IkeExec -> KeyMaterial -> Maybe KeyMaterial -> Int -> IO CryptoResult
-runIke env ex key mAux outLen = case key of
-  KeyBytes kb -> case auxOf mAux of
-    Left err -> pure (GotCryptoError err)
-    Right auxB -> case ieKind ex of
-      Ike2PrfPlus
-        | outLen >= 1
-        , Just h <- digestOutLen (ieAlg ex)
-        , (outLen + h - 1) `div` h <= 255 -> do
-            r <- ikePrfPlusExpand env (ieAlg ex) kb (ieBlob1 ex) outLen
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk d -> GotBytes (BS.take outLen d)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: IKE prf+ length out of range"))
-      IkePrf
-        | outLen >= 1, Just h <- digestOutLen (ieAlg ex), outLen <= h -> do
-            let (kk, msg) = if ieFlags ex == 1
-                  then (ieBlob1 ex <> ieBlob2 ex, kb)
-                  else (kb, ieBlob1 ex <> ieBlob2 ex)
-            r <- macSign env (MacHMAC (ieAlg ex) Nothing) (KeyBytes kk) msg
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk d -> GotBytes (BS.take outLen d)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: IKE PRF length out of range"))
-      Ike1Prf -> case auxB of
-        -- Unreachable post-dispatch (IKEv1-PRF needs aux);
-        -- typed, never a crash.
-        Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-          "IKEv1-PRF derive binds no keygxy key"))
-        Just gx
-          | outLen >= 1, Just h <- digestOutLen (ieAlg ex), outLen <= h -> do
-              let msg = gx <> ieBlob1 ex <> ieBlob2 ex <> BS.singleton (ieKeyNum ex)
-              r <- macSign env (MacHMAC (ieAlg ex) Nothing) (KeyBytes kb) msg
-              pure $ case r of
-                EngineFail err -> GotCryptoError (toCryptoError err)
-                EngineOk d -> GotBytes (BS.take outLen d)
-          | otherwise -> pure (GotCryptoError (CryptoFailed
-              "driver: IKEv1-PRF length out of range"))
-      Ike1Extended
-        | outLen >= 1 && outLen <= maxIkeOutput
-        , extTruncOk auxB (ieBlob1 ex) (BS.length kb) outLen -> do
-            r <- ikeExtExpand env (ieAlg ex) kb auxB (ieBlob1 ex) outLen
-            pure $ case r of
-              EngineFail err -> GotCryptoError (toCryptoError err)
-              EngineOk d -> GotBytes (BS.take outLen d)
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: IKE extended length out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
-  where
-    auxOf Nothing
-      | ikeNeedsAux ex = Left (CryptoBadKey "driver" "IKE derive binds no aux key")
-      | otherwise = Right Nothing
-    auxOf (Just (KeyBytes ab)) = Right (Just ab)
-    auxOf (Just _) = Left (CryptoBadKey "driver" "IKE aux key is not byte material")
-    -- | The truncation rule admits the request: without aux
-    -- input the output must fit the base.
-    extTruncOk Nothing extra kbLen wantLen = not (BS.null extra) || wantLen <= kbLen
-    extTruncOk (Just _) _ _ _ = True
--- | Byte-op derives: pure byte manipulation over secret
--- material (no backend crypto — identical on both
--- backends). Concat rows join base and second input and
--- truncate to the planned length; XOR folds the first
--- planned-length bytes of both inputs (at most the shorter
--- one; the planner refuses a longer length first); EXTRACT
--- slices whole bytes at the bit offset, bit-exact
--- (MSB-first) for sub-byte offsets. Off-range lengths are 'CryptoFailed';
--- non-bytes keys are 'CryptoBadKey'.
-runByteOps :: ByteOpsExec -> KeyMaterial -> Maybe KeyMaterial -> Int -> IO CryptoResult
-runByteOps ex key mAux outLen = case key of
-  KeyBytes kb -> case auxOf mAux of
-    Left err -> pure (GotCryptoError err)
-    Right auxB -> case boeKind ex of
-      ConcatBaseAndKey -> case auxB of
-        -- Unreachable post-dispatch (concat-key needs
-        -- aux); typed, never a crash.
-        Nothing -> pure (GotCryptoError (CryptoBadKey "driver"
-          "concat-key derive binds no second key"))
-        Just sb
-          | outLen >= 1, outLen <= BS.length kb + BS.length sb ->
-              pure (GotBytes (BS.take outLen (kb <> sb)))
-          | otherwise -> pure (GotCryptoError (CryptoFailed
-              "driver: concat-key length out of range"))
-      ConcatBaseAndData
-        | outLen >= 1, outLen <= BS.length kb + BS.length dat ->
-            pure (GotBytes (BS.take outLen (kb <> dat)))
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: concat-data length out of range"))
-      ConcatDataAndBase
-        | outLen >= 1, outLen <= BS.length dat + BS.length kb ->
-            pure (GotBytes (BS.take outLen (dat <> kb)))
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: data-concat length out of range"))
-      XorBaseAndData
-        | outLen >= 1
-        , outLen <= min (BS.length kb) (BS.length dat) ->
-            pure (GotBytes (BS.take outLen (kb `xorB` dat)))
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: XOR length out of range"))
-      ExtractKeyFromKey
-        | outLen >= 1
-        , toInteger off + toInteger outLen * 8 <= toInteger (BS.length kb) * 8 ->
-            pure (GotBytes (extractBits kb (fromIntegral off) outLen))
-        | otherwise -> pure (GotCryptoError (CryptoFailed
-            "driver: EXTRACT window out of range"))
-  _ -> pure (GotCryptoError (CryptoBadKey "driver"
-    "key derivation needs raw secret bytes"))
-  where
-    dat = boeData ex
-    off = boeOff ex
-    auxOf Nothing
-      | byteOpsNeedsAux ex = Left (CryptoBadKey "driver" "byte-op derive binds no aux key")
-      | otherwise = Right Nothing
-    auxOf (Just (KeyBytes ab)) = Right (Just ab)
-    auxOf (Just _) = Left (CryptoBadKey "driver" "byte-op aux key is not byte material")
--- | Bit-exact slice (MSB-first): @n@ whole bytes starting
--- at bit @off@ of the input (the caller keeps the window
--- in range).
-extractBits :: ByteString -> Int -> Int -> ByteString
-extractBits bs off n = BS.pack [byteAt i | i <- [0 .. n - 1]]
-  where
-    byteAt i = foldl setBit 0 [0 .. 7]
-      where
-        setBit acc j
-          | bitAt (off + i * 8 + j) = acc .|. (1 `shiftL` (7 - j))
-          | otherwise = acc
-    bitAt p = testBit (BS.index bs (p `div` 8)) (7 - (p `mod` 8))
--- | IKEv2 prf+ (RFC 4306 §2.8): @T(i) = PRF(K, T(i-1) |
--- seed | i)@ with @T(0)@ empty, the counter a single byte
--- (never wraps: past 255 blocks refuses).
-ikePrfPlusExpand :: CryptoBackend b => BackendEnv b -> DigestAlg -> ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
-ikePrfPlusExpand env alg kb seed outLen = case digestOutLen alg of
-  Nothing -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
-    "IKE prf+ needs a fixed-width HMAC"))
-  Just h
-    | outLen < 1 -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
-        "IKE prf+ length out of range"))
-    | n > 255 -> pure (EngineFail (BackendBadParam "ikePrfPlusExpand"
-        "IKE prf+ length exceeds the counter capacity"))
-    | otherwise -> go 1 BS.empty []
-    where
-      n = (outLen + h - 1) `div` h
-      spec = MacHMAC alg Nothing
-      key = KeyBytes kb
-      go i prev acc
-        | i > n = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-        | otherwise = do
-            t <- macSign env spec key (prev <> seed <> BS.singleton (fromIntegral i))
-            case t of
-              EngineFail err -> pure (EngineFail err)
-              EngineOk blk -> go (i + 1) blk (blk : acc)
--- | IKEv1 extended expansion: @T(i) = PRF(K, T(i-1) |
--- keygxy | extra)@ with the first message the bare seed
--- (@\\x00@ when both inputs are empty); with neither
--- input and a short output, the base truncates (the
--- oracle reference rule).
-ikeExtExpand :: CryptoBackend b => BackendEnv b -> DigestAlg -> ByteString -> Maybe ByteString -> ByteString -> Int -> IO (EngineResult ByteString)
-ikeExtExpand env alg kb mGx extra outLen
-  | outLen < 1 = pure (EngineFail (BackendBadParam "ikeExtExpand"
-      "IKE extended length out of range"))
-  | otherwise = case (mGx, BS.null extra) of
-      (Nothing, True)
-        | outLen <= BS.length kb -> pure (EngineOk (BS.take outLen kb))
-        | otherwise -> pure (EngineFail (BackendBadParam "ikeExtExpand"
-            "IKE extended truncation exceeds the base length"))
-      _ -> case digestOutLen alg of
-        Nothing -> pure (EngineFail (BackendBadParam "ikeExtExpand"
-          "IKE extended needs a fixed-width HMAC"))
-        Just h ->
-          let seed = maybe BS.empty id mGx <> extra
-              first = if BS.null seed then BS.singleton 0 else seed
-              n = (outLen + h - 1) `div` h
-              spec = MacHMAC alg Nothing
-              key = KeyBytes kb
-              go 0 _ acc = pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-              go k prev acc = do
-                let msg = if k == n then first else prev <> seed
-                t <- macSign env spec key msg
-                case t of
-                  EngineFail err -> pure (EngineFail err)
-                  EngineOk blk -> go (k - 1) blk (blk : acc)
-          in go n first []
 -- | Answer one planned effect against the backend.
 runEffect :: CryptoBackend b => BackendEnv b -> KeyResolver -> CryptoEffect -> IO CryptoResult
 runEffect env resolve fx = case fx of
@@ -2317,63 +1100,4 @@ runEffect env resolve fx = case fx of
     | isEncryptDataMech mech -> withKey resolve mkey $ \key ->
         runEncryptData env mech key params outLen
     | otherwise -> pure (unsupported fx)
--- | Four-byte big-endian word (PBKDF2 block index).
-word32BE :: Int -> ByteString
-word32BE n = BS.pack
-  [ fromIntegral ((n `shiftR` 24) .&. 0xff)
-  , fromIntegral ((n `shiftR` 16) .&. 0xff)
-  , fromIntegral ((n `shiftR` 8) .&. 0xff)
-  , fromIntegral (n .&. 0xff)
-  ]
-
--- | HKDF effect params (@prf:u8 mode:u8 salt@) onto the
--- backend digest, its hash length, the stage mode, and the salt.
--- The PRF code resolves through 'kdfCodeDigest' and the stem
--- through 'rsaDigest' (unservable HMACs refuse); the mode must
--- select expand (extract-only never reaches the driver — the
--- planner refuses it first).
-hkdfParamsFor :: ByteString -> Maybe (DigestAlg, Int, Word8, ByteString)
-hkdfParamsFor params = do
-  (prf, r0) <- BS.uncons params
-  (mode, salt) <- BS.uncons r0
-  guard (mode == 0x02 || mode == 0x03)
-  stem <- kdfCodeDigest (fromIntegral prf)
-  alg <- rsaDigest stem
-  hashLen <- digestOutLen alg
-  pure (alg, hashLen, mode, salt)
-
--- | HKDF-Expand (RFC 5869) with the PRF HMAC over the base key
--- bytes: @T(i) = HMAC(prk, T(i-1) || info || i)@, truncated to the
--- requested length. The caller bounds the length at 255 blocks.
-hkdfExpand
-  :: CryptoBackend b
-  => BackendEnv b -> MacSpec -> KeyMaterial -> ByteString -> Int -> IO (EngineResult ByteString)
-hkdfExpand env spec prk info outLen = go BS.empty 1 []
-  where
-    go :: ByteString -> Int -> [ByteString] -> IO (EngineResult ByteString)
-    go prev ctr acc
-      | BS.length (BS.concat acc) >= outLen =
-          pure (EngineOk (BS.take outLen (BS.concat (reverse acc))))
-      | ctr > 255 = pure (EngineFail
-          (BackendBadParam "derive" "HKDF-Expand counter overflow"))
-      | otherwise = do
-          r <- macSign env spec prk (prev <> info <> BS.singleton (fromIntegral ctr))
-          case r of
-            EngineFail err -> pure (EngineFail err)
-            EngineOk t -> go t (ctr + 1) (t : acc)
-
--- | HKDF extract-then-expand (RFC 5869) with the PRF HMAC: the
--- base key bytes are the input keying material, an empty salt
--- extracts against HashLen zeros (RFC 5869 section 2.2), and the
--- extract output feeds 'hkdfExpand' over the context string.
-hkdfExtractExpand
-  :: CryptoBackend b
-  => BackendEnv b -> MacSpec -> Int -> ByteString -> ByteString -> ByteString -> Int
-  -> IO (EngineResult ByteString)
-hkdfExtractExpand env spec hashLen ikm salt info outLen = do
-  let saltKey = KeyBytes (if BS.null salt then BS.replicate hashLen 0 else salt)
-  r <- macSign env spec saltKey ikm
-  case r of
-    EngineFail err -> pure (EngineFail err)
-    EngineOk prk -> hkdfExpand env spec (KeyBytes prk) info outLen
 
