@@ -27,7 +27,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (DigestAlg (..), PssParams (..), SigSpec (..))
 import Haskoki.Engine.Driver (rsaPssSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -59,15 +59,11 @@ import Haskoki.Registry.Generated
   , ckm_SHA256_RSA_PKCS
   , ckm_SHA256_RSA_PKCS_PSS
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "RSA-PSS recipe"
@@ -194,17 +190,6 @@ caseParams = do
         (not (rsaPssParamsValid r (encodePssParams "SHA256" "SHA256" 32))
           || d == "SHA256")
     ) groupShape
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 pssMech :: MechanismId
 pssMech = MechanismId (ckm_SHA256_RSA_PKCS_PSS)

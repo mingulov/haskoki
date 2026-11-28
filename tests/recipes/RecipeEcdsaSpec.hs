@@ -40,7 +40,7 @@ import Haskoki.Engine.Backend
   , SigSpec (..)
   )
 import Haskoki.Engine.Driver (ecCurveOfKey, ecdsaSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -73,15 +73,11 @@ import Haskoki.Registry.Generated
   , ckm_EDDSA
   , ckm_SHA256_RSA_PKCS
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "ECDSA recipe"
@@ -197,17 +193,6 @@ caseParams = do
         (isJust (ecdsaEncodingOf p)) (ecdsaParamsValid rr p)
       ) ["RAW", "DER", BS.empty]
     ) groupShape
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 ecdsaMech, rawMech :: MechanismId
 ecdsaMech = MechanismId (ckm_ECDSA_SHA256)

@@ -40,10 +40,8 @@ import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
   , ObjectState (..)
-  , SessionState (..)
   , emptyModel
   )
-import Haskoki.Operation (emptySessionOps)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
   , planDerive
@@ -85,16 +83,15 @@ import Haskoki.Registry.Generated
   )
 import Haskoki.Registry.Types (ParameterCodec (..))
 import Haskoki.Rules (defaultRules)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
   , ObjectId (..)
   , ReturnCode (..)
   , Revision (..)
-  , SessionId (..)
   , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "SP800-108 recipe"
@@ -297,17 +294,6 @@ baseOid = ObjectId 43
 
 baseHandle :: ExternalHandle
 baseHandle = ExternalHandle 403
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 mkBaseModel :: BS.ByteString -> Bool -> Model
 mkBaseModel mat canDerive = emptyModel

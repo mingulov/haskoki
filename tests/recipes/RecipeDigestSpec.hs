@@ -26,7 +26,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (DigestAlg (..))
 import Haskoki.Engine.Driver (digestAlgFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -49,14 +49,10 @@ import Haskoki.Registry
   , mkCapabilities
   )
 import Haskoki.Registry.Generated (mustGeneratedId)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
-  ( Generation (..)
-  , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
+  ( ReturnCode (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "Digest recipe"
@@ -116,17 +112,6 @@ caseParams = do
   assertBool "empty valid" (digestParamsValid BS.empty)
   assertBool "non-empty refused" (not (digestParamsValid "x"))
   assertBool "iv-length refused" (not (digestParamsValid (BS.replicate 16 0)))
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 testEnv :: OpEnv
 testEnv = OpEnv

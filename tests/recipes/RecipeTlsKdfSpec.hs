@@ -42,10 +42,8 @@ import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
   , ObjectState (..)
-  , SessionState (..)
   , emptyModel
   )
-import Haskoki.Operation (emptySessionOps)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
   , planDerive
@@ -75,16 +73,15 @@ import Haskoki.Registry.Generated
   )
 import Haskoki.Registry.Types (MechanismId (..))
 import Haskoki.Rules (defaultRules)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
   , ObjectId (..)
   , ReturnCode (..)
   , Revision (..)
-  , SessionId (..)
   , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "TLS-KDF recipe"
@@ -210,17 +207,6 @@ baseOid = ObjectId 44
 
 baseHandle :: ExternalHandle
 baseHandle = ExternalHandle 404
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 mkBaseModel :: BS.ByteString -> Bool -> Model
 mkBaseModel mat canDerive = emptyModel

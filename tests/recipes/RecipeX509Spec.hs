@@ -32,7 +32,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (RsaCipherParams (..), SigSpec (..))
 import Haskoki.Engine.Driver (rsaRecoverCipherFor, rsaX509CipherFor, rsaX509SigFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , CryptoEffect (..)
@@ -71,16 +71,12 @@ import Haskoki.Registry
   , mkCapabilities
   )
 import Haskoki.Registry.Generated (mustGeneratedId, ckm_RSA_PKCS, ckm_RSA_PKCS_OAEP)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ObjectId (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "RSA-X.509 recipe"
@@ -160,17 +156,6 @@ caseFraming = do
     (x509Tail 256 16 (BS.replicate 257 0))
   assertEqual "tail refuses zero length" Nothing (x509Tail 256 0 block)
   assertEqual "tail refuses overlong length" Nothing (x509Tail 256 257 block)
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 x509Mech :: MechanismId
 x509Mech = MechanismId (mustGeneratedId x509Name)

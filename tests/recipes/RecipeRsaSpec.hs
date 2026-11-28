@@ -33,7 +33,7 @@ import Haskoki.Engine.Driver
   , rsaPkcs1SpecFor
   , rsaRecoverCipherFor
   )
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -66,15 +66,11 @@ import Haskoki.Registry.Generated
   , ckm_SHA256
   , ckm_SHA256_RSA_PKCS
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "RSA PKCS#1 v1.5 recipe"
@@ -170,17 +166,6 @@ caseParams = do
     assertBool ("byte refused " ++ T.unpack suffix)
       (not (rsaPkcs1ParamsValid rr "x"))
     ) groupShape
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 rsaMech, rawMech :: MechanismId
 rsaMech = MechanismId (ckm_SHA256_RSA_PKCS)

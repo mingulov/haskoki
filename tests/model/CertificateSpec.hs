@@ -44,7 +44,6 @@ import Haskoki.Object
   , planSetAttributes
   , resolveHandle
   )
-import Haskoki.Operation (emptySessionOps)
 import Haskoki.Outcome
   ( NativeOutput (..)
   , PlanResult (..)
@@ -58,13 +57,12 @@ import Haskoki.Session (SessionLogin (..))
 import Haskoki.Transition (planCall, publishDelta)
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , Pkcs11Version (..)
   , ReturnCode (..)
-  , Revision (..)
   , SessionId (..)
   , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "Certificates"
@@ -105,17 +103,6 @@ certClass = mustClassId "CKO_CERTIFICATE"
 -- there is no model inventory of certificate types.
 ckcX509 :: Word64
 ckcX509 = 0
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 clsCert, typX509, valDer, subjCn :: (AttributeType, AttributeValue)
 clsCert = (AttrClass, ValULong certClass)

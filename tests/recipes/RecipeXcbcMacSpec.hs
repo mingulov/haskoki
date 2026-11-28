@@ -29,7 +29,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (CipherSpec (..))
 import Haskoki.Engine.Driver (xcbcSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -62,15 +62,11 @@ import Haskoki.Registry.Generated
   , ckm_AES_CMAC
   , ckm_SHA256_HMAC
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "XCBC-MAC recipe"
@@ -163,17 +159,6 @@ caseKeyLens = do
 -- ---------------------------------------------------------------------------
 -- Init path
 -- ---------------------------------------------------------------------------
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 xcbcMech, xcbc96Mech :: MechanismId
 xcbcMech = MechanismId (ckm_AES_XCBC_MAC)

@@ -28,7 +28,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (DigestAlg (..), OaepParams (..))
 import Haskoki.Engine.Driver (rsaOaepParamsFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)
@@ -56,15 +56,11 @@ import Haskoki.Registry
   , mkCapabilities
   )
 import Haskoki.Registry.Generated (mustGeneratedId, ckm_RSA_PKCS, ckm_RSA_PKCS_PSS)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "RSA-OAEP recipe"
@@ -138,17 +134,6 @@ caseParams = do
   assertBool "unknown mgf refused"
     (not (rsaOaepParamsValid r (BS.pack
       [0,0,0,0,0,0,0,4, 0,0,0,0,0,0,0,99])))
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 oaepMech :: MechanismId
 oaepMech = MechanismId (mustGeneratedId oaepName)

@@ -38,7 +38,7 @@ import Haskoki.Engine.Backend
   , SigSpec (..)
   )
 import Haskoki.Engine.Driver (eddsaCurveOfKey, eddsaSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -72,15 +72,11 @@ import Haskoki.Registry.Generated
   , ckm_ML_DSA
   , ckm_SHA256_RSA_PKCS
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "EdDSA recipe"
@@ -180,17 +176,6 @@ caseParams = do
     assertEqual ("validity agrees " ++ show p)
       (decodeEddsaParams p == Just (False, BS.empty)) (eddsaParamsValid r p)
     ) [BS.empty, pureImage, encodeEddsaParams True "CTX"]
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 eddsaMech :: MechanismId
 eddsaMech = MechanismId (ckm_EDDSA)

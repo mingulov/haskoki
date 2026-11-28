@@ -29,7 +29,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (AeadSpec (..))
 import Haskoki.Engine.Driver (gmacSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -62,15 +62,11 @@ import Haskoki.Registry.Generated
   , ckm_AES_GMAC
   , ckm_SHA256_HMAC
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "GMAC recipe"
@@ -158,17 +154,6 @@ caseKeyLens = do
 -- ---------------------------------------------------------------------------
 -- Init path
 -- ---------------------------------------------------------------------------
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 testEnv :: OpEnv
 testEnv = OpEnv
