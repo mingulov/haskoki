@@ -33,7 +33,8 @@ Module-size budgets (0.6.3 ratchet, same file per one-in-one-out:
 no new check-*.py for this rule). Every .hs file under the lib
 roots (src core tools app client examples bench) must stay at or
 below 1200 lines, every .hs file under tests/ at or below 4000;
-ffi/ mirrors and *Generated.hs are out of scope. Over-budget
+top-level ffi/ (a compiled hs-source-dir, excluded by owner
+decision) and *Generated.hs are out of scope. Over-budget
 files fail unless pinned in MODSIZE_ALLOW with a reason, and a
 pinned file fails when it grows past its pin. Splitting a pinned
 file removes its pin; growing the tree within budget needs no
@@ -607,14 +608,15 @@ def check(cabal_text):
 
 
 # Module-size budgets (0.6.3 ratchet): the lib/test splits must not
-# regrow. Caps apply to every .hs file under the source roots;
-# over-cap files fail unless pinned below with a reason. Pins
-# record pre-existing debt (generated code, FFI mirrors and
-# owner-call skips); splitting a pinned file removes its pin.
+# regrow. Caps apply to every Haskell source file (.hs/.hsc/.lhs)
+# under the source roots; over-cap files fail unless pinned below
+# with a reason. Pins record pre-existing over-budget debt
+# (owner-call skips, follow-up candidates).
 MODSIZE_LIB_MAX = 1200
 MODSIZE_TEST_MAX = 4000
-# Roots track every hs-source-dirs entry in haskoki.cabal; top-level
-# ffi/ is deliberately not a root (C mirrors stay out of scope).
+# Roots track every hs-source-dirs entry in haskoki.cabal except ffi/,
+# which is a compiled hs-source-dir excluded by owner decision (FFI
+# binding surface).
 MODSIZE_LIB_ROOTS = ("src", "core", "tools", "app", "client",
                      "examples", "bench")
 MODSIZE_TEST_ROOTS = ("tests", "test")
@@ -666,12 +668,14 @@ def check_modsize(root):
     """Returns error strings for over-budget unpinned modules."""
     errors = []
     counts = {}
+    unreadable = set()
     for rel, path, cap in _modsize_files(Path(root)):
         try:
             n = len(path.read_text(encoding="utf-8",
                                    errors="replace").splitlines())
         except OSError as exc:
             errors.append("modsize: cannot read %s: %s" % (rel, exc))
+            unreadable.add(rel)
             continue
         counts[rel] = (n, cap)
         if n <= cap:
@@ -686,6 +690,8 @@ def check_modsize(root):
                       "or add a (count, reason) pin in MODSIZE_ALLOW "
                       "in scripts/check-exposure.py" % (rel, n, cap))
     for rel, (pinned, _why) in sorted(MODSIZE_ALLOW.items()):
+        if rel in unreadable:
+            continue
         if rel not in counts:
             errors.append("modsize: stale pin %s: file is gone or out "
                           "of scope; remove the pin" % rel)
@@ -1025,9 +1031,6 @@ def _self_test_modsize():
         (root / "src" / "dist-newstyle" / "Copy.hs").write_text(big + big)
         (root / "test").mkdir()
         (root / "test" / "Main.hs").write_text(big + big + big + big)
-        assert check_modsize(root) != [], \
-            "test/ root and build-output copies are scanned distinctly"
-        (root / "src" / "dist-newstyle" / "Copy.hs").unlink()
         errs = check_modsize(root)
         assert len(errs) == 1 and "test/Main.hs" in errs[0], \
             "test/ counts, dist-newstyle/ does not"
