@@ -613,12 +613,18 @@ def check(cabal_text):
 # owner-call skips); splitting a pinned file removes its pin.
 MODSIZE_LIB_MAX = 1200
 MODSIZE_TEST_MAX = 4000
+# Roots track every hs-source-dirs entry in haskoki.cabal; top-level
+# ffi/ is deliberately not a root (C mirrors stay out of scope).
 MODSIZE_LIB_ROOTS = ("src", "core", "tools", "app", "client",
                      "examples", "bench")
-MODSIZE_TEST_ROOTS = ("tests",)
-MODSIZE_SKIP_DIRS = ("ffi",)
+MODSIZE_TEST_ROOTS = ("tests", "test")
+MODSIZE_EXTS = ("*.hs", "*.hsc", "*.lhs")
 MODSIZE_SKIP_SUFFIXES = ("Generated.hs",)
+MODSIZE_SKIP_PARTS = ("dist-newstyle",)
 # path: (lines at pinning, reason). Lines are splitlines() counts.
+# Pins cover over-budget debt only (owner-call skips, follow-up
+# candidates); generated code and ffi/ mirrors are excluded above,
+# never pinned.
 MODSIZE_ALLOW = {
     "src/Haskoki/Engine/OpenSSL4.hs":
         (2393, "owner-call skip: FFI-adjacent, weak seams"),
@@ -644,25 +650,30 @@ def _modsize_files(root):
         base = root / d
         if not base.is_dir():
             continue
-        for p in sorted(base.rglob("*.hs")):
-            rel = p.relative_to(root).as_posix()
-            if rel.split("/")[0] in MODSIZE_SKIP_DIRS:
-                continue
-            if rel.endswith(MODSIZE_SKIP_SUFFIXES):
-                continue
-            out.append((rel, p, cap))
+        for ext in MODSIZE_EXTS:
+            for p in sorted(base.rglob(ext)):
+                rel = p.relative_to(root).as_posix()
+                if any(part in MODSIZE_SKIP_PARTS
+                       for part in rel.split("/")):
+                    continue
+                if rel.endswith(MODSIZE_SKIP_SUFFIXES):
+                    continue
+                out.append((rel, p, cap))
     return out
 
 
 def check_modsize(root):
     """Returns error strings for over-budget unpinned modules."""
     errors = []
+    counts = {}
     for rel, path, cap in _modsize_files(Path(root)):
         try:
-            n = len(path.read_text().splitlines())
+            n = len(path.read_text(encoding="utf-8",
+                                   errors="replace").splitlines())
         except OSError as exc:
             errors.append("modsize: cannot read %s: %s" % (rel, exc))
             continue
+        counts[rel] = (n, cap)
         if n <= cap:
             continue
         if rel in MODSIZE_ALLOW:
@@ -672,7 +683,21 @@ def check_modsize(root):
                               "(pinned at %d): split it" % (rel, n, pinned))
             continue
         errors.append("modsize: %s has %d lines (budget %d): split it "
-                      "or pin it with a reason" % (rel, n, cap))
+                      "or add a (count, reason) pin in MODSIZE_ALLOW "
+                      "in scripts/check-exposure.py" % (rel, n, cap))
+    for rel, (pinned, _why) in sorted(MODSIZE_ALLOW.items()):
+        if rel not in counts:
+            errors.append("modsize: stale pin %s: file is gone or out "
+                          "of scope; remove the pin" % rel)
+            continue
+        n, cap = counts[rel]
+        if n <= cap:
+            errors.append("modsize: %s is %d lines (budget %d): "
+                          "remove its pin" % (rel, n, cap))
+        elif n < pinned:
+            errors.append("modsize: %s shrank to %d lines "
+                          "(pinned at %d): lower the pin"
+                          % (rel, n, pinned))
     return errors
 
 
@@ -927,6 +952,18 @@ def self_test():
                  "{ visibility: public }\n") != [], \
         "public marker in a nested section fails closed (un-nest)"
     # Module-size budgets (tmp trees, small files exercise the same code).
+    # Live pins stay out: the fixture tree is judged on its own pins.
+    real_allow = dict(MODSIZE_ALLOW)
+    MODSIZE_ALLOW.clear()
+    try:
+        _self_test_modsize()
+    finally:
+        MODSIZE_ALLOW.update(real_allow)
+    print("exposure self-test: ok")
+    return 0
+
+
+def _self_test_modsize():
     with tempfile.TemporaryDirectory(prefix="exposure-modsize") as tmp:
         root = Path(tmp)
         (root / "src").mkdir()
@@ -949,20 +986,51 @@ def self_test():
         finally:
             del MODSIZE_ALLOW["src/Big.hs"]
         (root / "src" / "Big.hs").unlink()
+        MODSIZE_ALLOW["src/Gone.hs"] = (MODSIZE_LIB_MAX + 5, "fixture pin")
+        try:
+            assert check_modsize(root) != [], \
+                "pin without a file must fail"
+        finally:
+            del MODSIZE_ALLOW["src/Gone.hs"]
+        (root / "src" / "Big.hs").write_text(big)
+        MODSIZE_ALLOW["src/Big.hs"] = (MODSIZE_LIB_MAX + 5, "fixture pin")
+        try:
+            assert check_modsize(root) != [], \
+                "pin above the file must fail (lower the pin)"
+        finally:
+            del MODSIZE_ALLOW["src/Big.hs"]
+        small = "module Small2 where\n"
+        (root / "src" / "Small2.hs").write_text(small)
+        MODSIZE_ALLOW["src/Small2.hs"] = (MODSIZE_LIB_MAX + 5, "fixture pin")
+        try:
+            assert check_modsize(root) != [], \
+                "pin on an in-budget file must fail (remove the pin)"
+        finally:
+            del MODSIZE_ALLOW["src/Small2.hs"]
+        (root / "src" / "Small2.hs").unlink()
+        (root / "src" / "Big.hs").unlink()
         (root / "ffi").mkdir()
         (root / "ffi" / "Huge.hs").write_text(big + big)
         (root / "src" / "Generated").mkdir()
         (root / "src" / "Generated" / "Foo.hs").write_text(big)
         gen = root / "src" / "WidgetGenerated.hs"
         gen.write_text(big + big)
-        assert check_modsize(root) != [], \
+        errs = check_modsize(root)
+        assert len(errs) == 1 and "src/Generated/Foo.hs" in errs[0], \
             "a Generated/ directory must not exclude its files"
         (root / "src" / "Generated" / "Foo.hs").unlink()
-        gen.unlink()
         assert check_modsize(root) == [], \
-            "ffi/ and *Generated.hs stay out of scope"
-    print("exposure self-test: ok")
-    return 0
+            "top-level ffi/ is not walked; *Generated.hs is skipped"
+        (root / "src" / "dist-newstyle").mkdir()
+        (root / "src" / "dist-newstyle" / "Copy.hs").write_text(big + big)
+        (root / "test").mkdir()
+        (root / "test" / "Main.hs").write_text(big + big + big + big)
+        assert check_modsize(root) != [], \
+            "test/ root and build-output copies are scanned distinctly"
+        (root / "src" / "dist-newstyle" / "Copy.hs").unlink()
+        errs = check_modsize(root)
+        assert len(errs) == 1 and "test/Main.hs" in errs[0], \
+            "test/ counts, dist-newstyle/ does not"
 
 
 def main():
