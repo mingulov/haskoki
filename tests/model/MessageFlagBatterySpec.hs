@@ -2,7 +2,7 @@
 
 DG1: a tested row gains a @message-*@ route iff (a) its classic
 counterpart route is tested, (b) the driver @FxMessage*@ arm serves
-the mechanism (@src/Haskoki/Engine/Driver.hs:1944-2072@, never the
+the mechanism (@src/Haskoki/Engine/Driver.hs:616-747@, never the
 @unsupported fx@ fallthrough), and (c) 'initMessageOperation'
 returns @CKR_OK@ under full caps with valid parameters. The
 @CKF_MESSAGE_*@ flags match the routes; @CKF_MULTI_MESSAGE@ stays
