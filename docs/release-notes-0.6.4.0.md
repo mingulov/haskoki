@@ -30,7 +30,7 @@ Shipped 2026-11-28.
 
 - Golden sweep passing; suites: model 1811, engine 468,
   storage 550, core 381, prop 85 (74 + 11 new framing laws),
-  all green; tasty listings identical except the 11 additions.
+  all passing; tasty listings identical except the 11 additions.
 - Zero-warning builds; every moved span verified byte-identical
   by script; C ABI + native symbol sets identical; compat matrix
   version-cells-only. Two-tier review (claude-opus + codex
