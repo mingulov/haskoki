@@ -1,6 +1,5 @@
 {- | Haskoki.Der.Primitives: DER tag-length-value readers and writers, algorithm OIDs.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Der.Primitives
   ( integerToBE
   , derOctet

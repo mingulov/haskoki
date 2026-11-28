@@ -1,6 +1,5 @@
 {- | Haskoki.Engine.Synthetic.Codecs: digest-context codecs.
 -}
-{-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Engine.Synthetic.Codecs
   ( encodeDigestCtx
   , decodeDigestCtx
