@@ -132,6 +132,9 @@ library haskoki-core
     Haskoki.Attribute.Generated
     Haskoki.Bytes
     Haskoki.Der
+    Haskoki.Der.Primitives
+    Haskoki.Der.Classical
+    Haskoki.Der.Pqc
     Haskoki.Object
     Haskoki.Object.TemplateValidation
     Haskoki.Object.TemplateRules

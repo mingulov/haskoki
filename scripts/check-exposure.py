@@ -636,10 +636,8 @@ MODSIZE_ALLOW = {
         (1814, "owner-call skip: weak seams"),
     "core/Haskoki/Registry.hs":
         (1766, "owner-call skip: weak seams"),
-    "core/Haskoki/Der.hs":
-        (1498, "follow-up candidate, not yet split"),
     "core/Haskoki/Operation/Derive.hs":
-        (1434, "follow-up candidate, not yet split"),
+        (1419, "follow-up candidate, not yet split"),
     "tests/model/FfiAsyncSpec.hs":
         (4063, "out of the 0.6.3 test-split scope (3 files)"),
 }
