@@ -50,6 +50,7 @@ import qualified Data.ByteString as BS
 import Data.Word (Word64)
 
 import Haskoki.Attribute.Generated (mustKeyTypeId)
+import Haskoki.Bytes (u16be)
 import Haskoki.Recipe.Hmac (decodeMacGeneral, hmacGeneralCodec)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
@@ -125,9 +126,6 @@ ssl3RecipeFor mid =
     (r : _) -> Just r
     [] -> Nothing
 
-encodeU16 :: Int -> ByteString
-encodeU16 n = BS.pack [fromIntegral ((n `div` 256) `mod` 256), fromIntegral (n `mod` 256)]
-
 decodeU16 :: ByteString -> Maybe (Int, ByteString)
 decodeU16 bs
   | BS.length bs < 2 = Nothing
@@ -139,8 +137,8 @@ decodeU16 bs
 -- sr@.
 encodeSsl3MasterParams :: ByteString -> ByteString -> ByteString
 encodeSsl3MasterParams cr sr =
-  encodeU16 (BS.length cr) <> cr
-    <> encodeU16 (BS.length sr) <> sr
+  u16be (BS.length cr) <> cr
+    <> u16be (BS.length sr) <> sr
 
 -- | Decode the master frame ('Nothing' on truncation or
 -- trailing bytes).
@@ -158,9 +156,9 @@ decodeSsl3MasterParams bs = do
 -- iv:u16be crLen:u16be cr srLen:u16be sr@.
 encodeSsl3KeyMatParams :: Int -> Int -> Int -> ByteString -> ByteString -> ByteString
 encodeSsl3KeyMatParams mac key iv cr sr =
-  encodeU16 mac <> encodeU16 key <> encodeU16 iv
-    <> encodeU16 (BS.length cr) <> cr
-    <> encodeU16 (BS.length sr) <> sr
+  u16be mac <> u16be key <> u16be iv
+    <> u16be (BS.length cr) <> cr
+    <> u16be (BS.length sr) <> sr
 
 -- | Decode the key-material frame ('Nothing' on
 -- truncation or trailing bytes).

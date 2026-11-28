@@ -1,16 +1,20 @@
 {- | Codec laws: every Codec.hs pair roundtrips over generated
-payloads, reserved bits and truncated frames reject, and the
-message family gates accept exactly their own tags.
+payloads, reserved bits and truncated frames reject, the
+message family gates accept exactly their own tags, and the
+'Haskoki.Bytes' framing helpers match every deleted per-module
+form bit for bit (shift, div-without-mod, and list-comprehension
+encoders; 'Integer' and 'Word64' folds).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module CodecProps (spec) where
 
-import Data.Bits (bit, testBit, (.|.))
+import Control.Monad (forM_)
+import Data.Bits (bit, shiftL, shiftR, testBit, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.List (nub, sort)
 import Data.Maybe (isJust, isNothing)
-import Data.Word (Word16, Word64)
+import Data.Word (Word16, Word32, Word64, Word8)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 import Test.Tasty.QuickCheck
@@ -23,6 +27,7 @@ import Test.Tasty.QuickCheck
   )
 
 import Gen (lcgBytes, lcgNext, permitOps, propWith, qcBytes)
+import Haskoki.Bytes (foldBE, u16be, u32be, u64be)
 import Haskoki.FFI.Decode (maxInputBytes)
 import Haskoki.Operation.Codec
   ( decodeInitInput
@@ -53,6 +58,17 @@ spec seedOv count =
     , propWith seedOv "oneshot roundtrip cipher" 107 count pOneCipher
     , propWith seedOv "oneshot roundtrip sign" 108 count pOneSign
     , propWith seedOv "oneshot roundtrip verify" 109 count pOneVerify
+    , propWith seedOv "u16be matches Word16 shift form" 110 count pU16Word
+    , propWith seedOv "u32be matches Word32 shift form" 111 count pU32Word
+    , propWith seedOv "u64be matches Word64 shift form" 112 count pU64Word
+    , propWith seedOv "u64be matches Int shift form" 113 count pU64Int
+    , propWith seedOv "u32be matches div-without-mod form" 114 count pU32NoMod
+    , propWith seedOv "u64be matches list-comp form" 115 count pU64ListComp
+    , propWith seedOv "foldBE matches shiftL Integer fold" 116 count pFoldBeShift
+    , propWith seedOv "foldBE matches Word64 folds" 117 count pFoldBeW64
+    , propWith seedOv "framing roundtrips" 118 count pFrameRoundtrip
+    , propWith seedOv "u64be matches Word64 div forms" 119 count pU64DivForms
+    , testCase "framing edge vectors" caseFrameEdges
     , testCase "init reserved bits reject" (caseInitReserved count)
     , testCase "verify truncation law" (caseVerifyTrunc count)
     , testCase "next family gate table" caseNextGate
@@ -310,3 +326,186 @@ caseEdges = do
   let oneEmptyWit = MsgOneShotVerify BS.empty BS.empty BS.empty
   assertEqual "oneshot empty witness" (Just oneEmptyWit)
     (decodeMsgOneShot MsgVerify (encodeMsgOneShot oneEmptyWit))
+
+-- ---------------------------------------------------------------------------
+-- Haskoki.Bytes equivalence: the canonical Int div/mod encoders and the
+-- Integer fold match every deleted per-module form bit for bit, over the
+-- full input range (negatives and wide Word64 values included).
+-- ---------------------------------------------------------------------------
+
+-- | Deleted Operation/Codec shift form (via its oneByte helper).
+shiftByte :: Word64 -> Int -> Word8
+shiftByte w s = fromIntegral ((w `shiftR` s) .&. 0xFF)
+
+oracleU16 :: Word16 -> ByteString
+oracleU16 w = BS.pack [shiftByte (fromIntegral w) 8, shiftByte (fromIntegral w) 0]
+
+oracleU32 :: Word32 -> ByteString
+oracleU32 w = BS.pack
+  [ shiftByte (fromIntegral w) 24
+  , shiftByte (fromIntegral w) 16
+  , shiftByte (fromIntegral w) 8
+  , shiftByte (fromIntegral w) 0
+  ]
+
+oracleU64 :: Word64 -> ByteString
+oracleU64 w = BS.pack
+  [ shiftByte w 56
+  , shiftByte w 48
+  , shiftByte w 40
+  , shiftByte w 32
+  , shiftByte w 24
+  , shiftByte w 16
+  , shiftByte w 8
+  , shiftByte w 0
+  ]
+
+-- | Deleted no-mod u16 form (GenMlKem encoder, Tls ctxSuffix).
+oracleU16NoMod :: Int -> ByteString
+oracleU16NoMod n = BS.pack
+  [ fromIntegral (n `div` 256)
+  , fromIntegral (n `mod` 256)
+  ]
+
+-- | Deleted test-suite div-without-mod form (SnapshotSpec/SnapshotProps).
+oracleU32NoMod :: Int -> ByteString
+oracleU32NoMod n = BS.pack
+  [ fromIntegral (n `div` 0x1000000)
+  , fromIntegral (n `div` 0x10000)
+  , fromIntegral (n `div` 0x100)
+  , fromIntegral n
+  ]
+
+-- | Deleted Detached/Recipes Word64-typed 32-bit shift form.
+oracleU32W64 :: Word64 -> ByteString
+oracleU32W64 w = BS.pack
+  [ fromIntegral ((w `shiftR` 24) .&. 0xFF)
+  , fromIntegral ((w `shiftR` 16) .&. 0xFF)
+  , fromIntegral ((w `shiftR` 8) .&. 0xFF)
+  , fromIntegral (w .&. 0xFF)
+  ]
+
+-- | Deleted RecipeOtpSpec Word64 div/mod form.
+oracleWord64be :: Word64 -> ByteString
+oracleWord64be w = BS.pack
+  [ fromIntegral (w `div` 72057594037927936 `mod` 256)
+  , fromIntegral (w `div` 281474976710656 `mod` 256)
+  , fromIntegral (w `div` 1099511627776 `mod` 256)
+  , fromIntegral (w `div` 4294967296 `mod` 256)
+  , fromIntegral (w `div` 16777216 `mod` 256)
+  , fromIntegral (w `div` 65536 `mod` 256)
+  , fromIntegral (w `div` 256 `mod` 256)
+  , fromIntegral (w `mod` 256)
+  ]
+
+-- | Deleted Pbe 256^i list-comprehension form.
+oracleEncodeU64 :: Word64 -> ByteString
+oracleEncodeU64 w = BS.pack
+  [fromIntegral ((w `div` (256 ^ i)) `mod` 256) | i <- ([7, 6 .. 0] :: [Int])]
+
+-- | Deleted list-comprehension shift form (RoutingE2E/OperationSpec specs).
+oracleU64ListComp :: Int -> ByteString
+oracleU64ListComp n =
+  BS.pack [fromIntegral (n `shiftR` s) .&. 0xff | s <- [56, 48 .. 0]]
+
+-- | Deleted Otp shiftL Integer fold.
+oracleFoldShift :: ByteString -> Integer
+oracleFoldShift = BS.foldl' (\a b -> a `shiftL` 8 + fromIntegral b) 0
+
+-- | Deleted Word64 folds (Operation/Codec shiftL\/disjoin, Detached multiply).
+oracleFoldW64Shift :: ByteString -> Word64
+oracleFoldW64Shift = BS.foldl' (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) 0
+
+oracleFoldW64Mul :: ByteString -> Word64
+oracleFoldW64Mul = BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0
+
+pU16Word :: Property
+pU16Word = forAll (arbitrary :: Gen Word16) $ \w ->
+  u16be (fromIntegral w) == oracleU16 w
+
+pU32Word :: Property
+pU32Word = forAll (arbitrary :: Gen Word32) $ \w ->
+  u32be (fromIntegral w) == oracleU32 w
+
+pU64Word :: Property
+pU64Word = forAll (arbitrary :: Gen Word64) $ \w ->
+  u64be (fromIntegral w) == oracleU64 w
+
+pU64Int :: Property
+pU64Int = forAll (arbitrary :: Gen Int) $ \n ->
+  u64be n == oracleU64 (fromIntegral n)
+
+pU32NoMod :: Property
+pU32NoMod = forAll (arbitrary :: Gen Int) $ \n ->
+  u32be n == oracleU32NoMod n
+
+pU64ListComp :: Property
+pU64ListComp = forAll (arbitrary :: Gen Int) $ \n ->
+  u64be n == oracleU64ListComp n
+
+pU64DivForms :: Property
+pU64DivForms = forAll (arbitrary :: Gen Word64) $ \w ->
+  u64be (fromIntegral w) == oracleWord64be w
+    .&&. u64be (fromIntegral w) == oracleEncodeU64 w
+
+pFoldBeShift :: Property
+pFoldBeShift = forAll (qcBytes 12) $ \bs ->
+  foldBE bs == oracleFoldShift bs
+
+pFoldBeW64 :: Property
+pFoldBeW64 = forAll (qcBytes 12) $ \bs ->
+  fromInteger (foldBE bs) == oracleFoldW64Shift bs
+    .&&. fromInteger (foldBE bs) == oracleFoldW64Mul bs
+
+pFrameRoundtrip :: Property
+pFrameRoundtrip =
+  forAll (arbitrary :: Gen Word16) (\w ->
+    foldBE (u16be (fromIntegral w)) == toInteger w
+      .&&. BS.length (u16be (fromIntegral w)) == 2)
+  .&&. forAll (arbitrary :: Gen Word32) (\w ->
+    foldBE (u32be (fromIntegral w)) == toInteger w
+      .&&. BS.length (u32be (fromIntegral w)) == 4)
+  .&&. forAll (arbitrary :: Gen Word64) (\w ->
+    foldBE (u64be (fromIntegral w)) == toInteger w
+      .&&. BS.length (u64be (fromIntegral w)) == 8)
+
+-- | Deterministic edge vectors: zeros, ones, width boundaries,
+-- negatives, and Int\/Word64 extremes hit every deleted form.
+caseFrameEdges :: IO ()
+caseFrameEdges = do
+  let ints = [0, 1, -1, 255, 256, -256, 32767, 32768, 65535, 65536,
+              4294967295, 4294967296, maxBound, minBound] :: [Int]
+      w64s = [0, 1, maxBound, minBound, 0x8000000000000000,
+              0xFFFFFFFFFFFFFFFF, 0x100000000, 0x123456789ABCDEF] :: [Word64]
+  forM_ ints $ \n -> do
+    assertEqual ("u16be edge " ++ show n)
+      (oracleU16 (fromIntegral n)) (u16be n)
+    assertEqual ("u16nomod edge " ++ show n)
+      (oracleU16NoMod n) (u16be n)
+    assertEqual ("u32be edge " ++ show n)
+      (oracleU32 (fromIntegral n)) (u32be n)
+    assertEqual ("u32nomod edge " ++ show n)
+      (oracleU32NoMod n) (u32be n)
+    assertEqual ("u64be edge " ++ show n)
+      (oracleU64 (fromIntegral n)) (u64be n)
+    assertEqual ("u64listcomp edge " ++ show n)
+      (oracleU64ListComp n) (u64be n)
+  forM_ w64s $ \w -> do
+    assertEqual ("u64be word edge " ++ show w)
+      (oracleU64 w) (u64be (fromIntegral w))
+    assertEqual ("u32be word64 edge " ++ show w)
+      (oracleU32W64 w) (u32be (fromIntegral w))
+    assertEqual ("word64be edge " ++ show w)
+      (oracleWord64be w) (u64be (fromIntegral w))
+    assertEqual ("encodeU64 edge " ++ show w)
+      (oracleEncodeU64 w) (u64be (fromIntegral w))
+  let blobs = [BS.empty, BS.singleton 0, BS.singleton 0xFF,
+               BS.replicate 8 0xFF, BS.replicate 12 0xFF,
+               BS.pack [1..12], BS.pack [0x80, 0x00, 0x80, 0x00]]
+  forM_ blobs $ \bs -> do
+    assertEqual ("foldBE shift " ++ show bs)
+      (oracleFoldShift bs) (foldBE bs)
+    assertEqual ("foldBE w64shift " ++ show bs)
+      (oracleFoldW64Shift bs) (fromInteger (foldBE bs))
+    assertEqual ("foldBE w64mul " ++ show bs)
+      (oracleFoldW64Mul bs) (fromInteger (foldBE bs))

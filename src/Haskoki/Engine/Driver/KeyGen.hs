@@ -27,6 +27,7 @@ import Haskoki.Engine.Backend
   , PqcKemAlg (..)
   , PqcSigAlg (..)
   )
+import Haskoki.Engine.Driver.Common (keyBytesOf)
 import Haskoki.Engine.Driver.Result (toCryptoError)
 import Haskoki.Operation.Effect (CryptoError (..), CryptoResult (..))
 import Haskoki.Operation.Kem (KemAlg (..))
@@ -150,14 +151,9 @@ toPrefixedPair prefix (EngineOk (priv, mPub)) = toKeyPair (EngineOk (prefixMat p
 toPrefixedPair _ (EngineFail err) = GotCryptoError (toCryptoError err)
 
 toKeyPair :: EngineResult (KeyMaterial, Maybe KeyMaterial) -> CryptoResult
-toKeyPair (EngineOk (priv, mPub)) = case (keyBytes priv, traverse keyBytes mPub) of
+toKeyPair (EngineOk (priv, mPub)) = case (keyBytesOf priv, traverse keyBytesOf mPub) of
   (Just p, Just q) -> GotBytes (encodeKeyPair p q)
   _ -> GotCryptoError (CryptoFailed "driver: keygen returned an unexportable reference")
-  where
-    keyBytes :: KeyMaterial -> Maybe ByteString
-    keyBytes (KeyBytes bs) = Just bs
-    keyBytes (KeyDer bs) = Just bs
-    keyBytes (KeyRefMaterial _) = Nothing
 toKeyPair (EngineFail err) = GotCryptoError (toCryptoError err)
 
 -- | ML-KEM parameter-set numbers onto backend algorithms.

@@ -14,6 +14,7 @@ evidence.
 {-# LANGUAGE OverloadedStrings #-}
 module SlotPhaseSpec (spec) where
 
+import Control.Exception (evaluate)
 import Control.Monad (forM)
 import qualified Data.ByteString as BS
 import Data.List (isInfixOf)
@@ -217,7 +218,9 @@ caseNoRawPhaseFields = do
   files <- filter (/= "tests/model/SlotPhaseSpec.hs")
     . concat <$> mapM walkHs ["core", "src", "ffi", "tests", "app"]
   hits <- fmap concat $ forM files $ \fp -> do
+    -- Strict read (see SlotInsertSpec): never hold the whole slurp open.
     body <- readFile fp
+    _ <- evaluate (length body)
     pure
       [ (fp, n)
       | (n, ln) <- zip [1 :: Int ..] (lines body)

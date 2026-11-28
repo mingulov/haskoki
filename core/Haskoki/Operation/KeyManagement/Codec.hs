@@ -22,6 +22,8 @@ import Data.ByteString (ByteString)
 import Control.Monad (guard)
 import Data.Word (Word8)
 
+import Haskoki.Bytes (foldBE, u16be, u32be, u64be)
+
 
 -- | Key-generation arguments framed for the driver: AES length in
 -- bytes, EC curve name, RSA modulus bits plus public exponent, the
@@ -71,8 +73,7 @@ encodeGenArgs args = case args of
   GenAes n -> BS.singleton 0 <> BS.singleton (fromIntegral n)
   GenEc curve -> BS.singleton 1 <> curve
   GenRsa bits e -> BS.singleton 2 <> u64be (fromIntegral bits) <> u64be (fromIntegral e)
-  GenMlKem alg -> BS.singleton 3 <> BS.pack
-    [fromIntegral (alg `div` 256), fromIntegral (alg `mod` 256)]
+  GenMlKem alg -> BS.singleton 3 <> u16be alg
   GenBytes n -> BS.singleton 4 <> BS.singleton (fromIntegral n)
   GenDsaParams l n -> BS.singleton 5 <> u16be l <> u16be n
   GenDsaKeypair der -> BS.singleton 6 <> u32be (BS.length der) <> der
@@ -160,14 +161,7 @@ decodeGenArgs bs = case BS.uncons bs of
 
 -- | Frame authenticated-wrap parameters: @ivLen:u32be iv aad@.
 encodeWrapParams :: ByteString -> ByteString -> ByteString
-encodeWrapParams iv aad =
-  let n = BS.length iv
-  in BS.pack
-    [ fromIntegral (n `div` 16777216 `mod` 256)
-    , fromIntegral (n `div` 65536 `mod` 256)
-    , fromIntegral (n `div` 256 `mod` 256)
-    , fromIntegral (n `mod` 256)
-    ] <> iv <> aad
+encodeWrapParams iv aad = u32be (BS.length iv) <> iv <> aad
 
 -- | Parse framed authenticated-wrap parameters. A short prefix or
 -- an overrun length fails.
@@ -184,14 +178,7 @@ decodeWrapParams bs
 -- | Frame a keygen answer: @privLen:u32be priv pub?@. A single key
 -- carries no public half; a pair always carries both.
 encodeKeyPair :: ByteString -> Maybe ByteString -> ByteString
-encodeKeyPair priv mPub =
-  let n = BS.length priv
-  in BS.pack
-    [ fromIntegral (n `div` 16777216 `mod` 256)
-    , fromIntegral (n `div` 65536 `mod` 256)
-    , fromIntegral (n `div` 256 `mod` 256)
-    , fromIntegral (n `mod` 256)
-    ] <> priv <> maybe BS.empty id mPub
+encodeKeyPair priv mPub = u32be (BS.length priv) <> priv <> maybe BS.empty id mPub
 
 -- | Parse a framed keygen answer. A short length prefix, a length
 -- overrun, or a length that lies all fail.
@@ -206,38 +193,7 @@ decodeKeyPair bs
         else let (priv, pub) = BS.splitAt n rest
              in Just (priv, if BS.null pub then Nothing else Just pub)
 
--- | 2-byte big-endian framing.
-u16be :: Int -> ByteString
-u16be n = BS.pack
-  [ fromIntegral (n `div` 256 `mod` 256)
-  , fromIntegral (n `mod` 256)
-  ]
-
--- | 4-byte big-endian framing.
-u32be :: Int -> ByteString
-u32be n = BS.pack
-  [ fromIntegral (n `div` 16777216 `mod` 256)
-  , fromIntegral (n `div` 65536 `mod` 256)
-  , fromIntegral (n `div` 256 `mod` 256)
-  , fromIntegral (n `mod` 256)
-  ]
-
--- | 8-byte big-endian framing.
-u64be :: Int -> ByteString
-u64be n = BS.pack
-  [ fromIntegral (n `div` 72057594037927936 `mod` 256)
-  , fromIntegral (n `div` 281474976710656 `mod` 256)
-  , fromIntegral (n `div` 1099511627776 `mod` 256)
-  , fromIntegral (n `div` 4294967296 `mod` 256)
-  , fromIntegral (n `div` 16777216 `mod` 256)
-  , fromIntegral (n `div` 65536 `mod` 256)
-  , fromIntegral (n `div` 256 `mod` 256)
-  , fromIntegral (n `mod` 256)
-  ]
-
--- | Big-endian fold computed in 'Integer' so large values never wrap.
-foldBE :: ByteString -> Integer
-foldBE = BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0
+-- Integer framing lives in Haskoki.Bytes (u16be/u32be/u64be/foldBE).
 
 -- | Pad one wrap payload with PKCS#7. This mirrors
 -- 'Haskoki.Operation.Cipher.pkcs7Pad' exactly (duplicated because

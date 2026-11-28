@@ -107,11 +107,13 @@ compSpec :: WrapCompEcdhRecipe -> EcdhSpec
 compSpec r = if wceCofactor r then EcdhCofactor else EcdhPlain
 
 -- | Raw bytes out of key material (DER halves and byte seeds;
--- backend references carry no bytes here).
+-- backend references carry no bytes here). Arms are explicit so a
+-- future 'KeyMaterial' constructor fails at compile time instead
+-- of silently mapping to 'Nothing'.
 keyBytesOf :: KeyMaterial -> Maybe ByteString
 keyBytesOf (KeyBytes b) = Just b
 keyBytesOf (KeyDer b) = Just b
-keyBytesOf _ = Nothing
+keyBytesOf (KeyRefMaterial _) = Nothing
 
 -- | Pub-from-priv extraction: the backend answers the DER
 -- SPKI for the base half (any material shape the backend

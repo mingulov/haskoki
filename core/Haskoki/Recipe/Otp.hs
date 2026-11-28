@@ -51,6 +51,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Word (Word64, Word8)
 
+import Haskoki.Bytes (foldBE)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
@@ -96,9 +97,6 @@ decodeHotpParams bs
       in if digits >= 6 && digits <= 8
            then Just (fromInteger (foldBE bCounter), fromInteger digits)
            else Nothing
-  where
-    foldBE :: ByteString -> Integer
-    foldBE = BS.foldl' (\a b -> a `shiftL` 8 + fromIntegral b) 0
 
 -- | HOTP parameter validation: the strict decode accepts.
 hotpParamsValid :: OtpRecipe -> ByteString -> Bool

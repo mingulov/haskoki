@@ -1,6 +1,6 @@
 cabal-version:      3.12
 name:               haskoki
-version:            0.6.3.0
+version:            0.6.4.0
 synopsis:           Haskell PKCS#11 soft token (demonstrator)
 description:
   A Haskell soft token that makes the PKCS#11 surface (APIs 2.40, 3.0, 3.1
@@ -130,7 +130,11 @@ library haskoki-core
     Haskoki.Snapshot
     Haskoki.Attribute
     Haskoki.Attribute.Generated
+    Haskoki.Bytes
     Haskoki.Der
+    Haskoki.Der.Primitives
+    Haskoki.Der.Classical
+    Haskoki.Der.Pqc
     Haskoki.Object
     Haskoki.Object.TemplateValidation
     Haskoki.Object.TemplateRules
@@ -150,6 +154,9 @@ library haskoki-core
     Haskoki.Operation.Effect
     Haskoki.Operation.Dual
     Haskoki.Operation.Derive
+    Haskoki.Operation.Derive.Framing
+    Haskoki.Operation.Derive.Resolution
+    Haskoki.Operation.Derive.Stamping
     Haskoki.Operation.Kem
     Haskoki.Operation.KeyManagement
     Haskoki.Operation.KeyManagement.Codec
@@ -256,6 +263,10 @@ library haskoki-internal
     Haskoki.Engine.Driver.Xcbc
     Haskoki.Engine.OpenSSL4
     Haskoki.Engine.Synthetic
+    Haskoki.Engine.Synthetic.Framing
+    Haskoki.Engine.Synthetic.Capabilities
+    Haskoki.Engine.Synthetic.PureOps
+    Haskoki.Engine.Synthetic.Codecs
     Haskoki.Ctl
     Haskoki.Ctl.Store
     Haskoki.FFI.Async
@@ -653,6 +664,7 @@ test-suite haskoki-model-tests
     OwnershipCounters
     StormBudget
     TestSession
+    AcquisitionCounters
     AdmissionSpec
     AsyncSpec
     ByteFormatSpec
@@ -672,6 +684,12 @@ test-suite haskoki-model-tests
     ErrorUnifySpec
     EventsSpec
     FfiAsyncSpec
+    FfiAsync.Fixtures
+    FfiAsync.Open
+    FfiAsync.Admission
+    FfiAsync.Handoff
+    FfiAsync.Standalone
+    FfiAsync.Retirement
     FfiHygieneSpec
     JobStepSpec
     LeaseScopeSpec
@@ -784,6 +802,7 @@ test-suite haskoki-engine-tests
   include-dirs:     spec/vendor cbits
   other-modules:
     OwnershipCounters
+    AcquisitionCounters
     AsyncEngineSpec
     CertificateEngineSpec
     CryptoExportSpec

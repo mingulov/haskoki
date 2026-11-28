@@ -12,6 +12,7 @@ evidence.
 -}
 module SlotInsertSpec (spec) where
 
+import Control.Exception (evaluate)
 import Control.Monad (forM)
 import qualified Data.ByteString as BS
 import Data.List (isInfixOf)
@@ -183,7 +184,11 @@ caseNoRawInsertion = do
   files <- filter (/= "tests/model/SlotInsertSpec.hs")
     . concat <$> mapM walkHs ["core", "src", "ffi", "tests", "app"]
   hits <- fmap concat $ forM files $ \fp -> do
+    -- Strict read: a lazy 'readFile' here holds every slurped file
+    -- open until the hits force, exhausting fds under parallel tasty
+    -- workers as the tree grows.
     body <- readFile fp
+    _ <- evaluate (length body)
     pure
       [ (fp, n)
       | (n, ln) <- zip [1 :: Int ..] (lines body)

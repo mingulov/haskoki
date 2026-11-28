@@ -65,6 +65,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Word (Word64)
 
+import Haskoki.Bytes (u16be, u64be)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
@@ -170,18 +171,12 @@ maxPbeIters = 10000000
 maxPbeMaterial :: Int
 maxPbeMaterial = 65536
 
-encodeU16 :: Int -> ByteString
-encodeU16 n = BS.pack [fromIntegral ((n `div` 256) `mod` 256), fromIntegral (n `mod` 256)]
-
 decodeU16 :: ByteString -> Maybe (Int, ByteString)
 decodeU16 bs
   | BS.length bs < 2 = Nothing
   | otherwise =
       let (w, rest) = BS.splitAt 2 bs
       in Just (BS.foldl' (\a b -> a * 256 + fromIntegral b) 0 w, rest)
-
-encodeU64 :: Word64 -> ByteString
-encodeU64 w = BS.pack [fromIntegral ((w `div` (256 ^ i)) `mod` 256) | i <- ([7, 6 .. 0] :: [Int])]
 
 decodeU64 :: ByteString -> Maybe (Word64, ByteString)
 decodeU64 bs
@@ -194,9 +189,9 @@ decodeU64 bs
 -- saltLen:u16be salt@.
 encodePbeParams :: Word64 -> ByteString -> ByteString -> ByteString
 encodePbeParams iters pw salt =
-  encodeU64 iters
-    <> encodeU16 (BS.length pw) <> pw
-    <> encodeU16 (BS.length salt) <> salt
+  u64be (fromIntegral iters)
+    <> u16be (BS.length pw) <> pw
+    <> u16be (BS.length salt) <> salt
 
 -- | Decode the canonical frame ('Nothing' on truncation or
 -- trailing bytes).

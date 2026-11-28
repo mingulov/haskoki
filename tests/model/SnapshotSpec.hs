@@ -14,6 +14,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Bytes (u32be)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -730,23 +731,16 @@ forbiddenPatterns =
   [ ("PTR tag", "PTR\0")
   , ("HDL tag", "HDL\0")
   , ("RID tag", "RID\0")
-  , ("BE32 canary", be32 0xDEADBEEF)
+  , ("BE32 canary", u32be 0xDEADBEEF)
   , ("BE64 canary", be64 0xDEADBEEF)
-  , ("BE32 object id", be32 9)
+  , ("BE32 object id", u32be 9)
   , ("BE64 object id", be64 9)
-  , ("BE32 handle", be32 3)
+  , ("BE32 handle", u32be 3)
   , ("BE64 handle", be64 3)
   ]
   where
-    be32 :: Int -> BS.ByteString
-    be32 n = BS.pack
-      [ fromIntegral (n `div` 0x1000000)
-      , fromIntegral (n `div` 0x10000)
-      , fromIntegral (n `div` 0x100)
-      , fromIntegral n
-      ]
     be64 :: Int -> BS.ByteString
-    be64 n = BS.replicate 4 0x00 <> be32 n
+    be64 n = BS.replicate 4 0x00 <> u32be n
 
 caseNoPointers :: IO ()
 caseNoPointers = do
@@ -993,15 +987,6 @@ caseRestoreGrantBoundDual = do
 -- ---------------------------------------------------------------------------
 -- Geometry revalidation: decode admits exactly what init admits
 -- ---------------------------------------------------------------------------
-
--- | Big-endian u32, mirroring the snapshot codec.
-u32be :: Int -> BS.ByteString
-u32be n = BS.pack
-  [ fromIntegral (n `div` 0x1000000)
-  , fromIntegral (n `div` 0x10000)
-  , fromIntegral (n `div` 0x100)
-  , fromIntegral n
-  ]
 
 -- | Replace the 4 bytes ending @back@ bytes from the end (a trailing
 -- u32 field) with the big-endian encoding of @n@.

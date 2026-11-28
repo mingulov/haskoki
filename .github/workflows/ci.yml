@@ -234,6 +234,38 @@ jobs:
           python3 scripts/test-demo-shards.py
           python3 scripts/test-shell-config.py
           python3 scripts/publish-coverage.py --check
+      - name: HLint ratchet (no new hints)
+        run: |
+          set -euo pipefail
+          # Pinned HLint binary (hash = bytes served by github.com over
+          # TLS on 2026-11-28; no upstream checksum file is published).
+          # Ratchet: the outstanding-hint count must not grow. Lower
+          # HLINT_MAX when cleanups land; never raise it for new code.
+          HLINT_VER=3.10
+          HLINT_SHA=ccabc8802a58154699a3583b8dddc5ea2e6d65753a62c45c0e80088ebb16b42b
+          HLINT_MAX=1646
+          cd /tmp
+          curl -fsSLO "https://github.com/ndmitchell/hlint/releases/download/v${HLINT_VER}/hlint-${HLINT_VER}-x86_64-linux.tar.gz"
+          echo "$HLINT_SHA  hlint-${HLINT_VER}-x86_64-linux.tar.gz" | sha256sum -c -
+          tar xzf "hlint-${HLINT_VER}-x86_64-linux.tar.gz"
+          cd "$GITHUB_WORKSPACE"
+          rc=0
+          /tmp/hlint-${HLINT_VER}/hlint -j src core tests test client app tools ffi \
+            > /tmp/hlint.log 2> /tmp/hlint.err || rc=$?
+          summary=$(tail -n 1 /tmp/hlint.log)
+          if [ "$summary" = "No hints" ]; then n=0
+          elif [[ "$summary" =~ ^([0-9]+)\ hints?$ ]]; then n=${BASH_REMATCH[1]}
+          else
+            echo "::error::unrecognised hlint summary (rc=$rc): '$summary'"
+            tail -40 /tmp/hlint.log; cat /tmp/hlint.err; exit 1
+          fi
+          if [ "$rc" -gt 1 ]; then echo "::error::hlint rc=$rc"; cat /tmp/hlint.err; exit 1; fi
+          echo "hlint hints: $n (max $HLINT_MAX)"
+          if [ "$n" -gt "$HLINT_MAX" ]; then
+            echo "::error::HLint hints grew to $n (max $HLINT_MAX); fix new hints or pay down old ones"
+            tail -40 /tmp/hlint.log
+            exit 1
+          fi
       - name: Build and test
         run: |
           set -euo pipefail

@@ -630,19 +630,56 @@ MODSIZE_SKIP_PARTS = ("dist-newstyle",)
 MODSIZE_ALLOW = {
     "src/Haskoki/Engine/OpenSSL4.hs":
         (2393, "owner-call skip: FFI-adjacent, weak seams"),
-    "src/Haskoki/Engine/Synthetic.hs":
-        (1958, "follow-up candidate, not yet split"),
     "core/Haskoki/Transition.hs":
         (1814, "owner-call skip: weak seams"),
     "core/Haskoki/Registry.hs":
         (1766, "owner-call skip: weak seams"),
-    "core/Haskoki/Der.hs":
-        (1498, "follow-up candidate, not yet split"),
-    "core/Haskoki/Operation/Derive.hs":
-        (1434, "follow-up candidate, not yet split"),
-    "tests/model/FfiAsyncSpec.hs":
-        (4063, "out of the 0.6.3 test-split scope (3 files)"),
 }
+
+# Split-family import confinement (0.6.4 guardrail): a split child's
+# module may be imported only by its shell and its sibling children.
+# child-prefix: (shell path, family dir). Prefixes match longest-first
+# so nested families (Storage.SQLite) win over their parents; a prefix
+# without a trailing dot is an exact module match (shared support).
+# Deliberately NOT pinned: Haskoki.Runtime.Storage.* (Memory/SQLite/
+# Preflight are public sub-APIs imported across suites by design).
+FAMILY_CHILDREN = {
+    "Haskoki.Der.":
+        ("core/Haskoki/Der.hs", "core/Haskoki/Der/"),
+    "Haskoki.Operation.Derive.":
+        ("core/Haskoki/Operation/Derive.hs",
+         "core/Haskoki/Operation/Derive/"),
+    "Haskoki.Engine.Synthetic.":
+        ("src/Haskoki/Engine/Synthetic.hs",
+         "src/Haskoki/Engine/Synthetic/"),
+    "Haskoki.Engine.Driver.":
+        ("src/Haskoki/Engine/Driver.hs", "src/Haskoki/Engine/Driver/"),
+    "Haskoki.Operation.KeyManagement.":
+        ("core/Haskoki/Operation/KeyManagement.hs",
+         "core/Haskoki/Operation/KeyManagement/"),
+    "Haskoki.Runtime.Storage.SQLite.":
+        ("src/Haskoki/Runtime/Storage/SQLite.hs",
+         "src/Haskoki/Runtime/Storage/SQLite/"),
+    "Haskoki.Runtime.Async.":
+        ("src/Haskoki/Runtime/Async.hs", "src/Haskoki/Runtime/Async/"),
+    "Haskoki.Runtime.Detached.":
+        ("src/Haskoki/Runtime/Detached.hs",
+         "src/Haskoki/Runtime/Detached/"),
+    "Haskoki.Object.":
+        ("core/Haskoki/Object.hs", "core/Haskoki/Object/"),
+    "FfiAsync.":
+        ("tests/model/FfiAsyncSpec.hs", "tests/model/FfiAsync/"),
+    "KeyManagement.":
+        ("tests/model/KeyManagementSpec.hs", "tests/model/KeyManagement/"),
+    "OpenSSL.":
+        ("tests/engine/OpenSSLSpec.hs", "tests/engine/OpenSSL/"),
+    "Store.":
+        ("tests/storage/StoreSpec.hs", "tests/storage/Store/"),
+    "AcquisitionCounters":
+        ("tests/support/AcquisitionCounters.hs", "tests/"),
+}
+FAMILY_IMPORT_RE = re.compile(r"^import\s+(?:qualified\s+)?"
+                              r"(?:\"[^\"]+\"\s+)?([\w.]+)")
 
 
 def _modsize_files(root):
@@ -704,6 +741,59 @@ def check_modsize(root):
             errors.append("modsize: %s shrank to %d lines "
                           "(pinned at %d): lower the pin"
                           % (rel, n, pinned))
+    return errors
+
+
+def check_family(root, families=None):
+    """Returns error strings for cross-family child imports."""
+    errors = []
+    fams = FAMILY_CHILDREN if families is None else families
+    prefixes = sorted(fams, key=len, reverse=True)
+    root = Path(root)
+    for prefix, (shell, famdir) in sorted(fams.items()):
+        if not (root / shell).is_file():
+            errors.append("family: stale entry %s: shell %s is gone"
+                          % (prefix, shell))
+        if not (root / famdir).is_dir():
+            errors.append("family: stale entry %s: dir %s is gone"
+                          % (prefix, famdir))
+    if errors:
+        return errors
+    try:
+        files = set()
+        for ext in MODSIZE_EXTS:
+            files.update(sorted(root.rglob(ext)))
+        files = sorted(files)
+    except OSError as exc:
+        return ["family: cannot walk %s: %s" % (root, exc)]
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        parts = rel.split("/")
+        if any(p.startswith(".") or p in MODSIZE_SKIP_PARTS
+               for p in parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            errors.append("family: cannot read %s: %s" % (rel, exc))
+            continue
+        for line in text.splitlines():
+            m = FAMILY_IMPORT_RE.match(line)
+            if not m:
+                continue
+            mod = m.group(1)
+            for prefix in prefixes:
+                if prefix.endswith("."):
+                    if not mod.startswith(prefix):
+                        continue
+                elif mod != prefix:
+                    continue
+                shell, famdir = fams[prefix]
+                if rel != shell and not rel.startswith(famdir):
+                    errors.append(
+                        "family: %s imports %s outside its family "
+                        "(shell %s, dir %s)" % (rel, mod, shell, famdir))
+                break
     return errors
 
 
@@ -1034,6 +1124,77 @@ def _self_test_modsize():
         errs = check_modsize(root)
         assert len(errs) == 1 and "test/Main.hs" in errs[0], \
             "test/ counts, dist-newstyle/ does not"
+    # Family confinement: shell + siblings pass, outsiders fail,
+    # longest-prefix wins, exact support match, dist-newstyle skipped.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "core" / "Haskoki" / "Der").mkdir(parents=True)
+        (root / "core" / "Haskoki" / "Der.hs").write_text(
+            "module Haskoki.Der where\nimport Haskoki.Der.Classical\n")
+        (root / "core" / "Haskoki" / "Der" / "Classical.hs").write_text(
+            "module Haskoki.Der.Classical where\n"
+            "import Haskoki.Der.Primitives\n")
+        (root / "core" / "Haskoki" / "Der" / "Primitives.hs").write_text(
+            "module Haskoki.Der.Primitives where\n")
+        (root / "core" / "Haskoki" / "Other.hs").write_text(
+            "module Haskoki.Other where\n")
+        fams = {"Haskoki.Der.":
+                    ("core/Haskoki/Der.hs", "core/Haskoki/Der/"),
+                "AcquisitionCounters":
+                    ("tests/support/AcquisitionCounters.hs", "tests/")}
+        (root / "tests" / "support").mkdir(parents=True)
+        (root / "tests" / "support" / "AcquisitionCounters.hs").write_text(
+            "module AcquisitionCounters where\n")
+        assert check_family(root, families=fams) == [], \
+            "shell + sibling imports pass"
+        (root / "core" / "Haskoki" / "Other.hs").write_text(
+            "module Haskoki.Other where\n"
+            "import qualified Haskoki.Der.Classical as C\n")
+        errs = check_family(root, families=fams)
+        assert len(errs) == 1 and "Other.hs" in errs[0] \
+            and "Haskoki.Der.Classical" in errs[0], \
+            "outside import of a split child must fail"
+        (root / "core" / "Haskoki" / "Other.hs").write_text(
+            "module Haskoki.Other where\n")
+        (root / "tests" / "Probe.hs").write_text(
+            "module Probe where\nimport AcquisitionCounters\n")
+        assert check_family(root, families=fams) == [], \
+            "support module importable from tests/"
+        (root / "src").mkdir()
+        (root / "src" / "Prod.hs").write_text(
+            "module Prod where\nimport AcquisitionCounters\n")
+        assert check_family(root, families=fams) != [], \
+            "support module importable from src/ must fail"
+        (root / "src" / "Prod.hs").unlink()
+        (root / "src" / "dist-newstyle").mkdir()
+        (root / "src" / "dist-newstyle" / "Stale.hs").write_text(
+            "module Stale where\nimport Haskoki.Der.Classical\n")
+        assert check_family(root, families=fams) == [], \
+            "dist-newstyle/ is skipped"
+    # Nested pair (longest-prefix wins) + package-qualified form.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "s").mkdir()
+        (root / "s" / "P.hs").write_text("module P where\n")
+        (root / "s" / "P").mkdir()
+        (root / "s" / "P" / "Q.hs").write_text("module P.Q where\n")
+        (root / "s" / "P" / "Q").mkdir()
+        (root / "s" / "P" / "Q" / "R.hs").write_text(
+            "module P.Q.R where\n")
+        (root / "s" / "Out.hs").write_text(
+            "module Out where\nimport \"pkg\" P.Q.R\n")
+        fams = {"P.": ("s/P.hs", "s/P/"),
+                "P.Q.": ("s/P/Q.hs", "s/P/Q/")}
+        errs = check_family(root, families=fams)
+        assert len(errs) == 1 and "P.Q.R" in errs[0] \
+            and "s/P/Q.hs" in errs[0], \
+            "nested child resolves against the longest prefix"
+        (root / "s" / "Out.hs").write_text("module Out where\n")
+        assert check_family(root, families=fams) == [], \
+            "no outside importers pass"
+        fams["Gone."] = ("s/Gone.hs", "s/Gone/")
+        assert check_family(root, families=fams) != [], \
+            "stale shell/dir entries must fail"
 
 
 def main():
@@ -1041,11 +1202,13 @@ def main():
         return self_test()
     errors = check(CABAL.read_text())
     errors.extend(check_modsize(REPO))
+    errors.extend(check_family(REPO))
     if errors:
         for e in errors:
             print("exposure: %s" % e)
         return 1
-    print("exposure: ok (no public Haskell library; modules within budget)")
+    print("exposure: ok (no public Haskell library; modules within "
+          "budget; split families confined)")
     return 0
 
 

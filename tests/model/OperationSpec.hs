@@ -10,7 +10,7 @@ visibility, usage permission, auth marking); the context-auth gate
 {-# LANGUAGE OverloadedStrings #-}
 module OperationSpec (spec) where
 
-import Data.Bits ((.&.), complement, shiftR)
+import Data.Bits (complement)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
@@ -18,6 +18,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Bytes (u64be)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -412,9 +413,6 @@ gcmArgs = InitArgs
   , iaCipher = Just (CipherSpec 1 False)
   , iaRecover = Nothing
   }
-  where
-    u64be :: Int -> ByteString
-    u64be n = BS.pack [fromIntegral (n `shiftR` s) .&. 0xff | s <- [56, 48 .. 0]]
 
 -- | Fake stream resource for planner-level tests, which bypass the
 -- init-alloc finish that records the real one.

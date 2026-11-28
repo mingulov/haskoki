@@ -9,7 +9,7 @@
  *       outl1+outl2 bound; tampered tags refuse with AUTHFAIL and
  *       *out untouched.
  *   findings 1+2: DH derive: ffdhe2048 KAT (A->B agrees with the pinned CLI
- *       secret from tests/engine/OpenSSL/Fixtures.hs); bad key/peer/param
+ *       secret from tests/engine/OpenSSL/Agreement.hs); bad key/peer/param
  *       inputs refuse with the documented codes and *out untouched.
  *   key confusion: every RSA-family shim (sign, verify, PSS, X9.31,
  *       OAEP, PKCS#1 enc/dec, X.509 enc/dec/sign/verify) refuses a
@@ -145,7 +145,7 @@ typedef long (*fn_ecdh_derive)(void *ctx, const char *propq,
                                const unsigned char *peer_der, size_t peer_len,
                                int cofactor, unsigned char **out);
 
-/* DH KAT (S10e fixtures, tests/engine/OpenSSL/Fixtures.hs): two ffdhe2048
+/* DH KAT (S10e fixtures, tests/engine/OpenSSL/Agreement.hs): two ffdhe2048
  * pairs from pinned-CLI genpkey; secret is pinned-CLI pkeyutl output. */
 static const unsigned char kPrivA[] = {
   0x30, 0x82, 0x01, 0x3f, 0x02, 0x01, 0x00, 0x30, 0x82, 0x01, 0x17, 0x06,

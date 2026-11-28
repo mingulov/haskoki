@@ -40,6 +40,7 @@ import qualified Data.ByteString as BS
 import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute.Generated (mustKeyTypeId)
+import Haskoki.Bytes (u16be)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
@@ -102,9 +103,6 @@ tlsKeyMatRecipeFor mid =
     (r : _) -> Just r
     [] -> Nothing
 
-encodeU16 :: Int -> ByteString
-encodeU16 n = BS.pack [fromIntegral ((n `div` 256) `mod` 256), fromIntegral (n `mod` 256)]
-
 decodeU16 :: ByteString -> Maybe (Int, ByteString)
 decodeU16 bs
   | BS.length bs < 2 = Nothing
@@ -117,9 +115,9 @@ decodeU16 bs
 encodeTlsKeyMatParams :: Word8 -> Int -> Int -> Int -> ByteString -> ByteString -> ByteString
 encodeTlsKeyMatParams prf mac key iv cr sr =
   BS.singleton prf
-    <> encodeU16 mac <> encodeU16 key <> encodeU16 iv
-    <> encodeU16 (BS.length cr) <> cr
-    <> encodeU16 (BS.length sr) <> sr
+    <> u16be mac <> u16be key <> u16be iv
+    <> u16be (BS.length cr) <> cr
+    <> u16be (BS.length sr) <> sr
 
 -- | Decode the canonical frame ('Nothing' on truncation,
 -- trailing bytes, or over-ceiling material).

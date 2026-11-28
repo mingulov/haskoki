@@ -15,7 +15,7 @@ module Store.Files
   , testV2RefusesWithoutWriting
   ) where
 
-import Control.Exception (bracket, bracket_)
+import Control.Exception (bracket, bracket_, evaluate)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
@@ -151,7 +151,9 @@ testOpenFdSourceGate = do
   assertBool "rule 1: guardFlags must be defined with cloexec = True on one line"
     (any (\(_, c, _) -> "guardFlags = " `isInfixOf` c && "cloexec = True" `isInfixOf` c) (codeLines obody))
   forbidden <- fmap concat $ mapM (\f -> do
+    -- Strict read (see SlotInsertSpec): never hold the whole slurp open.
     txt <- readFile f
+    _ <- evaluate (length txt)
     pure [(f, n, l) | (n, c, l) <- codeLines txt
          , any (`isInfixOf` c) ["setFdOption", "F_SETFD", "cloexec = False"]]) files
   assertEqual "rule 2: setFdOption / F_SETFD / cloexec = False (file, line, text)" [] forbidden

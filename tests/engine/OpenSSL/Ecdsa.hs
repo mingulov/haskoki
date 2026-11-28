@@ -483,3 +483,31 @@ caseEcdsaOffCurve = withBackend $ \env -> do
     sign env ecdsaSpec (KeyDer "bogus") ecMsg
   expectBadKey "garbage verify refused" =<<
     verify env ecdsaSpec (KeyDer "bogus") ecMsg ecSigDer
+
+
+-- | Point-at-infinity fixture: Wycheproof
+-- @ecdsa_brainpoolP224r1_sha224_test.json@ tc360 (invalid,
+-- PointDuplication/ArithmeticError), PKCS#11-shaped exactly as the
+-- lane sends it — 28-byte SHA-224 digest, 56-byte raw r||s with
+-- both halves in range. The verification math lands on the point
+-- at infinity, which X9.62 §7.4.2 says REJECTS; OpenSSL reports
+-- it as an internal error (rc -1), so the shim must map that one
+-- degenerate-math reason to a mismatch verdict.
+ecInf224Pub, ecInf224Digest, ecInf224Sig :: ByteString
+ecInf224Pub = hex $ concat
+  [ "3052301406072a8648ce3d020106092b2403030208010105033a0004d4b6e51"
+  , "12406fb743b6bb55f49ea2030d904420831ebddacd67bba89652265384b75d85"
+  , "0e7c27f4e33ed6c576df0ff969470a9ef25ffafcd"
+  ]
+ecInf224Digest = hex "753bb40078934081d7bd113ec49b19ef09d1ba33498690516d4d122c"
+ecInf224Sig = hex $ concat
+  [ "6be09a551321b343150c1812bae87dcc688b5e25b6ef5e51d2d3c9cf47eb11"
+  , "8e0cc1222cb8b2bab72745a932f05ce96e79f4e98be1e2868a"
+  ]
+
+ecBp160Pub :: ByteString
+ecBp160Pub = hex $ concat
+  [ "3042301406072a8648ce3d020106092b2403030208010101032a0004e471b91d"
+  , "45036f84037b7e2c3804348be1455d93662b6814bfeb22a8acb58b5ae6f583f2"
+  , "a0de1081"
+  ]

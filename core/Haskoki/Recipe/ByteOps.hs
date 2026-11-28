@@ -33,12 +33,13 @@ module Haskoki.Recipe.ByteOps
   , maxByteOpsMaterial
   ) where
 
-import Data.Bits (shiftL, shiftR, (.&.))
+import Data.Bits (shiftL)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Word (Word64)
 
 import Haskoki.Attribute.Generated (mustKeyTypeId)
+import Haskoki.Bytes (u64be)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
@@ -74,10 +75,6 @@ maxByteOpsOutput = 65536
 maxByteOpsMaterial :: Int
 maxByteOpsMaterial = 65536
 
-encodeWord64 :: Int -> ByteString
-encodeWord64 n =
-  BS.pack [fromIntegral ((n `shiftR` s) .&. 0xff) | s <- [56, 48 .. 0]]
-
 decodeWord64 :: ByteString -> Maybe (Int, ByteString)
 decodeWord64 bs = do
   (h, r) <- Just (BS.splitAt 8 bs)
@@ -93,9 +90,9 @@ decodeSized bs = do
 -- | Encode the canonical frame.
 encodeByteOpsParams :: Word64 -> Word64 -> ByteString -> ByteString
 encodeByteOpsParams aux off blob =
-  encodeWord64 (fromIntegral aux)
-    <> encodeWord64 (fromIntegral off)
-    <> encodeWord64 (BS.length blob) <> blob
+  u64be (fromIntegral aux)
+    <> u64be (fromIntegral off)
+    <> u64be (BS.length blob) <> blob
 
 -- | Decode the canonical frame ('Nothing' on truncation,
 -- trailing bytes, or over-ceiling material).

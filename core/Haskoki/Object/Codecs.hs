@@ -18,6 +18,7 @@ import Haskoki.Attribute
   , decodeValue
   , encodeValue
   )
+import Haskoki.Bytes (u32be)
 
 -- | Attribute-type tag: the 'Enum' order of 'AttributeType'.
 attrTag :: AttributeType -> Word8
@@ -40,13 +41,7 @@ encodeTemplate = BS.concat . map encodeEntry
     encodeEntry (t, v) =
       let bs = encodeValue v
           len = BS.length bs
-      in BS.pack
-        [ attrTag t
-        , fromIntegral (len `div` 16777216 `mod` 256)
-        , fromIntegral (len `div` 65536 `mod` 256)
-        , fromIntegral (len `div` 256 `mod` 256)
-        , fromIntegral (len `mod` 256)
-        ] <> bs
+      in BS.singleton (attrTag t) <> u32be len <> bs
 
 -- | Bound on entries per template (pinned single source of truth;
 -- ConfigSpec pins the value through the FFI alias). The C packer

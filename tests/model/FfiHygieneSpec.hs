@@ -15,6 +15,7 @@ the two logs byte-identically.
 -}
 module FfiHygieneSpec (spec) where
 
+import Control.Exception (evaluate)
 import Control.Monad (forM)
 import Data.List (isInfixOf)
 import System.Directory (doesDirectoryExist, listDirectory)
@@ -34,7 +35,9 @@ caseNoUnsafePerformIO = do
   files <- filter (/= "tests/model/FfiHygieneSpec.hs")
     . concat <$> mapM walkHs ["src", "ffi", "tests", "app"]
   hits <- fmap concat $ forM files $ \fp -> do
+    -- Strict read (see SlotInsertSpec): never hold the whole slurp open.
     body <- readFile fp
+    _ <- evaluate (length body)
     pure
       [ (fp, n)
       | (n, ln) <- zip [1 :: Int ..] (lines body)

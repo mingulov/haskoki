@@ -486,7 +486,7 @@ data CtxEntry
 -- retirement balance plus the reclaim polls
 -- ('ctxPendingReclaims'\/'ctxReclaimStats', polled to balance by
 -- @awaitNoPendingReclaims@ and @awaitReclaimBalanced@ in
--- @tests\/model\/FfiAsyncSpec.hs@): the balance covers
+-- @tests\/model\/FfiAsync\/Fixtures.hs@): the balance covers
 -- record-side roots, the polls cover every queued root
 -- process-wide.
 foreign import ccall unsafe "haskoki_ctx_register"

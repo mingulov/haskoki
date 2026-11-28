@@ -107,6 +107,7 @@
         "DriverGoldenSpec",
         "EnvLock",
         "OwnershipCounters",
+        "AcquisitionCounters",
         "FfiAcquireSpec",
         "InitDiagnosticSpec",
         "LazyWalk",
@@ -179,6 +180,7 @@
         ],
         "EnvLock": [],
         "OwnershipCounters": [],
+        "AcquisitionCounters": [],
         "FfiAcquireSpec": [
           "Acquisition hooks"
         ],
@@ -250,6 +252,13 @@
         "ErrorUnifySpec",
         "EventsSpec",
         "FfiAsyncSpec",
+        "FfiAsync.Fixtures",
+        "FfiAsync.Open",
+        "FfiAsync.Admission",
+        "FfiAsync.Handoff",
+        "FfiAsync.Standalone",
+        "FfiAsync.Retirement",
+        "AcquisitionCounters",
         "FfiHygieneSpec",
         "JobStepSpec",
         "LeaseScopeSpec",
@@ -414,6 +423,13 @@
         "FfiAsyncSpec": [
           "FFI acquisition"
         ],
+        "FfiAsync.Fixtures": [],
+        "FfiAsync.Open": [],
+        "FfiAsync.Admission": [],
+        "FfiAsync.Handoff": [],
+        "FfiAsync.Standalone": [],
+        "FfiAsync.Retirement": [],
+        "AcquisitionCounters": [],
         "FfiHygieneSpec": [
           "FFI hygiene"
         ],
