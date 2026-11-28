@@ -717,7 +717,16 @@
         "SQLiteSeams",
         "StoreCtlSpec",
         "StoreFixtures",
-        "StoreSpec"
+        "StoreSpec",
+        "Store.Contract",
+        "Store.Files",
+        "Store.UriTwins",
+        "Store.Ownership",
+        "Store.Seams",
+        "Store.TokenParsing",
+        "Store.OpenRecon",
+        "Store.AttrCodec",
+        "Store.Fixtures"
       ],
       "required_groups": [
         "haskoki storage"
@@ -770,7 +779,16 @@
         "StoreFixtures": [],
         "StoreSpec": [
           "store contract"
-        ]
+        ],
+        "Store.Contract": [],
+        "Store.Files": [],
+        "Store.UriTwins": [],
+        "Store.Ownership": [],
+        "Store.Seams": [],
+        "Store.TokenParsing": [],
+        "Store.OpenRecon": [],
+        "Store.AttrCodec": [],
+        "Store.Fixtures": []
       }
     },
     {
