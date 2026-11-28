@@ -33,7 +33,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (CipherSpec (..))
 import Haskoki.Engine.Driver (cbcmacSpecFor)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)

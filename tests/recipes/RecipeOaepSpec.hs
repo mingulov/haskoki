@@ -28,7 +28,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (DigestAlg (..), OaepParams (..))
 import Haskoki.Engine.Driver (rsaOaepParamsFor)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)

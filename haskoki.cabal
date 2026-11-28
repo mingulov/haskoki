@@ -878,7 +878,7 @@ test-suite haskoki-core-tests
   import:           fatal-omissions
   type:             exitcode-stdio-1.0
   main-is:          Main.hs
-  hs-source-dirs:   tests/coretests tests/model
+  hs-source-dirs:   tests/coretests tests/model tests/support
   other-modules:
     ByteFormatSpec
     DenominatorSpec
@@ -894,6 +894,7 @@ test-suite haskoki-core-tests
     SlotPhaseSpec
     SnapshotSpec
     TemplateRulesSpec
+    TestSession
     TransitionSpec
     ULongSpec
   build-depends:

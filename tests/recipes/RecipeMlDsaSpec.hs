@@ -46,7 +46,7 @@ import Haskoki.Engine.Backend
   , SigSpec (..)
   )
 import Haskoki.Engine.Driver (mldsaLevelOfKey, mldsaSpecFor)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)

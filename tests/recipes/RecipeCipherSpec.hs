@@ -102,7 +102,7 @@ import Haskoki.Engine.Backend
   , cipherKeyLens
   )
 import Haskoki.Engine.Driver (cipherSpecFor)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)

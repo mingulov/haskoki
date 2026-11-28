@@ -27,7 +27,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (DigestAlg (..), PssParams (..), SigSpec (..))
 import Haskoki.Engine.Driver (rsaPssSpecFor)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)

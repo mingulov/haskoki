@@ -26,7 +26,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 import Haskoki.Engine.Backend (AeadSpec (..))
 import Haskoki.Engine.Driver (aeadSpecFor)
 import Haskoki.FFI.NativeParams (ccmStructToCanonical)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)

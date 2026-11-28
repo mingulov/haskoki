@@ -48,7 +48,7 @@ import Haskoki.Attribute.Generated
   , keyTypeIdByName
   , keyTypeNameById
   )
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Object
   ( RuleDeny (..)
   , TemplateError (..)

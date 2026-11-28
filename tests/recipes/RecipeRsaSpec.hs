@@ -33,7 +33,7 @@ import Haskoki.Engine.Driver
   , rsaPkcs1SpecFor
   , rsaRecoverCipherFor
   )
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
