@@ -2,7 +2,7 @@
 
 DG1: a tested row gains a @message-*@ route iff (a) its classic
 counterpart route is tested, (b) the driver @FxMessage*@ arm serves
-the mechanism (@src/Haskoki/Engine/Driver.hs:616-747@, never the
+the mechanism (@src/Haskoki/Engine/Driver.hs:616-740@, never the
 @unsupported fx@ fallthrough), and (c) 'initMessageOperation'
 returns @CKR_OK@ under full caps with valid parameters. The
 @CKF_MESSAGE_*@ flags match the routes; @CKF_MULTI_MESSAGE@ stays
@@ -427,7 +427,7 @@ argsFor op mid params = InitArgs
 -- ---------------------------------------------------------------------------
 
 -- | Message-cipher service: the exact @FxMessageCipher@ mechanism
--- dispatch (@Driver.hs:1944-1956@) through the same recipe tables
+-- dispatch (@Driver.hs:616-628@) through the same recipe tables
 -- the driver's predicates wrap. GCM takes the AEAD arm; block
 -- ciphers, the raw ChaCha20 stream row, RSA-OAEP and RSA-X.509 take
 -- the cipher arms; CCM and ChaCha20-Poly1305 have no message arm
@@ -445,7 +445,7 @@ msgCipherServed mid =
       Nothing -> False
 
 -- | Message-sign/verify service: the exact @FxMessageSign@ /
--- @FxMessageVerify@ mechanism dispatch (@Driver.hs:1957-2072@)
+-- @FxMessageVerify@ mechanism dispatch (@Driver.hs:629-740@)
 -- through the same recipe tables. The classic SSL3-MAC and HOTP
 -- arms have no message counterpart: those rows fall through to
 -- @unsupported fx@ (HOTP since v0.5: PKCS#11 v3.2 defines no

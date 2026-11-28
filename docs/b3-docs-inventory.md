@@ -35,7 +35,7 @@ Library/flib divergence (for H3/V5; unexplained in-tree):
 | Fact | Detail |
 |---|---|
 | 7 library-exposed modules absent from the flib | `Haskoki`, `Haskoki.PKCS11`, `Haskoki.Ctl`, `Haskoki.Engine.Synthetic`, `Haskoki.FFI.KeyOutputs`, `Haskoki.FFI.MessageParams`, `Haskoki.Runtime` |
-| `Engine.Synthetic` omission is consistent | no `src/Haskoki/Engine/Driver/` family module imports `Synthetic`; synthetic stays test-only |
+| `Engine.Synthetic` omission is consistent | `src/Haskoki/Engine/Driver.hs` imports `Haskoki.Engine.Backend` only, never `Synthetic`; synthetic stays test-only |
 | 1 flib-only module, absent from the library | `Haskoki.FFI.Types` (`ffi/Haskoki/FFI/Types.hsc:16`); zero in-tree `import` sites found by search over `src/`, `ffi/`, `app/`, `tests/`, `test/` |
 | `Haskoki` re-exports a core module | `src/Haskoki.hs:12-20` re-exports `Haskoki.Types` (a `haskoki-core` module) alongside `Haskoki.PKCS11` |
 

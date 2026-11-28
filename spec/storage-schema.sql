@@ -16,9 +16,9 @@
 -- * Version 3 marks a store written by a credential-seeding build;
 --   versions 1 and 2 refuse at open without writing and move to 3
 --   only through `haskoki-ctl store migrate` (see `migrateOwned` in
---   `src/Haskoki/Runtime/Storage/SQLite.hs`).
+--   `src/Haskoki/Runtime/Storage/SQLite/Migrate.hs`).
 --
--- The Haskell backend (`src/Haskoki/Runtime/Storage/SQLite.hs`)
+-- The Haskell backend (`src/Haskoki/Runtime/Storage/SQLite/Init.hs`)
 -- issues these statements at init; this file is the readable
 -- reference. Full-width unsigned quantities travel as 8-byte blobs
 -- or fixed hex text, never as blind SQLite signed-integer casts

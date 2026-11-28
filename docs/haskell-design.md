@@ -127,9 +127,10 @@ point, never the deprecated scaffold names.
 The dispatch surface stays small while helpers move only for cause:
 
 - Move a pure family helper out of `ffi/Haskoki/FFI/Standard.hs`,
-  `src/Haskoki/Engine/Driver/`, or
-  `core/Haskoki/Operation/KeyManagement/` only when a concrete fix
-  exposes the seam; bulk moves are not pre-authorized.
+  `src/Haskoki/Engine/Driver.hs` and its `Driver/` family, or
+  `core/Haskoki/Operation/KeyManagement.hs` and its `KeyManagement/`
+  family only when a concrete fix exposes the seam; bulk moves are
+  not pre-authorized.
 - Keep one dispatch arm per `FunctionId` with no wildcard, mirroring
   `runFinisher` leg for leg.
 - Preserve error precedence and output/persistence ordering across
