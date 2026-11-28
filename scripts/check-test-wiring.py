@@ -2044,6 +2044,11 @@ def check_tree(root, inventory_path):
         for d in s["dirs"]:
             files.extend((root / s["base"] / d).glob("*.hs"))
         have = {f.stem for f in files}
+        # Dotted helper modules live one level down: A.B in A/B.hs
+        # (test splits register KeyManagement.* this way).
+        for d in s["dirs"]:
+            for f in (root / s["base"] / d).glob("*/*.hs"):
+                have.add(f"{f.parent.name}.{f.stem}")
         pinned = inv.get(name, {}).get("modules")
         if pinned is None:
             rule(f"INVENTORY-{name}-MODULES", False,
@@ -2226,7 +2231,7 @@ def _selftest_root(tmp, mains, cabal_suites, inventory, workflows,
                 for d in spec["dirs"] for m in spec["modules"]}:
         for spec in cabal_suites.values():
             for d in spec["dirs"]:
-                p = root / d / f"{rel}.hs"
+                p = root / d / (rel.replace(".", "/") + ".hs")
                 if not p.exists() and rel in spec["modules"]:
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(f"module {rel} where\n")
@@ -2234,7 +2239,7 @@ def _selftest_root(tmp, mains, cabal_suites, inventory, workflows,
                 for d in spec["dirs"] for m in spec["modules"]}:
         for spec in (client_cabal_suites or {}).values():
             for d in spec["dirs"]:
-                p = root / "client" / d / f"{rel}.hs"
+                p = root / "client" / d / (rel.replace(".", "/") + ".hs")
                 if not p.exists() and rel in spec["modules"]:
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(f"module {rel} where\n")
@@ -2451,6 +2456,27 @@ def self_test():
             workflows)
         expect("unreviewed-cabal-addition-fails",
                any(f == "INVENTORY-suite-a-MODULES" for f in fails_out),
+               repr(fails_out))
+
+        dotted_cabal = {"suite-a": {"dirs": ["tests/alpha"],
+                                    "modules": ["FooSpec", "Helper"]
+                                    + PAD_SPECS + ["Sub.Helper"],
+                                    "main": "Main.hs"}}
+        dotted_inv = _good_inventory(extra_modules=["Sub.Helper"])
+        dotted_inv["suites"][0]["module_groups"]["Sub.Helper"] = []
+        fails_out, _ = run_fixture(
+            tmp + "/dotted", mains, dotted_cabal,
+            dotted_inv, workflows)
+        expect("dotted-helper-passes", not fails_out, repr(fails_out))
+
+        def drop_dotted(root):
+            (root / "tests/alpha/Sub/Helper.hs").unlink()
+        fails_out, _ = run_fixture(
+            tmp + "/dotted-missing", mains, dotted_cabal,
+            dotted_inv, workflows,
+            mutate=drop_dotted)
+        expect("dotted-helper-missing-fails",
+               any(f == "WIRING-suite-a-Sub.Helper" for f in fails_out),
                repr(fails_out))
 
         wrong_reg = dict(mains)

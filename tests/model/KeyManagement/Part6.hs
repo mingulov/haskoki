@@ -1,9 +1,8 @@
-{- | KeyManagement part 6: key-output codecs.
+{- | KeyManagement Part 6: key-output codecs and PBE.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.Part6
-  ( withInputBytes
-  , caseHandleWriteback
+  ( caseHandleWriteback
   , caseWrappedWriteback
   , caseCiphertextWriteback
   , caseKeyInputDecode
@@ -20,7 +19,6 @@ module KeyManagement.Part6
   , pbeMd5Cast128Mech
   , pbePw
   , pbeSalt
-  , pbeTmpl
   , casePbePlans
   , caseRealPbeVector
   , caseRealPbeSha1Vector

@@ -1,10 +1,9 @@
-{- | KeyManagement part 5: real-backend proofs.
+{- | KeyManagement Part 5: real-backend proofs and planner KDF cases.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.Part5
   ( caseRealEcKeygen
   , caseRealRsaKeygen
-  , assertDomainGenerator
   , caseRealX942Paramgen
   , caseRealDhPkcsParamgen
   , caseRealDsaParamgen
@@ -21,7 +20,6 @@ module KeyManagement.Part5
   , caseRealHkdfDataVector
   , caseSp800Plans
   , caseRealSp800Vector
-  , tlsKdfSess32
   , caseTlsKdfPlans
   , caseRealTlsKdfVector
   , caseIkePlans
@@ -30,10 +28,8 @@ module KeyManagement.Part5
   , caseSealedByteOpsRefuse
   , caseSealedIkeTruncRefuse
   , caseRealByteOpsVector
-  , denialDelta
   , caseByteOpsProtection
   , caseKeyTemplatesRefuseHistory
-  , ssl3MasterKid
   , caseSsl3DerivePlans
   , caseRealSsl3Vector
   , caseKeyMatPlans

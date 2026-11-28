@@ -1,15 +1,11 @@
-{- | KeyManagement part 2.
+{- | KeyManagement Part 2: symmetric keygen.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.Part2
   ( caseAesKeygen
   , caseDes3Keygen
   , caseBlake2b512Keygen
-  , genBlake2b512Key
-  , blake2b512Tmpl
   , caseChacha20Keygen
-  , genChacha20Key
-  , chacha20Tmpl
   ) where
 
 import qualified Data.ByteString as BS

@@ -6,8 +6,6 @@ module KeyManagement.KeygenSweep
   , keygenSweepTable
   , sweepLengths
   , caseKeygenSweep
-  , runSweepRow
-  , oddParity
   , genSweepKey
   , sweepTmpl
   ) where

@@ -2,19 +2,10 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.TC03f
-  ( trustedPending
-  , trustedObject
-  , plainObject
-  , expectTrustedRefused
-  , expectAdmitted
-  , loginSo
-  , caseKeygenTrustedUserRefused
+  ( caseKeygenTrustedUserRefused
   , caseKeypairTrustedUserRefused
   , caseDeriveUnwrapTrustedUserRefused
   , caseKeygenTrustedAllowedPaths
-  , trustedSecret
-  , plainSecret
-  , expectFinishRefused
   , caseFinishTrustedUserRefused
   , caseFinishTrustedSoSucceeds
   , caseFinishUntrustedUserSucceeds
