@@ -39,10 +39,10 @@ generation, recipe\/format version, target-session compatibility
 and auth, and capacity — before attaching new storage. One active
 attachment per persistent job ('joinPolicyName'); delivery-vs-cancel
 arbitration is the job lease, reused, not reimplemented: joined
-jobs complete through @completeJob@ via @completeJoined@, which
+jobs complete through @completeJob@ via 'completeJoined', which
 additionally marks the durable record with the observed fate
 (delivered on delivery; failed or canceled when an already-terminal
-job is observed), and poll through @pollJob@ via @pollJoined@,
+job is observed), and poll through @pollJob@ via 'pollJoined',
 which marks the observed terminal fate the same way.
 
 Join claims (concurrency): after validation, a join takes an
