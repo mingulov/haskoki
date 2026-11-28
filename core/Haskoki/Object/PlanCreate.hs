@@ -14,15 +14,15 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import Data.Word (Word64)
 import Haskoki.Attribute
-  (AttributeType (..)
+  ( AttributeType (..)
   , AttributeValue (..)
   , historyAttrs
   , stampKeyDefaults
   )
 import Haskoki.Attribute.Generated
-  (classNameById)
+  ( classNameById)
 import Haskoki.Der
-  (curveCoordLen, curveOidOfParams, curveOrderOfOid, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dsaPrivateDer, dsaPublicDer,
+  ( curveCoordLen, curveOidOfParams, curveOrderOfOid, dhPrivateDer, dhPrivateDerQ, dhPublicDer, dhPublicDerQ, dsaPrivateDer, dsaPublicDer,
    ecPrivateDer, ecPublicDer, eddsaPrivateDer, eddsaPublicDer,
    edwardsOidOfParams, edwardsWidthsOfParams, mldsaOidOfCkp,
    montgomeryOidOfParams, montgomeryPrivateDer, montgomeryPublicDer,
@@ -35,11 +35,11 @@ import Haskoki.Der
    rsaPrivateDer, rsaPublicDer,
    unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Model
-  (Model (..)
+  ( Model (..)
   , SessionState (..)
   )
 import Haskoki.Outcome
-  (DeltaOp (..)
+  ( DeltaOp (..)
   , NativeOutput (..)
   , PlanResult (..)
   , PreparedCommit (..)
@@ -48,7 +48,7 @@ import Haskoki.Outcome
 import Haskoki.Request (OutputRegion (..))
 import Haskoki.Session (SessionLogin (LoginSO), admitCode, admitPrivate, admitWritable)
 import Haskoki.Types
-  (ExternalHandle (..)
+  ( ExternalHandle (..)
   , ObjectId (..)
   , ReturnCode (..)
   )
@@ -173,7 +173,7 @@ importMaterial
   :: Map AttributeType AttributeValue
   -> Either (ReturnCode, String) (Map AttributeType AttributeValue)
 importMaterial attrs = case (classOf, keyTypeOf) of
-  (Just c, Just k)
+  ( Just c, Just k)
     | c == ckoPrivateKey && k == ckkRsa -> rsaPrivate
     | c == ckoPublicKey && k == ckkRsa -> rsaPublic
     | c == ckoPrivateKey && k == ckkEc -> ecPrivate

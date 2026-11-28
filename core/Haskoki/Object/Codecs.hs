@@ -13,7 +13,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Word (Word8)
 import Haskoki.Attribute
-  (AttributeType (..)
+  ( AttributeType (..)
   , AttributeValue (..)
   , decodeValue
   , encodeValue

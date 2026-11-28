@@ -33,7 +33,7 @@ import Haskoki.Attribute
   , AttributeValue (..)
   )
 import Haskoki.Attribute.Generated
-  ( mustClassId, mustKeyTypeId)
+  (mustClassId, mustKeyTypeId)
 import Haskoki.Object.TemplateValidation
 
 ckoPrivateKey, ckoPublicKey, ckoSecretKey, ckkRsa, ckkEc, ckkAes, ckkDsa, ckkDh, ckkX9_42Dh, ckkEcEdwards, ckkMlDsa, ckkSlhDsa, ckkMlKem, ckkKea, ckkGostr3410, ckkHss, ckkXmss, ckkXmssMt :: Word64
