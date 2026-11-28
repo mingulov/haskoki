@@ -17,8 +17,8 @@ Covered patterns (case-sensitive except where noted):
 
 Deliberate keeps (narrow allowlist below, each with its reason):
   docs/byte-formats.md F1-F9  live byte-format taxonomy (not findings)
-  OpenSSLSpec KAT messages    frozen vectors; expectations were derived
-                              from the external pinned CLI, so the input
+  OpenSSL/Ecdsa.hs + Rsa.hs   frozen vectors; expectations were derived
+  KAT messages                from the external pinned CLI, so the input
                               bytes must not churn
   SyntheticSpec t06-* labels  golden-fixture KDF inputs; changing them
                               would invalidate pinned goldens
@@ -73,10 +73,16 @@ NEW_PATTERN_EXCLUDE = {"spec/findings-ledger.json"}
 ALLOW = [
     ("docs/byte-formats.md", re.compile(r"\bF[0-9]\b"),
      "F1-F9 byte-format taxonomy"),
-    ("tests/engine/OpenSSLSpec.hs",
+    ("tests/engine/OpenSSL/Ecdsa.hs",
      re.compile(r'^\w+ = "T16 S\d '),
      "frozen KAT message bytes"),
-    ("tests/engine/OpenSSLSpec.hs",
+    ("tests/engine/OpenSSL/Ecdsa.hs",
+     re.compile(r'T16 (curves ECDSA|S7 X9\.31 KAT)'),
+     "frozen KAT message bytes (curve-labeled inputs, comment quote)"),
+    ("tests/engine/OpenSSL/Rsa.hs",
+     re.compile(r'^\w+ = "T16 S\d '),
+     "frozen KAT message bytes"),
+    ("tests/engine/OpenSSL/Rsa.hs",
      re.compile(r'T16 (curves ECDSA|S7 X9\.31 KAT)'),
      "frozen KAT message bytes (curve-labeled inputs, comment quote)"),
     ("tests/engine/SyntheticSpec.hs",
