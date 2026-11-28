@@ -208,7 +208,7 @@ caseVersionExact :: IO ()
 caseVersionExact = do
   r <- runCtl ["--version"]
   assertEqual "version exits 0" 0 (ceCode r)
-  assertEqual "complete version stdout" "haskoki-ctl 0.6.2.0\n" (ceOut r)
+  assertEqual "complete version stdout" "haskoki-ctl 0.6.3.0\n" (ceOut r)
   assertEqual "no stderr" "" (ceErr r)
 
 -- | The inspect entry normalizes spellings like the open: a query
