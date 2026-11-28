@@ -2,41 +2,36 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.PlanMutation
-  ( deriveCopyAttrs
-  , setAttributePolicy
-  , copyPriority
-  , copyExempt
-  , copyIsNoop
-  , planCopyObject
+  ( planCopyObject
   , planSetAttributes
   ) where
 
-import Data.List ( sortOn)
+import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Haskoki.Attribute
-  ( AttributeType (..)
+  (AttributeType (..)
   , AttributeValue (..)
   , historyAttrs
   , payloadSealed
   , sealedAttrs
   )
 import Haskoki.Model
-  ( Model (..)
+  (Model (..)
   , ObjectState (..)
   , SessionState (..)
   )
 import Haskoki.Outcome
-  ( DeltaOp (..)
+  (DeltaOp (..)
   , NativeOutput (..)
   , PlanResult (..)
   , PreparedCommit (..)
   , StateDelta (..)
   )
-import Haskoki.Request ( OutputRegion (..))
-import Haskoki.Session (SessionLogin ( LoginSO), admitCode, admitPrivate, admitWritable)
+import Haskoki.Request (OutputRegion (..))
+import Haskoki.Session (SessionLogin (LoginSO), admitCode, admitPrivate, admitWritable)
 import Haskoki.Types
-  ( ExternalHandle (..)
+  (ExternalHandle (..)
   , ObjectId (..)
   , ReturnCode (..)
   )

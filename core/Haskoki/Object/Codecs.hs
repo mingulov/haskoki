@@ -2,9 +2,7 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.Codecs
-  ( attrTag
-  , tagAttr
-  , encodeTemplate
+  ( encodeTemplate
   , maxTemplateEntries
   , parseTemplate
   , encodeWanted
@@ -13,9 +11,9 @@ module Haskoki.Object.Codecs
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
-import Data.Word ( Word8)
+import Data.Word (Word8)
 import Haskoki.Attribute
-  ( AttributeType (..)
+  (AttributeType (..)
   , AttributeValue (..)
   , decodeValue
   , encodeValue

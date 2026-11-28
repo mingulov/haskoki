@@ -2,9 +2,7 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.PlanQuery
-  ( planFindObjects
-  , projectPublicValue
-  , normalizeEcParams
+  (planFindObjects
   , viewForFind
   , readView
   , planGetAttributes
@@ -12,11 +10,11 @@ module Haskoki.Object.PlanQuery
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe ( listToMaybe)
+import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Haskoki.Attribute
-  ( AttributeResult (..)
+  (AttributeResult (..)
   , AttributeType (..)
   , AttributeValue (..)
   , PartialReads (..)
@@ -25,18 +23,15 @@ import Haskoki.Attribute
   , payloadSealed
   , sealedAttrs
   )
-import Haskoki.Der
-  ( dhSpkiFields, dsaSpkiFields,
-   ecParamsNameOfOid,
-                              )
+import Haskoki.Der (dhSpkiFields, dsaSpkiFields, ecParamsNameOfOid)
 import Haskoki.Model
-  ( HandleBinding (..)
+  (HandleBinding (..)
   , Model (..)
   , ObjectState (..)
   , SessionState (..)
   )
 import Haskoki.Outcome
-  ( DeltaOp (..)
+  (DeltaOp (..)
   , NativeOutput (..)
   , PlanResult (..)
   , PreparedCommit (..)
@@ -45,7 +40,7 @@ import Haskoki.Outcome
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Types
-  ( ExternalHandle (..)
+  (ExternalHandle (..)
   , ObjectId (..)
   , ReturnCode (..)
   )
@@ -116,7 +111,7 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
       Nothing ->
         let h = ExternalHandle next
             (binds, outs) = assign (next + 1) rest
-        in ( DeltaBindHandle h oid : binds
+        in (DeltaBindHandle h oid : binds
            , NativeOutput (RegionHandle "object") (encodeHandle h) : outs
            )
 

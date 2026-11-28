@@ -6,7 +6,6 @@ module Haskoki.Object.PlanCerts
   , isAsymmetricKeyType
   , ckoCertificate
   , ckoData
-  , ckcX509
   , checkCertificateTemplate
   , checkCertificateDates
   , certImmutable
@@ -23,11 +22,6 @@ module Haskoki.Object.PlanCerts
   , ckkMlDsa
   , ckkSlhDsa
   , ckkMlKem
-  , ckkKea
-  , ckkGostr3410
-  , ckkHss
-  , ckkXmss
-  , ckkXmssMt
   ) where
 
 import qualified Data.ByteString as BS

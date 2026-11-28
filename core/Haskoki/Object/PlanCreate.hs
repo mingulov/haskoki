@@ -1,11 +1,8 @@
-{- | Object object creation planning.
+{- | Object creation planning.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.PlanCreate
-  ( stampCreatedKey
-  , planCreateObject
-  , importMaterial
-  , bitsOf
+  ( planCreateObject
   ) where
 
 import Data.Bits (countLeadingZeros)
@@ -17,7 +14,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import Data.Word (Word64)
 import Haskoki.Attribute
-  ( AttributeType (..)
+  (AttributeType (..)
   , AttributeValue (..)
   , historyAttrs
   , stampKeyDefaults
@@ -38,20 +35,20 @@ import Haskoki.Der
    rsaPrivateDer, rsaPublicDer,
    unwrapEcPoint, unwrapEdwardsPoint)
 import Haskoki.Model
-  ( Model (..)
+  (Model (..)
   , SessionState (..)
   )
 import Haskoki.Outcome
-  ( DeltaOp (..)
+  (DeltaOp (..)
   , NativeOutput (..)
   , PlanResult (..)
   , PreparedCommit (..)
   , StateDelta (..)
   )
-import Haskoki.Request ( OutputRegion (..))
-import Haskoki.Session (SessionLogin ( LoginSO), admitCode, admitPrivate, admitWritable)
+import Haskoki.Request (OutputRegion (..))
+import Haskoki.Session (SessionLogin (LoginSO), admitCode, admitPrivate, admitWritable)
 import Haskoki.Types
-  ( ExternalHandle (..)
+  (ExternalHandle (..)
   , ObjectId (..)
   , ReturnCode (..)
   )
