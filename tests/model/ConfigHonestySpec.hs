@@ -538,7 +538,7 @@ casePendingPolls = do
   assertEqual "sign + 5 completes pend" 6 (length (pendingLines (ceOut r)))
 
 -- | CONFIG-NOT-POLICY: detached records always commit to the store
--- ('Detached.hs' detach path, unconditional 'storeCommit';
+-- ('Detached/Detach.hs' detach path, unconditional 'storeCommit';
 -- durability follows storage.kind), so the knob selects nothing —
 -- but both values stay parseable (fixtures use both) with a loud
 -- capabilities disclosure (reserved-knob shape).

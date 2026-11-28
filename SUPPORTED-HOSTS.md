@@ -150,7 +150,7 @@ presence.
 - Key storage has no encryption-at-rest: the SQLite store keeps
   token rows and object rows (attributes plus `material_blob` key
   bytes) as plain JSON/blobs (schema in
-  `src/Haskoki/Runtime/Storage/SQLite.hs`), and memory mode keeps
+  `src/Haskoki/Runtime/Storage/SQLite/Init.hs`), and memory mode keeps
   the same records in process memory only. Session objects are
   never stored; handles are minted by the live model on reload.
   The store path is explicit in config (SQLite without a path

@@ -172,7 +172,7 @@ execution state enum, `record_json`, `format_version = 1`),
 `objects_by_token` and `jobs_by_token` indexes. Full-width
 unsigned quantities travel as 8-byte blobs or fixed hex text,
 never as blind SQLite signed-integer casts. The Haskell backend
-issues the same statements (`SQLite.hs` schema literals); the
+issues the same statements (`SQLite/Init.hs` schema literals); the
 `.sql` file is the readable reference, and the schema-shape pin
 proves they agree.
 
