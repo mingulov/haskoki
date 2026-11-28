@@ -29,11 +29,22 @@ warns and ignores it, the gate flags it); quoted braces in
 stanza names (fail closed); publicity markers inside nested
 (ignored) sections (fail closed — un-nest to escape).
 
+Module-size budgets (0.6.3 ratchet, same file per one-in-one-out:
+no new check-*.py for this rule). Every .hs file under the lib
+roots (src core tools app client examples bench) must stay at or
+below 1200 lines, every .hs file under tests/ at or below 4000;
+ffi/ mirrors and *Generated.hs are out of scope. Over-budget
+files fail unless pinned in MODSIZE_ALLOW with a reason, and a
+pinned file fails when it grows past its pin. Splitting a pinned
+file removes its pin; growing the tree within budget needs no
+gate change.
+
 Usage: python3 scripts/check-exposure.py [--self-test]
 """
 
 import re
 import sys
+import tempfile
 from bisect import bisect_right
 from pathlib import Path
 
@@ -595,6 +606,76 @@ def check(cabal_text):
     return errors
 
 
+# Module-size budgets (0.6.3 ratchet): the lib/test splits must not
+# regrow. Caps apply to every .hs file under the source roots;
+# over-cap files fail unless pinned below with a reason. Pins
+# record pre-existing debt (generated code, FFI mirrors and
+# owner-call skips); splitting a pinned file removes its pin.
+MODSIZE_LIB_MAX = 1200
+MODSIZE_TEST_MAX = 4000
+MODSIZE_LIB_ROOTS = ("src", "core", "tools", "app", "client",
+                     "examples", "bench")
+MODSIZE_TEST_ROOTS = ("tests",)
+MODSIZE_SKIP_DIRS = ("ffi",)
+MODSIZE_SKIP_SUFFIXES = ("Generated.hs",)
+# path: (lines at pinning, reason). Lines are splitlines() counts.
+MODSIZE_ALLOW = {
+    "src/Haskoki/Engine/OpenSSL4.hs":
+        (2393, "owner-call skip: FFI-adjacent, weak seams"),
+    "src/Haskoki/Engine/Synthetic.hs":
+        (1958, "follow-up candidate, not yet split"),
+    "core/Haskoki/Transition.hs":
+        (1814, "owner-call skip: weak seams"),
+    "core/Haskoki/Registry.hs":
+        (1766, "owner-call skip: weak seams"),
+    "core/Haskoki/Der.hs":
+        (1498, "follow-up candidate, not yet split"),
+    "core/Haskoki/Operation/Derive.hs":
+        (1434, "follow-up candidate, not yet split"),
+    "tests/model/FfiAsyncSpec.hs":
+        (4063, "out of the 0.6.3 test-split scope (3 files)"),
+}
+
+
+def _modsize_files(root):
+    out = []
+    for d, cap in [(r, MODSIZE_LIB_MAX) for r in MODSIZE_LIB_ROOTS] + \
+                  [(r, MODSIZE_TEST_MAX) for r in MODSIZE_TEST_ROOTS]:
+        base = root / d
+        if not base.is_dir():
+            continue
+        for p in sorted(base.rglob("*.hs")):
+            rel = p.relative_to(root).as_posix()
+            if rel.split("/")[0] in MODSIZE_SKIP_DIRS:
+                continue
+            if rel.endswith(MODSIZE_SKIP_SUFFIXES):
+                continue
+            out.append((rel, p, cap))
+    return out
+
+
+def check_modsize(root):
+    """Returns error strings for over-budget unpinned modules."""
+    errors = []
+    for rel, path, cap in _modsize_files(Path(root)):
+        try:
+            n = len(path.read_text().splitlines())
+        except OSError as exc:
+            errors.append("modsize: cannot read %s: %s" % (rel, exc))
+            continue
+        if n <= cap:
+            continue
+        if rel in MODSIZE_ALLOW:
+            pinned, _why = MODSIZE_ALLOW[rel]
+            if n > pinned:
+                errors.append("modsize: %s grew to %d lines "
+                              "(pinned at %d): split it" % (rel, n, pinned))
+            continue
+        errors.append("modsize: %s has %d lines (budget %d): split it "
+                      "or pin it with a reason" % (rel, n, cap))
+    return errors
+
+
 def self_test():
     good = "library foo\n  visibility: private\n  exposed-modules:\n    A\n"
     assert check(good) == [], "private named lib must pass"
@@ -845,6 +926,41 @@ def self_test():
                  "  x-note: { note } library sneaky "
                  "{ visibility: public }\n") != [], \
         "public marker in a nested section fails closed (un-nest)"
+    # Module-size budgets (tmp trees, small files exercise the same code).
+    with tempfile.TemporaryDirectory(prefix="exposure-modsize") as tmp:
+        root = Path(tmp)
+        (root / "src").mkdir()
+        (root / "src" / "Small.hs").write_text("module Small where\n")
+        big = "module Big where\n" + "-- pad\n" * MODSIZE_LIB_MAX
+        (root / "src" / "Big.hs").write_text(big)
+        assert check_modsize(root) != [], \
+            "over-budget lib module must fail"
+        (root / "src" / "Big.hs").unlink()
+        assert check_modsize(root) == [], \
+            "in-budget tree must pass"
+        (root / "src" / "Big.hs").write_text(big)
+        MODSIZE_ALLOW["src/Big.hs"] = (MODSIZE_LIB_MAX + 1, "fixture pin")
+        try:
+            assert check_modsize(root) == [], \
+                "pinned module at its pin must pass"
+            (root / "src" / "Big.hs").write_text(big + "-- one more\n")
+            assert check_modsize(root) != [], \
+                "pinned module grown past its pin must fail"
+        finally:
+            del MODSIZE_ALLOW["src/Big.hs"]
+        (root / "src" / "Big.hs").unlink()
+        (root / "ffi").mkdir()
+        (root / "ffi" / "Huge.hs").write_text(big + big)
+        (root / "src" / "Generated").mkdir()
+        (root / "src" / "Generated" / "Foo.hs").write_text(big)
+        gen = root / "src" / "WidgetGenerated.hs"
+        gen.write_text(big + big)
+        assert check_modsize(root) != [], \
+            "a Generated/ directory must not exclude its files"
+        (root / "src" / "Generated" / "Foo.hs").unlink()
+        gen.unlink()
+        assert check_modsize(root) == [], \
+            "ffi/ and *Generated.hs stay out of scope"
     print("exposure self-test: ok")
     return 0
 
@@ -853,11 +969,12 @@ def main():
     if "--self-test" in sys.argv[1:]:
         return self_test()
     errors = check(CABAL.read_text())
+    errors.extend(check_modsize(REPO))
     if errors:
         for e in errors:
             print("exposure: %s" % e)
         return 1
-    print("exposure: ok (no public Haskell library)")
+    print("exposure: ok (no public Haskell library; modules within budget)")
     return 0
 
 
