@@ -5,7 +5,7 @@
  * headers:
  *   - two byte-exact vectors replicated from the engine suite's
  *     pinned oracle root (Python cryptography AESGCM, quoted from
- *     tests/engine/OpenSSLSpec.hs caseAeadReal and
+ *     tests/engine/OpenSSL/Aead.hs caseAeadReal and
  *     caseAeadEmptyPlaintext, never from memory): key 00..0f,
  *     nonce 00..0b, aad "aad-data", pt "Hello GCM world!" seals to
  *     ct db09cba2... with tag 39f03850...; empty plaintext seals to
@@ -79,7 +79,7 @@ static int g_failures = 0;
     }                                                                      \
   } while (0)
 
-/* Pinned vector bytes, quoted from tests/engine/OpenSSLSpec.hs
+/* Pinned vector bytes, quoted from tests/engine/OpenSSL/Aead.hs
  * (caseAeadReal, caseAeadEmptyPlaintext; oracle root: Python
  * cryptography AESGCM). Key 00..0f, nonce 00..0b. */
 static const CK_BYTE kKey[16] = {

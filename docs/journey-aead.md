@@ -11,7 +11,7 @@ token appends the tag to the ciphertext.
 
 The consumer replicates two engine-suite vectors byte-exactly
 through the C surface. Both come from `caseAeadReal` and
-`caseAeadEmptyPlaintext` in `tests/engine/OpenSSLSpec.hs`, whose
+`caseAeadEmptyPlaintext` in `tests/engine/OpenSSL/Aead.hs`, whose
 oracle root is Python cryptography AESGCM — quoted from the tree,
 never from memory. Key `000102030405060708090a0b0c0d0e0f`, nonce
 `000102030405060708090a0b`:
