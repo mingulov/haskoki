@@ -1,6 +1,6 @@
-# Haskoki 0.6.2.0 release notes (accumulating draft)
+# Haskoki 0.6.2.0 release notes
 
-Developer preview: entries land per task and finalize at release.
+Shipped 2026-11-28.
 
 ## Fixed — null retry on staged message slots
 

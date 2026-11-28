@@ -1,6 +1,6 @@
-# Haskoki 0.6.3.0 release notes (accumulating draft)
+# Haskoki 0.6.3.0 release notes
 
-Developer preview: entries land per task and finalize at release.
+Shipped 2026-11-28.
 
 ## Refactor — behavior-identical module splits
 
