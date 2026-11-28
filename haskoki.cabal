@@ -271,6 +271,14 @@ library haskoki-internal
     Haskoki.Runtime.Config
     Haskoki.Runtime.Control
     Haskoki.Runtime.Detached
+    Haskoki.Runtime.Detached.Context
+    Haskoki.Runtime.Detached.Saveability
+    Haskoki.Runtime.Detached.Recipes
+    Haskoki.Runtime.Detached.Detach
+    Haskoki.Runtime.Detached.Attachments
+    Haskoki.Runtime.Detached.Join
+    Haskoki.Runtime.Detached.JoinComplete
+    Haskoki.Runtime.Detached.ClaimSeam
     Haskoki.Runtime.Events
     Haskoki.Runtime.Lifecycle
     Haskoki.Runtime.SlotEvents
@@ -429,6 +437,14 @@ foreign-library haskoki
     Haskoki.Runtime.Config
     Haskoki.Runtime.Control
     Haskoki.Runtime.Detached
+    Haskoki.Runtime.Detached.Context
+    Haskoki.Runtime.Detached.Saveability
+    Haskoki.Runtime.Detached.Recipes
+    Haskoki.Runtime.Detached.Detach
+    Haskoki.Runtime.Detached.Attachments
+    Haskoki.Runtime.Detached.Join
+    Haskoki.Runtime.Detached.JoinComplete
+    Haskoki.Runtime.Detached.ClaimSeam
     Haskoki.Runtime.Events
     Haskoki.Runtime.Lifecycle
     Haskoki.Runtime.SlotEvents
