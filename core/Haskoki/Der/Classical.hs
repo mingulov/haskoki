@@ -58,8 +58,6 @@ module Haskoki.Der.Classical
   , ecSpkiFields
   , ecPkcs8HasPub
   , ecSec1HasPub
-  , curveOrderValues
-  , isA1
   ) where
 
 
