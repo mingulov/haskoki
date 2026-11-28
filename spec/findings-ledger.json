@@ -4349,7 +4349,7 @@
    "decision": "target-gap",
    "target": "align wrap, unwrap and KEM key resolution with each function's return list (only the C_UnwrapKey list was checked against the specification text); not in 0.5.0.0 scope",
    "test": "tests/model/DecodedRequestSpec.hs::unwrap double-fault (handle) code",
-   "receipt": "core/Haskoki/Operation/KeyManagement.hs::withWrappingKey",
+   "receipt": "core/Haskoki/Operation/KeyManagement/Wrap.hs::withWrappingKey",
    "checker_pin": "n/a (not a checker case)"
   },
   {
@@ -4364,7 +4364,7 @@
    "decision": "historical",
    "target": "Ruled benign, no change: the heal short-circuit only decides which typed refusal an invalid request receives (terminal fate versus wrong-function, stale-generation or auth refusals); every outcome stays a refusal -- nothing is admitted, delivered or resurrected, the terminal outcome carries only the execution-state enum, and the terminal mark is an idempotent memory-only cache fill. Existence probing is unauthenticated by design (unknown ids report unknown). Reordering would add a store read and a new store-failure mode to the terminal short-circuit. Terminal-stays-terminal stays pinned by the detached rejoin cases.",
    "test": "tests/model/DetachedSpec.hs::caseJoinAfterDelivered",
-   "receipt": "src/Haskoki/Runtime/Detached.hs::attachmentGate",
+   "receipt": "src/Haskoki/Runtime/Detached/Join.hs::attachmentGate",
    "checker_pin": "n/a (not a checker case)"
   }
  ],

@@ -2,7 +2,6 @@
 -}
 module Haskoki.Runtime.Detached.Attachments
   ( AttachmentView (..)
-  , attView
   , inspectAttachment
   , inspectReverse
   , detachStats

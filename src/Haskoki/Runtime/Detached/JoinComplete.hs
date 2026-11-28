@@ -5,10 +5,8 @@ module Haskoki.Runtime.Detached.JoinComplete
   , completeJoined
   , cancelJoined
   , pollJoined
-  , markResolved
   , retireLiveTable
   , retireLiveTableFor
-  , retireMatching
   , markState
   , setTerminal
   , execStateOf

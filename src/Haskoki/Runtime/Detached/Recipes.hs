@@ -11,19 +11,9 @@ module Haskoki.Runtime.Detached.Recipes
   , codeFunction
   , encodeRecipe
   , decodeRecipe
-  , encodeEffect
-  , takeEffect
-  , encodeKey
-  , takeKey
-  , takeFlag
   , guardEmpty
-  , u32be
-  , u64be
   , u32prefixed
-  , takeU32
-  , takeU64
   , takePrefixed
-  , foldBE
   , recipeFromWork
   ) where
 
@@ -96,7 +86,7 @@ recipeNameCall = "haskoki-call/v1"
 recipeNameGenKey = "haskoki-genkey/v1"
 recipeNameGenKeyPair = "haskoki-genkeypair/v1"
 
--- | Durable function names for 'jrFunction'.
+-- | Durable function names for @jrFunction@.
 jobFunctionName :: JobFunction -> String
 jobFunctionName JobSign = "sign"
 jobFunctionName JobDigest = "digest"
