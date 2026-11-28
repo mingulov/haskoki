@@ -3,16 +3,8 @@
 module Haskoki.Runtime.Detached.Detach
   ( DetachOutcome (..)
   , detachCode
-  , termCode
   , detachJob
-  , detachUnder
-  , detachPending
-  , detachReady
-  , encodeResultBody
   , decodeResultBody
-  , commitDetach
-  , loadSuperseded
-  , reconcileDetach
   ) where
 
 import Control.Concurrent.STM

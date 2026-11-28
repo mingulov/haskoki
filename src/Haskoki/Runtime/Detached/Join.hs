@@ -5,26 +5,7 @@ module Haskoki.Runtime.Detached.Join
   , JoinOutcome (..)
   , joinPolicyName
   , joinCode
-  , terminalJoinCode
-  , denyCode
   , joinJob
-  , joinRecord
-  , attachmentGate
-  , snapLive
-  , checkFunction
-  , mustFunction
-  , checkToken
-  , joinValidated
-  , authBlocked
-  , joinBody
-  , recipeFunction
-  , joinRecipe
-  , claimLost
-  , joinClaimed
-  , recipeCapacity
-  , recipeTicks
-  , replanRecipe
-  , joinReservation
   ) where
 
 import Control.Concurrent.STM (readTVarIO)
@@ -38,7 +19,7 @@ import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
 import Data.Unique (newUnique)
 import Data.Word (Word64)
-import Haskoki.CallWork ( checkedCallWork)
+import Haskoki.CallWork (checkedCallWork)
 import Haskoki.Model (Model, SessionState (..), lookupSession, lookupTokenAuth)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement

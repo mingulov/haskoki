@@ -23,8 +23,8 @@ Detach protocol (design 07, section 6), in order:
    typed unsaveable outcome instead — never a crash, never a
    serialized address.
 3. Reserve the persistent id from the store
-   ('storeReserveJobId': the store-wide mark advances durably
-   first) and make the record durable ('storeCommit'). The id is
+   (@storeReserveJobId@: the store-wide mark advances durably
+   first) and make the record durable (@storeCommit@). The id is
    returned ONLY after the insert and revocation both succeed.
    Re-detaching a joined job retires its superseded id in the same
    atomic delta (the old record canceled, recipe bytes unchanged).
@@ -39,10 +39,10 @@ generation, recipe\/format version, target-session compatibility
 and auth, and capacity — before attaching new storage. One active
 attachment per persistent job ('joinPolicyName'); delivery-vs-cancel
 arbitration is the job lease, reused, not reimplemented: joined
-jobs complete through 'completeJob' via 'completeJoined', which
+jobs complete through @completeJob@ via @completeJoined@, which
 additionally marks the durable record with the observed fate
 (delivered on delivery; failed or canceled when an already-terminal
-job is observed), and poll through 'pollJob' via 'pollJoined',
+job is observed), and poll through @pollJob@ via @pollJoined@,
 which marks the observed terminal fate the same way.
 
 Join claims (concurrency): after validation, a join takes an
@@ -51,7 +51,7 @@ the claiming table and session identity — before the effectful
 replan\/start, then commits only that claim to the live
 attachment (or rolls only it back on refusal or interruption).
 Claim state is not per context: it lives in the store handle's
-claim authority ('storeClaims', keyed by token, then persistent
+claim authority (@storeClaims@, keyed by token, then persistent
 id), so every detach context over one open store sees and
 arbitrates the same attachments — two contexts cannot both join
 one persistent id. Live bindings key by
@@ -109,7 +109,6 @@ module Haskoki.Runtime.Detached
     -- * Join-claim test seam
   , setJoinTestHook
   ) where
-
 
 import Haskoki.Runtime.Detached.Context
 import Haskoki.Runtime.Detached.Saveability
