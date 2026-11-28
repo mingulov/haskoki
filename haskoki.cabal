@@ -295,6 +295,22 @@ library haskoki-internal
     Haskoki.Runtime.SlotEvents
     Haskoki.Runtime.Catalog
     Haskoki.Runtime.Storage
+    Haskoki.Runtime.Storage.Limits
+    Haskoki.Runtime.Storage.Records
+    Haskoki.Runtime.Storage.Deltas
+    Haskoki.Runtime.Storage.Commit
+    Haskoki.Runtime.Storage.Precommit
+    Haskoki.Runtime.Storage.TokenIdentity
+    Haskoki.Runtime.Storage.Projection
+    Haskoki.Runtime.Storage.Encoding
+    Haskoki.Runtime.Storage.Base64
+    Haskoki.Runtime.Storage.FixedHex
+    Haskoki.Runtime.Storage.AttrNames
+    Haskoki.Runtime.Storage.TokenDocs
+    Haskoki.Runtime.Storage.CredDocs
+    Haskoki.Runtime.Storage.ObjectDocs
+    Haskoki.Runtime.Storage.Word64Hex
+    Haskoki.Runtime.Storage.JobDocs
     Haskoki.Runtime.Storage.Memory
     Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
@@ -461,6 +477,22 @@ foreign-library haskoki
     Haskoki.Runtime.SlotEvents
     Haskoki.Runtime.Catalog
     Haskoki.Runtime.Storage
+    Haskoki.Runtime.Storage.Limits
+    Haskoki.Runtime.Storage.Records
+    Haskoki.Runtime.Storage.Deltas
+    Haskoki.Runtime.Storage.Commit
+    Haskoki.Runtime.Storage.Precommit
+    Haskoki.Runtime.Storage.TokenIdentity
+    Haskoki.Runtime.Storage.Projection
+    Haskoki.Runtime.Storage.Encoding
+    Haskoki.Runtime.Storage.Base64
+    Haskoki.Runtime.Storage.FixedHex
+    Haskoki.Runtime.Storage.AttrNames
+    Haskoki.Runtime.Storage.TokenDocs
+    Haskoki.Runtime.Storage.CredDocs
+    Haskoki.Runtime.Storage.ObjectDocs
+    Haskoki.Runtime.Storage.Word64Hex
+    Haskoki.Runtime.Storage.JobDocs
     Haskoki.Runtime.Storage.Memory
     Haskoki.Runtime.Storage.Preflight
     Haskoki.Runtime.Storage.SQLite
