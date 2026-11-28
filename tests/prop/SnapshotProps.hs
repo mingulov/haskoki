@@ -662,8 +662,6 @@ caseMessage count =
 -- Geometry revalidation laws
 -- ---------------------------------------------------------------------------
 
--- Big-endian u32, mirroring the snapshot codec (Haskoki.Bytes).
-
 -- | Replace the 4 bytes ending @back@ bytes from the end (a trailing
 -- u32 field) with the big-endian encoding of @n@.
 pokeU32 :: ByteString -> Int -> Int -> ByteString

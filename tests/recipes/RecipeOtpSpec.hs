@@ -33,6 +33,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Bytes (u64be)
 import Haskoki.Engine.Driver (hotpParamsFor)
 import Haskoki.Model (emptyModel)
 import Haskoki.Operation
@@ -178,19 +179,7 @@ caseParamsCodec = do
   assertEqual "long rejected" Nothing
     (decodeHotpParams (encodeHotpParams 1 6 <> "x"))
   mapM_ (\d -> assertEqual ("digits rejected " ++ show d) Nothing
-    (decodeHotpParams (word64be 3 <> word64be d))) [0, 1, 5, 9, 10, 0xffffffff]
-  where
-    word64be :: Word64 -> ByteString
-    word64be w = BS.pack
-      [ fromIntegral (w `div` 72057594037927936 `mod` 256)
-      , fromIntegral (w `div` 281474976710656 `mod` 256)
-      , fromIntegral (w `div` 1099511627776 `mod` 256)
-      , fromIntegral (w `div` 4294967296 `mod` 256)
-      , fromIntegral (w `div` 16777216 `mod` 256)
-      , fromIntegral (w `div` 65536 `mod` 256)
-      , fromIntegral (w `div` 256 `mod` 256)
-      , fromIntegral (w `mod` 256)
-      ]
+    (decodeHotpParams (u64be 3 <> u64be d))) [0, 1, 5, 9, 10, 0xffffffff]
 
 caseParamsValid :: IO ()
 caseParamsValid = do

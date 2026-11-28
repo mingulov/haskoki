@@ -65,7 +65,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Word (Word64)
 
-import Haskoki.Bytes (u16be)
+import Haskoki.Bytes (u16be, u64be)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
 
@@ -178,9 +178,6 @@ decodeU16 bs
       let (w, rest) = BS.splitAt 2 bs
       in Just (BS.foldl' (\a b -> a * 256 + fromIntegral b) 0 w, rest)
 
-encodeU64 :: Word64 -> ByteString
-encodeU64 w = BS.pack [fromIntegral ((w `div` (256 ^ i)) `mod` 256) | i <- ([7, 6 .. 0] :: [Int])]
-
 decodeU64 :: ByteString -> Maybe (Word64, ByteString)
 decodeU64 bs
   | BS.length bs < 8 = Nothing
@@ -192,7 +189,7 @@ decodeU64 bs
 -- saltLen:u16be salt@.
 encodePbeParams :: Word64 -> ByteString -> ByteString -> ByteString
 encodePbeParams iters pw salt =
-  encodeU64 iters
+  u64be (fromIntegral iters)
     <> u16be (BS.length pw) <> pw
     <> u16be (BS.length salt) <> salt
 
