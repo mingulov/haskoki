@@ -27,8 +27,8 @@ delivery is not guaranteed.
 The separate private test API uses context/job tokens, completion version
 `1`, and its own Join dialogue. Its tests must not be described as standard
 3.2 table behavior. The implementation lives in
-[Async.hs](../src/Haskoki/Runtime/Async.hs) and
-[Detached.hs](../src/Haskoki/Runtime/Detached.hs);
+[Async/](../src/Haskoki/Runtime/Async/) and
+[Detached/](../src/Haskoki/Runtime/Detached/) module families;
 [async_routed.c](../tests/c/async_routed.c) exercises the public table.
 
 Configuration currently has 49 accepted keys. Unknown keys and sections

@@ -11,7 +11,7 @@ values use the generic CLASS/TYPE path; they do not gain X.509 semantics.
 
 `CKA_START_DATE` and `CKA_END_DATE`, when supplied, must be eight ASCII
 digits. The token does not check calendar validity or enforce a validity
-period. See `checkCertificateDates` in [Object.hs](../core/Haskoki/Object.hs).
+period. See `checkCertificateDates` in [PlanCerts.hs](../core/Haskoki/Object/PlanCerts.hs).
 
 ## Supplied-values metadata position
 

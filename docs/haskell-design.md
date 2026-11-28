@@ -77,7 +77,7 @@ the raw pair. The abstract type seals the value; gate 3 is a
 textual backstop against direct construction (`WorkCall (`),
 while the closed 1-ary `WorkCall _)` wildcard, which binds
 nothing, stays permitted for the two outer-function refusal arms
-over key functions (see `src/Haskoki/Runtime/Async.hs`).
+over key functions (see `src/Haskoki/Runtime/Async/Operations.hs`).
 
 ## Public Haskell surface
 
@@ -127,8 +127,8 @@ point, never the deprecated scaffold names.
 The dispatch surface stays small while helpers move only for cause:
 
 - Move a pure family helper out of `ffi/Haskoki/FFI/Standard.hs`,
-  `src/Haskoki/Engine/Driver.hs`, or
-  `core/Haskoki/Operation/KeyManagement.hs` only when a concrete fix
+  `src/Haskoki/Engine/Driver/`, or
+  `core/Haskoki/Operation/KeyManagement/` only when a concrete fix
   exposes the seam; bulk moves are not pre-authorized.
 - Keep one dispatch arm per `FunctionId` with no wildcard, mirroring
   `runFinisher` leg for leg.

@@ -16,7 +16,7 @@ identities; each decoder checks its own lengths, tags, and ranges.
 | F1 | init frame | FFI/`Request.reqInput` → classic-init planners | §1 + `Codec.hs` header | `ByteFormatSpec` init golden + layout |
 | F2 | verify one-shot frame | FFI/`reqInput` → verify planner | §1 + `Codec.hs` header | `ByteFormatSpec` verify golden |
 | F3 | message frames (begin/next/one-shot) | FFI/`reqInput` → message planners | §1 + `Codec.hs` header | `ByteFormatSpec` message goldens + family gates |
-| F4 | attribute frames (template entries, wanted lists, value codec, handles) | core-internal: `Object`/`Attribute` codecs ↔ planners; entries also decoded from scenario/detached bytes (the C→Haskell FFI template frame is F9, a different layout — not this encoding) | §2 + `Object.hs`/`Attribute.hs` | `ByteFormatSpec` template/value/wanted/handle goldens |
+| F4 | attribute frames (template entries, wanted lists, value codec, handles) | core-internal: `Object`/`Attribute` codecs ↔ planners; entries also decoded from scenario/detached bytes (the C→Haskell FFI template frame is F9, a different layout — not this encoding) | §2 + `Object/`/`Attribute.hs` | `ByteFormatSpec` template/value/wanted/handle goldens |
 | F5 | recipe parameter codecs (the `params` tail of F1) | C `CK_MECHANISM` → FFI decode → recipe validators | §3 + per-`Recipe/*` module | `ByteFormatSpec` params goldens (+ per-recipe validity specs) |
 | F6 | snapshot/portable bytes | save → bytes → restore (sessions, `haskoki-ctl` observable) | §4 + `Snapshot.hs` header grammar | `SnapshotSpec` golden + truncation/flip/no-pointer cases |
 | F7 | SQLite store bytes (schema + JSON docs + blobs) | store file ↔ SQLite backend; memory backend shares the JSON docs | §5 + `spec/storage-schema.sql` | `StoreSpec` schema-shape pin + `BytesSpec` doc goldens + reload cases |
@@ -62,7 +62,7 @@ boundary already length-bounded; the decoders additionally reject
 reserved-bit abuse and family/tag mismatches, and permits decode
 in canonical ascending order so equivalent permits compare equal.
 
-## 2. Attribute frames (`core/Haskoki/Object.hs`, `core/Haskoki/Attribute.hs`)
+## 2. Attribute frames (`core/Haskoki/Object/`, `core/Haskoki/Attribute.hs`)
 
 Core-internal encoding — contrast F9 (§7): the C→Haskell frame
 uses `u64le` type ids and little-endian values, while the

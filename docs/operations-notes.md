@@ -194,13 +194,13 @@ revisions, then perform the masked durable section. SQLite uses one
 `BEGIN IMMEDIATE` transaction. Every connection sets
 `PRAGMA synchronous = EXTRA` and verifies it reads back as set
 (`configure`/`verifyPragmas` in
-[SQLite.hs](../src/Haskoki/Runtime/Storage/SQLite.hs)), so the last
+[Init.hs](../src/Haskoki/Runtime/Storage/SQLite/Init.hs)), so the last
 commit stays committed across a power loss closely following it, at the
 cost of one directory fsync per commit; removing a cold journal at open
 likewise syncs the store directory after the unlink (`syncParentDir`).
 The implementations are in
 [Memory.hs](../src/Haskoki/Runtime/Storage/Memory.hs) and
-[SQLite.hs](../src/Haskoki/Runtime/Storage/SQLite.hs).
+the [SQLite/](../src/Haskoki/Runtime/Storage/SQLite/) backend family.
 
 A token in quarantine refuses another commit with `StoreQuarantined`.
 After an ambiguous write, a reload determines whether the projected delta
@@ -239,7 +239,7 @@ objects, jobs, and auth counters. Labels alone never identify a
 token: a catalog entry that reuses a label under a different
 identity (or the reverse) reopens refused, never silently
 reassigned (see `reconcileIdentities` in
-`src/Haskoki/Runtime/Storage.hs` and the refusal cases in
+`src/Haskoki/Runtime/Storage/TokenIdentity.hs` and the refusal cases in
 `tests/storage/StoreSpec.hs`).
 
 Slot 0 is the home token `TokenId 1`, unconditionally: the
@@ -682,7 +682,7 @@ opening can still replay a hot journal, and closing the last
 connection can still checkpoint a WAL. The two disagree on liveness by design:
 `store inspect` judges the sidecar pid through `/proc` only
 (`readLockState`), while `store check` uses the kernel flock as the
-authority (`probeOwner` in `src/Haskoki/Runtime/Storage/SQLite.hs`), so a store
+authority (`probeOwner` in `src/Haskoki/Runtime/Storage/SQLite/Snapshot.hs`), so a store
 whose kernel lock is held but whose sidecar is absent reports `offline`
 under `inspect` and `store-live` under `check` (see `casePlanLiveOwner`
 in `tests/storage/PreflightSpec.hs`), and a stale sidecar naming a live
@@ -783,7 +783,7 @@ away from both the link and its target (`caseOpenDanglingLink`).
    `resolveStoreSpelling`, so sidecars beside the decoded file
    are reported under the same three-case guarantee below
    (pinned by `caseUriTwinSidecar` in
-   `tests/storage/StoreSpec.hs`). A cold
+   `tests/storage/Store/UriTwins.hs`). A cold
    journal is cleared only after this plan says the migration
    proceeds.
 2. Takes the store's ownership lock for the rest of the run. A store
@@ -894,7 +894,7 @@ cold; eight matching magic bytes (`d9 d5 05 f9 20 a1 63 d7`) mean hot
 for preflight purposes — a replay candidate, though SQLite still
 needs a complete header to actually replay it — and a readable
 eight-byte prefix matching neither magic nor zeros is unknown
-(`classifyJournal` in `src/Haskoki/Runtime/Storage/SQLite.hs`).
+(`classifyJournal` in `src/Haskoki/Runtime/Storage/SQLite/Snapshot.hs`).
 A non-empty `-wal` or `-shm`
 sibling is checked before the cold classification, so a cold journal
 plus a foreign `-wal` reports `store-foreign-sidecar`, never cold, and
@@ -1002,7 +1002,7 @@ after the snapshot comparison and before the backup (no `-wal` or
 `-shm` sibling exists even zero-byte, a SQLite `RESERVED` lock is
 taken, the journal is still cold on re-read; see
 `clearColdJournalOwned` in
-`src/Haskoki/Runtime/Storage/SQLite.hs`). A journal that vanished
+`src/Haskoki/Runtime/Storage/SQLite/Migrate.hs`). A journal that vanished
 between the plan and the clear counts as cleared (treated as
 absent on recheck). The line
 is printed to stdout and flushed the moment the journal is cleared,
@@ -1255,9 +1255,10 @@ commit and can be evicted by the next terminal commit. Delivered payloads
 remain until eviction or explicit terminal-only `reapJob`.
 
 There is no background reaper. An evicted or reaped id becomes unknown.
-See `maxRetainedTombstones`, `maxRetainedBytes`, and `reapEligibility` in
-[Async.hs](../src/Haskoki/Runtime/Async.hs), with count/byte bounds in
-[AsyncSpec](../tests/model/AsyncSpec.hs).
+See `maxRetainedTombstones` and `maxRetainedBytes` in
+[Lease.hs](../src/Haskoki/Runtime/Async/Lease.hs) and `reapEligibility`
+in [Operations.hs](../src/Haskoki/Runtime/Async/Operations.hs), with
+count/byte bounds in [AsyncSpec](../tests/model/AsyncSpec.hs).
 
 ## Release limits for operators
 
@@ -1269,10 +1270,10 @@ list). The notes below bind each operational property to its code.
 Key storage. Memory mode keeps token and object records in process
 memory only; SQLite mode persists the same records to the configured
 path as plain JSON/blobs — token rows plus object rows with
-`material_blob` key bytes (`src/Haskoki/Runtime/Storage/SQLite.hs`
-schema) — with no encryption-at-rest. Session objects are never
+`material_blob` key bytes (`src/Haskoki/Runtime/Storage/SQLite/`
+backend schema) — with no encryption-at-rest. Session objects are never
 stored, and external handles are never stored: the live model mints
-handles on reload (`src/Haskoki/Runtime/Storage.hs` record notes).
+handles on reload (`src/Haskoki/Runtime/Storage/Records.hs` record notes).
 The store path is explicit in config and single-writer; a pathless
 SQLite open or a second concurrent open refuses loudly instead of
 sharing state.
@@ -1335,7 +1336,7 @@ retention limits of 4096 records and 64 MiB; commits evict the oldest
 terminal records when either limit is exceeded. Owners may also use
 `reapJob` for eager removal (see Async expiry/GC above and
 `maxRetainedTombstones` / `maxRetainedBytes` in
-`src/Haskoki/Runtime/Async.hs`).
+`src/Haskoki/Runtime/Async/Lease.hs`).
 
 Memory handling. Tag comparison inside the engines uses the full
 xor-fold shape (`ctEq`); no uniform running-time guarantee is made

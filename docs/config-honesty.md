@@ -203,9 +203,9 @@ existing token accepts (see [operations notes](operations-notes.md)).
 |---|---|---|---|
 | one-shot input | 16 MiB | `maxInputBytes` (`FFI/Decode.hs`), checked before copy | native |
 | buffered accumulation | 16 MiB | `maxBuffered`/`validateOperationIn` (`Operation.hs`) | native |
-| template entries | 64 | `maxTemplateEntries` (`Object.hs`, `NativeParams.hs`) | native |
+| template entries | 64 | `maxTemplateEntries` (`Object/Codecs.hs`, `NativeParams.hs`) | native |
 | template value bytes | 4194304 | `maxAttributeBytes` (`Attribute.hs`) | native |
-| retained tombstones | 4096 records and 64 MiB | `maxRetainedTombstones`/`maxRetainedBytes` (`Async.hs`) | both |
+| retained tombstones | 4096 records and 64 MiB | `maxRetainedTombstones`/`maxRetainedBytes` (`Async/Lease.hs`) | both |
 | seed bytes | 1048576 | `seedRandomMaxBytes` (`Backend.hs`) | native |
 | scenario steps | 1024 | `maxScenarioActions` (`Control.hs`) | both |
 | scenario JSON depth | 32 | `maxJsonDepth` (`Control.hs`) | both |
