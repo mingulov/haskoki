@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.6.3.0] - unreleased
+## [0.6.3.0] - 2026-11-28
 
 Architecture release. No behavior change: the large Haskell
 modules are split into small single-concern family modules
@@ -30,7 +30,7 @@ Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.3.0`.
   builds, `.so` export parity (C ABI identical; remaining
   `nm` diffs are GHC-internal renames only).
 
-## [0.6.2.0] - unreleased
+## [0.6.2.0] - 2026-11-28
 
 Cleanup release. The per-change detail is in
 [docs/release-notes-0.6.2.0.md](docs/release-notes-0.6.2.0.md).
