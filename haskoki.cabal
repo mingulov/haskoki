@@ -681,6 +681,18 @@ test-suite haskoki-model-tests
     LifecycleSpec
     KeyImportSpec
     KeyManagementSpec
+    KeyManagement.Fixtures
+    KeyManagement.Part1
+    KeyManagement.Part2Fixtures
+    KeyManagement.Part2
+    KeyManagement.KeygenSweep
+    KeyManagement.Premaster
+    KeyManagement.Part3
+    KeyManagement.Part4
+    KeyManagement.Part5
+    KeyManagement.Part6
+    KeyManagement.TC03f
+    KeyManagement.CreationStamping
     MechanismExhaustivenessSpec
     MessageFlagBatterySpec
     MessageSpec
