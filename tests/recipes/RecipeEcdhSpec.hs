@@ -38,10 +38,8 @@ import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
   , ObjectState (..)
-  , SessionState (..)
   , emptyModel
   )
-import Haskoki.Operation (emptySessionOps)
 import Haskoki.Operation.Derive (encodeDeriveParams, encodeHkdfInfo, planDerive)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
@@ -81,16 +79,15 @@ import Haskoki.Registry.Generated
   )
 import Haskoki.Registry.Types (ParameterCodec (..))
 import Haskoki.Rules (defaultRules)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
   , ObjectId (..)
   , ReturnCode (..)
   , Revision (..)
-  , SessionId (..)
   , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "ECDH recipe"
@@ -270,17 +267,6 @@ baseOid = ObjectId 41
 
 baseHandle :: ExternalHandle
 baseHandle = ExternalHandle 401
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 -- The base class follows the key type: generic-secret legs
 -- plant a secret-class object, agreement legs a private-class

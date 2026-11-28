@@ -34,7 +34,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
 import Haskoki.Engine.Driver (hotpParamsFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( CryptoEffect (..)
   , InitArgs (..)
@@ -79,15 +79,11 @@ import Haskoki.Registry
   )
 import Haskoki.Registry.Generated (ckm_HOTP, ckm_SHA_1_HMAC)
 import Haskoki.Rules (defaultRules)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "OTP recipe"
@@ -236,17 +232,6 @@ caseKeygenGeometry = do
 -- ---------------------------------------------------------------------------
 -- Init path
 -- ---------------------------------------------------------------------------
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 testEnv :: OpEnv
 testEnv = OpEnv

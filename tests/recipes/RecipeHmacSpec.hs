@@ -27,7 +27,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (DigestAlg (..), MacSpec (..), digestOutLen)
 import Haskoki.Engine.Driver (hmacSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -61,15 +61,11 @@ import Haskoki.Registry.Generated
   , ckm_SHA256_HMAC
   , ckm_SHA256_HMAC_GENERAL
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "HMAC recipe"
@@ -202,17 +198,6 @@ caseCodecRoundTrip = do
   assertEqual "empty rejected" Nothing (decodeMacGeneral BS.empty)
   assertEqual "short rejected" Nothing (decodeMacGeneral (BS.replicate 7 0))
   assertEqual "long rejected" Nothing (decodeMacGeneral (BS.replicate 9 0))
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 plainMech, generalMech :: MechanismId
 plainMech = MechanismId (ckm_SHA256_HMAC)

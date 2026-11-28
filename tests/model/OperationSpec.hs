@@ -163,6 +163,7 @@ import Haskoki.Types
   , SessionId (..)
   , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "operation lifecycles"
@@ -343,17 +344,6 @@ recEnv = testEnv
 
 testSlot :: SlotId
 testSlot = SlotId 7
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = testSlot
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 -- | Model holding one public AES key object bound to handle 3.
 modelWithKey :: Model

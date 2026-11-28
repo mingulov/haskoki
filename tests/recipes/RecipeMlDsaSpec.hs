@@ -46,7 +46,7 @@ import Haskoki.Engine.Backend
   , SigSpec (..)
   )
 import Haskoki.Engine.Driver (mldsaLevelOfKey, mldsaSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
@@ -80,15 +80,11 @@ import Haskoki.Registry.Generated
   , ckm_EDDSA
   , ckm_ML_DSA
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "ML-DSA recipe"
@@ -202,17 +198,6 @@ caseParams = do
   mapM_ (\p ->
     assertEqual ("validity agrees " ++ show p) (expect p) (mldsaParamsValid r p)
     ) [BS.empty, defaultImage, encodeMldsaParams HedgeDeterministic "CTX"]
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 mldsaMech :: MechanismId
 mldsaMech = MechanismId (ckm_ML_DSA)

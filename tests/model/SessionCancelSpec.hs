@@ -67,7 +67,6 @@ import Haskoki.Request
   , Request (..)
   )
 import Haskoki.Rules (defaultRules)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Transition (planCall, publishDelta)
 import Haskoki.Types
   ( EngineResourceId (..)
@@ -80,6 +79,7 @@ import Haskoki.Types
   , SessionId (..)
   , SlotId (..)
   )
+import TestSession (testSessionOn)
 
 spec :: TestTree
 spec = testGroup "session cancel"
@@ -173,15 +173,7 @@ cancelEnv model = OpEnv
   }
 
 testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 0
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
+testSession = testSessionOn (SlotId 0)
 
 -- | A model holding exactly one session (with the given ops) plus
 -- the key object behind 'ExternalHandle 3', as in OperationSpec.

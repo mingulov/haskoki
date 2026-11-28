@@ -48,7 +48,7 @@ import Haskoki.Attribute.Generated
   , keyTypeIdByName
   , keyTypeNameById
   )
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Object
   ( RuleDeny (..)
   , TemplateError (..)
@@ -58,7 +58,6 @@ import Haskoki.Object
   , planCreateObject
   , validateTemplate
   )
-import Haskoki.Operation (emptySessionOps)
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)
@@ -84,14 +83,10 @@ import Haskoki.Registry.Generated (generatedIdByName)
 import Data.Maybe (isJust)
 import qualified Haskoki.Registry.Generated as Gen
 import Haskoki.Rules (defaultRules)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
-  ( Generation (..)
-  , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
+  ( ReturnCode (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "Template rules"
@@ -354,17 +349,6 @@ caseForbiddenPresent = do
   assertEqual "MODULUS_BITS forbidden"
     (Left (RuleForbiddenPresent "CKA_MODULUS_BITS"))
     (checkRules synthRule attrs)
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 caseAesMissingLen :: IO ()
 caseAesMissingLen = do

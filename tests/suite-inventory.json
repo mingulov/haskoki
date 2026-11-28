@@ -329,6 +329,7 @@
         "StandardSurfaceSpec",
         "StormBudget",
         "TemplateRulesSpec",
+        "TestSession",
         "TraceSpec",
         "ULongSpec",
         "UsdtMapSpec"
@@ -626,6 +627,7 @@
         "TemplateRulesSpec": [
           "Template rules"
         ],
+        "TestSession": [],
         "TraceSpec": [
           "Trace"
         ],

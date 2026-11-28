@@ -102,7 +102,7 @@ import Haskoki.Engine.Backend
   , cipherKeyLens
   )
 import Haskoki.Engine.Driver (cipherSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)
@@ -189,15 +189,11 @@ import Haskoki.Registry.Generated
   , ckm_SHA256
   , ckm_SHA256_HMAC
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "Block-cipher recipe"
@@ -547,17 +543,6 @@ caseKeyLens = do
     mapM_ (\n -> assertBool ("key ok " ++ T.unpack suffix ++ "/" ++ show n)
       (cipherKeyLenValid r n)) keys
     ) groupShape
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 cbcMech, ecbMech, d3Mech, ctrMech, ctsMech, cfb128Mech, cfb8Mech, cfb1Mech, ofbMech, kwMech, kwPadMech, kwpMech, xtsMech, ariaPadMech, camPadMech, d3PadMech, camCtrMech :: MechanismId
 cbcMech = MechanismId (ckm_AES_CBC)

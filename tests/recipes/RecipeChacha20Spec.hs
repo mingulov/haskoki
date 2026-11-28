@@ -33,7 +33,7 @@ import Haskoki.FFI.NativeParams
   ( chachaPolyStructToCanonical
   , chachaStreamStructToCanonical
   )
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)
@@ -72,15 +72,11 @@ import Haskoki.Registry.Generated
   , ckm_CHACHA20_POLY1305
   , ckm_SHA256
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "ChaCha20 recipe"
@@ -183,17 +179,6 @@ caseStreamParams = do
   assertBool "trailing garbage refused"
     (not (chachaParamsValid stream (good 0 nonce12 <> "x")))
   assertBool "garbage refused" (not (chachaParamsValid stream "nope"))
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 polyMech :: MechanismId
 polyMech = MechanismId ckm_CHACHA20_POLY1305

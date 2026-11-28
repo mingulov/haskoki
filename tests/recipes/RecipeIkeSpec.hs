@@ -33,10 +33,8 @@ import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
   , ObjectState (..)
-  , SessionState (..)
   , emptyModel
   )
-import Haskoki.Operation (emptySessionOps)
 import Haskoki.Operation.Derive
   ( encodeDeriveParams
   , planDerive
@@ -64,16 +62,15 @@ import Haskoki.Registry.Generated
   )
 import Haskoki.Registry.Types (MechanismId (..))
 import Haskoki.Rules (defaultRules)
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
   , Generation (..)
   , ObjectId (..)
   , ReturnCode (..)
   , Revision (..)
-  , SessionId (..)
   , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "IKE recipe"
@@ -206,17 +203,6 @@ auxOid = ObjectId 45
 
 auxHandle :: ExternalHandle
 auxHandle = ExternalHandle 405
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 mkSecret :: ObjectId -> Word64 -> BS.ByteString -> Bool -> ObjectState
 mkSecret oid kty mat canDerive = ObjectState

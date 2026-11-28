@@ -23,7 +23,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (AeadSpec (..))
 import Haskoki.Engine.Driver (aeadSpecFor)
-import Haskoki.Model (SessionState (..), emptyModel)
+import Haskoki.Model ( emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)
@@ -55,15 +55,11 @@ import Haskoki.Registry.Generated
   , ckm_AES_GCM
   , ckm_SHA256
   )
-import Haskoki.Session (SessionLogin (..))
 import Haskoki.Types
   ( ExternalHandle (..)
-  , Generation (..)
   , ReturnCode (..)
-  , Revision (..)
-  , SessionId (..)
-  , SlotId (..)
   )
+import TestSession (testSession)
 
 spec :: TestTree
 spec = testGroup "AES-GCM recipe"
@@ -135,17 +131,6 @@ caseParams = do
   assertBool "garbage refused" (not (gcmParamsValid gcm "nope"))
   assertBool "truncated refused"
     (not (gcmParamsValid gcm (BS.take 20 (good 16 iv12))))
-
-testSession :: SessionState
-testSession = SessionState
-  { ssId = SessionId 1
-  , ssSlot = SlotId 7
-  , ssRevision = Revision 1
-  , ssGeneration = Generation 1
-  , ssReadOnly = False
-  , ssLogin = LoginPublic
-  , ssOps = emptySessionOps
-  }
 
 gcmMech :: MechanismId
 gcmMech = MechanismId ckm_AES_GCM
