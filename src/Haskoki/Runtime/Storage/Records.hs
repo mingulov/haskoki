@@ -12,9 +12,9 @@ module Haskoki.Runtime.Storage.Records
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
-import Data.Word ( Word64)
+import Data.Word (Word64)
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
-import Haskoki.Runtime.Attach ( JobExecState (..))
+import Haskoki.Runtime.Attach (JobExecState (..))
 import Haskoki.Session
   ( TokenAuth (..)
   )

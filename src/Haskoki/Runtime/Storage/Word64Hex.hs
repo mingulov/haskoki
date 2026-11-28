@@ -5,9 +5,9 @@ module Haskoki.Runtime.Storage.Word64Hex
   , decodeHexWord64
   ) where
 
-import Data.Bits ( shiftR, (.&.))
-import Data.Char ( isHexDigit)
-import Data.Word ( Word64)
+import Data.Bits (shiftR, (.&.))
+import Data.Char (isHexDigit)
+import Data.Word (Word64)
 import Haskoki.Runtime.Storage.FixedHex
 
 -- ---------------------------------------------------------------------------

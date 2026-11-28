@@ -7,9 +7,9 @@ module Haskoki.Runtime.Storage.FixedHex
   , decodeHex16
   ) where
 
-import Data.Bits ( shiftR, (.&.))
+import Data.Bits (shiftR, (.&.))
 import Data.Char (chr, isHexDigit, ord)
-import Data.Word ( Word64)
+import Data.Word (Word64)
 
 -- ---------------------------------------------------------------------------
 -- Fixed hex for full-width unsigned quantities

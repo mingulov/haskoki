@@ -123,12 +123,12 @@ module Haskoki.Runtime.Storage
   ) where
 
 
-
 import Haskoki.Runtime.Attach (ClaimAuthority, JobExecState (..), claimCensus, markCensus)
 import Haskoki.Runtime.Storage.Limits
 import Haskoki.Runtime.Storage.Records
 import Haskoki.Runtime.Storage.Deltas
 import Haskoki.Runtime.Storage.Commit
+import Haskoki.Runtime.Storage.Contract
 import Haskoki.Runtime.Storage.Precommit
 import Haskoki.Runtime.Storage.TokenIdentity
 import Haskoki.Runtime.Storage.Projection

@@ -6,12 +6,10 @@ module Haskoki.Runtime.Storage.JobDocs
   , encodeReturnCode
   , decodeReturnCode
   , encodeJobRecord
-  , encodeJobBody
   , decodeJobRecord
-  , decodeJobBody
   ) where
 
-import Haskoki.Runtime.Attach ( JobExecState (..))
+import Haskoki.Runtime.Attach (JobExecState (..))
 import Haskoki.Types
   ( Generation (..)
   , ReturnCode (..)

@@ -3,7 +3,6 @@
 module Haskoki.Runtime.Storage.Precommit
   ( LoadedState (..)
   , checkLimits
-  , utf8Bytes
   , checkExpectedRevisions
   , checkTokenRefs
   , checkSlotUnique

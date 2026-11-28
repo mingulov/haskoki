@@ -3,7 +3,6 @@
 module Haskoki.Runtime.Storage.ObjectDocs
   ( encodeObjectRecord
   , decodeObjectRecord
-  , decodeAttrPairs
   , encodeAttrsDoc
   , decodeAttrsDoc
   , knownMaterialEncodings

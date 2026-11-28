@@ -5,7 +5,6 @@ module Haskoki.Runtime.Storage.Commit
   , FaultInjector (..)
   , noFaults
   , scriptedFaults
-  , removeFirst
   , withMaskHook
   , withResultHook
   , StoreStats (..)
@@ -21,7 +20,7 @@ module Haskoki.Runtime.Storage.Commit
   , coverDeletedJobIds
   ) where
 
-import Data.Word ( Word64)
+import Data.Word (Word64)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Haskoki.Runtime.Storage.Deltas
 import Haskoki.Runtime.Storage.Records
@@ -177,7 +176,7 @@ reconcileJobsReload delta jobs
 -- with full-record equality (the job-table precedent: backends
 -- AND this with 'reconcileReload' and 'reconcileJobsReload').
 -- A credential put naming a token dropped in the same delta
--- never reaches reconciliation: 'checkTokenRefs' refuses it at
+-- never reaches reconciliation: @checkTokenRefs@ refuses it at
 -- validation, since the projected token set has no such token.
 reconcileCredentialsReload :: StoreDelta -> [CredentialRecord] -> Reconcile
 reconcileCredentialsReload delta creds
