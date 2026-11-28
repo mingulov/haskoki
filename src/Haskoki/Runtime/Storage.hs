@@ -122,7 +122,6 @@ module Haskoki.Runtime.Storage
   , decodeHexWord64
   ) where
 
-
 import Haskoki.Runtime.Attach (ClaimAuthority, JobExecState (..), claimCensus, markCensus)
 import Haskoki.Runtime.Storage.Limits
 import Haskoki.Runtime.Storage.Records
