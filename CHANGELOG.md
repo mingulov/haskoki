@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.3.0] - unreleased
+
+Architecture release. No behavior change: the large Haskell
+modules are split into small single-concern family modules
+behind re-export shells (public APIs and export lists
+byte-identical). The per-split detail is in
+[docs/release-notes-0.6.3.0.md](docs/release-notes-0.6.3.0.md).
+Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.3.0`.
+
+### Refactor
+
+- Lib splits: Driver (31 family modules), KeyManagement (9),
+  SQLite (12), Async (9), Detached (8), Object (11),
+  Storage (17) — 97 new modules, each behind its original
+  export list.
+- Test splits: KeyManagementSpec (12), StoreSpec (9),
+  OpenSSLSpec (12) grouped by suite structure; the 36
+  hand-built `testSession` copies share one parameterized
+  helper in `tests/support/TestSession.hs`.
+- New module-size ratchet in `check-exposure.py` (1200-line
+  lib / 4000-line test budgets, 7 pinned exceptions);
+  test-wiring gate learns dotted helper modules.
+
+### Verification
+
+- Golden sweep passing (67,808 rows, zero EXN), all 8 test
+  suites passing with identical test counts, zero-warning
+  builds, `.so` export parity (C ABI identical; remaining
+  `nm` diffs are GHC-internal renames only).
+
 ## [0.6.2.0] - unreleased
 
 Cleanup release. The per-change detail is in
