@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.6.4.0] - 2026-11-28
+
+Maintainability release. No behavior change: the four 0.6.3
+follow-up splits land (Der, Derive, Synthetic, FfiAsyncSpec),
+integer framing merges into one `Haskoki.Bytes` home, the deferred
+OpenSSL const colocation completes, and new guardrails (family
+import confinement, HLint ratchet) lock the shape in. Detail in
+[docs/release-notes-0.6.4.0.md](docs/release-notes-0.6.4.0.md).
+Reports `libraryVersion` 0.6 and `haskoki-ctl 0.6.4.0`.
+
 ## [0.6.3.0] - 2026-11-28
 
 Architecture release. No behavior change: the large Haskell

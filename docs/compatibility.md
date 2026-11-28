@@ -5,7 +5,7 @@ Every cell resolves to works, migrate, or refuse; there are no blanks.
 
 ## Versions
 
-- Binary: `0.6.3.0` (authority: `haskoki.cabal`; the CLI carries it, pinned by `caseVersionExact`).
+- Binary: `0.6.4.0` (authority: `haskoki.cabal`; the CLI carries it, pinned by `caseVersionExact`).
 - Store schema served: `3` (authority: `sqliteSchemaVersion`).
 - Config schema accepted: `1` (absent means default).
 - Interfaces: `2.40`, `3.0`, `3.1`, `3.2` (config allowlist, cross-checked against the ABI inventory; advertisement parity pinned by the discovery legs).
@@ -22,53 +22,53 @@ Every cell resolves to works, migrate, or refuse; there are no blanks.
 
 | Binary | Store | Config | Interface | Verdict |
 | --- | --- | --- | --- | --- |
-| 0.6.3.0 | memory | 1 | 2.40 | works |
-| 0.6.3.0 | memory | 1 | 3.0 | works |
-| 0.6.3.0 | memory | 1 | 3.1 | works |
-| 0.6.3.0 | memory | 1 | 3.2 | works |
-| 0.6.3.0 | memory | 1 | other | refuse |
-| 0.6.3.0 | memory | other | 2.40 | refuse |
-| 0.6.3.0 | memory | other | 3.0 | refuse |
-| 0.6.3.0 | memory | other | 3.1 | refuse |
-| 0.6.3.0 | memory | other | 3.2 | refuse |
-| 0.6.3.0 | memory | other | other | refuse |
-| 0.6.3.0 | 1 | 1 | 2.40 | migrate |
-| 0.6.3.0 | 1 | 1 | 3.0 | migrate |
-| 0.6.3.0 | 1 | 1 | 3.1 | migrate |
-| 0.6.3.0 | 1 | 1 | 3.2 | migrate |
-| 0.6.3.0 | 1 | 1 | other | refuse |
-| 0.6.3.0 | 1 | other | 2.40 | refuse |
-| 0.6.3.0 | 1 | other | 3.0 | refuse |
-| 0.6.3.0 | 1 | other | 3.1 | refuse |
-| 0.6.3.0 | 1 | other | 3.2 | refuse |
-| 0.6.3.0 | 1 | other | other | refuse |
-| 0.6.3.0 | 2 | 1 | 2.40 | migrate |
-| 0.6.3.0 | 2 | 1 | 3.0 | migrate |
-| 0.6.3.0 | 2 | 1 | 3.1 | migrate |
-| 0.6.3.0 | 2 | 1 | 3.2 | migrate |
-| 0.6.3.0 | 2 | 1 | other | refuse |
-| 0.6.3.0 | 2 | other | 2.40 | refuse |
-| 0.6.3.0 | 2 | other | 3.0 | refuse |
-| 0.6.3.0 | 2 | other | 3.1 | refuse |
-| 0.6.3.0 | 2 | other | 3.2 | refuse |
-| 0.6.3.0 | 2 | other | other | refuse |
-| 0.6.3.0 | 3 | 1 | 2.40 | works |
-| 0.6.3.0 | 3 | 1 | 3.0 | works |
-| 0.6.3.0 | 3 | 1 | 3.1 | works |
-| 0.6.3.0 | 3 | 1 | 3.2 | works |
-| 0.6.3.0 | 3 | 1 | other | refuse |
-| 0.6.3.0 | 3 | other | 2.40 | refuse |
-| 0.6.3.0 | 3 | other | 3.0 | refuse |
-| 0.6.3.0 | 3 | other | 3.1 | refuse |
-| 0.6.3.0 | 3 | other | 3.2 | refuse |
-| 0.6.3.0 | 3 | other | other | refuse |
-| 0.6.3.0 | other | 1 | 2.40 | refuse |
-| 0.6.3.0 | other | 1 | 3.0 | refuse |
-| 0.6.3.0 | other | 1 | 3.1 | refuse |
-| 0.6.3.0 | other | 1 | 3.2 | refuse |
-| 0.6.3.0 | other | 1 | other | refuse |
-| 0.6.3.0 | other | other | 2.40 | refuse |
-| 0.6.3.0 | other | other | 3.0 | refuse |
-| 0.6.3.0 | other | other | 3.1 | refuse |
-| 0.6.3.0 | other | other | 3.2 | refuse |
-| 0.6.3.0 | other | other | other | refuse |
+| 0.6.4.0 | memory | 1 | 2.40 | works |
+| 0.6.4.0 | memory | 1 | 3.0 | works |
+| 0.6.4.0 | memory | 1 | 3.1 | works |
+| 0.6.4.0 | memory | 1 | 3.2 | works |
+| 0.6.4.0 | memory | 1 | other | refuse |
+| 0.6.4.0 | memory | other | 2.40 | refuse |
+| 0.6.4.0 | memory | other | 3.0 | refuse |
+| 0.6.4.0 | memory | other | 3.1 | refuse |
+| 0.6.4.0 | memory | other | 3.2 | refuse |
+| 0.6.4.0 | memory | other | other | refuse |
+| 0.6.4.0 | 1 | 1 | 2.40 | migrate |
+| 0.6.4.0 | 1 | 1 | 3.0 | migrate |
+| 0.6.4.0 | 1 | 1 | 3.1 | migrate |
+| 0.6.4.0 | 1 | 1 | 3.2 | migrate |
+| 0.6.4.0 | 1 | 1 | other | refuse |
+| 0.6.4.0 | 1 | other | 2.40 | refuse |
+| 0.6.4.0 | 1 | other | 3.0 | refuse |
+| 0.6.4.0 | 1 | other | 3.1 | refuse |
+| 0.6.4.0 | 1 | other | 3.2 | refuse |
+| 0.6.4.0 | 1 | other | other | refuse |
+| 0.6.4.0 | 2 | 1 | 2.40 | migrate |
+| 0.6.4.0 | 2 | 1 | 3.0 | migrate |
+| 0.6.4.0 | 2 | 1 | 3.1 | migrate |
+| 0.6.4.0 | 2 | 1 | 3.2 | migrate |
+| 0.6.4.0 | 2 | 1 | other | refuse |
+| 0.6.4.0 | 2 | other | 2.40 | refuse |
+| 0.6.4.0 | 2 | other | 3.0 | refuse |
+| 0.6.4.0 | 2 | other | 3.1 | refuse |
+| 0.6.4.0 | 2 | other | 3.2 | refuse |
+| 0.6.4.0 | 2 | other | other | refuse |
+| 0.6.4.0 | 3 | 1 | 2.40 | works |
+| 0.6.4.0 | 3 | 1 | 3.0 | works |
+| 0.6.4.0 | 3 | 1 | 3.1 | works |
+| 0.6.4.0 | 3 | 1 | 3.2 | works |
+| 0.6.4.0 | 3 | 1 | other | refuse |
+| 0.6.4.0 | 3 | other | 2.40 | refuse |
+| 0.6.4.0 | 3 | other | 3.0 | refuse |
+| 0.6.4.0 | 3 | other | 3.1 | refuse |
+| 0.6.4.0 | 3 | other | 3.2 | refuse |
+| 0.6.4.0 | 3 | other | other | refuse |
+| 0.6.4.0 | other | 1 | 2.40 | refuse |
+| 0.6.4.0 | other | 1 | 3.0 | refuse |
+| 0.6.4.0 | other | 1 | 3.1 | refuse |
+| 0.6.4.0 | other | 1 | 3.2 | refuse |
+| 0.6.4.0 | other | 1 | other | refuse |
+| 0.6.4.0 | other | other | 2.40 | refuse |
+| 0.6.4.0 | other | other | 3.0 | refuse |
+| 0.6.4.0 | other | other | 3.1 | refuse |
+| 0.6.4.0 | other | other | 3.2 | refuse |
+| 0.6.4.0 | other | other | other | refuse |
