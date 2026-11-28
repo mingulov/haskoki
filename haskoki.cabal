@@ -263,6 +263,10 @@ library haskoki-internal
     Haskoki.Engine.Driver.Xcbc
     Haskoki.Engine.OpenSSL4
     Haskoki.Engine.Synthetic
+    Haskoki.Engine.Synthetic.Framing
+    Haskoki.Engine.Synthetic.Capabilities
+    Haskoki.Engine.Synthetic.PureOps
+    Haskoki.Engine.Synthetic.Codecs
     Haskoki.Ctl
     Haskoki.Ctl.Store
     Haskoki.FFI.Async

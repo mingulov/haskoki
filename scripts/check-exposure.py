@@ -630,8 +630,6 @@ MODSIZE_SKIP_PARTS = ("dist-newstyle",)
 MODSIZE_ALLOW = {
     "src/Haskoki/Engine/OpenSSL4.hs":
         (2393, "owner-call skip: FFI-adjacent, weak seams"),
-    "src/Haskoki/Engine/Synthetic.hs":
-        (1958, "follow-up candidate, not yet split"),
     "core/Haskoki/Transition.hs":
         (1814, "owner-call skip: weak seams"),
     "core/Haskoki/Registry.hs":
