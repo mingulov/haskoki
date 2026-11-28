@@ -45,7 +45,7 @@ module KeyManagement.Part2Fixtures
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Word (Word64)
-import Test.Tasty.HUnit ( assertFailure)
+import Test.Tasty.HUnit (assertFailure)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
@@ -54,7 +54,7 @@ import Haskoki.Model
   ( Model (..)
   , SessionState
   )
-import Haskoki.Operation.Effect ( CryptoEffect (..), CryptoResult (..))
+import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.KeyManagement
   ( KeyPlan (..)
   , aesKeyGenMech

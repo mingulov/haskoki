@@ -34,7 +34,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64)
-import Test.Tasty.HUnit ( assertEqual, assertFailure)
+import Test.Tasty.HUnit (assertEqual, assertFailure)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
@@ -54,7 +54,7 @@ import Haskoki.Operation.Derive
   , planDerive
   , pubPrivMech
   )
-import Haskoki.Operation.Effect ( CryptoEffect (..), CryptoResult (..))
+import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.Kem
   ( KemAlg (..)
   , kemCtLen
@@ -168,7 +168,7 @@ import Haskoki.Registry.Generated
   , ckm_SHAKE_128_KEY_DERIVATION
   , ckm_TLS_PRF
   )
-import Haskoki.Request ( OutputIntent (..), OutputRegion (..))
+import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types

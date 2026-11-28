@@ -13,7 +13,7 @@ module KeyManagement.TC03f
 
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
-import Test.Tasty.HUnit ( assertEqual, assertFailure)
+import Test.Tasty.HUnit (assertEqual, assertFailure)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
@@ -22,7 +22,7 @@ import Haskoki.Model
   ( Model (..)
   , SessionState
   )
-import Haskoki.Operation.Effect ( CryptoResult (..))
+import Haskoki.Operation.Effect (CryptoResult (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , PendingObject (..)

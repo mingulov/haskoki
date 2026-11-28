@@ -111,14 +111,14 @@ import Haskoki.Engine.Backend
   , KeyMaterial (..)
   , SigSpec (..)
   )
-import Haskoki.Engine.Driver ( runEffect)
+import Haskoki.Engine.Driver (runEffect)
 import Haskoki.Engine.Synthetic (Synthetic (..))
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
   , SessionState
   )
-import Haskoki.Object ( planFindObjects, planGetAttributes, resolveHandle)
+import Haskoki.Object (planFindObjects, planGetAttributes, resolveHandle)
 import Haskoki.Operation.Cipher (pkcs7Pad, pkcs7Unpad)
 import Haskoki.Operation
   ( CipherSpec (..)
@@ -136,7 +136,7 @@ import Haskoki.Operation.Derive
   , maxDerivedTotal
   , planDerive
   )
-import Haskoki.Operation.Effect ( CryptoEffect (..), CryptoResult (..))
+import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.Kem
   ( KemAlg (..)
   , kemCtLen
@@ -248,7 +248,7 @@ import Haskoki.Registry.Generated
   , ckm_SHA256_KEY_DERIVATION
   )
 import Haskoki.Registry.KeyMatrix (matrixKeyTypes)
-import Haskoki.Request ( OutputIntent (..), OutputRegion (..))
+import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types

@@ -24,8 +24,8 @@ import Haskoki.Model
   , ObjectState (..)
   , SessionState
   )
-import Haskoki.Object ( resolveHandle)
-import Haskoki.Operation.Effect ( CryptoEffect (..), CryptoResult (..))
+import Haskoki.Object (resolveHandle)
+import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)

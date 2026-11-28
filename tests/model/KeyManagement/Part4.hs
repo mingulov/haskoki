@@ -16,7 +16,7 @@ import Data.Bits (complement)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
-import Test.Tasty.HUnit ( assertEqual, assertFailure)
+import Test.Tasty.HUnit (assertEqual, assertFailure)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
@@ -26,7 +26,7 @@ import Haskoki.Model
   , ObjectState (..)
   , SessionState
   )
-import Haskoki.Object ( resolveHandle)
+import Haskoki.Object (resolveHandle)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)
@@ -40,7 +40,7 @@ import Haskoki.Operation.Derive
   ( encodeDeriveParams
   , encodeHkdfInfo
   )
-import Haskoki.Operation.Effect ( CryptoEffect (..), CryptoResult (..))
+import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.Kem
   ( KemAlg (..)
   , kemCtLen
@@ -76,8 +76,8 @@ import Haskoki.Outcome
   , Rejection (..)
   , StateDelta (..)
   )
-import Haskoki.Registry ( Operation (..), curatedRegistry, mkCapabilities)
-import Haskoki.Request ( OutputIntent (..), OutputRegion (..))
+import Haskoki.Registry (Operation (..), curatedRegistry, mkCapabilities)
+import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types

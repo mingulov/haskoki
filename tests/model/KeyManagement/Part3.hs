@@ -31,14 +31,14 @@ import Haskoki.Attribute
   , AttributeValue (..)
   )
 import Haskoki.Attribute.Generated (mustKeyTypeId)
-import Haskoki.Der ( ecPrivateDer, ecPublicDer)
+import Haskoki.Der (ecPrivateDer, ecPublicDer)
 import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
   , SessionState
   )
 import Haskoki.FFI.Standard (decodeNativeValue, ecParamsToWire, nativeFromCanonical)
-import Haskoki.Object ( planFindObjects, planGetAttributes, resolveHandle)
+import Haskoki.Object (planFindObjects, planGetAttributes, resolveHandle)
 import Haskoki.Operation.Derive
   ( decodeDeriveParams
   , decodeHkdfInfo

@@ -22,7 +22,7 @@ import Haskoki.Model
   ( Model (..)
   , ObjectState (..)
   )
-import Haskoki.Object ( planGetAttributes, resolveHandle)
+import Haskoki.Object (planGetAttributes, resolveHandle)
 import Haskoki.Operation.Kem
   ( KemAlg (..)
   , kemCtLen
@@ -52,7 +52,7 @@ import Haskoki.Outcome
   , Rejection (..)
   , StateDelta (..)
   )
-import Haskoki.Request ( OutputIntent (..), OutputRegion (..))
+import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
