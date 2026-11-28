@@ -14,6 +14,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Bytes (u32be)
 import Haskoki.Model
   ( HandleBinding (..)
   , Model (..)
@@ -994,14 +995,7 @@ caseRestoreGrantBoundDual = do
 -- Geometry revalidation: decode admits exactly what init admits
 -- ---------------------------------------------------------------------------
 
--- | Big-endian u32, mirroring the snapshot codec.
-u32be :: Int -> BS.ByteString
-u32be n = BS.pack
-  [ fromIntegral (n `div` 0x1000000)
-  , fromIntegral (n `div` 0x10000)
-  , fromIntegral (n `div` 0x100)
-  , fromIntegral n
-  ]
+-- Big-endian u32, mirroring the snapshot codec (Haskoki.Bytes).
 
 -- | Replace the 4 bytes ending @back@ bytes from the end (a trailing
 -- u32 field) with the big-endian encoding of @n@.

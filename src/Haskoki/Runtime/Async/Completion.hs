@@ -6,10 +6,9 @@ module Haskoki.Runtime.Async.Completion
   , decodeCompletion
   ) where
 
-import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.Word (Word32)
+import Haskoki.Bytes (foldBE, u32be)
 import Haskoki.Object (decodeHandle, encodeHandle)
 import Haskoki.Output (maxOutputBytes)
 import Haskoki.Types
@@ -34,7 +33,7 @@ data Completion
 -- exact frames.
 encodeCompletion :: Completion -> ByteString
 encodeCompletion (CompBytes bs) =
-  BS.pack [0x01] <> u32be (fromIntegral (BS.length bs)) <> bs
+  BS.pack [0x01] <> u32be (BS.length bs) <> bs
 encodeCompletion (CompOneHandle h) =
   BS.pack [0x02] <> encodeHandle h
 encodeCompletion (CompTwoHandles h1 h2) =
@@ -62,15 +61,4 @@ decodeCompletion bs = case BS.uncons bs of
           <*> decodeHandle (BS.drop 8 rest)
   _ -> Nothing
 
--- | Big-endian fold computed in 'Integer' so large values never wrap.
-foldBE :: ByteString -> Integer
-foldBE = BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0
-
--- | Big-endian 32-bit frame.
-u32be :: Word32 -> ByteString
-u32be w = BS.pack
-  [ fromIntegral ((w `shiftR` 24) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 16) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 8) .&. 0xFF)
-  , fromIntegral (w .&. 0xFF)
-  ]
+-- Integer framing lives in Haskoki.Bytes (u32be/foldBE).

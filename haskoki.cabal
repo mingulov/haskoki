@@ -130,6 +130,7 @@ library haskoki-core
     Haskoki.Snapshot
     Haskoki.Attribute
     Haskoki.Attribute.Generated
+    Haskoki.Bytes
     Haskoki.Der
     Haskoki.Object
     Haskoki.Object.TemplateValidation

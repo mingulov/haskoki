@@ -22,6 +22,8 @@ import Data.ByteString (ByteString)
 import Control.Monad (guard)
 import Data.Word (Word8)
 
+import Haskoki.Bytes (foldBE, u16be, u32be, u64be)
+
 
 -- | Key-generation arguments framed for the driver: AES length in
 -- bytes, EC curve name, RSA modulus bits plus public exponent, the
@@ -206,38 +208,7 @@ decodeKeyPair bs
         else let (priv, pub) = BS.splitAt n rest
              in Just (priv, if BS.null pub then Nothing else Just pub)
 
--- | 2-byte big-endian framing.
-u16be :: Int -> ByteString
-u16be n = BS.pack
-  [ fromIntegral (n `div` 256 `mod` 256)
-  , fromIntegral (n `mod` 256)
-  ]
-
--- | 4-byte big-endian framing.
-u32be :: Int -> ByteString
-u32be n = BS.pack
-  [ fromIntegral (n `div` 16777216 `mod` 256)
-  , fromIntegral (n `div` 65536 `mod` 256)
-  , fromIntegral (n `div` 256 `mod` 256)
-  , fromIntegral (n `mod` 256)
-  ]
-
--- | 8-byte big-endian framing.
-u64be :: Int -> ByteString
-u64be n = BS.pack
-  [ fromIntegral (n `div` 72057594037927936 `mod` 256)
-  , fromIntegral (n `div` 281474976710656 `mod` 256)
-  , fromIntegral (n `div` 1099511627776 `mod` 256)
-  , fromIntegral (n `div` 4294967296 `mod` 256)
-  , fromIntegral (n `div` 16777216 `mod` 256)
-  , fromIntegral (n `div` 65536 `mod` 256)
-  , fromIntegral (n `div` 256 `mod` 256)
-  , fromIntegral (n `mod` 256)
-  ]
-
--- | Big-endian fold computed in 'Integer' so large values never wrap.
-foldBE :: ByteString -> Integer
-foldBE = BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0
+-- Integer framing lives in Haskoki.Bytes (u16be/u32be/u64be/foldBE).
 
 -- | Pad one wrap payload with PKCS#7. This mirrors
 -- 'Haskoki.Operation.Cipher.pkcs7Pad' exactly (duplicated because

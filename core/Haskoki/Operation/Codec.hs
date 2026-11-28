@@ -44,12 +44,13 @@ module Haskoki.Operation.Codec
   ) where
 
 import Control.Monad (guard)
-import Data.Bits (shiftL, shiftR, testBit, (.&.), (.|.))
+import Data.Bits (shiftL, testBit, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.List (sort)
 import Data.Word (Word16, Word32, Word64, Word8)
 
+import Haskoki.Bytes (foldBE, u16be, u32be, u64be)
 import Haskoki.Operation.Message (MsgBegin (..), MsgNext (..), MsgOneShot (..))
 import Haskoki.Operation.State (CipherSpec (..), MsgFamily (..))
 import Haskoki.Registry (MechanismId (..), Operation (..))
@@ -113,43 +114,13 @@ import Haskoki.Registry.Generated
   , ckm_CHACHA20_POLY1305
   )
 
--- ---------------------------------------------------------------------------
--- Integer framing
--- ---------------------------------------------------------------------------
-
-oneByte :: Word64 -> Int -> Word8
-oneByte w s = fromIntegral ((w `shiftR` s) .&. 0xFF)
-
-u16be :: Word16 -> ByteString
-u16be w = BS.pack [oneByte (fromIntegral w) 8, oneByte (fromIntegral w) 0]
-
-u32be :: Word32 -> ByteString
-u32be w = BS.pack
-  [ oneByte (fromIntegral w) 24
-  , oneByte (fromIntegral w) 16
-  , oneByte (fromIntegral w) 8
-  , oneByte (fromIntegral w) 0
-  ]
-
-u64be :: Word64 -> ByteString
-u64be w = BS.pack
-  [ oneByte w 56
-  , oneByte w 48
-  , oneByte w 40
-  , oneByte w 32
-  , oneByte w 24
-  , oneByte w 16
-  , oneByte w 8
-  , oneByte w 0
-  ]
+-- Integer framing lives in Haskoki.Bytes (u16be/u32be/u64be/foldBE);
+-- Word-typed call sites convert at the boundary with fromIntegral.
 
 takeN :: Int -> ByteString -> Maybe (ByteString, ByteString)
 takeN n bs
   | BS.length bs < n = Nothing
   | otherwise = Just (BS.splitAt n bs)
-
-foldBE :: ByteString -> Word64
-foldBE = BS.foldl' (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) 0
 
 takeU8 :: ByteString -> Maybe (Word8, ByteString)
 takeU8 bs = case BS.uncons bs of
@@ -169,7 +140,7 @@ takeU32 bs = do
 takeU64 :: ByteString -> Maybe (Word64, ByteString)
 takeU64 bs = do
   (h, rest) <- takeN 8 bs
-  pure (foldBE h, rest)
+  pure (fromInteger (foldBE h), rest)
 
 checkLen :: Int -> ByteString -> Maybe ()
 checkLen n bs
@@ -177,7 +148,7 @@ checkLen n bs
   | otherwise = Just ()
 
 lenPrefix :: ByteString -> ByteString
-lenPrefix p = u32be (fromIntegral (BS.length p)) <> p
+lenPrefix p = u32be (BS.length p) <> p
 
 takeLenPrefixed :: ByteString -> Maybe (ByteString, ByteString)
 takeLenPrefixed bs = do
@@ -210,7 +181,8 @@ permitBits =
 -- always-authenticate mark, and opaque mechanism parameters.
 encodeInitInput :: MechanismId -> [Operation] -> Bool -> ByteString -> ByteString
 encodeInitInput mech permits auth params =
-  u64be (unMechanismId mech) <> u16be bits <> BS.singleton flag <> params
+  u64be (fromIntegral (unMechanismId mech)) <> u16be (fromIntegral bits)
+    <> BS.singleton flag <> params
   where
     flag = if auth then 1 else 0
     bits = foldr (.|.) 0
@@ -323,7 +295,7 @@ cipherShapeFor (MechanismId m)
 -- | Frame a verify one-shot: the data plus the witness signature.
 encodeVerifyInput :: ByteString -> ByteString -> ByteString
 encodeVerifyInput dat sig =
-  u32be (fromIntegral (BS.length dat)) <> dat <> sig
+  u32be (BS.length dat) <> dat <> sig
 
 -- | Parse a framed verify one-shot.
 decodeVerifyInput :: ByteString -> Maybe (ByteString, ByteString)
@@ -335,7 +307,7 @@ decodeVerifyInput bs = do
 
 -- | Frame session-cancel flags: the CKF_* selector mask as u32be.
 encodeCancelInput :: Word32 -> ByteString
-encodeCancelInput = u32be
+encodeCancelInput w = u32be (fromIntegral w)
 
 -- | Parse framed session-cancel flags: exactly four bytes, nothing
 -- else. A new function id with no legacy byte-carrying callers, so

@@ -12,7 +12,7 @@ randomized) plus the keyed sign\/verify path through
 {-# LANGUAGE TypeFamilies #-}
 module RoutingE2ESpec (spec) where
 
-import Data.Bits (complement, (.&.), shiftR)
+import Data.Bits (complement)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
@@ -28,6 +28,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..))
+import Haskoki.Bytes (u64be)
 import Haskoki.CallWork (callWorkEffect, checkedCallWork)
 import Haskoki.Engine.Backend
   ( BackendEnv
@@ -731,8 +732,6 @@ caseDriverGcm :: IO ()
 caseDriverGcm = withBackend $ \env -> do
   -- Canonical gcm-params/1 image: tagLen || ivLen || iv || aad.
   let params = u64be 16 <> u64be 12 <> "0123456789ab" <> "AD"
-      u64be :: Int -> ByteString
-      u64be n = BS.pack [fromIntegral (n `shiftR` s) .&. 0xff | s <- [56, 48 .. 0]]
   out <- runEffect env resolver
       (FxCipher DirEncrypt aesGcmMech (Just aesOid) params "hello!")
     >>= expectBytes

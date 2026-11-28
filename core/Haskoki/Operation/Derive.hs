@@ -50,6 +50,7 @@ import qualified Data.Map.Strict as Map
 import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..), payloadSealed)
+import Haskoki.Bytes (u16be, u32be)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState)
 import Haskoki.Object (effectiveAttrs, effectiveExtractable, effectiveSensitive, encodeTemplate, objectVisible, parseTemplate, resolveHandle)
 import Haskoki.Operation.Effect (CryptoEffect (..))
@@ -215,17 +216,6 @@ encodeDeriveParams :: ByteString -> [[(AttributeType, AttributeValue)]] -> ByteS
 encodeDeriveParams info tmpls =
   u32be (BS.length info) <> info <> u16be (length tmpls) <> BS.concat
     [ u32be (BS.length t) <> t | t <- map encodeTemplate tmpls ]
-  where
-    u32be n = BS.pack
-      [ fromIntegral (n `div` 16777216 `mod` 256)
-      , fromIntegral (n `div` 65536 `mod` 256)
-      , fromIntegral (n `div` 256 `mod` 256)
-      , fromIntegral (n `mod` 256)
-      ]
-    u16be n = BS.pack
-      [ fromIntegral (n `div` 256 `mod` 256)
-      , fromIntegral (n `mod` 256)
-      ]
 
 -- | Parse framed derive arguments. Truncation, overrun lengths,
 -- context past 'maxDeriveInfo', more than 'maxDeriveKeys'
@@ -276,11 +266,6 @@ encodeHkdfInfo :: Word8 -> Word8 -> ByteString -> ByteString -> ByteString
 encodeHkdfInfo prf mode salt info =
   BS.singleton prf <> BS.singleton mode
     <> u16be (BS.length salt) <> salt <> info
-  where
-    u16be n = BS.pack
-      [ fromIntegral (n `div` 256 `mod` 256)
-      , fromIntegral (n `mod` 256)
-      ]
 
 -- | Parse an HKDF info segment. An unknown PRF, truncation, an
 -- overrun salt length, a missing stage and reserved mode bits

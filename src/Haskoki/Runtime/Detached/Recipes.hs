@@ -17,7 +17,6 @@ module Haskoki.Runtime.Detached.Recipes
   , recipeFromWork
   ) where
 
-import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC8
@@ -25,6 +24,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word64, Word8)
 import Haskoki.Attribute (AttributeType, AttributeValue, historyAttrs)
+import Haskoki.Bytes (foldBE, u32be, u64be)
 import Haskoki.CallWork (callWorkEffect)
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
@@ -124,22 +124,22 @@ encodeRecipe r = case r of
   RecipeCall func ticks cap fx ->
     ( recipeNameCall
     , BS.pack [codeByte func]
-      <> u32be (fromIntegral ticks)
-      <> u64be cap
+      <> u32be ticks
+      <> u64be (fromIntegral cap)
       <> encodeEffect fx
     )
   RecipeGenKey ticks cap fx tmpl owned ->
     ( recipeNameGenKey
-    , u32be (fromIntegral ticks)
-      <> u64be cap
+    , u32be ticks
+      <> u64be (fromIntegral cap)
       <> encodeEffect fx
       <> BS.pack [if owned then 1 else 0]
       <> u32prefixed (BC8.pack (encodeAttrsDoc tmpl))
     )
   RecipeGenKeyPair ticks cap fx pub priv pubOwned privOwned ->
     ( recipeNameGenKeyPair
-    , u32be (fromIntegral ticks)
-      <> u64be cap
+    , u32be ticks
+      <> u64be (fromIntegral cap)
       <> encodeEffect fx
       <> BS.pack [if pubOwned then 1 else 0, if privOwned then 1 else 0]
       <> u32prefixed (BC8.pack (encodeAttrsDoc pub))
@@ -213,12 +213,12 @@ decodeRecipe name bs
 encodeEffect :: CryptoEffect -> ByteString
 encodeEffect fx = case fx of
   FxDigest (MechanismId m) input ->
-    BS.pack [0xD1] <> u64be m <> u32prefixed input
+    BS.pack [0xD1] <> u64be (fromIntegral m) <> u32prefixed input
   FxSign (MechanismId m) key params input ->
-    BS.pack [0x51] <> u64be m <> encodeKey key
+    BS.pack [0x51] <> u64be (fromIntegral m) <> encodeKey key
       <> u32prefixed params <> u32prefixed input
   FxGenerateKey (MechanismId m) params input ->
-    BS.pack [0x6B] <> u64be m <> u32prefixed params <> u32prefixed input
+    BS.pack [0x6B] <> u64be (fromIntegral m) <> u32prefixed params <> u32prefixed input
   _ -> BS.pack [0x00]
 
 -- | Strict effect decode; tag @0x00@ and unknown tags reject.
@@ -244,7 +244,7 @@ takeEffect bs = case BS.uncons bs of
 -- | Optional logical key reference: @0x00@ = none, @0x01@ + u64be id.
 encodeKey :: Maybe ObjectId -> ByteString
 encodeKey Nothing = BS.pack [0x00]
-encodeKey (Just (ObjectId n)) = BS.pack [0x01] <> u64be (fromIntegral n)
+encodeKey (Just (ObjectId n)) = BS.pack [0x01] <> u64be n
 
 -- | Strict key-reference decode.
 takeKey :: ByteString -> Maybe (Maybe ObjectId, ByteString)
@@ -270,31 +270,12 @@ guardEmpty rest
   | BS.null rest = Just ()
   | otherwise = Nothing
 
--- | Big-endian 32-bit frame.
-u32be :: Word64 -> ByteString
-u32be w = BS.pack
-  [ fromIntegral ((w `shiftR` 24) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 16) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 8) .&. 0xFF)
-  , fromIntegral (w .&. 0xFF)
-  ]
-
--- | Big-endian 64-bit frame.
-u64be :: Word64 -> ByteString
-u64be w = BS.pack
-  [ fromIntegral ((w `shiftR` 56) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 48) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 40) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 32) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 24) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 16) .&. 0xFF)
-  , fromIntegral ((w `shiftR` 8) .&. 0xFF)
-  , fromIntegral (w .&. 0xFF)
-  ]
+-- Integer framing lives in Haskoki.Bytes (u32be/u64be/foldBE);
+-- Word-typed call sites convert at the boundary with fromIntegral.
 
 -- | Length-prefixed blob (@u32BE@ length + bytes).
 u32prefixed :: ByteString -> ByteString
-u32prefixed bs = u32be (fromIntegral (BS.length bs)) <> bs
+u32prefixed bs = u32be (BS.length bs) <> bs
 
 -- | Take a big-endian 32-bit frame.
 takeU32 :: ByteString -> Maybe (Word64, ByteString)
@@ -302,7 +283,7 @@ takeU32 bs
   | BS.length bs < 4 = Nothing
   | otherwise =
       let (b, rest) = BS.splitAt 4 bs
-      in Just (foldBE b, rest)
+      in Just (fromInteger (foldBE b), rest)
 
 -- | Take a big-endian 64-bit frame.
 takeU64 :: ByteString -> Maybe (Word64, ByteString)
@@ -310,7 +291,7 @@ takeU64 bs
   | BS.length bs < 8 = Nothing
   | otherwise =
       let (b, rest) = BS.splitAt 8 bs
-      in Just (foldBE b, rest)
+      in Just (fromInteger (foldBE b), rest)
 
 -- | Take a length-prefixed blob (exact bytes, no overrun).
 takePrefixed :: ByteString -> Maybe (ByteString, ByteString)
@@ -319,10 +300,6 @@ takePrefixed bs = do
   if fromIntegral n > BS.length rest
     then Nothing
     else Just (BS.splitAt (fromIntegral n) rest)
-
--- | Big-endian fold.
-foldBE :: ByteString -> Word64
-foldBE = BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0
 
 -- | Build a recipe from live planned work, or 'Nothing' when the
 -- work shape has no async recipe (not every 'CryptoEffect' is an
