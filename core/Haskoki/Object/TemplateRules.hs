@@ -2,7 +2,7 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.TemplateRules
-  ( TemplateRule (..)
+  (TemplateRule (..)
   , RuleDeny (..)
   , findRule
   , checkRules
@@ -10,15 +10,15 @@ module Haskoki.Object.TemplateRules
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe ( listToMaybe)
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Haskoki.Attribute
-  ( AttributeType (..)
+  (AttributeType (..)
   , AttributeValue (..)
   , attributeTypeByName
   )
 import Haskoki.Attribute.Generated
-  ( generatedTemplateRules)
+  (generatedTemplateRules)
 
 -- | One template rule: the class and key-type context plus the
 -- required and forbidden @CKA_*@ names. Rules come from the generated
@@ -39,7 +39,7 @@ data RuleDeny
   deriving (Eq, Show)
 
 -- | Find the rule for a @(class, key-type)@ context, if any. Contexts
--- without a rule carry no presence constraints beyond 'validateTemplate'.
+-- without a rule carry no presence constraints beyond @validateTemplate@.
 findRule :: Text -> Text -> Maybe TemplateRule
 findRule clsName keyName = listToMaybe
   [ TemplateRule c k req frb

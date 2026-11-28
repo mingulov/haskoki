@@ -42,7 +42,7 @@ decodeHandle bs = case decodeValue AttrClass bs of
 -- | Guarded resolution: the binding must exist, the object must
 -- exist, and the binding generation must still match the object's.
 -- Anything else is 'Nothing' (the caller maps it to
--- 'CKR_OBJECT_HANDLE_INVALID').
+-- @CKR_OBJECT_HANDLE_INVALID@).
 resolveHandle :: Model -> ExternalHandle -> Maybe ObjectState
 resolveHandle m h = case Map.lookup h (mHandles m) of
   Nothing -> Nothing
@@ -51,7 +51,3 @@ resolveHandle m h = case Map.lookup h (mHandles m) of
     Just ost
       | hbGeneration b == osGeneration ost -> Just ost
       | otherwise -> Nothing
-
--- ---------------------------------------------------------------------------
--- Common storage-object attributes
--- ---------------------------------------------------------------------------

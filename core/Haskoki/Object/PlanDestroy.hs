@@ -1,4 +1,4 @@
-{- | Object object destruction planning.
+{- | Object destruction planning.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.PlanDestroy

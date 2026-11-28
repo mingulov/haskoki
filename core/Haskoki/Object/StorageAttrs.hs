@@ -2,15 +2,11 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.StorageAttrs
-  ( storageFlagDefaults
-  , flagOr
-  , tmplFlagOr
-  , nonStorageClasses
+  ( flagOr
   , isStorageObject
   , isKeyClass
   , isPublicKeyClass
   , keyDefaults
-  , publicKeyDefaults
   , effectiveAttrs
   , objectToken
   , objectPrivate
@@ -62,6 +58,7 @@ privateDefault = False
 modifiableDefault = True
 copyableDefault = True
 destroyableDefault = True
+
 -- | The common storage flags paired with their enforced defaults.
 storageFlagDefaults :: [(AttributeType, Bool)]
 storageFlagDefaults =
