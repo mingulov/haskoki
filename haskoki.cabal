@@ -154,6 +154,9 @@ library haskoki-core
     Haskoki.Operation.Effect
     Haskoki.Operation.Dual
     Haskoki.Operation.Derive
+    Haskoki.Operation.Derive.Framing
+    Haskoki.Operation.Derive.Resolution
+    Haskoki.Operation.Derive.Stamping
     Haskoki.Operation.Kem
     Haskoki.Operation.KeyManagement
     Haskoki.Operation.KeyManagement.Codec

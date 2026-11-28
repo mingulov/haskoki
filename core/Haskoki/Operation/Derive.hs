@@ -44,15 +44,17 @@ module Haskoki.Operation.Derive
   , planDerive
   ) where
 
+
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
-import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute (AttributeType (..), AttributeValue (..), payloadSealed)
-import Haskoki.Bytes (u16be, u32be)
 import Haskoki.Model (Model (..), ObjectState (..), SessionState)
-import Haskoki.Object (effectiveAttrs, effectiveExtractable, effectiveSensitive, encodeTemplate, objectVisible, parseTemplate, resolveHandle)
+import Haskoki.Object (effectiveAttrs, effectiveExtractable, effectiveSensitive)
+import Haskoki.Operation.Derive.Framing
+import Haskoki.Operation.Derive.Resolution
+import Haskoki.Operation.Derive.Stamping
 import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
@@ -72,7 +74,6 @@ import Haskoki.Operation.KeyManagement
   , ckoSecretKey
   , derivedObjectDomain
   , keyBytesOf
-  , mechAllowed
   , pendingFromAttrs
   , resolveByteOpsProtection
   , sealedByteOpChildOk
@@ -97,13 +98,9 @@ import Haskoki.Recipe.Ecdh
   , ecdhParamsValid
   , ecdhRecipeFor
   , ecdhSecretWidth
-  , xdhSecretWidth
   )
-import Haskoki.Recipe.Ecdsa (ecdsaCurveOfDer)
 import Haskoki.Recipe.Kdf
   ( KdfRecipe (..)
-  , kdfCodeDigest
-  , kdfDigestWidth
   , kdfParamsValid
   , kdfRecipeFor
   , kdfShaWidth
@@ -117,8 +114,7 @@ import Haskoki.Recipe.PubPriv
   , pubPrivRecipeFor
   )
 import Haskoki.Recipe.Sp800108
-  ( Sp800Mode (..)
-  , Sp800Params (..)
+  ( Sp800Params (..)
   , Sp800Recipe (..)
   , decodeSp800Params
   , maxSp800Total
@@ -129,15 +125,12 @@ import Haskoki.Recipe.Ike
   ( IkeKind (..)
   , IkeRecipe (..)
   , decodeIkeParams
-  , ikeBaseKeyOk
   , ikeParamsValid
   , ikeRecipeFor
-  , maxIkeOutput
   )
 import Haskoki.Recipe.ByteOps
   ( ByteOpsKind (..)
   , ByteOpsRecipe (..)
-  , byteOpsBaseKeyOk
   , byteOpsParamsValid
   , byteOpsRecipeFor
   , decodeByteOpsParams
@@ -172,151 +165,9 @@ import Haskoki.Recipe.TlsPrf
   , tlsPrfRecipeFor
   )
 import Haskoki.Registry (MechanismId (..))
-import Haskoki.Registry.Generated (ckm_HKDF_DATA, ckm_HKDF_DERIVE, ckm_PUB_KEY_FROM_PRIV_KEY)
 import Haskoki.Rules (Rules)
 import Haskoki.Session (admitCode, admitObjects)
-import Haskoki.Types (ExternalHandle (..), ObjectId, ReturnCode (..))
-
--- | @CKM_HKDF_DERIVE@ (generated id, resolved by name).
-hkdfDeriveMech :: MechanismId
-hkdfDeriveMech = MechanismId (ckm_HKDF_DERIVE)
-
--- | @CKM_PUB_KEY_FROM_PRIV_KEY@ (generated id, resolved by
--- name): the single derive row that ignores CKA_DERIVE and
--- yields a public key object.
-pubPrivMech :: MechanismId
-pubPrivMech = MechanismId (ckm_PUB_KEY_FROM_PRIV_KEY)
-
--- | @CKM_HKDF_DATA@ (generated id, resolved by name): the same KDF
--- as 'hkdfDeriveMech' with raw-byte output into @CKO_DATA@
--- objects (any derive-marked base; key-class templates deny).
-hkdfDataMech :: MechanismId
-hkdfDataMech = MechanismId (ckm_HKDF_DATA)
-
--- | SHAKE XOF output ceiling in bytes: 64 KiB bounds the largest
--- sane derived object while template lengths below it pass through.
-maxXofTotal :: Int
-maxXofTotal = 65536
-
--- | HKDF-Expand-SHA256 output ceiling: 255 blocks of 32 bytes.
-maxDerivedTotal :: Int
-maxDerivedTotal = 255 * 32
-
--- | Bounded fan-out: at most 16 keys per derive call.
-maxDeriveKeys :: Int
-maxDeriveKeys = 16
-
--- | Context-string ceiling: 64 KiB.
-maxDeriveInfo :: Int
-maxDeriveInfo = 65536
-
--- | Frame derive arguments: @infoLen:u32be info count:u16be
--- (tmplLen:u32be tmpl)*@, each template in 'encodeTemplate' form.
-encodeDeriveParams :: ByteString -> [[(AttributeType, AttributeValue)]] -> ByteString
-encodeDeriveParams info tmpls =
-  u32be (BS.length info) <> info <> u16be (length tmpls) <> BS.concat
-    [ u32be (BS.length t) <> t | t <- map encodeTemplate tmpls ]
-
--- | Parse framed derive arguments. Truncation, overrun lengths,
--- context past 'maxDeriveInfo', more than 'maxDeriveKeys'
--- templates, oversized templates and trailing bytes all fail.
-decodeDeriveParams :: ByteString -> Maybe (ByteString, [[(AttributeType, AttributeValue)]])
-decodeDeriveParams bs = do
-  (infoLen, r0) <- takeU32 bs
-  let infoN = fromIntegral infoLen
-  if infoN > maxDeriveInfo
-    then Nothing
-    else do
-      (info, r1) <- takeN infoN r0
-      (count, r2) <- takeU16 r1
-      let n = fromIntegral count
-      if n > maxDeriveKeys
-        then Nothing
-        else do
-          (tmpls, rest) <- takeTmpls n r2
-          if BS.null rest then Just (info, tmpls) else Nothing
-  where
-    takeN :: Int -> ByteString -> Maybe (ByteString, ByteString)
-    takeN n b
-      | BS.length b < n = Nothing
-      | otherwise = Just (BS.splitAt n b)
-    takeU32 :: ByteString -> Maybe (Int, ByteString)
-    takeU32 b = do
-      (h, r) <- takeN 4 b
-      pure (BS.foldl' (\acc x -> acc * 256 + fromIntegral x) 0 h, r)
-    takeU16 :: ByteString -> Maybe (Int, ByteString)
-    takeU16 b = do
-      (h, r) <- takeN 2 b
-      pure (BS.foldl' (\acc x -> acc * 256 + fromIntegral x) 0 h, r)
-    takeTmpls :: Int -> ByteString -> Maybe ([[(AttributeType, AttributeValue)]], ByteString)
-    takeTmpls 0 b = Just ([], b)
-    takeTmpls k b = do
-      (tLen, r0) <- takeU32 b
-      (tBs, r1) <- takeN tLen r0
-      tmpl <- parseTemplate tBs
-      (rest, r2) <- takeTmpls (k - 1) r1
-      pure (tmpl : rest, r2)
-
--- | HKDF info segment: @prf:u8 mode:u8 saltLen:u16be salt
--- context@. The PRF is an engine-local digest code
--- ('kdfCodeDigest'); mode bit 0 selects extract, bit 1 selects
--- expand; decoding fails closed on an unknown PRF, an empty
--- stage set, and on reserved bits.
-encodeHkdfInfo :: Word8 -> Word8 -> ByteString -> ByteString -> ByteString
-encodeHkdfInfo prf mode salt info =
-  BS.singleton prf <> BS.singleton mode
-    <> u16be (BS.length salt) <> salt <> info
-
--- | Parse an HKDF info segment. An unknown PRF, truncation, an
--- overrun salt length, a missing stage and reserved mode bits
--- all fail.
-decodeHkdfInfo :: ByteString -> Maybe (Word8, Word8, ByteString, ByteString)
-decodeHkdfInfo bs = do
-  (prfBs, r0) <- takeN 1 bs
-  (modeBs, r1) <- takeN 1 r0
-  (lenBs, r2) <- takeN 2 r1
-  let prf = BS.head prfBs
-      mode = BS.head modeBs
-      saltN = BS.foldl' (\acc x -> acc * 256 + fromIntegral x) 0 lenBs
-  case kdfCodeDigest (fromIntegral prf) of
-    Nothing -> Nothing
-    Just _ ->
-      if mode /= 0x01 && mode /= 0x02 && mode /= 0x03
-        then Nothing
-        else takeN saltN r2 >>= \(salt, ctx) -> Just (prf, mode, salt, ctx)
-  where
-    takeN :: Int -> ByteString -> Maybe (ByteString, ByteString)
-    takeN n b
-      | BS.length b < n = Nothing
-      | otherwise = Just (BS.splitAt n b)
-
--- | PRF code onto its hash length: the decode-validated code
--- resolves through 'kdfCodeDigest' and the width through
--- 'kdfDigestWidth' (the two tables share their domain, so this
--- is total on decoded frames; 'Nothing' is defense in depth).
-prfHashLen :: Word8 -> Maybe Int
-prfHashLen prf =
-  kdfCodeDigest (fromIntegral prf) >>= kdfDigestWidth
-
--- | SP 800-108 hash length for a frame PRF code (the
--- 'kdfCodeDigest' space onto 'kdfDigestWidth').
-sp800HashLen :: Word8 -> Maybe Int
-sp800HashLen code = do
-  stem <- kdfCodeDigest (fromIntegral code)
-  kdfDigestWidth stem
-
--- | SP 800-108 width pre-check: the planned total's bit-length
--- must fit the DKM-length width, and counter mode must fit its
--- iterations in @2^r - 1@ (never wraps). Only well-formed
--- lengths contribute; malformed or missing lengths fall
--- through to 'finish', which reports them with the precise
--- code.
-sp800LengthFits :: Sp800Mode -> Int -> Int -> Int -> [[(AttributeType, AttributeValue)]] -> Bool
-sp800LengthFits mode lBits rBits hashLen tmpls =
-  let total = sum [fromIntegral m | t <- tmpls, (AttrValueLen, ValULong m) <- t] :: Integer
-      n = (total + toInteger hashLen - 1) `div` toInteger hashLen
-  in total * 8 < 2 ^ lBits
-    && (mode /= Sp800Counter || n <= 2 ^ rBits - 1)
+import Haskoki.Types (ExternalHandle (..), ReturnCode (..))
 
 -- | Plan one (possibly multi-key) derivation: the mechanism must be
 -- a derive mechanism (HKDF, ECDH, or KDF), the base handle must
@@ -1211,209 +1062,3 @@ planDerive rules model st mech baseH blob
           "derived length is malformed")
         Nothing -> Left (KeyDeny CKR_TEMPLATE_INCOMPLETE
           "derived data template needs CKA_VALUE_LEN")
-
--- | Stamp one derived SECRET key: omitted protection flags
--- inherit the source-effective values (the base key, plus the aux
--- key where the mechanism takes one), and history derives from
--- the child flags and the source history: always-sensitive is the
--- child sensitive mark AND the sources' always rows;
--- never-extractable is the child unextractable mark AND the
--- sources' never rows; local is false and the mechanism id reads
--- unavailable. Explicit caller values always win. Sources read
--- through the effective view (a source without stored history
--- reads false). Data outputs stamp nothing; the public row stamps
--- its own forced set.
-stampDerived
-  :: Map.Map AttributeType AttributeValue
-  -> Maybe (Map.Map AttributeType AttributeValue)
-  -> Map.Map AttributeType AttributeValue
-  -> Map.Map AttributeType AttributeValue
-stampDerived base mAux attrs =
-  Map.insert AttrKeyGenMechanism (ValULong maxBound)
-    (Map.insert AttrLocal (ValBool False)
-      (Map.insert AttrNeverExtractable (ValBool never)
-        (Map.insert AttrAlwaysSensitive (ValBool always) filled)))
-  where
-    sensSrc = effectiveSensitive base || maybe False effectiveSensitive mAux
-    extSrc = effectiveExtractable base && maybe True effectiveExtractable mAux
-    alwaysSrc = histTrue AttrAlwaysSensitive base
-      && maybe True (histTrue AttrAlwaysSensitive) mAux
-    neverSrc = histTrue AttrNeverExtractable base
-      && maybe True (histTrue AttrNeverExtractable) mAux
-    filled = foldr insertMissing attrs [(AttrSensitive, sensSrc), (AttrExtractable, extSrc)]
-    sens = Map.lookup AttrSensitive filled == Just (ValBool True)
-    ext = Map.lookup AttrExtractable filled == Just (ValBool True)
-    always = sens && alwaysSrc
-    never = not ext && neverSrc
-    insertMissing (t, v) acc
-      | Map.member t acc = acc
-      | otherwise = Map.insert t (ValBool v) acc
-    -- Stored-true-or-false reads the same as the effective view
-    -- for key objects (absent history defaults false); every
-    -- derive source is a key.
-    histTrue t m = Map.lookup t m == Just (ValBool True)
-
--- | Project aux-key attributes out of the model: 'Nothing' when
--- the mechanism takes no aux key. A resolved aux always looks up
--- (same model); 'Nothing' on a 'Just' handle is
--- unreachable-defensive and denies at the call site.
-auxAttrsOf :: Model -> Maybe ObjectId -> Maybe (Maybe (Map.Map AttributeType AttributeValue))
-auxAttrsOf _ Nothing = Just Nothing
-auxAttrsOf model (Just oid) = Just <$> (osAttrs <$> Map.lookup oid (mObjects model))
-
--- | How a derive family fills an omitted @CKA_VALUE_LEN@.
-data LenDefault
-  = NoLenDefault
-    -- ^ the length is required (INCOMPLETE when absent)
-  | GenericLenDefault !Int
-    -- ^ generic-secret targets default to this width; typed
-    -- targets need a length
-  | SpecLenDefault !Int !Bool
-    -- ^ the PKCS#11 hash-KDF and concat\/XOR rule: an untyped
-    -- target defaults to this width, a typed target to its type's
-    -- single defined length, otherwise INCOMPLETE. The flag keeps
-    -- the byte-op rows' pinned default for an explicit generic
-    -- type (hash KDF: an explicit generic secret has no defined
-    -- length, so it stays INCOMPLETE)
-
--- | Resolve the base key: known handle, session-visible, derive
--- mark set, the derive mechanism in the allowed mechanisms,
--- stored material present. Shared by the derive families that
--- resolve a marked base (identical denials, one
--- implementation).
---
--- Refusal order: the handle resolves first, then session
--- visibility (both deny @CKR_KEY_HANDLE_INVALID@), then the
--- derive mark, then the allowed-mechanism list (both deny
--- @CKR_KEY_FUNCTION_NOT_PERMITTED@), then stored material
--- (@CKR_GENERAL_ERROR@), and only then the family key type and
--- the object class (both deny @CKR_KEY_TYPE_INCONSISTENT@,
--- decided by the family arm after this returns). A wrong-type
--- base without the mark therefore answers
--- @CKR_KEY_FUNCTION_NOT_PERMITTED@; operation init orders the
--- same checks type, class, allowed list, usage.
-resolveBase
-  :: Model -> SessionState -> MechanismId -> ExternalHandle
-  -> Either KeyDeny (ObjectState, ByteString)
-resolveBase model st dMech baseH = case resolveHandle model baseH of
-  Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
-    "unknown or destroyed base-key handle")
-  Just ost
-    | not (objectVisible st ost) -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
-        "base key not visible in this session")
-    | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
-        Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
-          "base key does not permit derivation")
-    | not (mechAllowed dMech ost) -> Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
-        "mechanism is not in the key's allowed list")
-    | otherwise -> case keyBytesOf ost of
-        Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
-          "base key lacks material")
-        Just mat -> Right (ost, mat)
-
--- | Resolve the base key ignoring CKA_DERIVE: known handle,
--- session-visible, stored material present. The pub-from-priv
--- row is the only derive allowed to skip the mark (same
--- denials otherwise, one implementation shape with
--- 'resolveBase').
-resolveBaseAnyMark
-  :: Model -> SessionState -> ExternalHandle
-  -> Either KeyDeny (ObjectState, ByteString)
-resolveBaseAnyMark model st baseH = case resolveHandle model baseH of
-  Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
-    "unknown or destroyed base-key handle")
-  Just ost
-    | not (objectVisible st ost) -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
-        "base key not visible in this session")
-    | otherwise -> case keyBytesOf ost of
-        Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
-          "base key lacks material")
-        Just mat -> Right (ost, mat)
-
--- | An IKE base\/aux object: generic-secret or HMAC type (the
--- recipe rule; a missing or mistyped key type denies).
-ikeBaseOk :: ObjectState -> Bool
-ikeBaseOk ost = case Map.lookup AttrKeyType (osAttrs ost) of
-  Just (ValULong kty) -> ikeBaseKeyOk kty
-  _ -> False
-
--- | Resolve a params-carried aux handle (0 = absent),
--- held to the same visibility, type, permission, allowed
--- mechanisms, and material rules as the base key; the type
--- check and its label ride per family (IKE: generic or HMAC;
--- byte-ops: generic only).
-resolveAuxKey
-  :: (ObjectState -> Bool) -> String
-  -> Model -> SessionState -> MechanismId -> Word64
-  -> Either KeyDeny (Maybe ObjectId)
-resolveAuxKey _ _ _ _ _ 0 = Right Nothing
-resolveAuxKey typeOk label model st dMech auxN =
-  case resolveHandle model (ExternalHandle (fromIntegral auxN)) of
-    Nothing -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
-      "unknown or destroyed aux-key handle")
-    Just ost
-      | not (objectVisible st ost) -> Left (KeyDeny CKR_KEY_HANDLE_INVALID
-          "aux key not visible in this session")
-      | not (typeOk ost) -> Left (KeyDeny CKR_KEY_TYPE_INCONSISTENT
-          (label ++ " aux key has the wrong key type"))
-      | Map.lookup AttrDerive (osAttrs ost) /= Just (ValBool True) ->
-          Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
-            "aux key does not permit derivation")
-      | not (mechAllowed dMech ost) -> Left (KeyDeny CKR_KEY_FUNCTION_NOT_PERMITTED
-          "mechanism is not in the key's allowed list")
-      | otherwise -> case keyBytesOf ost of
-          Nothing -> Left (KeyDeny CKR_GENERAL_ERROR
-            "aux key lacks material")
-          Just _ -> Right (Just (osId ost))
-
--- | Byte-op base\/aux type check over object state.
-byteOpsBaseOkState :: ObjectState -> Bool
-byteOpsBaseOkState ost = case Map.lookup AttrKeyType (osAttrs ost) of
-  Just (ValULong kty) -> byteOpsBaseKeyOk kty
-  _ -> False
-
--- | The output ceiling by kind: the single-shot rows cap at
--- their PRF width (truncation serves the AES legs); the
--- iterating rows cap at the prf+ counter capacity.
-ikeCeiling :: IkeKind -> Word8 -> Maybe Int
-ikeCeiling kind prf = case kind of
-  Ike2PrfPlus -> blockCeiling
-  Ike1Extended -> Just maxIkeOutput
-  IkePrf -> digestWidth
-  Ike1Prf -> digestWidth
-  where
-    digestWidth = do
-      stem <- kdfCodeDigest (fromIntegral prf)
-      kdfDigestWidth stem
-    -- prf+ runs a single-byte counter: 255 blocks of the hash
-    -- width. The flat cap over-admits small hashes (SHA-256
-    -- tops out at 8160, not 16320); the backend refuses past
-    -- the counter capacity, so the planner must too.
-    blockCeiling = do
-      stem <- kdfCodeDigest (fromIntegral prf)
-      hLen <- kdfDigestWidth stem
-      pure (255 * hLen)
-
--- | Base/peer curve agreement: a mismatch denies only when BOTH
--- sides scan as DER EC keys on different curves. Unscannable sides
--- (synthetic opaque bytes) pass — the backends enforce key shape.
-curvesDiffer :: ByteString -> ByteString -> Bool
-curvesDiffer base peer = case (ecdsaCurveOfDer base, ecdsaCurveOfDer peer) of
-  (Just a, Just b) -> a /= b
-  _ -> False
-
--- | A Montgomery base key (the XDH agreement shape).
-isMontgomery :: ObjectState -> Bool
-isMontgomery ost =
-  Map.lookup AttrKeyType (osAttrs ost) == Just (ValULong ckkEcMontgomery)
-
--- | A Montgomery base whose scanned curve width disagrees with the
--- raw peer length (the XDH peer is the bare RFC 7748 coordinate,
--- never a wrapped point). Unscannable bases (synthetic opaque
--- doubles) cannot be checked here — the backend arbitrates, the
--- Weierstrass opaque precedent.
-xdhPeerMismatched :: ObjectState -> ByteString -> ByteString -> Bool
-xdhPeerMismatched ost mat peer =
-  isMontgomery ost && case xdhSecretWidth mat of
-    Just w -> BS.length peer /= w
-    Nothing -> False
