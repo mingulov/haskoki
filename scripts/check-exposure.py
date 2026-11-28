@@ -634,8 +634,6 @@ MODSIZE_ALLOW = {
         (1814, "owner-call skip: weak seams"),
     "core/Haskoki/Registry.hs":
         (1766, "owner-call skip: weak seams"),
-    "tests/model/FfiAsyncSpec.hs":
-        (4063, "out of the 0.6.3 test-split scope (3 files)"),
 }
 
 

@@ -664,6 +664,7 @@ test-suite haskoki-model-tests
     OwnershipCounters
     StormBudget
     TestSession
+    AcquisitionCounters
     AdmissionSpec
     AsyncSpec
     ByteFormatSpec
@@ -683,6 +684,12 @@ test-suite haskoki-model-tests
     ErrorUnifySpec
     EventsSpec
     FfiAsyncSpec
+    FfiAsync.Fixtures
+    FfiAsync.Open
+    FfiAsync.Admission
+    FfiAsync.Handoff
+    FfiAsync.Standalone
+    FfiAsync.Retirement
     FfiHygieneSpec
     JobStepSpec
     LeaseScopeSpec
@@ -795,6 +802,7 @@ test-suite haskoki-engine-tests
   include-dirs:     spec/vendor cbits
   other-modules:
     OwnershipCounters
+    AcquisitionCounters
     AsyncEngineSpec
     CertificateEngineSpec
     CryptoExportSpec
