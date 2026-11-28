@@ -15,7 +15,7 @@ suite.
 module KeyManagementSpec (spec) where
 
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit ( testCase)
+import Test.Tasty.HUnit (testCase)
 
 import KeyManagement.Part1
 import KeyManagement.Part2

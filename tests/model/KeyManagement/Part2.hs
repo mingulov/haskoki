@@ -10,7 +10,7 @@ module KeyManagement.Part2
 
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
-import Test.Tasty.HUnit ( assertEqual, assertFailure)
+import Test.Tasty.HUnit (assertEqual, assertFailure)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
@@ -20,8 +20,8 @@ import Haskoki.Model
   , ObjectState (..)
   , SessionState
   )
-import Haskoki.Object ( resolveHandle)
-import Haskoki.Operation.Effect ( CryptoEffect (..), CryptoResult (..))
+import Haskoki.Object (resolveHandle)
+import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.KeyManagement
   ( KeyDeny (..)
   , KeyPlan (..)

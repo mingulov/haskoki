@@ -71,7 +71,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt, isHexDigit)
 import qualified Data.Map.Strict as Map
-import Test.Tasty.HUnit ( assertEqual, assertFailure)
+import Test.Tasty.HUnit (assertEqual, assertFailure)
 import Haskoki.Attribute
   ( AttributeType (..)
   , AttributeValue (..)
@@ -91,7 +91,7 @@ import Haskoki.Model
   , emptyModel
   , lookupSession
   )
-import Haskoki.Operation.Effect ( CryptoEffect (..), CryptoResult (..))
+import Haskoki.Operation.Effect (CryptoEffect (..), CryptoResult (..))
 import Haskoki.Operation.Kem
   ( mlKemKeyPairGenMech
   )
@@ -144,7 +144,7 @@ import Haskoki.Registry.Generated
   , ckm_SSL3_MASTER_KEY_DERIVE_DH
   , ckm_SSL3_KEY_AND_MAC_DERIVE
   )
-import Haskoki.Request ( OutputRegion (..))
+import Haskoki.Request (OutputRegion (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Session (SessionLogin (..))
 import Haskoki.Transition (publishDelta)

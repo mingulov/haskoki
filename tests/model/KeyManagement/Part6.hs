@@ -48,7 +48,7 @@ import Haskoki.FFI.KeyOutputs
 import Haskoki.Model
   ( Model (..)
   )
-import Haskoki.Operation.Effect ( CryptoEffect (..))
+import Haskoki.Operation.Effect (CryptoEffect (..))
 import Haskoki.Operation.KeyManagement
   ( GenArgs (..)
   , KeyDeny (..)
@@ -89,7 +89,7 @@ import Haskoki.Registry.Generated
   , ckm_PBE_MD5_CAST3_CBC
   , ckm_PBE_MD5_CAST128_CBC
   )
-import Haskoki.Request ( OutputIntent (..), OutputRegion (..))
+import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Rules (defaultRules)
 import Haskoki.Transition (publishDelta)
 import Haskoki.Types
