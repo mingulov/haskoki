@@ -5341,7 +5341,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5360,7 +5360,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5379,7 +5379,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5398,7 +5398,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5417,7 +5417,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5436,7 +5436,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5455,7 +5455,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5474,7 +5474,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5493,7 +5493,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5512,7 +5512,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5531,7 +5531,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5550,7 +5550,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5569,7 +5569,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5588,7 +5588,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5607,7 +5607,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5626,7 +5626,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5645,7 +5645,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5664,7 +5664,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5683,7 +5683,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5702,7 +5702,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [
@@ -5721,7 +5721,7 @@
    "owner": "provider",
    "decision": "provider-fix",
    "target": "0.6.0 P-07: parity adjustment on derive (was unscheduled for 0.5.0).",
-   "test": "tests/model/KeyManagementSpec.hs::caseDeriveDesParity",
+   "test": "tests/model/KeyManagement/Premaster.hs::caseDeriveDesParity",
    "receipt": "spec/pkcs11-check/baseline-fast-f19a7e130274a18becc588f334e0660c6b56cee4-openssl-memory.json",
    "checker_pin": "pkcs11-check 0.3.0 (demo image); framework v0.3.0 (CI lanes)",
    "retired_by": [

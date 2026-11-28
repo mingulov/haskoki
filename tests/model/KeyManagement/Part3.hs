@@ -1,4 +1,4 @@
-{- | KeyManagement part 3.
+{- | KeyManagement Part 3: derivation.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.Part3
@@ -10,9 +10,6 @@ module KeyManagement.Part3
   , caseDeriveRejectsInvalidTargetDomain
   , caseDeriveFinishRejectsOffDomainMaterial
   , caseDeriveCodec
-  , pubPrivP256
-  , pubPrivSec1P256
-  , pubPrivSec1ScalarP256
   , casePubPrivRsa
   , casePubPrivEc
   , casePubPrivEcSpkiStamp

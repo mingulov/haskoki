@@ -2,38 +2,16 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.CreationStamping
-  ( assertStoredBool
-  , assertBirthHistory
-  , assertImportHistory
-  , assertDerivedHistory
-  , assertKemHistory
-  , assertNoKeyRows
+  ( assertKemHistory
   , bareSecretTmpl
   , caseGenerateStampsKeyAttrs
   , casePairStampsBothHalves
-  , mintSweepStampRow
   , caseGenerateStampsEveryKeygen
-  , assertPubBirthHistory
   , casePairStampsEveryPair
   , caseGenerateExplicitBirthFlags
-  , unwrapPending
   , caseUnwrapStampsEveryMech
-  , ecdhMech
-  , dhPkcsMech
-  , tlsPrfMech
-  , encDataMech
-  , shake128Mech
-  , sha256KdfMech
-  , derivePending
   , caseDeriveStampsEveryFamily
   , caseCopyGeneratedKeyDerivesHistory
-  , gateTmpl
-  , gateEcdhFrame
-  , gateDhFrame
-  , gateBaseAttrs
-  , gateMat
-  , expectGateRefused
-  , expectGatePlans
   , caseDeriveEcdhRefusesSecretEc
   , caseDeriveEcdhRefusesSecretMont
   , caseDeriveEcdhRefusesPublicEc

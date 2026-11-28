@@ -1,4 +1,4 @@
-{- | KeyManagement pre-master keygens (slice 11a, phase 2).
+{- | KeyManagement pre-master keygens, keygen matrix, wrap round-trips and derive checks.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.Premaster
@@ -21,10 +21,6 @@ module KeyManagement.Premaster
   , genKeyWith
   , caseGenericSecretKeygen
   , hmacSha256Mech
-  , des3macMech
-  , des3macGenMech
-  , sha256Mech
-  , aesCcmMech
   , caseInitKeyTypeMatrix
   , caseInitClassConfusion
   , caseUnwrapRefusesAsymmetric
@@ -69,7 +65,6 @@ module KeyManagement.Premaster
   , caseEcOpaqueBareCopy
   , caseEcParamsDisagree
   , caseWrapRoundtrip
-  , secretTmplN
   , caseAesKwWrapRoundtrip
   , caseAesKwpWrapRoundtrip
   , caseAesKwPkcs7WrapRoundtrip

@@ -1,4 +1,4 @@
-{- | KeyManagement part 1.
+{- | KeyManagement Part 1: KEM keygen, encaps and generated reads.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.Part1

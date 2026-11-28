@@ -1,4 +1,4 @@
-{- | KeyManagement part 4.
+{- | KeyManagement Part 4: decaps, wrap mismatch and init.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module KeyManagement.Part4

@@ -403,7 +403,6 @@ ssl3Cr, ssl3Sr :: BS.ByteString
 ssl3Cr = BS.pack [0 .. 27]
 ssl3Sr = BS.pack [28 .. 55]
 
-
 -- | Generate one RSA pair through the planner + backend, with
 -- caller-supplied templates (so the wrap/unwrap marks land).
 genRsaPair :: (Model -> CryptoEffect -> IO CryptoResult)
