@@ -797,6 +797,18 @@ test-suite haskoki-engine-tests
     NativeParamsSpec
     NotificationsEngineSpec
     OpenSSLSpec
+    OpenSSL.Digest
+    OpenSSL.Cipher
+    OpenSSL.Rsa
+    OpenSSL.Ecdsa
+    OpenSSL.Dsa
+    OpenSSL.Pqc
+    OpenSSL.Agreement
+    OpenSSL.Aead
+    OpenSSL.Random
+    OpenSSL.Caps
+    OpenSSL.Lifecycle
+    OpenSSL.Fixtures
     OperationSmokeSpec
     RoutingE2ESpec
     SnapshotEngineSpec
