@@ -46,12 +46,13 @@ module Haskoki.Recipe.Ike
   , maxIkeMaterial
   ) where
 
-import Data.Bits (shiftL, shiftR, (.&.))
+import Data.Bits (shiftL)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Word (Word64, Word8)
 
 import Haskoki.Attribute.Generated (mustKeyTypeId)
+import Haskoki.Bytes (u64be)
 import Haskoki.Recipe.Kdf (kdfCodeDigest)
 import Haskoki.Registry.Generated (mustGeneratedId)
 import Haskoki.Registry.Types (MechanismId (..), MechanismName, ParameterCodec (..))
@@ -88,10 +89,6 @@ maxIkeOutput = 255 * 64
 maxIkeMaterial :: Int
 maxIkeMaterial = 65536
 
-encodeWord64 :: Int -> ByteString
-encodeWord64 n =
-  BS.pack [fromIntegral ((n `shiftR` s) .&. 0xff) | s <- [56, 48 .. 0]]
-
 decodeWord64 :: ByteString -> Maybe (Int, ByteString)
 decodeWord64 bs = do
   (h, r) <- Just (BS.splitAt 8 bs)
@@ -108,9 +105,9 @@ decodeSized bs = do
 encodeIkeParams :: Word8 -> Word8 -> Word8 -> Word64 -> ByteString -> ByteString -> ByteString
 encodeIkeParams prf flags keynum aux b1 b2 =
   BS.singleton prf <> BS.singleton flags <> BS.singleton keynum
-    <> encodeWord64 (fromIntegral aux)
-    <> encodeWord64 (BS.length b1) <> b1
-    <> encodeWord64 (BS.length b2) <> b2
+    <> u64be (fromIntegral aux)
+    <> u64be (BS.length b1) <> b1
+    <> u64be (BS.length b2) <> b2
 
 -- | Decode the canonical frame ('Nothing' on truncation,
 -- trailing bytes, or over-ceiling material).

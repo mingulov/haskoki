@@ -30,6 +30,7 @@ import Haskoki.Engine.Backend
   , KeyMaterial (..)
   , MacSpec (..)
   )
+import Haskoki.Bytes (u16be)
 import Haskoki.Engine.Driver.Common (rsaDigest, xorB)
 import Haskoki.Engine.Driver.Result (toCryptoError)
 import Haskoki.Operation.Effect (CryptoError (..), CryptoResult (..))
@@ -263,5 +264,5 @@ pHash env alg secret seedBytes outLen = case digestOutLen alg of
 ctxSuffix :: ByteString -> ByteString
 ctxSuffix ctx
   | BS.null ctx = BS.empty
-  | otherwise = BS.pack [fromIntegral (n `div` 256), fromIntegral (n `mod` 256)] <> ctx
+  | otherwise = u16be n <> ctx
   where n = BS.length ctx

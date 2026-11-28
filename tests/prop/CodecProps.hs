@@ -360,6 +360,13 @@ oracleU64 w = BS.pack
   , shiftByte w 0
   ]
 
+-- | Deleted no-mod u16 form (GenMlKem encoder, Tls ctxSuffix).
+oracleU16NoMod :: Int -> ByteString
+oracleU16NoMod n = BS.pack
+  [ fromIntegral (n `div` 256)
+  , fromIntegral (n `mod` 256)
+  ]
+
 -- | Deleted test-suite div-without-mod form (SnapshotSpec/SnapshotProps).
 oracleU32NoMod :: Int -> ByteString
 oracleU32NoMod n = BS.pack
@@ -473,6 +480,8 @@ caseFrameEdges = do
   forM_ ints $ \n -> do
     assertEqual ("u16be edge " ++ show n)
       (oracleU16 (fromIntegral n)) (u16be n)
+    assertEqual ("u16nomod edge " ++ show n)
+      (oracleU16NoMod n) (u16be n)
     assertEqual ("u32be edge " ++ show n)
       (oracleU32 (fromIntegral n)) (u32be n)
     assertEqual ("u32nomod edge " ++ show n)
