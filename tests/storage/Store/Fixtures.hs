@@ -18,6 +18,8 @@ module Store.Fixtures
   , numbersClean
   , parseCatalog
   , positionalDoc
+  , rawSchemaState
+  , reapSelected
   , reapThenRestore
   , resolves
   , restoreEnv
@@ -29,12 +31,9 @@ module Store.Fixtures
   , threeLabels
   , threeSo
   , threeUser
+  , v1SchemaDdl
   , withEnvGate
   , withProcRoot
-  , v1SchemaDdl
-  , rawSchemaState
-  , WorkerReg
-  , reapSelected
   ) where
 
 import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId, threadDelay, withMVar)
@@ -101,8 +100,7 @@ import Haskoki.Runtime.Storage
 import StoreFixtures
   ( EnvScope
   , rawExec, rawTexts
-  
-   )
+  )
 import Haskoki.FFI.Standard
   ( StdInstance
   , haskokiStdClose

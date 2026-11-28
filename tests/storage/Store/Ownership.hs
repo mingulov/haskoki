@@ -30,7 +30,7 @@ import StoreFixtures
   ( EnvScope, awaitHolderExit
   , makeTempDir
   , reapedPid, releaseHolder, spawnedPid
-   )
+  )
 import Haskoki.Runtime.Storage.SQLite (openSQLiteStore, openSQLiteStoreWith)
 import Store.Fixtures
 

@@ -1,4 +1,4 @@
-{- | Store store contract cases.
+{- | Store contract cases.
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Store.Contract
@@ -7,9 +7,9 @@ module Store.Contract
   , expectInspect
   , expectLoaded
   , freshObject
+  , idTmpl
   , memoryOpener
   , sqliteOpener
-  , idTmpl
   ) where
 
 import Control.Concurrent (forkFinally, killThread)
