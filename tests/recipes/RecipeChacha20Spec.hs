@@ -33,7 +33,7 @@ import Haskoki.FFI.NativeParams
   ( chachaPolyStructToCanonical
   , chachaStreamStructToCanonical
   )
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , InitArgs (..)

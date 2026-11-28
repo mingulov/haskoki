@@ -32,7 +32,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Haskoki.Engine.Backend (RsaCipherParams (..), SigSpec (..))
 import Haskoki.Engine.Driver (rsaRecoverCipherFor, rsaX509CipherFor, rsaX509SigFor)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( CipherSpec (..)
   , CryptoEffect (..)

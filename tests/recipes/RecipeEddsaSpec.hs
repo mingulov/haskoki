@@ -38,7 +38,7 @@ import Haskoki.Engine.Backend
   , SigSpec (..)
   )
 import Haskoki.Engine.Driver (eddsaCurveOfKey, eddsaSpecFor)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)

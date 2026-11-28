@@ -49,7 +49,7 @@ import Haskoki.Engine.Backend
   , SigSpec (..)
   )
 import Haskoki.Engine.Driver (slhdsaLevelOfKey, slhdsaSpecFor)
-import Haskoki.Model ( emptyModel)
+import Haskoki.Model (emptyModel)
 import Haskoki.Operation
   ( InitArgs (..)
   , InitOutcome (..)
