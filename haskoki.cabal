@@ -831,6 +831,15 @@ test-suite haskoki-storage-tests
     StoreCtlSpec
     StoreFixtures
     StoreSpec
+    Store.Contract
+    Store.Files
+    Store.UriTwins
+    Store.Ownership
+    Store.Seams
+    Store.TokenParsing
+    Store.OpenRecon
+    Store.AttrCodec
+    Store.Fixtures
   build-depends:
     base        >= 4.14 && < 5,
     bytestring  >= 0.10 && < 0.13,
