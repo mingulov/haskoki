@@ -13,9 +13,9 @@ module Haskoki.Runtime.Storage.Encoding
   , docTopKeys
   ) where
 
-import Data.Bits ( shiftR, (.&.))
+import Data.Bits (shiftR, (.&.))
 import Data.Char (chr, isHexDigit, ord)
-import Data.List ( sortOn)
+import Data.List (sortOn)
 import Haskoki.Runtime.Storage.FixedHex
 
 -- ---------------------------------------------------------------------------

@@ -299,6 +299,7 @@ library haskoki-internal
     Haskoki.Runtime.Storage.Records
     Haskoki.Runtime.Storage.Deltas
     Haskoki.Runtime.Storage.Commit
+    Haskoki.Runtime.Storage.Contract
     Haskoki.Runtime.Storage.Precommit
     Haskoki.Runtime.Storage.TokenIdentity
     Haskoki.Runtime.Storage.Projection
@@ -481,6 +482,7 @@ foreign-library haskoki
     Haskoki.Runtime.Storage.Records
     Haskoki.Runtime.Storage.Deltas
     Haskoki.Runtime.Storage.Commit
+    Haskoki.Runtime.Storage.Contract
     Haskoki.Runtime.Storage.Precommit
     Haskoki.Runtime.Storage.TokenIdentity
     Haskoki.Runtime.Storage.Projection

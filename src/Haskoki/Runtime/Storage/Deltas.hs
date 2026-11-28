@@ -11,7 +11,7 @@ module Haskoki.Runtime.Storage.Deltas
   , StoreError (..)
   ) where
 
-import Data.Word ( Word64)
+import Data.Word (Word64)
 import Control.Exception (Exception)
 import Haskoki.Session
   ( clearTransientAuth
@@ -34,7 +34,7 @@ import Haskoki.Runtime.Storage.Records
 -- ordinary same-id token put updates the token row and preserves
 -- every owned object, job, and credential; dropping a token
 -- removes its owned objects, jobs, and credential;
--- 'storeResetToken' is the generation-guarded
+-- @storeResetToken@ is the generation-guarded
 -- replacement-plus-removal path for objects and jobs. The
 -- credential row stays: an existing durable credential always
 -- wins over the catalog PINs.
@@ -134,10 +134,10 @@ scrubDeltaAuth d = d { sdPutTokens = map scrubTokenAuth (sdPutTokens d) }
 --   whole connection — are quarantined. The caller must reload and
 --   reconcile, and must NEVER blindly reissue the PKCS#11 operation.
 --   Quarantine is process-local state of the live handle: a clean
---   'storeReload' or a reopen (fresh handle) clears it. A
+--   @storeReload@ or a reopen (fresh handle) clears it. A
 --   connection-wide quarantine (SQLite: a write transaction left
 --   open by a failed ROLLBACK) refuses every load, commit, reset
---   and reservation; only a 'storeReload' whose retried ROLLBACK
+--   and reservation; only a @storeReload@ whose retried ROLLBACK
 --   ends the transaction, or the close (C_Finalize closes the
 --   store; SQLite rolls the open transaction back), resolves it.
 --   No 'publishStd' path (object creation, derive, provisioning,
@@ -185,6 +185,6 @@ data StoreError
   deriving (Eq, Show)
 
 -- | Store failures throw as exceptions on the paths with no
--- 'Either' channel (a failed 'storeClose' reports by
+-- 'Either' channel (a failed @storeClose@ reports by
 -- throwing the failure instead of returning silently).
 instance Exception StoreError

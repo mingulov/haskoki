@@ -2,9 +2,7 @@
 -}
 module Haskoki.Runtime.Storage.TokenDocs
   ( encodeTokenRecord
-  , encodeAuth
   , decodeTokenRecord
-  , decodeAuth
   ) where
 
 import Haskoki.Session

@@ -1,8 +1,7 @@
 {- | Detached base64 (RFC 4648, strict).
 -}
 module Haskoki.Runtime.Storage.Base64
-  ( b64Alphabet
-  , encodeBase64
+  ( encodeBase64
   , decodeBase64
   ) where
 
