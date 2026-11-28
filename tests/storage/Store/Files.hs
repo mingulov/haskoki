@@ -103,7 +103,7 @@ testHeldFdsCloexec = do
 -- observe the fork window, so this is a best-effort tripwire that
 -- pins the shape that closes it (it is textual and line-based: it
 -- does not parse block comments or follow indirection). Rules:
---   1. every 'openFd' in the SQLite backend (the shell plus every
+--   1. every @openFd@ in the SQLite backend (the shell plus every
 --      Storage\/SQLite\/ module) takes @guardFlags@
 --      (on its own or the next line), and @guardFlags@ sets
 --      @cloexec = True@;

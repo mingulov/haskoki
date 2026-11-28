@@ -65,8 +65,7 @@ import Haskoki.Runtime.Storage
 import StoreFixtures
   ( assertUnchanged, captureState, closeAcquired
   , expectStdNeedsMigration, makeTempDir, openReconciled
-  
-   )
+  )
 import Haskoki.FFI.Standard
   ( ObjectProjection (..)
   , StdStore (..)

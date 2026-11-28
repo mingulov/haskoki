@@ -12,7 +12,6 @@ SQLite satisfy the SAME contract ('contractSpec'). Backend-specific
 fixtures (a 'MemoryWorld' vs a SQLite file path) supply the shared
 store identity across the close/reopen boundary.
 -}
-{-# LANGUAGE ForeignFunctionInterface #-}
 module StoreSpec
   ( spec
   , contractSpec
@@ -42,13 +41,13 @@ module StoreSpec
   ) where
 
 import Test.Tasty (DependencyType (AllFinish), TestTree, after, testGroup)
-import Test.Tasty.HUnit ( testCase)
+import Test.Tasty.HUnit (testCase)
 
 import StoreFixtures
   ( EnvScope, awaitHolderExit
   , makeTempDir, newEnvScope
   , releaseHolder
-   )
+  )
 import Store.Contract
 import Store.Files
 import Store.UriTwins

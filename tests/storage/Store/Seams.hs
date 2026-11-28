@@ -77,7 +77,7 @@ import StoreFixtures
   ( EnvScope, awaitHolderExit, claimReap, closeAcquired
   , makeTempDir, openReconciled
   , reapedPid, releaseHolder, spawnedPid, waitBounded, withFileMode
-   )
+  )
 import Haskoki.FFI.Standard
   ( StdStore (..)
   , StdStoreError (..)
