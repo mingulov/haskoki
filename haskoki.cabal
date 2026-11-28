@@ -132,6 +132,17 @@ library haskoki-core
     Haskoki.Attribute.Generated
     Haskoki.Der
     Haskoki.Object
+    Haskoki.Object.TemplateValidation
+    Haskoki.Object.TemplateRules
+    Haskoki.Object.Codecs
+    Haskoki.Object.Handles
+    Haskoki.Object.StorageAttrs
+    Haskoki.Object.PlanReject
+    Haskoki.Object.PlanCerts
+    Haskoki.Object.PlanCreate
+    Haskoki.Object.PlanDestroy
+    Haskoki.Object.PlanMutation
+    Haskoki.Object.PlanQuery
     Haskoki.Operation
     Haskoki.Operation.Cipher
     Haskoki.Operation.Codec
