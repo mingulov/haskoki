@@ -20,6 +20,7 @@ import Data.ByteString (ByteString)
 import Control.Monad (guard)
 import Data.Word (Word8)
 
+import Haskoki.Bytes (u16be)
 import Haskoki.Engine.Backend
   ( BackendEnv
   , BackendError (..)
@@ -30,7 +31,6 @@ import Haskoki.Engine.Backend
   , KeyMaterial (..)
   , MacSpec (..)
   )
-import Haskoki.Bytes (u16be)
 import Haskoki.Engine.Driver.Common (rsaDigest, xorB)
 import Haskoki.Engine.Driver.Result (toCryptoError)
 import Haskoki.Operation.Effect (CryptoError (..), CryptoResult (..))

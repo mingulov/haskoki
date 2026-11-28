@@ -744,18 +744,33 @@ def check_modsize(root):
     return errors
 
 
-def check_family(root):
+def check_family(root, families=None):
     """Returns error strings for cross-family child imports."""
     errors = []
-    prefixes = sorted(FAMILY_CHILDREN, key=len, reverse=True)
+    fams = FAMILY_CHILDREN if families is None else families
+    prefixes = sorted(fams, key=len, reverse=True)
+    root = Path(root)
+    for prefix, (shell, famdir) in sorted(fams.items()):
+        if not (root / shell).is_file():
+            errors.append("family: stale entry %s: shell %s is gone"
+                          % (prefix, shell))
+        if not (root / famdir).is_dir():
+            errors.append("family: stale entry %s: dir %s is gone"
+                          % (prefix, famdir))
+    if errors:
+        return errors
     try:
-        files = sorted(Path(root).rglob("*.hs"))
+        files = set()
+        for ext in MODSIZE_EXTS:
+            files.update(sorted(root.rglob(ext)))
+        files = sorted(files)
     except OSError as exc:
         return ["family: cannot walk %s: %s" % (root, exc)]
     for path in files:
         rel = path.relative_to(root).as_posix()
-        if ".git/" in rel or "/dist-newstyle/" in rel \
-                or rel.startswith("dist-newstyle/"):
+        parts = rel.split("/")
+        if any(p.startswith(".") or p in MODSIZE_SKIP_PARTS
+               for p in parts):
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -773,7 +788,7 @@ def check_family(root):
                         continue
                 elif mod != prefix:
                     continue
-                shell, famdir = FAMILY_CHILDREN[prefix]
+                shell, famdir = fams[prefix]
                 if rel != shell and not rel.startswith(famdir):
                     errors.append(
                         "family: %s imports %s outside its family "
@@ -1123,31 +1138,63 @@ def _self_test_modsize():
             "module Haskoki.Der.Primitives where\n")
         (root / "core" / "Haskoki" / "Other.hs").write_text(
             "module Haskoki.Other where\n")
-        assert check_family(root) == [], "shell + sibling imports pass"
+        fams = {"Haskoki.Der.":
+                    ("core/Haskoki/Der.hs", "core/Haskoki/Der/"),
+                "AcquisitionCounters":
+                    ("tests/support/AcquisitionCounters.hs", "tests/")}
+        (root / "tests" / "support").mkdir(parents=True)
+        (root / "tests" / "support" / "AcquisitionCounters.hs").write_text(
+            "module AcquisitionCounters where\n")
+        assert check_family(root, families=fams) == [], \
+            "shell + sibling imports pass"
         (root / "core" / "Haskoki" / "Other.hs").write_text(
             "module Haskoki.Other where\n"
             "import qualified Haskoki.Der.Classical as C\n")
-        errs = check_family(root)
+        errs = check_family(root, families=fams)
         assert len(errs) == 1 and "Other.hs" in errs[0] \
             and "Haskoki.Der.Classical" in errs[0], \
             "outside import of a split child must fail"
         (root / "core" / "Haskoki" / "Other.hs").write_text(
             "module Haskoki.Other where\n")
-        (root / "tests").mkdir()
         (root / "tests" / "Probe.hs").write_text(
             "module Probe where\nimport AcquisitionCounters\n")
-        assert check_family(root) == [], \
+        assert check_family(root, families=fams) == [], \
             "support module importable from tests/"
         (root / "src").mkdir()
         (root / "src" / "Prod.hs").write_text(
             "module Prod where\nimport AcquisitionCounters\n")
-        assert check_family(root) != [], \
+        assert check_family(root, families=fams) != [], \
             "support module importable from src/ must fail"
         (root / "src" / "Prod.hs").unlink()
         (root / "src" / "dist-newstyle").mkdir()
         (root / "src" / "dist-newstyle" / "Stale.hs").write_text(
             "module Stale where\nimport Haskoki.Der.Classical\n")
-        assert check_family(root) == [], "dist-newstyle/ is skipped"
+        assert check_family(root, families=fams) == [], \
+            "dist-newstyle/ is skipped"
+    # Nested pair (longest-prefix wins) + package-qualified form.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "s").mkdir()
+        (root / "s" / "P.hs").write_text("module P where\n")
+        (root / "s" / "P").mkdir()
+        (root / "s" / "P" / "Q.hs").write_text("module P.Q where\n")
+        (root / "s" / "P" / "Q").mkdir()
+        (root / "s" / "P" / "Q" / "R.hs").write_text(
+            "module P.Q.R where\n")
+        (root / "s" / "Out.hs").write_text(
+            "module Out where\nimport \"pkg\" P.Q.R\n")
+        fams = {"P.": ("s/P.hs", "s/P/"),
+                "P.Q.": ("s/P/Q.hs", "s/P/Q/")}
+        errs = check_family(root, families=fams)
+        assert len(errs) == 1 and "P.Q.R" in errs[0] \
+            and "s/P/Q.hs" in errs[0], \
+            "nested child resolves against the longest prefix"
+        (root / "s" / "Out.hs").write_text("module Out where\n")
+        assert check_family(root, families=fams) == [], \
+            "no outside importers pass"
+        fams["Gone."] = ("s/Gone.hs", "s/Gone/")
+        assert check_family(root, families=fams) != [], \
+            "stale shell/dir entries must fail"
 
 
 def main():

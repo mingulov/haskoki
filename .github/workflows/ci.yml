@@ -249,10 +249,17 @@ jobs:
           echo "$HLINT_SHA  hlint-${HLINT_VER}-x86_64-linux.tar.gz" | sha256sum -c -
           tar xzf "hlint-${HLINT_VER}-x86_64-linux.tar.gz"
           cd "$GITHUB_WORKSPACE"
-          set +e
-          /tmp/hlint-${HLINT_VER}/hlint -j src core tests test client app tools ffi > /tmp/hlint.log 2>&1
-          set -e
-          n=$(grep -oE '[0-9]+ hints' /tmp/hlint.log | tail -1 | grep -oE '[0-9]+')
+          rc=0
+          /tmp/hlint-${HLINT_VER}/hlint -j src core tests test client app tools ffi \
+            > /tmp/hlint.log 2> /tmp/hlint.err || rc=$?
+          summary=$(tail -n 1 /tmp/hlint.log)
+          if [ "$summary" = "No hints" ]; then n=0
+          elif [[ "$summary" =~ ^([0-9]+)\ hints?$ ]]; then n=${BASH_REMATCH[1]}
+          else
+            echo "::error::unrecognised hlint summary (rc=$rc): '$summary'"
+            tail -40 /tmp/hlint.log; cat /tmp/hlint.err; exit 1
+          fi
+          if [ "$rc" -gt 1 ]; then echo "::error::hlint rc=$rc"; cat /tmp/hlint.err; exit 1; fi
           echo "hlint hints: $n (max $HLINT_MAX)"
           if [ "$n" -gt "$HLINT_MAX" ]; then
             echo "::error::HLint hints grew to $n (max $HLINT_MAX); fix new hints or pay down old ones"
