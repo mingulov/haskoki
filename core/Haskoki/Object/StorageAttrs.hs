@@ -36,7 +36,7 @@ import Haskoki.Attribute
   , AttributeValue (..)
   )
 import Haskoki.Attribute.Generated
-  ( mustClassId)
+  (mustClassId)
 import Haskoki.Model
   ( ObjectState (..)
   , SessionState (..)

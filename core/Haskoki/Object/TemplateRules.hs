@@ -2,7 +2,7 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.TemplateRules
-  (TemplateRule (..)
+  ( TemplateRule (..)
   , RuleDeny (..)
   , findRule
   , checkRules
@@ -13,12 +13,12 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Haskoki.Attribute
-  (AttributeType (..)
+  ( AttributeType (..)
   , AttributeValue (..)
   , attributeTypeByName
   )
 import Haskoki.Attribute.Generated
-  (generatedTemplateRules)
+  ( generatedTemplateRules)
 
 -- | One template rule: the class and key-type context plus the
 -- required and forbidden @CKA_*@ names. Rules come from the generated

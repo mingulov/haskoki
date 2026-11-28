@@ -2,7 +2,7 @@
 -}
 {-# LANGUAGE OverloadedStrings #-}
 module Haskoki.Object.PlanQuery
-  (planFindObjects
+  ( planFindObjects
   , viewForFind
   , readView
   , planGetAttributes
@@ -14,7 +14,7 @@ import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Haskoki.Attribute
-  (AttributeResult (..)
+  ( AttributeResult (..)
   , AttributeType (..)
   , AttributeValue (..)
   , PartialReads (..)
@@ -25,13 +25,13 @@ import Haskoki.Attribute
   )
 import Haskoki.Der (dhSpkiFields, dsaSpkiFields, ecParamsNameOfOid)
 import Haskoki.Model
-  (HandleBinding (..)
+  ( HandleBinding (..)
   , Model (..)
   , ObjectState (..)
   , SessionState (..)
   )
 import Haskoki.Outcome
-  (DeltaOp (..)
+  ( DeltaOp (..)
   , NativeOutput (..)
   , PlanResult (..)
   , PreparedCommit (..)
@@ -40,7 +40,7 @@ import Haskoki.Outcome
   )
 import Haskoki.Request (OutputIntent (..), OutputRegion (..))
 import Haskoki.Types
-  (ExternalHandle (..)
+  ( ExternalHandle (..)
   , ObjectId (..)
   , ReturnCode (..)
   )
@@ -111,7 +111,7 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
       Nothing ->
         let h = ExternalHandle next
             (binds, outs) = assign (next + 1) rest
-        in (DeltaBindHandle h oid : binds
+        in ( DeltaBindHandle h oid : binds
            , NativeOutput (RegionHandle "object") (encodeHandle h) : outs
            )
 
@@ -126,7 +126,7 @@ planFindObjects model st tmpl = case checkDuplicates tmpl of
 -- objects, so @y@ always reads and always matches.
 projectPublicValue :: Map AttributeType AttributeValue -> Map AttributeType AttributeValue
 projectPublicValue attrs = case (classOf, keyTypeOf, Map.lookup AttrValue attrs) of
-  (Just c, Just k, Just (ValBytes der))
+  ( Just c, Just k, Just (ValBytes der))
     | c == ckoPublicKey && k == ckkDsa
     , Just (_, _, _, y) <- dsaSpkiFields der ->
         Map.insert AttrValue (ValBytes y) attrs
