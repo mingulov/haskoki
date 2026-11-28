@@ -96,7 +96,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
-import AcquisitionCounters (AcqCounts (..), countingAcquisitionOver, zeroCounts)
+import AcquisitionCounters (AcqCounts (..), countingAcquisitionOver)
 import Haskoki.Engine.Backend
   ( BackendEnv
   , BackendError (..)
@@ -117,7 +117,6 @@ import Haskoki.FFI.Async
   , haskokiAsyncStoreClose
   , haskokiAsyncStoreOpen
   , haskokiAsyncStoreOpenWith
-  , newResidueOwner
   , openAsyncCtxOnWith
   , openAsyncCtxWith
   , openStoreBoxWith

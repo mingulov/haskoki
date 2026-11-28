@@ -293,7 +293,7 @@ caseInterfacesDisclosed = withTimeout "capabilities run" $ do
 
 -- | ENFORCED: kind routes the store ('openStdStore': memory opens
 -- transient, sqlite opens the explicit path). Routing behavior is
--- pinned by FfiAsyncSpec caseStdSuccess/caseStdBadSqlite; the
+-- pinned by FfiAsync.Open caseStdSuccess/caseStdBadSqlite; the
 -- sqlite-requires-path half by ConfigSpec caseNoSilentShare.
 caseStorageKindBad :: IO ()
 caseStorageKindBad =

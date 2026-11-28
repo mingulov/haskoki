@@ -10,7 +10,7 @@ module AcquisitionCounters
   , countingAcquisitionOver
   ) where
 
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 
 import Haskoki.Engine.Backend (EngineResult (..))
 import Haskoki.FFI.Async (AsyncAcquisition (..), newResidueOwner)

@@ -37,7 +37,6 @@ crypto probes are race-free.
 {-# LANGUAGE OverloadedStrings #-}
 module FfiAsyncSpec (spec, commitPathWarmup) where
 
-
 import Test.Tasty (TestTree, inOrderTestGroup)
 import Test.Tasty.HUnit (testCase)
 
